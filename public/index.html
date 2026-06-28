@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ChatRoom</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+
+<!-- Auth Screen -->
+<div id="auth-screen" class="screen">
+  <div class="auth-box">
+    <h1>ChatRoom</h1>
+    <div class="tabs">
+      <button class="tab-btn active" onclick="switchTab('login')">Login</button>
+      <button class="tab-btn" onclick="switchTab('register')">Register</button>
+    </div>
+    <div id="login-form">
+      <input id="login-user" type="text" placeholder="Username" />
+      <input id="login-pass" type="password" placeholder="Password" />
+      <button onclick="login()">Login</button>
+    </div>
+    <div id="register-form" class="hidden">
+      <input id="reg-user" type="text" placeholder="Username" />
+      <input id="reg-pass" type="password" placeholder="Password" />
+      <button onclick="register()">Register</button>
+    </div>
+    <p id="auth-error" class="error"></p>
+  </div>
+</div>
+
+<!-- App Screen -->
+<div id="app-screen" class="screen hidden">
+  <aside id="sidebar">
+    <div class="sidebar-header">
+      <span id="current-user-display"></span>
+      <button onclick="logout()" class="icon-btn" title="Logout">⏏</button>
+    </div>
+    <div class="room-create">
+      <input id="new-room-name" type="text" placeholder="New room name..." />
+      <button onclick="createRoom()">+</button>
+    </div>
+    <ul id="room-list"></ul>
+  </aside>
+
+  <main id="chat-area">
+    <header id="chat-header">
+      <span id="room-title">Select a room</span>
+      <span id="online-indicator"></span>
+    </header>
+
+    <div id="messages"></div>
+
+    <div id="input-bar">
+      <label class="icon-btn" title="Attach file">
+        📎
+        <input type="file" id="file-input" style="display:none" onchange="sendFile()" />
+      </label>
+      <button id="record-btn" class="icon-btn" title="Hold to record audio" onmousedown="startRecording()" onmouseup="stopRecording()" ontouchstart="startRecording()" ontouchend="stopRecording()">🎙</button>
+      <input id="msg-input" type="text" placeholder="Type a message..." onkeydown="if(event.key==='Enter') sendText()" />
+      <button onclick="sendText()" class="send-btn">Send</button>
+    </div>
+  </main>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>
