@@ -9,6 +9,7 @@ let isRecording = false;
 let pickerTarget = null;
 let editingMsgId = null;
 let ctxTarget = null;
+let editingRoomId = null;
 
 // Typing state
 let typingTimer = null;
@@ -18,7 +19,9 @@ const typingUsers = new Set();
 // Online users
 let onlineUsers = [];
 
-// Detect best supported audio MIME type (iOS Safari needs audio/mp4)
+// DM rooms cache: otherUserId -> roomData
+const dmRoomsCache = {};
+
 function getSupportedMimeType() {
   const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'];
   for (const t of types) {
@@ -102,6 +105,7 @@ async function enterApp() {
   document.getElementById('current-user-display').textContent = username;
   await connectSocket();
   await loadRooms();
+  await loadDMRooms();
 }
 
 function setAvatarInitials(name) {
@@ -126,8 +130,11 @@ function connectSocket() {
     socket.on('reactions_updated', ({ messageId, reactions }) => renderReactions(messageId, reactions));
     socket.on('room_online', ({ users }) => updateOnlineUsers(users));
     socket.on('room_created', (room) => addRoomToList(room));
+    socket.on('room_deleted', ({ roomId }) => removeRoomFromList(roomId));
+    socket.on('room_updated', (room) => updateRoomInList(room));
     socket.on('user_typing', ({ username: u }) => showTyping(u));
     socket.on('user_stopped_typing', ({ username: u }) => hideTyping(u));
+    socket.on('dm_activity', ({ room }) => ensureDMInSidebar(room));
   });
 }
 
@@ -147,23 +154,23 @@ function onTypingInput() {
 
 function showTyping(user) {
   typingUsers.add(user);
-  renderTypingBar();
+  renderTypingOverlay();
 }
 function hideTyping(user) {
   typingUsers.delete(user);
-  renderTypingBar();
+  renderTypingOverlay();
 }
-function renderTypingBar() {
-  const bar = document.getElementById('typing-bar');
-  const txt = document.getElementById('typing-text');
-  if (typingUsers.size === 0) { bar.classList.add('hidden'); return; }
+function renderTypingOverlay() {
+  const overlay = document.getElementById('typing-overlay');
+  if (typingUsers.size === 0) { overlay.classList.add('hidden'); return; }
   const names = [...typingUsers];
-  txt.textContent = names.length === 1
+  const text = names.length === 1
     ? `${names[0]} is typing`
     : names.length === 2
       ? `${names[0]} and ${names[1]} are typing`
       : `${names[0]} and ${names.length - 1} others are typing`;
-  bar.classList.remove('hidden');
+  overlay.innerHTML = `<span>${text}</span><span class="typing-dots"><span></span><span></span><span></span></span>`;
+  overlay.classList.remove('hidden');
 }
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
@@ -252,13 +259,85 @@ function addRoomToList(room) {
   const li = document.createElement('li');
   li.dataset.roomId = room.id;
   li.title = room.name;
+
   const icon = document.createElement('span');
   icon.className = 'room-icon'; icon.textContent = '#';
+
   const label = document.createElement('span');
   label.className = 'room-label'; label.textContent = room.name;
-  li.appendChild(icon); li.appendChild(label);
+
+  li.appendChild(icon);
+  li.appendChild(label);
+
+  // Edit/delete buttons for room creator
+  if (room.created_by) {
+    const actions = document.createElement('div');
+    actions.className = 'room-actions';
+
+    const editBtn = document.createElement('button');
+    editBtn.className = 'room-action-btn';
+    editBtn.title = 'Rename room';
+    editBtn.textContent = '✏️';
+    editBtn.onclick = (e) => { e.stopPropagation(); openRoomEdit(room.id, room.name); };
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'room-action-btn del';
+    delBtn.title = 'Delete room';
+    delBtn.textContent = '🗑';
+    delBtn.onclick = (e) => { e.stopPropagation(); confirmDeleteRoom(room.id, room.name); };
+
+    actions.appendChild(editBtn);
+    actions.appendChild(delBtn);
+    li.appendChild(actions);
+
+    // Only show actions for creator — hide by default, CSS shows on hover
+    // We track ownership client-side by storing created_by in dataset
+    li.dataset.createdBy = room.created_by;
+    // We'll hide actions for non-owners via JS after username lookup isn't possible;
+    // instead we check via a hidden attribute and show/hide in CSS hover only for owner
+    if (!isRoomOwner(room)) {
+      actions.style.display = 'none';
+      actions.classList.add('not-owner');
+    }
+  }
+
   li.onclick = () => { joinRoom(room.id, room.name, li); isMobile() ? closeSidebar() : collapseSidebar(); };
   document.getElementById('room-list').appendChild(li);
+}
+
+function isRoomOwner(room) {
+  // We can't easily get our own user id on the client without storing it.
+  // Store it when we log in.
+  return room.created_by && String(room.created_by) === String(getUserId());
+}
+
+function getUserId() {
+  // Decode JWT to get user id
+  if (!token) return null;
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    return payload.id;
+  } catch { return null; }
+}
+
+function removeRoomFromList(roomId) {
+  document.querySelector(`[data-room-id="${roomId}"]`)?.remove();
+  if (currentRoomId === roomId) {
+    currentRoomId = null;
+    document.getElementById('room-title').textContent = 'Select a room';
+    document.getElementById('messages').innerHTML = '';
+  }
+}
+
+function updateRoomInList(room) {
+  const li = document.querySelector(`[data-room-id="${room.id}"]`);
+  if (!li) return;
+  const label = li.querySelector('.room-label');
+  if (label) label.textContent = room.name;
+  li.title = room.name;
+  if (currentRoomId === room.id) {
+    document.getElementById('room-title').textContent = '# ' + room.name;
+  }
 }
 
 async function createRoom() {
@@ -270,16 +349,110 @@ async function createRoom() {
   input.value = '';
 }
 
-async function joinRoom(roomId, roomName, li) {
+// ─── Room edit/delete ────────────────────────────────────────────────────────
+function openRoomEdit(roomId, currentName) {
+  editingRoomId = roomId;
+  document.getElementById('room-edit-name').value = currentName;
+  document.getElementById('room-edit-error').textContent = '';
+  show('room-edit-modal');
+}
+function closeRoomEdit() {
+  editingRoomId = null;
+  hide('room-edit-modal');
+}
+function saveRoomEdit() {
+  const name = document.getElementById('room-edit-name').value.trim();
+  if (!name) return;
+  if (!editingRoomId) return;
+  socket.emit('edit_room', { roomId: editingRoomId, name });
+  closeRoomEdit();
+}
+function confirmDeleteRoom(roomId, roomName) {
+  if (!confirm(`Delete room "${roomName}"? All messages will be lost.`)) return;
+  socket.emit('delete_room', { roomId });
+}
+
+// ─── DM rooms ────────────────────────────────────────────────────────────────
+async function loadDMRooms() {
+  const rooms = await api('/dm-rooms');
+  if (!Array.isArray(rooms)) return;
+  rooms.forEach(r => addDMToSidebar(r, r.other_username));
+}
+
+function parseDMRoom(room) {
+  // room.name = __dm__<a>__<b>__
+  const match = room.name.match(/^__dm__(\d+)__(\d+)__$/);
+  if (!match) return null;
+  const myId = getUserId();
+  const otherId = parseInt(match[1]) === myId ? parseInt(match[2]) : parseInt(match[1]);
+  return otherId;
+}
+
+function addDMToSidebar(room, otherUsername) {
+  if (!otherUsername) return;
+  if (document.querySelector(`[data-room-id="${room.id}"]`)) return;
+
+  const li = document.createElement('li');
+  li.dataset.roomId = room.id;
+  li.dataset.isDm = '1';
+  li.title = otherUsername;
+
+  const icon = document.createElement('span');
+  icon.className = 'room-icon'; icon.textContent = '👤';
+
+  const label = document.createElement('span');
+  label.className = 'room-label'; label.textContent = otherUsername;
+
+  li.appendChild(icon);
+  li.appendChild(label);
+  li.onclick = () => {
+    joinRoom(room.id, otherUsername, li, true);
+    isMobile() ? closeSidebar() : collapseSidebar();
+  };
+  document.getElementById('dm-list').appendChild(li);
+}
+
+function ensureDMInSidebar(room) {
+  if (document.querySelector(`[data-room-id="${room.id}"]`)) return;
+  // Fetch the other username
+  api('/dm-rooms').then(rooms => {
+    if (!Array.isArray(rooms)) return;
+    const found = rooms.find(r => r.id === room.id);
+    if (found) addDMToSidebar(found, found.other_username);
+  });
+}
+
+async function openDM(otherUsername) {
+  closeOnlinePanel();
+  // Find user id for this username
+  const users = await api('/users');
+  if (!Array.isArray(users)) return;
+  const other = users.find(u => u.username === otherUsername);
+  if (!other) return;
+
+  const res = await api('/dm/' + other.id, 'POST');
+  if (res.error) return alert(res.error);
+
+  // Add to DM sidebar if not already there
+  addDMToSidebar(res, res.otherUsername || otherUsername);
+
+  const li = document.querySelector(`[data-room-id="${res.id}"]`);
+  if (li) {
+    joinRoom(res.id, res.otherUsername || otherUsername, li, true);
+    isMobile() ? closeSidebar() : collapseSidebar();
+  }
+}
+
+async function joinRoom(roomId, roomName, li, isDM = false) {
   if (currentRoomId === roomId) return;
   cancelEdit();
   stopTypingSignal();
   if (isRecording) stopRecording();
-  typingUsers.clear(); renderTypingBar();
+  typingUsers.clear(); renderTypingOverlay();
   currentRoomId = roomId;
-  document.querySelectorAll('#room-list li').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('#room-list li, #dm-list li').forEach(el => el.classList.remove('active'));
   li.classList.add('active');
-  document.getElementById('room-title').textContent = '# ' + roomName;
+  document.getElementById('room-title').textContent = (isDM ? '💬 ' : '# ') + roomName;
   document.getElementById('messages').innerHTML = '';
   document.getElementById('online-indicator').classList.add('hidden');
   socket.emit('join_room', roomId);
@@ -295,7 +468,6 @@ function updateOnlineUsers(users) {
   if (!users.length) { badge.classList.add('hidden'); return; }
   badge.classList.remove('hidden');
   badge.textContent = `● ${users.length} online`;
-  // refresh panel if open
   if (!document.getElementById('online-panel').classList.contains('hidden')) renderOnlinePanel();
 }
 
@@ -314,6 +486,10 @@ function renderOnlinePanel() {
   onlineUsers.forEach(u => {
     const li = document.createElement('li');
     li.textContent = u;
+    if (u !== username) {
+      li.title = `Message ${u}`;
+      li.onclick = () => openDM(u);
+    }
     ul.appendChild(li);
   });
 }
@@ -397,7 +573,6 @@ async function sendFile() {
   document.getElementById('file-input').value = '';
 }
 
-// Toggle recording: click once to start, click again to stop & send
 async function toggleRecording() {
   if (isRecording) {
     stopRecording();
@@ -419,7 +594,7 @@ async function startRecording() {
     mediaRecorder = new MediaRecorder(stream, options);
     mediaRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) audioChunks.push(e.data); };
     mediaRecorder.onstop = uploadAudio;
-    mediaRecorder.start(100); // collect data every 100ms
+    mediaRecorder.start(100);
     isRecording = true;
     document.getElementById('record-btn').classList.add('recording');
     document.getElementById('record-btn').title = 'Tap to stop recording';
@@ -439,11 +614,11 @@ function stopRecording() {
 }
 
 async function uploadAudio() {
-  if (audioChunks.length === 0) return; // nothing recorded
+  if (audioChunks.length === 0) return;
   const mimeType = getSupportedMimeType() || 'audio/webm';
   const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';
   const blob = new Blob(audioChunks, { type: mimeType });
-  if (blob.size < 1000) return; // too small, probably empty
+  if (blob.size < 1000) return;
   const form = new FormData();
   form.append('file', blob, `voice-${Date.now()}.${ext}`);
   const res = await fetch('/upload', { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: form }).then(r => r.json());
@@ -459,7 +634,7 @@ function appendMessage(msg) {
   const wrapper = document.createElement('div');
   wrapper.className = 'msg-wrapper ' + (isMine ? 'mine' : 'theirs');
   wrapper.dataset.msgId = msg.id;
-  addLongPress(wrapper, () => openCtxMenu(msg.id, msg.type, wrapper));
+  addLongPress(wrapper, () => openCtxMenu(msg.id, msg.type, isMine, wrapper));
 
   if (!isMine) {
     const sender = document.createElement('div');
@@ -496,7 +671,6 @@ function appendMessage(msg) {
   }
   wrapper.appendChild(bubble);
 
-  // Footer
   const footer = document.createElement('div');
   footer.className = 'msg-footer';
 
@@ -510,17 +684,19 @@ function appendMessage(msg) {
   reactBtn.onclick = (e) => { e.stopPropagation(); showEmojiPicker(msg.id, reactBtn, wrapper); };
   footer.appendChild(reactBtn);
 
-  if (msg.type === 'text') {
-    const editBtn = document.createElement('button');
-    editBtn.className = 'msg-action-btn'; editBtn.title = 'Edit'; editBtn.textContent = '✏️';
-    editBtn.onclick = (e) => { e.stopPropagation(); startEdit(msg.id); };
-    footer.appendChild(editBtn);
-  }
+  if (isMine) {
+    if (msg.type === 'text') {
+      const editBtn = document.createElement('button');
+      editBtn.className = 'msg-action-btn'; editBtn.title = 'Edit'; editBtn.textContent = '✏️';
+      editBtn.onclick = (e) => { e.stopPropagation(); startEdit(msg.id); };
+      footer.appendChild(editBtn);
+    }
 
-  const delBtn = document.createElement('button');
-  delBtn.className = 'msg-action-btn delete'; delBtn.title = 'Delete'; delBtn.textContent = '🗑';
-  delBtn.onclick = (e) => { e.stopPropagation(); confirmDelete(msg.id); };
-  footer.appendChild(delBtn);
+    const delBtn = document.createElement('button');
+    delBtn.className = 'msg-action-btn delete'; delBtn.title = 'Delete'; delBtn.textContent = '🗑';
+    delBtn.onclick = (e) => { e.stopPropagation(); confirmDelete(msg.id); };
+    footer.appendChild(delBtn);
+  }
 
   wrapper.appendChild(footer);
 
@@ -534,10 +710,15 @@ function appendMessage(msg) {
 }
 
 // ─── Context menu ─────────────────────────────────────────────────────────────
-function openCtxMenu(messageId, type, wrapperEl) {
-  ctxTarget = { messageId, type };
+function openCtxMenu(messageId, type, isMine, wrapperEl) {
+  ctxTarget = { messageId, type, isMine };
   const menu = document.getElementById('ctx-menu');
-  menu.querySelectorAll('button')[1].style.display = type === 'text' ? '' : 'none';
+  const buttons = menu.querySelectorAll('button');
+  // Edit button (index 1) — only for own text messages
+  buttons[1].style.display = (isMine && type === 'text') ? '' : 'none';
+  // Delete button (index 2) — only for own messages
+  menu.querySelector('button.danger').style.display = isMine ? '' : 'none';
+  menu.querySelector('hr').style.display = isMine ? '' : 'none';
   menu.classList.remove('hidden');
   const rect = wrapperEl.getBoundingClientRect();
   const mw = 160, mh = 120;
@@ -637,12 +818,6 @@ function handleGlobalClick(e) {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function appendSystem(text) {
-  const el = document.createElement('div');
-  el.className = 'system-msg'; el.textContent = text;
-  document.getElementById('messages').appendChild(el);
-  scrollBottom();
-}
 function scrollBottom() { const m = document.getElementById('messages'); m.scrollTop = m.scrollHeight; }
 function show(id) { document.getElementById(id).classList.remove('hidden'); }
 function hide(id) { document.getElementById(id).classList.add('hidden'); }

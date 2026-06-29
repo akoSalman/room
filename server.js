@@ -95,7 +95,7 @@ app.put('/profile', authMiddleware, async (req, res) => {
 
 // Rooms
 app.get('/rooms', authMiddleware, (req, res) => {
-  const rooms = db.prepare('SELECT * FROM rooms ORDER BY name').all();
+  const rooms = db.prepare('SELECT * FROM rooms WHERE is_dm = 0 ORDER BY name').all();
   res.json(rooms);
 });
 
@@ -103,13 +103,62 @@ app.post('/rooms', authMiddleware, (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: 'Room name required' });
   try {
-    const result = db.prepare('INSERT INTO rooms (name) VALUES (?)').run(name.trim());
+    const result = db.prepare('INSERT INTO rooms (name, created_by) VALUES (?, ?)').run(name.trim(), req.user.id);
     const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(result.lastInsertRowid);
     io.emit('room_created', room);
     res.json(room);
   } catch {
     res.status(409).json({ error: 'Room already exists' });
   }
+});
+
+// Users list (for DMs)
+app.get('/users', authMiddleware, (req, res) => {
+  const users = db.prepare('SELECT id, username FROM users WHERE id != ? ORDER BY username').all(req.user.id);
+  res.json(users);
+});
+
+// DM rooms
+app.post('/dm/:userId', authMiddleware, (req, res) => {
+  const myId = req.user.id;
+  const otherId = parseInt(req.params.userId);
+  if (!otherId || otherId === myId) return res.status(400).json({ error: 'Invalid user' });
+
+  const other = db.prepare('SELECT id, username FROM users WHERE id = ?').get(otherId);
+  if (!other) return res.status(404).json({ error: 'User not found' });
+
+  const a = Math.min(myId, otherId);
+  const b = Math.max(myId, otherId);
+  const dmName = `__dm__${a}__${b}__`;
+
+  let room = db.prepare('SELECT * FROM rooms WHERE name = ?').get(dmName);
+  if (!room) {
+    const result = db.prepare('INSERT INTO rooms (name, created_by, is_dm) VALUES (?, ?, 1)').run(dmName, myId);
+    room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(result.lastInsertRowid);
+  }
+
+  res.json({ ...room, otherUsername: other.username });
+});
+
+app.get('/dm-rooms', authMiddleware, (req, res) => {
+  // Return DM rooms where the current user has sent at least one message, or is part of
+  const myId = req.user.id;
+  const rooms = db.prepare(`
+    SELECT r.*, u.username as other_username
+    FROM rooms r
+    JOIN users u ON (
+      CASE
+        WHEN CAST(SUBSTR(r.name, 6, INSTR(SUBSTR(r.name,6),'__') - 1) AS INTEGER) = ?
+          THEN u.id = CAST(SUBSTR(r.name, 6 + INSTR(SUBSTR(r.name,6),'__') + 1, LENGTH(r.name)) AS INTEGER)
+        ELSE u.id = CAST(SUBSTR(r.name, 6, INSTR(SUBSTR(r.name,6),'__') - 1) AS INTEGER)
+      END
+    )
+    WHERE r.is_dm = 1
+      AND r.name LIKE '%__' || ? || '__%'
+      AND EXISTS (SELECT 1 FROM messages m WHERE m.room_id = r.id)
+    ORDER BY r.created_at DESC
+  `).all(myId, myId);
+  res.json(rooms);
 });
 
 // Messages
@@ -161,7 +210,6 @@ io.on('connection', (socket) => {
     const prev = onlineUsers.get(socket.id);
     if (prev?.roomId) {
       socket.leave(prev.roomId);
-      // update online list for old room
       const oldOnline = [...onlineUsers.values()]
         .filter(u => u.roomId === prev.roomId && u.username !== socket.user.username)
         .map(u => u.username);
@@ -169,7 +217,6 @@ io.on('connection', (socket) => {
     }
     onlineUsers.set(socket.id, { userId: socket.user.id, username: socket.user.username, roomId: String(roomId) });
     socket.join(String(roomId));
-    // send full online list to everyone in the room
     const roomOnline = [...onlineUsers.values()]
       .filter(u => u.roomId === String(roomId))
       .map(u => u.username);
@@ -189,6 +236,12 @@ io.on('connection', (socket) => {
     `).get(result.lastInsertRowid);
 
     io.to(String(roomId)).emit('message_received', msg);
+
+    // Notify the other DM participant so they can add the DM room to sidebar
+    const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+    if (room && room.is_dm) {
+      io.emit('dm_activity', { room });
+    }
   });
 
   socket.on('typing_start', ({ roomId }) => {
@@ -203,6 +256,7 @@ io.on('connection', (socket) => {
     if (!content || !content.trim()) return;
     const msg = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
     if (!msg || msg.type !== 'text') return;
+    if (msg.user_id !== socket.user.id) return; // ownership check
     db.prepare('UPDATE messages SET content = ?, edited = 1 WHERE id = ?').run(content.trim(), messageId);
     io.to(String(msg.room_id)).emit('message_edited', { messageId, content: content.trim() });
   });
@@ -210,6 +264,7 @@ io.on('connection', (socket) => {
   socket.on('delete_message', ({ messageId }) => {
     const msg = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
     if (!msg) return;
+    if (msg.user_id !== socket.user.id) return; // ownership check
     db.prepare('DELETE FROM reactions WHERE message_id = ?').run(messageId);
     db.prepare('DELETE FROM messages WHERE id = ?').run(messageId);
     io.to(String(msg.room_id)).emit('message_deleted', { messageId });
@@ -233,18 +288,37 @@ io.on('connection', (socket) => {
       JOIN users u ON r.user_id = u.id WHERE r.message_id = ?
     `).all(messageId);
 
-    // Find the roomId for this message
     const msg = db.prepare('SELECT room_id FROM messages WHERE id = ?').get(messageId);
     if (msg) io.to(String(msg.room_id)).emit('reactions_updated', { messageId, reactions });
+  });
+
+  socket.on('delete_room', ({ roomId }) => {
+    const room = db.prepare('SELECT * FROM rooms WHERE id = ? AND is_dm = 0').get(roomId);
+    if (!room) return;
+    if (room.created_by !== socket.user.id) return; // ownership check
+    db.prepare('DELETE FROM reactions WHERE message_id IN (SELECT id FROM messages WHERE room_id = ?)').run(roomId);
+    db.prepare('DELETE FROM messages WHERE room_id = ?').run(roomId);
+    db.prepare('DELETE FROM rooms WHERE id = ?').run(roomId);
+    io.emit('room_deleted', { roomId });
+  });
+
+  socket.on('edit_room', ({ roomId, name }) => {
+    if (!name || !name.trim()) return;
+    const room = db.prepare('SELECT * FROM rooms WHERE id = ? AND is_dm = 0').get(roomId);
+    if (!room) return;
+    if (room.created_by !== socket.user.id) return; // ownership check
+    const existing = db.prepare('SELECT id FROM rooms WHERE name = ? AND id != ?').get(name.trim(), roomId);
+    if (existing) return;
+    db.prepare('UPDATE rooms SET name = ? WHERE id = ?').run(name.trim(), roomId);
+    const updated = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+    io.emit('room_updated', updated);
   });
 
   socket.on('disconnect', () => {
     const info = onlineUsers.get(socket.id);
     onlineUsers.delete(socket.id);
     if (info?.roomId) {
-      // stop typing indicator for this user
       io.to(info.roomId).emit('user_stopped_typing', { username: socket.user.username });
-      // update online list
       const roomOnline = [...onlineUsers.values()]
         .filter(u => u.roomId === info.roomId)
         .map(u => u.username);

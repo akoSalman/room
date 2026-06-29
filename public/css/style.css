@@ -26,7 +26,6 @@ html {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background: var(--bg);
   color: var(--text);
-  /* Fill viewport including address bar area */
   height: -webkit-fill-available;
   height: 100%;
 }
@@ -110,9 +109,12 @@ body {
 #sidebar.collapsed { width: 54px; }
 #sidebar.collapsed .sidebar-username,
 #sidebar.collapsed .room-create,
-#sidebar.collapsed .room-label { display: none; }
+#sidebar.collapsed .room-label,
+#sidebar.collapsed .sidebar-section-label,
+#sidebar.collapsed .room-actions { display: none; }
 #sidebar.collapsed .sidebar-header { padding: 10px 0; justify-content: center; cursor: default; }
-#sidebar.collapsed #room-list li { padding: 13px 0; justify-content: center; }
+#sidebar.collapsed #room-list li,
+#sidebar.collapsed #dm-list li { padding: 13px 0; justify-content: center; }
 
 .sidebar-header { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background .15s; flex-shrink: 0; }
 .sidebar-header:hover { background: rgba(255,255,255,.04); }
@@ -125,12 +127,30 @@ body {
 .room-create input:focus { outline: none; border-color: var(--accent); }
 .room-create button { background: var(--accent); border: none; color: #fff; border-radius: 8px; padding: 7px 13px; cursor: pointer; font-size: 1.1rem; flex-shrink: 0; }
 
-#room-list { list-style: none; overflow-y: auto; flex: 1; -webkit-overflow-scrolling: touch; }
-#room-list li { padding: 13px 16px; cursor: pointer; border-bottom: 1px solid var(--border); transition: background .15s; font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 8px; }
-#room-list li .room-icon { flex-shrink: 0; color: var(--muted); }
-#room-list li:hover { background: var(--input-bg); }
-#room-list li.active { background: var(--mine-bg); color: #fff; }
-#room-list li.active .room-icon { color: #fff; }
+.sidebar-section-label { padding: 8px 14px 4px; font-size: 0.7rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; flex-shrink: 0; }
+.dm-section-label { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 10px; }
+
+#room-list, #dm-list { list-style: none; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+#room-list { flex-shrink: 0; max-height: 40vh; }
+#dm-list { flex: 1; }
+
+#room-list li, #dm-list li {
+  padding: 10px 16px; cursor: pointer; border-bottom: 1px solid var(--border);
+  transition: background .15s; font-size: 0.9rem; white-space: nowrap;
+  overflow: hidden; display: flex; align-items: center; gap: 8px; position: relative;
+}
+#room-list li .room-icon, #dm-list li .room-icon { flex-shrink: 0; color: var(--muted); }
+#room-list li .room-label, #dm-list li .room-label { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+#room-list li:hover, #dm-list li:hover { background: var(--input-bg); }
+#room-list li.active, #dm-list li.active { background: var(--mine-bg); color: #fff; }
+#room-list li.active .room-icon, #dm-list li.active .room-icon { color: #fff; }
+
+/* Room owner action buttons */
+.room-actions { display: none; gap: 2px; flex-shrink: 0; }
+#room-list li:hover .room-actions { display: flex; }
+.room-action-btn { background: none; border: none; cursor: pointer; padding: 2px 4px; font-size: 0.75rem; border-radius: 4px; color: var(--muted); line-height: 1; }
+.room-action-btn:hover { background: var(--border); color: var(--text); }
+.room-action-btn.del:hover { color: var(--danger); }
 
 /* ── Chat area ────────────────────────────────────── */
 #chat-area { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; position: relative; }
@@ -145,19 +165,38 @@ body {
 #online-panel { position: absolute; top: 50px; right: 12px; background: var(--sidebar-bg); border: 1px solid var(--border); border-radius: 12px; min-width: 180px; box-shadow: 0 8px 24px rgba(0,0,0,.4); z-index: 50; overflow: hidden; }
 .online-panel-title { padding: 10px 14px 6px; font-size: 0.75rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
 #online-list { list-style: none; padding-bottom: 8px; }
-#online-list li { display: flex; align-items: center; gap: 8px; padding: 6px 14px; font-size: 0.88rem; }
+#online-list li { display: flex; align-items: center; gap: 8px; padding: 8px 14px; font-size: 0.88rem; cursor: pointer; transition: background .12s; }
+#online-list li:hover { background: var(--input-bg); border-radius: 8px; }
 #online-list li::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--online); flex-shrink: 0; }
 
-/* Messages — must shrink to make room for input bar */
-#messages { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 12px 16px 8px; display: flex; flex-direction: column; gap: 6px; -webkit-overflow-scrolling: touch; }
-
-/* ── Typing indicator ─────────────────────────────── */
-#typing-bar { padding: 4px 18px 2px; font-size: 0.78rem; color: var(--muted); display: flex; align-items: center; gap: 6px; min-height: 24px; flex-shrink: 0; }
+/* ── Typing overlay — top center of messages area ── */
+#typing-overlay {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  border-radius: 20px;
+  padding: 4px 14px;
+  font-size: 0.78rem;
+  color: var(--success);
+  font-weight: 500;
+  white-space: nowrap;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+}
 .typing-dots { display: flex; gap: 3px; align-items: center; }
-.typing-dots span { width: 5px; height: 5px; border-radius: 50%; background: var(--muted); animation: tdot 1.2s infinite ease-in-out; }
+.typing-dots span { width: 4px; height: 4px; border-radius: 50%; background: var(--success); animation: tdot 1.2s infinite ease-in-out; }
 .typing-dots span:nth-child(2) { animation-delay: .2s; }
 .typing-dots span:nth-child(3) { animation-delay: .4s; }
-@keyframes tdot { 0%,60%,100% { transform: translateY(0); opacity:.35; } 30% { transform: translateY(-4px); opacity:1; } }
+@keyframes tdot { 0%,60%,100% { transform: translateY(0); opacity:.35; } 30% { transform: translateY(-3px); opacity:1; } }
+
+/* Messages — must shrink to make room for input bar */
+#messages { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 12px 16px 8px; display: flex; flex-direction: column; gap: 6px; -webkit-overflow-scrolling: touch; position: relative; }
 
 /* ── Edit banner ──────────────────────────────────── */
 #edit-banner { display: flex; align-items: center; gap: 8px; padding: 6px 14px; background: rgba(82,136,193,.12); border-top: 1px solid var(--accent); font-size: 0.82rem; color: var(--accent); flex-shrink: 0; }
@@ -169,7 +208,6 @@ body {
   align-items: center;
   gap: 6px;
   padding: 10px 12px;
-  /* add bottom safe-area padding for iPhone home bar */
   padding-bottom: max(10px, calc(env(safe-area-inset-bottom) + 6px));
   background: var(--header-bg);
   border-top: 1px solid var(--border);
@@ -207,7 +245,6 @@ body {
 .msg-footer { display: flex; align-items: center; gap: 4px; margin-top: 3px; padding: 0 4px; }
 .msg-time { font-size: 0.68rem; color: var(--muted); flex-shrink: 0; }
 
-/* Action buttons: always visible, subtle */
 .msg-action-btn {
   background: none; border: none;
   font-size: 0.75rem; cursor: pointer;
@@ -266,7 +303,6 @@ body {
     position: fixed; top: 0; left: 0; bottom: 0;
     width: var(--sidebar-w) !important;
     transform: translateX(-100%);
-    /* account for notch */
     padding-top: env(safe-area-inset-top);
   }
   #sidebar.open { transform: translateX(0); box-shadow: 4px 0 20px rgba(0,0,0,.5); }
@@ -278,7 +314,6 @@ body {
   .msg-bubble audio { max-width: 100%; }
   #emoji-picker { width: 210px; }
 
-  /* Always show action buttons on touch */
   .msg-action-btn, .react-btn { opacity: 0.7; }
 
   .auth-card { padding: 28px 20px; }

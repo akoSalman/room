@@ -14,6 +14,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS rooms (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT UNIQUE NOT NULL,
+    created_by INTEGER,
+    is_dm INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -43,8 +45,10 @@ db.exec(`
   );
 `);
 
-// Migrate: add edited column if it doesn't exist yet
+// Migrations
 try { db.exec('ALTER TABLE messages ADD COLUMN edited INTEGER DEFAULT 0'); } catch {}
+try { db.exec('ALTER TABLE rooms ADD COLUMN created_by INTEGER'); } catch {}
+try { db.exec('ALTER TABLE rooms ADD COLUMN is_dm INTEGER DEFAULT 0'); } catch {}
 
 // Seed a default room
 const existing = db.prepare('SELECT id FROM rooms WHERE name = ?').get('General');
