@@ -4,7 +4,8 @@ let currentRoomId = null;
 let socket = null;
 let mediaRecorder = null;
 let audioChunks = [];
-let pickerTarget = null; // { messageId, el }
+let pickerTarget = null;
+let socketReady = false;
 
 const EMOJIS = ['👍','❤️','😂','😮','😢','🔥','👏','🎉','🤔','😍','👎','😡'];
 
@@ -26,26 +27,49 @@ function switchTab(tab) {
 async function login() {
   const user = document.getElementById('login-user').value.trim();
   const pass = document.getElementById('login-pass').value;
-  const res = await api('/auth/login', 'POST', { username: user, password: pass });
-  if (res.error) return showAuthError(res.error);
-  saveSession(res.token, res.username);
-  enterApp();
+  if (!user || !pass) return showAuthError('Please enter username and password');
+  setAuthLoading(true);
+  try {
+    const res = await api('/auth/login', 'POST', { username: user, password: pass });
+    if (res.error) { showAuthError(res.error); return; }
+    saveSession(res.token, res.username);
+    enterApp();
+  } catch {
+    showAuthError('Connection error — is the server running?');
+  } finally {
+    setAuthLoading(false);
+  }
 }
 
 async function register() {
   const user = document.getElementById('reg-user').value.trim();
   const pass = document.getElementById('reg-pass').value;
-  const res = await api('/auth/register', 'POST', { username: user, password: pass });
-  if (res.error) return showAuthError(res.error);
-  saveSession(res.token, res.username);
-  enterApp();
+  if (!user || !pass) return showAuthError('Please enter username and password');
+  setAuthLoading(true);
+  try {
+    const res = await api('/auth/register', 'POST', { username: user, password: pass });
+    if (res.error) { showAuthError(res.error); return; }
+    saveSession(res.token, res.username);
+    enterApp();
+  } catch {
+    showAuthError('Connection error — is the server running?');
+  } finally {
+    setAuthLoading(false);
+  }
+}
+
+function setAuthLoading(on) {
+  const loginBtn = document.getElementById('login-btn');
+  const regBtn = document.getElementById('register-btn');
+  if (loginBtn) { loginBtn.disabled = on; loginBtn.textContent = on ? 'Please wait...' : 'Login'; }
+  if (regBtn) { regBtn.disabled = on; regBtn.textContent = on ? 'Please wait...' : 'Register'; }
 }
 
 function saveSession(t, u) { token = t; username = u; localStorage.setItem('token', t); localStorage.setItem('username', u); }
 function showAuthError(msg) { document.getElementById('auth-error').textContent = msg; }
 
 function logout() {
-  localStorage.clear(); token = null; username = null; currentRoomId = null;
+  localStorage.clear(); token = null; username = null; currentRoomId = null; socketReady = false;
   if (socket) { socket.disconnect(); socket = null; }
   show('auth-screen'); hide('app-screen');
 }
@@ -54,18 +78,30 @@ function logout() {
 async function enterApp() {
   show('app-screen'); hide('auth-screen');
   document.getElementById('current-user-display').textContent = username;
-  connectSocket();
+  await connectSocket();
   await loadRooms();
 }
 
 function connectSocket() {
-  socket = io({ auth: { token } });
-  socket.on('connect_error', () => logout());
-  socket.on('message_received', appendMessage);
-  socket.on('reactions_updated', ({ messageId, reactions }) => renderReactions(messageId, reactions));
-  socket.on('user_online', ({ username: u }) => appendSystem(`${u} joined`));
-  socket.on('user_offline', ({ username: u }) => appendSystem(`${u} left`));
-  socket.on('room_created', (room) => addRoomToList(room));
+  return new Promise((resolve) => {
+    if (socket) socket.disconnect();
+    socket = io({ auth: { token }, reconnectionAttempts: 5 });
+
+    socket.once('connect', () => {
+      socketReady = true;
+      resolve();
+    });
+
+    socket.on('connect_error', (err) => {
+      // Only force logout if token is rejected (auth error), not network hiccups
+      if (err.message === 'Unauthorized') logout();
+    });
+
+    socket.on('message_received', appendMessage);
+    socket.on('reactions_updated', ({ messageId, reactions }) => renderReactions(messageId, reactions));
+    socket.on('room_online', ({ users }) => updateOnlineIndicator(users));
+    socket.on('room_created', (room) => addRoomToList(room));
+  });
 }
 
 // ─── Mobile sidebar ───────────────────────────────────────────────────────────
@@ -81,8 +117,16 @@ function closeSidebar() {
 // ─── Rooms ────────────────────────────────────────────────────────────────────
 async function loadRooms() {
   const rooms = await api('/rooms');
+  if (!Array.isArray(rooms)) return;
   document.getElementById('room-list').innerHTML = '';
   rooms.forEach(addRoomToList);
+
+  // Auto-join General room
+  const general = rooms.find(r => r.name === 'General') || rooms[0];
+  if (general) {
+    const li = document.querySelector(`[data-room-id="${general.id}"]`);
+    if (li) joinRoom(general.id, general.name, li);
+  }
 }
 
 function addRoomToList(room) {
@@ -95,11 +139,12 @@ function addRoomToList(room) {
 }
 
 async function createRoom() {
-  const name = document.getElementById('new-room-name').value.trim();
+  const input = document.getElementById('new-room-name');
+  const name = input.value.trim();
   if (!name) return;
   const res = await api('/rooms', 'POST', { name });
   if (res.error) return alert(res.error);
-  document.getElementById('new-room-name').value = '';
+  input.value = '';
 }
 
 async function joinRoom(roomId, roomName, li) {
@@ -109,17 +154,26 @@ async function joinRoom(roomId, roomName, li) {
   li.classList.add('active');
   document.getElementById('room-title').textContent = '# ' + roomName;
   document.getElementById('messages').innerHTML = '';
+  updateOnlineIndicator([]);
   socket.emit('join_room', roomId);
   const msgs = await api('/messages/' + roomId);
-  msgs.forEach(appendMessage);
+  if (Array.isArray(msgs)) msgs.forEach(appendMessage);
   scrollBottom();
+}
+
+// ─── Online indicator ─────────────────────────────────────────────────────────
+function updateOnlineIndicator(users) {
+  const el = document.getElementById('online-indicator');
+  if (!users || users.length === 0) { el.textContent = ''; return; }
+  el.textContent = `● ${users.length} online`;
+  el.title = users.join(', ');
 }
 
 // ─── Messaging ────────────────────────────────────────────────────────────────
 function sendText() {
   const input = document.getElementById('msg-input');
   const content = input.value.trim();
-  if (!content || !currentRoomId) return;
+  if (!content || !currentRoomId || !socketReady) return;
   socket.emit('send_message', { roomId: currentRoomId, type: 'text', content });
   input.value = '';
 }
@@ -211,7 +265,6 @@ function appendMessage(msg) {
 
   wrapper.appendChild(bubble);
 
-  // Footer: time + react button
   const footer = document.createElement('div');
   footer.className = 'msg-footer';
 
@@ -229,17 +282,12 @@ function appendMessage(msg) {
 
   wrapper.appendChild(footer);
 
-  // Reactions row (empty, filled by renderReactions)
   const reactionsRow = document.createElement('div');
   reactionsRow.className = 'reactions-row';
   reactionsRow.id = 'reactions-' + msg.id;
   wrapper.appendChild(reactionsRow);
 
   container.appendChild(wrapper);
-
-  // Load existing reactions if any
-  if (msg.reactions) renderReactions(msg.id, msg.reactions);
-
   scrollBottom();
 }
 
@@ -256,21 +304,17 @@ function buildEmojiPicker() {
 
 function showEmojiPicker(messageId, btn, wrapper) {
   const picker = document.getElementById('emoji-picker');
-
   if (pickerTarget?.messageId === messageId && !picker.classList.contains('hidden')) {
     hideEmojiPicker(); return;
   }
-
   document.querySelectorAll('.msg-wrapper.show-react').forEach(el => el.classList.remove('show-react'));
   wrapper.classList.add('show-react');
   pickerTarget = { messageId };
-
   picker.classList.remove('hidden');
 
-  // Position near button
   const rect = btn.getBoundingClientRect();
   const pickerW = 240;
-  const pickerH = 80;
+  const pickerH = 90;
   let left = rect.left;
   let top = rect.top - pickerH - 8;
   if (left + pickerW > window.innerWidth) left = window.innerWidth - pickerW - 8;
@@ -295,8 +339,6 @@ function renderReactions(messageId, reactions) {
   const row = document.getElementById('reactions-' + messageId);
   if (!row) return;
   row.innerHTML = '';
-
-  // Group by emoji
   const groups = {};
   reactions.forEach(r => {
     if (!groups[r.emoji]) groups[r.emoji] = { count: 0, users: [], mine: false };
@@ -304,7 +346,6 @@ function renderReactions(messageId, reactions) {
     groups[r.emoji].users.push(r.username);
     if (r.username === username) groups[r.emoji].mine = true;
   });
-
   Object.entries(groups).forEach(([emoji, data]) => {
     const chip = document.createElement('div');
     chip.className = 'reaction-chip' + (data.mine ? ' mine' : '');
@@ -340,7 +381,10 @@ function show(id) { document.getElementById(id).classList.remove('hidden'); }
 function hide(id) { document.getElementById(id).classList.add('hidden'); }
 
 async function api(path, method = 'GET', body = null) {
-  const opts = { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) } };
+  const opts = {
+    method,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) }
+  };
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch(path, opts);
   return res.json();

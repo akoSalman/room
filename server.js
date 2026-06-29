@@ -133,11 +133,19 @@ io.on('connection', (socket) => {
     const prev = onlineUsers.get(socket.id);
     if (prev?.roomId) {
       socket.leave(prev.roomId);
-      io.to(prev.roomId).emit('user_offline', { username: socket.user.username });
+      // update online list for old room
+      const oldOnline = [...onlineUsers.values()]
+        .filter(u => u.roomId === prev.roomId && u.username !== socket.user.username)
+        .map(u => u.username);
+      io.to(prev.roomId).emit('room_online', { users: oldOnline });
     }
     onlineUsers.set(socket.id, { userId: socket.user.id, username: socket.user.username, roomId: String(roomId) });
     socket.join(String(roomId));
-    io.to(String(roomId)).emit('user_online', { username: socket.user.username });
+    // send full online list to everyone in the room
+    const roomOnline = [...onlineUsers.values()]
+      .filter(u => u.roomId === String(roomId))
+      .map(u => u.username);
+    io.to(String(roomId)).emit('room_online', { users: roomOnline });
   });
 
   socket.on('send_message', (data) => {
@@ -180,10 +188,13 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     const info = onlineUsers.get(socket.id);
-    if (info?.roomId) {
-      io.to(info.roomId).emit('user_offline', { username: info.username });
-    }
     onlineUsers.delete(socket.id);
+    if (info?.roomId) {
+      const roomOnline = [...onlineUsers.values()]
+        .filter(u => u.roomId === info.roomId)
+        .map(u => u.username);
+      io.to(info.roomId).emit('room_online', { users: roomOnline });
+    }
   });
 });
 
