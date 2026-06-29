@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
   <title>ChatRoom</title>
   <link rel="stylesheet" href="/css/style.css" />
 </head>
@@ -17,13 +17,13 @@
       <button class="tab-btn" onclick="switchTab('register')">Register</button>
     </div>
     <div id="login-form">
-      <input id="login-user" type="text" placeholder="Username" />
-      <input id="login-pass" type="password" placeholder="Password" />
+      <input id="login-user" type="text" placeholder="Username" autocomplete="username" />
+      <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password" />
       <button onclick="login()">Login</button>
     </div>
     <div id="register-form" class="hidden">
-      <input id="reg-user" type="text" placeholder="Username" />
-      <input id="reg-pass" type="password" placeholder="Password" />
+      <input id="reg-user" type="text" placeholder="Username" autocomplete="username" />
+      <input id="reg-pass" type="password" placeholder="Password" autocomplete="new-password" />
       <button onclick="register()">Register</button>
     </div>
     <p id="auth-error" class="error"></p>
@@ -32,13 +32,17 @@
 
 <!-- App Screen -->
 <div id="app-screen" class="screen hidden">
+
+  <!-- Mobile overlay -->
+  <div id="sidebar-overlay" onclick="closeSidebar()"></div>
+
   <aside id="sidebar">
     <div class="sidebar-header">
       <span id="current-user-display"></span>
       <button onclick="logout()" class="icon-btn" title="Logout">⏏</button>
     </div>
     <div class="room-create">
-      <input id="new-room-name" type="text" placeholder="New room name..." />
+      <input id="new-room-name" type="text" placeholder="New room..." />
       <button onclick="createRoom()">+</button>
     </div>
     <ul id="room-list"></ul>
@@ -46,6 +50,7 @@
 
   <main id="chat-area">
     <header id="chat-header">
+      <button id="menu-btn" class="icon-btn" onclick="openSidebar()">☰</button>
       <span id="room-title">Select a room</span>
       <span id="online-indicator"></span>
     </header>
@@ -57,11 +62,18 @@
         📎
         <input type="file" id="file-input" style="display:none" onchange="sendFile()" />
       </label>
-      <button id="record-btn" class="icon-btn" title="Hold to record audio" onmousedown="startRecording()" onmouseup="stopRecording()" ontouchstart="startRecording()" ontouchend="stopRecording()">🎙</button>
-      <input id="msg-input" type="text" placeholder="Type a message..." onkeydown="if(event.key==='Enter') sendText()" />
-      <button onclick="sendText()" class="send-btn">Send</button>
+      <button id="record-btn" class="icon-btn" title="Hold to record audio"
+        onmousedown="startRecording()" onmouseup="stopRecording()"
+        ontouchstart="startRecording(event)" ontouchend="stopRecording()">🎙</button>
+      <input id="msg-input" type="text" placeholder="Message..." onkeydown="if(event.key==='Enter') sendText()" />
+      <button onclick="sendText()" class="send-btn">➤</button>
     </div>
   </main>
+</div>
+
+<!-- Emoji Picker -->
+<div id="emoji-picker" class="hidden">
+  <div id="emoji-list"></div>
 </div>
 
 <script src="/socket.io/socket.io.js"></script>

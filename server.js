@@ -95,6 +95,16 @@ app.get('/messages/:roomId', authMiddleware, (req, res) => {
   res.json(messages.reverse());
 });
 
+// Reactions
+app.get('/reactions/:messageId', authMiddleware, (req, res) => {
+  const rows = db.prepare(`
+    SELECT r.emoji, u.username, r.user_id FROM reactions r
+    JOIN users u ON r.user_id = u.id
+    WHERE r.message_id = ?
+  `).all(req.params.messageId);
+  res.json(rows);
+});
+
 // Upload
 app.post('/upload', authMiddleware, upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file' });
@@ -143,6 +153,29 @@ io.on('connection', (socket) => {
     `).get(result.lastInsertRowid);
 
     io.to(String(roomId)).emit('message_received', msg);
+  });
+
+  socket.on('toggle_reaction', ({ messageId, emoji }) => {
+    const existing = db.prepare(
+      'SELECT id FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?'
+    ).get(messageId, socket.user.id, emoji);
+
+    if (existing) {
+      db.prepare('DELETE FROM reactions WHERE id = ?').run(existing.id);
+    } else {
+      db.prepare(
+        'INSERT OR IGNORE INTO reactions (message_id, user_id, emoji) VALUES (?, ?, ?)'
+      ).run(messageId, socket.user.id, emoji);
+    }
+
+    const reactions = db.prepare(`
+      SELECT r.emoji, u.username, r.user_id FROM reactions r
+      JOIN users u ON r.user_id = u.id WHERE r.message_id = ?
+    `).all(messageId);
+
+    // Find the roomId for this message
+    const msg = db.prepare('SELECT room_id FROM messages WHERE id = ?').get(messageId);
+    if (msg) io.to(String(msg.room_id)).emit('reactions_updated', { messageId, reactions });
   });
 
   socket.on('disconnect', () => {

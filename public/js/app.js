@@ -4,13 +4,18 @@ let currentRoomId = null;
 let socket = null;
 let mediaRecorder = null;
 let audioChunks = [];
+let pickerTarget = null; // { messageId, el }
 
-// ─── Boot ───────────────────────────────────────────────────────────────────
+const EMOJIS = ['👍','❤️','😂','😮','😢','🔥','👏','🎉','🤔','😍','👎','😡'];
+
+// ─── Boot ─────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
+  buildEmojiPicker();
+  document.addEventListener('click', handleGlobalClick);
   if (token && username) enterApp();
 });
 
-// ─── Auth ────────────────────────────────────────────────────────────────────
+// ─── Auth ─────────────────────────────────────────────────────────────────────
 function switchTab(tab) {
   document.getElementById('login-form').classList.toggle('hidden', tab !== 'login');
   document.getElementById('register-form').classList.toggle('hidden', tab !== 'register');
@@ -57,9 +62,20 @@ function connectSocket() {
   socket = io({ auth: { token } });
   socket.on('connect_error', () => logout());
   socket.on('message_received', appendMessage);
+  socket.on('reactions_updated', ({ messageId, reactions }) => renderReactions(messageId, reactions));
   socket.on('user_online', ({ username: u }) => appendSystem(`${u} joined`));
   socket.on('user_offline', ({ username: u }) => appendSystem(`${u} left`));
   socket.on('room_created', (room) => addRoomToList(room));
+}
+
+// ─── Mobile sidebar ───────────────────────────────────────────────────────────
+function openSidebar() {
+  document.getElementById('sidebar').classList.add('open');
+  document.getElementById('sidebar-overlay').classList.add('open');
+}
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-overlay').classList.remove('open');
 }
 
 // ─── Rooms ────────────────────────────────────────────────────────────────────
@@ -70,12 +86,11 @@ async function loadRooms() {
 }
 
 function addRoomToList(room) {
-  const existing = document.querySelector(`[data-room-id="${room.id}"]`);
-  if (existing) return;
+  if (document.querySelector(`[data-room-id="${room.id}"]`)) return;
   const li = document.createElement('li');
   li.textContent = '# ' + room.name;
   li.dataset.roomId = room.id;
-  li.onclick = () => joinRoom(room.id, room.name, li);
+  li.onclick = () => { joinRoom(room.id, room.name, li); closeSidebar(); };
   document.getElementById('room-list').appendChild(li);
 }
 
@@ -122,7 +137,8 @@ async function sendFile() {
 }
 
 // ─── Audio Recording ──────────────────────────────────────────────────────────
-async function startRecording() {
+async function startRecording(e) {
+  if (e) e.preventDefault();
   if (!currentRoomId) return;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -156,8 +172,10 @@ async function uploadAudio() {
 function appendMessage(msg) {
   const container = document.getElementById('messages');
   const isMine = msg.username === username;
+
   const wrapper = document.createElement('div');
   wrapper.className = 'msg-wrapper ' + (isMine ? 'mine' : 'theirs');
+  wrapper.dataset.msgId = msg.id;
 
   if (!isMine) {
     const sender = document.createElement('div');
@@ -193,15 +211,118 @@ function appendMessage(msg) {
 
   wrapper.appendChild(bubble);
 
-  const time = document.createElement('div');
+  // Footer: time + react button
+  const footer = document.createElement('div');
+  footer.className = 'msg-footer';
+
+  const time = document.createElement('span');
   time.className = 'msg-time';
   time.textContent = new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  wrapper.appendChild(time);
+  footer.appendChild(time);
+
+  const reactBtn = document.createElement('button');
+  reactBtn.className = 'react-btn';
+  reactBtn.textContent = '😊';
+  reactBtn.title = 'React';
+  reactBtn.onclick = (e) => { e.stopPropagation(); showEmojiPicker(msg.id, reactBtn, wrapper); };
+  footer.appendChild(reactBtn);
+
+  wrapper.appendChild(footer);
+
+  // Reactions row (empty, filled by renderReactions)
+  const reactionsRow = document.createElement('div');
+  reactionsRow.className = 'reactions-row';
+  reactionsRow.id = 'reactions-' + msg.id;
+  wrapper.appendChild(reactionsRow);
 
   container.appendChild(wrapper);
+
+  // Load existing reactions if any
+  if (msg.reactions) renderReactions(msg.id, msg.reactions);
+
   scrollBottom();
 }
 
+// ─── Reactions ────────────────────────────────────────────────────────────────
+function buildEmojiPicker() {
+  const list = document.getElementById('emoji-list');
+  EMOJIS.forEach(emoji => {
+    const span = document.createElement('span');
+    span.textContent = emoji;
+    span.onclick = () => pickEmoji(emoji);
+    list.appendChild(span);
+  });
+}
+
+function showEmojiPicker(messageId, btn, wrapper) {
+  const picker = document.getElementById('emoji-picker');
+
+  if (pickerTarget?.messageId === messageId && !picker.classList.contains('hidden')) {
+    hideEmojiPicker(); return;
+  }
+
+  document.querySelectorAll('.msg-wrapper.show-react').forEach(el => el.classList.remove('show-react'));
+  wrapper.classList.add('show-react');
+  pickerTarget = { messageId };
+
+  picker.classList.remove('hidden');
+
+  // Position near button
+  const rect = btn.getBoundingClientRect();
+  const pickerW = 240;
+  const pickerH = 80;
+  let left = rect.left;
+  let top = rect.top - pickerH - 8;
+  if (left + pickerW > window.innerWidth) left = window.innerWidth - pickerW - 8;
+  if (top < 8) top = rect.bottom + 8;
+  picker.style.left = left + 'px';
+  picker.style.top = top + 'px';
+}
+
+function hideEmojiPicker() {
+  document.getElementById('emoji-picker').classList.add('hidden');
+  document.querySelectorAll('.msg-wrapper.show-react').forEach(el => el.classList.remove('show-react'));
+  pickerTarget = null;
+}
+
+function pickEmoji(emoji) {
+  if (!pickerTarget) return;
+  socket.emit('toggle_reaction', { messageId: pickerTarget.messageId, emoji });
+  hideEmojiPicker();
+}
+
+function renderReactions(messageId, reactions) {
+  const row = document.getElementById('reactions-' + messageId);
+  if (!row) return;
+  row.innerHTML = '';
+
+  // Group by emoji
+  const groups = {};
+  reactions.forEach(r => {
+    if (!groups[r.emoji]) groups[r.emoji] = { count: 0, users: [], mine: false };
+    groups[r.emoji].count++;
+    groups[r.emoji].users.push(r.username);
+    if (r.username === username) groups[r.emoji].mine = true;
+  });
+
+  Object.entries(groups).forEach(([emoji, data]) => {
+    const chip = document.createElement('div');
+    chip.className = 'reaction-chip' + (data.mine ? ' mine' : '');
+    chip.title = data.users.join(', ');
+    chip.innerHTML = `${emoji}<span class="count">${data.count}</span>`;
+    chip.onclick = () => socket.emit('toggle_reaction', { messageId, emoji });
+    row.appendChild(chip);
+  });
+}
+
+function handleGlobalClick(e) {
+  const picker = document.getElementById('emoji-picker');
+  if (!picker.classList.contains('hidden') && !picker.contains(e.target) && !e.target.classList.contains('react-btn')) {
+    hideEmojiPicker();
+  }
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 function appendSystem(text) {
   const el = document.createElement('div');
   el.className = 'system-msg';
@@ -210,7 +331,6 @@ function appendSystem(text) {
   scrollBottom();
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 function scrollBottom() {
   const m = document.getElementById('messages');
   m.scrollTop = m.scrollHeight;
