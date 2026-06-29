@@ -8,56 +8,93 @@
 </head>
 <body>
 
-<!-- Auth Screen -->
+<!-- ── Auth Screen ─────────────────────────────────── -->
 <div id="auth-screen" class="screen">
-  <div class="auth-box">
+  <div class="auth-card">
+    <div class="auth-logo">💬</div>
     <h1>ChatRoom</h1>
-    <div class="tabs">
-      <button class="tab-btn active" onclick="switchTab('login')">Login</button>
-      <button class="tab-btn" onclick="switchTab('register')">Register</button>
+    <p class="auth-sub">Connect with your team in real time</p>
+
+    <div class="auth-tabs">
+      <button id="tab-login"  class="auth-tab active" onclick="switchTab('login')">Sign In</button>
+      <button id="tab-reg"    class="auth-tab"        onclick="switchTab('register')">Sign Up</button>
     </div>
+
     <div id="login-form">
-      <input id="login-user" type="text" placeholder="Username" autocomplete="username" />
-      <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password" />
-      <button id="login-btn" onclick="login()">Login</button>
+      <div class="field">
+        <label>Username</label>
+        <input id="login-user" type="text" placeholder="Enter your username" autocomplete="username" />
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input id="login-pass" type="password" placeholder="Enter your password" autocomplete="current-password" />
+      </div>
+      <button id="login-btn" class="btn-primary" onclick="login()">Sign In</button>
     </div>
+
     <div id="register-form" class="hidden">
-      <input id="reg-user" type="text" placeholder="Username" autocomplete="username" />
-      <input id="reg-pass" type="password" placeholder="Password" autocomplete="new-password" />
-      <button id="register-btn" onclick="register()">Register</button>
+      <div class="field">
+        <label>Username</label>
+        <input id="reg-user" type="text" placeholder="Choose a username" autocomplete="username" />
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input id="reg-pass" type="password" placeholder="Choose a password" autocomplete="new-password" />
+      </div>
+      <button id="register-btn" class="btn-success" onclick="register()">Create Account</button>
     </div>
+
     <p id="auth-error" class="error"></p>
   </div>
 </div>
 
-<!-- App Screen -->
+<!-- ── App Screen ─────────────────────────────────── -->
 <div id="app-screen" class="screen hidden">
 
   <div id="sidebar-overlay" onclick="closeSidebar()"></div>
 
+  <!-- Sidebar -->
   <aside id="sidebar">
-    <div class="sidebar-header">
+
+    <!-- Profile header -->
+    <div class="sidebar-header" onclick="openProfile()">
+      <div class="avatar" id="sidebar-avatar"></div>
       <span id="current-user-display" class="sidebar-username"></span>
-      <button onclick="logout()" class="icon-btn" title="Logout">⏏</button>
-      <button id="collapse-btn" onclick="toggleSidebar()" class="icon-btn" title="Collapse sidebar">‹</button>
+      <button id="collapse-btn" class="icon-btn" title="Collapse" onclick="event.stopPropagation(); toggleSidebar()">‹</button>
     </div>
+
+    <!-- Room create -->
     <div class="room-create">
       <input id="new-room-name" type="text" placeholder="New room..." />
-      <button onclick="createRoom()">+</button>
+      <button onclick="createRoom()" title="Create room">+</button>
     </div>
+
     <ul id="room-list"></ul>
   </aside>
 
+  <!-- Chat area -->
   <main id="chat-area">
     <header id="chat-header">
       <button id="menu-btn" class="icon-btn" onclick="openSidebar()">☰</button>
       <span id="room-title">Select a room</span>
-      <span id="online-indicator"></span>
+      <button id="online-indicator" class="online-badge hidden" onclick="toggleOnlinePanel()"></button>
     </header>
+
+    <!-- Online users dropdown -->
+    <div id="online-panel" class="hidden">
+      <div class="online-panel-title">Online now</div>
+      <ul id="online-list"></ul>
+    </div>
 
     <div id="messages"></div>
 
-    <!-- Edit mode indicator -->
+    <!-- Typing indicator -->
+    <div id="typing-bar" class="hidden">
+      <span id="typing-text"></span>
+      <span class="typing-dots"><span></span><span></span><span></span></span>
+    </div>
+
+    <!-- Edit banner -->
     <div id="edit-banner" class="hidden">
       <span>✏️ Editing message</span>
       <button onclick="cancelEdit()">✕</button>
@@ -68,17 +105,52 @@
         📎
         <input type="file" id="file-input" style="display:none" onchange="sendFile()" />
       </label>
-      <button id="record-btn" class="icon-btn" title="Hold to record audio"
+      <button id="record-btn" class="icon-btn" title="Hold to record"
         onmousedown="startRecording()" onmouseup="stopRecording()"
         ontouchstart="startRecording(event)" ontouchend="stopRecording()">🎙</button>
       <input id="msg-input" type="text" placeholder="Message..."
-        onkeydown="handleInputKey(event)" />
+        onkeydown="handleInputKey(event)" oninput="onTypingInput()" />
       <button onclick="sendOrSave()" class="send-btn">➤</button>
     </div>
   </main>
 </div>
 
-<!-- Context menu -->
+<!-- ── Profile Modal ──────────────────────────────── -->
+<div id="profile-modal" class="modal-overlay hidden" onclick="closeProfile()">
+  <div class="modal-card" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h2>Profile</h2>
+      <button class="icon-btn" onclick="closeProfile()">✕</button>
+    </div>
+
+    <div class="profile-avatar-big" id="profile-avatar-big"></div>
+    <p class="profile-name" id="profile-name-display"></p>
+
+    <div class="modal-section">
+      <div class="field">
+        <label>New username</label>
+        <input id="prof-username" type="text" placeholder="Leave blank to keep current" />
+      </div>
+      <div class="field">
+        <label>Current password <span class="req">(required to save changes)</span></label>
+        <input id="prof-cur-pass" type="password" placeholder="Your current password" />
+      </div>
+      <div class="field">
+        <label>New password <span class="req">(optional)</span></label>
+        <input id="prof-new-pass" type="password" placeholder="Leave blank to keep current" />
+      </div>
+      <p id="profile-error" class="error"></p>
+      <p id="profile-success" class="success"></p>
+      <button class="btn-primary" onclick="saveProfile()">Save changes</button>
+    </div>
+
+    <div class="modal-section">
+      <button class="btn-danger" onclick="logout()">Sign out</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Context menu ───────────────────────────────── -->
 <div id="ctx-menu" class="hidden">
   <button onclick="ctxReact()">😊 &nbsp;React</button>
   <button onclick="ctxEdit()">✏️ &nbsp;Edit</button>
@@ -86,7 +158,7 @@
   <button class="danger" onclick="ctxDelete()">🗑 &nbsp;Delete</button>
 </div>
 
-<!-- Emoji Picker -->
+<!-- ── Emoji Picker ───────────────────────────────── -->
 <div id="emoji-picker" class="hidden">
   <div id="emoji-list"></div>
 </div>

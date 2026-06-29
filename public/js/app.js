@@ -6,8 +6,16 @@ let socketReady = false;
 let mediaRecorder = null;
 let audioChunks = [];
 let pickerTarget = null;
-let editingMsgId = null;   // currently being edited
-let ctxTarget = null;      // { messageId, type }
+let editingMsgId = null;
+let ctxTarget = null;
+
+// Typing state
+let typingTimer = null;
+let isTyping = false;
+const typingUsers = new Set();
+
+// Online users
+let onlineUsers = [];
 
 const EMOJIS = ['👍','❤️','😂','😮','😢','🔥','👏','🎉','🤔','😍','👎','😡'];
 
@@ -15,7 +23,7 @@ const EMOJIS = ['👍','❤️','😂','😮','😢','🔥','👏','🎉','🤔'
 window.addEventListener('DOMContentLoaded', () => {
   buildEmojiPicker();
   document.addEventListener('click', handleGlobalClick);
-  document.addEventListener('contextmenu', e => e.preventDefault()); // block native ctx on mobile
+  document.addEventListener('contextmenu', e => e.preventDefault());
   if (token && username) enterApp();
 });
 
@@ -23,7 +31,8 @@ window.addEventListener('DOMContentLoaded', () => {
 function switchTab(tab) {
   document.getElementById('login-form').classList.toggle('hidden', tab !== 'login');
   document.getElementById('register-form').classList.toggle('hidden', tab !== 'register');
-  document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', (i === 0) === (tab === 'login')));
+  document.getElementById('tab-login').classList.toggle('active', tab === 'login');
+  document.getElementById('tab-reg').classList.toggle('active', tab === 'register');
   document.getElementById('auth-error').textContent = '';
 }
 
@@ -31,52 +40,68 @@ async function login() {
   const user = document.getElementById('login-user').value.trim();
   const pass = document.getElementById('login-pass').value;
   if (!user || !pass) return showAuthError('Please enter username and password');
-  setAuthLoading(true);
+  setAuthLoading(true, 'login');
   try {
     const res = await api('/auth/login', 'POST', { username: user, password: pass });
-    if (res.error) { showAuthError(res.error); return; }
+    if (res.error) return showAuthError(res.error);
     saveSession(res.token, res.username);
     enterApp();
   } catch { showAuthError('Connection error — is the server running?'); }
-  finally { setAuthLoading(false); }
+  finally { setAuthLoading(false, 'login'); }
 }
 
 async function register() {
   const user = document.getElementById('reg-user').value.trim();
   const pass = document.getElementById('reg-pass').value;
   if (!user || !pass) return showAuthError('Please enter username and password');
-  setAuthLoading(true);
+  setAuthLoading(true, 'register');
   try {
     const res = await api('/auth/register', 'POST', { username: user, password: pass });
-    if (res.error) { showAuthError(res.error); return; }
+    if (res.error) return showAuthError(res.error);
     saveSession(res.token, res.username);
     enterApp();
   } catch { showAuthError('Connection error — is the server running?'); }
-  finally { setAuthLoading(false); }
+  finally { setAuthLoading(false, 'register'); }
 }
 
-function setAuthLoading(on) {
-  const lb = document.getElementById('login-btn');
-  const rb = document.getElementById('register-btn');
-  if (lb) { lb.disabled = on; lb.textContent = on ? 'Please wait...' : 'Login'; }
-  if (rb) { rb.disabled = on; rb.textContent = on ? 'Please wait...' : 'Register'; }
+function setAuthLoading(on, which) {
+  const btn = document.getElementById(which === 'login' ? 'login-btn' : 'register-btn');
+  if (!btn) return;
+  btn.disabled = on;
+  btn.textContent = on ? 'Please wait…' : (which === 'login' ? 'Sign In' : 'Create Account');
 }
 
-function saveSession(t, u) { token = t; username = u; localStorage.setItem('token', t); localStorage.setItem('username', u); }
+function saveSession(t, u) {
+  token = t; username = u;
+  localStorage.setItem('token', t);
+  localStorage.setItem('username', u);
+}
 function showAuthError(msg) { document.getElementById('auth-error').textContent = msg; }
 
 function logout() {
   localStorage.clear(); token = null; username = null; currentRoomId = null; socketReady = false;
   if (socket) { socket.disconnect(); socket = null; }
+  closeProfile();
   show('auth-screen'); hide('app-screen');
 }
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 async function enterApp() {
   show('app-screen'); hide('auth-screen');
+  setAvatarInitials(username);
   document.getElementById('current-user-display').textContent = username;
   await connectSocket();
   await loadRooms();
+}
+
+function setAvatarInitials(name) {
+  const initials = (name || '?').slice(0, 2).toUpperCase();
+  const sa = document.getElementById('sidebar-avatar');
+  const pb = document.getElementById('profile-avatar-big');
+  if (sa) sa.textContent = initials;
+  if (pb) pb.textContent = initials;
+  if (document.getElementById('profile-name-display'))
+    document.getElementById('profile-name-display').textContent = name;
 }
 
 function connectSocket() {
@@ -89,9 +114,46 @@ function connectSocket() {
     socket.on('message_edited', ({ messageId, content }) => applyEdit(messageId, content));
     socket.on('message_deleted', ({ messageId }) => applyDelete(messageId));
     socket.on('reactions_updated', ({ messageId, reactions }) => renderReactions(messageId, reactions));
-    socket.on('room_online', ({ users }) => updateOnlineIndicator(users));
+    socket.on('room_online', ({ users }) => updateOnlineUsers(users));
     socket.on('room_created', (room) => addRoomToList(room));
+    socket.on('user_typing', ({ username: u }) => showTyping(u));
+    socket.on('user_stopped_typing', ({ username: u }) => hideTyping(u));
   });
+}
+
+// ─── Typing ───────────────────────────────────────────────────────────────────
+function onTypingInput() {
+  if (!currentRoomId || !socketReady) return;
+  if (!isTyping) {
+    isTyping = true;
+    socket.emit('typing_start', { roomId: currentRoomId });
+  }
+  clearTimeout(typingTimer);
+  typingTimer = setTimeout(() => {
+    isTyping = false;
+    socket.emit('typing_stop', { roomId: currentRoomId });
+  }, 1500);
+}
+
+function showTyping(user) {
+  typingUsers.add(user);
+  renderTypingBar();
+}
+function hideTyping(user) {
+  typingUsers.delete(user);
+  renderTypingBar();
+}
+function renderTypingBar() {
+  const bar = document.getElementById('typing-bar');
+  const txt = document.getElementById('typing-text');
+  if (typingUsers.size === 0) { bar.classList.add('hidden'); return; }
+  const names = [...typingUsers];
+  txt.textContent = names.length === 1
+    ? `${names[0]} is typing`
+    : names.length === 2
+      ? `${names[0]} and ${names[1]} are typing`
+      : `${names[0]} and ${names.length - 1} others are typing`;
+  bar.classList.remove('hidden');
 }
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
@@ -115,10 +177,52 @@ function expandSidebar() {
   document.getElementById('collapse-btn').textContent = '‹';
 }
 function toggleSidebar() {
-  const collapsed = document.getElementById('sidebar').classList.contains('collapsed');
-  collapsed ? expandSidebar() : collapseSidebar();
+  document.getElementById('sidebar').classList.contains('collapsed') ? expandSidebar() : collapseSidebar();
 }
 function isMobile() { return window.innerWidth <= 640; }
+
+// ─── Profile modal ────────────────────────────────────────────────────────────
+function openProfile() {
+  if (document.getElementById('sidebar').classList.contains('collapsed')) return;
+  document.getElementById('prof-username').value = '';
+  document.getElementById('prof-cur-pass').value = '';
+  document.getElementById('prof-new-pass').value = '';
+  document.getElementById('profile-error').textContent = '';
+  document.getElementById('profile-success').textContent = '';
+  setAvatarInitials(username);
+  show('profile-modal');
+}
+function closeProfile() { hide('profile-modal'); }
+
+async function saveProfile() {
+  const newUsername = document.getElementById('prof-username').value.trim();
+  const currentPassword = document.getElementById('prof-cur-pass').value;
+  const newPassword = document.getElementById('prof-new-pass').value;
+
+  document.getElementById('profile-error').textContent = '';
+  document.getElementById('profile-success').textContent = '';
+
+  if (!newUsername && !newPassword) {
+    return document.getElementById('profile-error').textContent = 'Nothing to update';
+  }
+  if (!currentPassword) {
+    return document.getElementById('profile-error').textContent = 'Current password is required';
+  }
+
+  const res = await api('/profile', 'PUT', { newUsername: newUsername || undefined, currentPassword, newPassword: newPassword || undefined });
+  if (res.error) {
+    document.getElementById('profile-error').textContent = res.error;
+    return;
+  }
+  saveSession(res.token, res.username);
+  username = res.username;
+  setAvatarInitials(res.username);
+  document.getElementById('current-user-display').textContent = res.username;
+  document.getElementById('prof-cur-pass').value = '';
+  document.getElementById('prof-new-pass').value = '';
+  document.getElementById('prof-username').value = '';
+  document.getElementById('profile-success').textContent = 'Profile updated successfully';
+}
 
 // ─── Rooms ────────────────────────────────────────────────────────────────────
 async function loadRooms() {
@@ -129,10 +233,7 @@ async function loadRooms() {
   const general = rooms.find(r => r.name === 'General') || rooms[0];
   if (general) {
     const li = document.querySelector(`[data-room-id="${general.id}"]`);
-    if (li) {
-      await joinRoom(general.id, general.name, li);
-      collapseSidebar();
-    }
+    if (li) { await joinRoom(general.id, general.name, li); collapseSidebar(); }
   }
 }
 
@@ -140,22 +241,13 @@ function addRoomToList(room) {
   if (document.querySelector(`[data-room-id="${room.id}"]`)) return;
   const li = document.createElement('li');
   li.dataset.roomId = room.id;
-
-  const icon = document.createElement('span');
-  icon.className = 'room-icon';
-  icon.textContent = '#';
-
-  const label = document.createElement('span');
-  label.className = 'room-label';
-  label.textContent = room.name;
-
-  li.appendChild(icon);
-  li.appendChild(label);
   li.title = room.name;
-  li.onclick = () => {
-    joinRoom(room.id, room.name, li);
-    if (isMobile()) closeSidebar(); else collapseSidebar();
-  };
+  const icon = document.createElement('span');
+  icon.className = 'room-icon'; icon.textContent = '#';
+  const label = document.createElement('span');
+  label.className = 'room-label'; label.textContent = room.name;
+  li.appendChild(icon); li.appendChild(label);
+  li.onclick = () => { joinRoom(room.id, room.name, li); isMobile() ? closeSidebar() : collapseSidebar(); };
   document.getElementById('room-list').appendChild(li);
 }
 
@@ -171,40 +263,69 @@ async function createRoom() {
 async function joinRoom(roomId, roomName, li) {
   if (currentRoomId === roomId) return;
   cancelEdit();
+  stopTypingSignal();
+  typingUsers.clear(); renderTypingBar();
   currentRoomId = roomId;
   document.querySelectorAll('#room-list li').forEach(el => el.classList.remove('active'));
   li.classList.add('active');
   document.getElementById('room-title').textContent = '# ' + roomName;
   document.getElementById('messages').innerHTML = '';
-  updateOnlineIndicator([]);
+  document.getElementById('online-indicator').classList.add('hidden');
   socket.emit('join_room', roomId);
   const msgs = await api('/messages/' + roomId);
   if (Array.isArray(msgs)) msgs.forEach(appendMessage);
   scrollBottom();
 }
 
-function updateOnlineIndicator(users) {
-  const el = document.getElementById('online-indicator');
-  el.textContent = users.length ? `● ${users.length} online` : '';
-  el.title = users.join(', ');
+// ─── Online users ─────────────────────────────────────────────────────────────
+function updateOnlineUsers(users) {
+  onlineUsers = users;
+  const badge = document.getElementById('online-indicator');
+  if (!users.length) { badge.classList.add('hidden'); return; }
+  badge.classList.remove('hidden');
+  badge.textContent = `● ${users.length} online`;
+  // refresh panel if open
+  if (!document.getElementById('online-panel').classList.contains('hidden')) renderOnlinePanel();
 }
 
-// ─── Send / Edit ──────────────────────────────────────────────────────────────
-function handleInputKey(e) {
-  if (e.key === 'Enter') sendOrSave();
+function toggleOnlinePanel() {
+  const panel = document.getElementById('online-panel');
+  panel.classList.contains('hidden') ? openOnlinePanel() : closeOnlinePanel();
+}
+function openOnlinePanel() {
+  renderOnlinePanel();
+  document.getElementById('online-panel').classList.remove('hidden');
+}
+function closeOnlinePanel() { document.getElementById('online-panel').classList.add('hidden'); }
+function renderOnlinePanel() {
+  const ul = document.getElementById('online-list');
+  ul.innerHTML = '';
+  onlineUsers.forEach(u => {
+    const li = document.createElement('li');
+    li.textContent = u;
+    ul.appendChild(li);
+  });
 }
 
-function sendOrSave() {
-  if (editingMsgId) saveEdit();
-  else sendText();
-}
+// ─── Messaging ────────────────────────────────────────────────────────────────
+function handleInputKey(e) { if (e.key === 'Enter') sendOrSave(); }
+function sendOrSave() { editingMsgId ? saveEdit() : sendText(); }
 
 function sendText() {
   const input = document.getElementById('msg-input');
   const content = input.value.trim();
   if (!content || !currentRoomId || !socketReady) return;
+  stopTypingSignal();
   socket.emit('send_message', { roomId: currentRoomId, type: 'text', content });
   input.value = '';
+}
+
+function stopTypingSignal() {
+  if (isTyping) {
+    isTyping = false;
+    clearTimeout(typingTimer);
+    if (currentRoomId) socket.emit('typing_stop', { roomId: currentRoomId });
+  }
 }
 
 // ─── Edit ─────────────────────────────────────────────────────────────────────
@@ -213,45 +334,43 @@ function startEdit(messageId) {
   if (!bubble) return;
   editingMsgId = messageId;
   const input = document.getElementById('msg-input');
-  input.value = bubble.dataset.text || bubble.textContent;
+  input.value = bubble.dataset.text || bubble.textContent.replace('(edited)', '').trim();
   input.focus();
   show('edit-banner');
 }
-
 function saveEdit() {
   const content = document.getElementById('msg-input').value.trim();
   if (!content || !editingMsgId) return;
   socket.emit('edit_message', { messageId: editingMsgId, content });
   cancelEdit();
 }
-
 function cancelEdit() {
   editingMsgId = null;
   document.getElementById('msg-input').value = '';
   hide('edit-banner');
 }
-
 function applyEdit(messageId, content) {
   const wrapper = document.querySelector(`[data-msg-id="${messageId}"]`);
   if (!wrapper) return;
   const bubble = wrapper.querySelector('.msg-bubble');
   bubble.dataset.text = content;
-  // re-render text keeping the edited tag
   const tag = bubble.querySelector('.edited-tag');
   bubble.textContent = content;
   if (tag) bubble.appendChild(tag);
   else {
     const t = document.createElement('span');
-    t.className = 'edited-tag';
-    t.textContent = '(edited)';
+    t.className = 'edited-tag'; t.textContent = '(edited)';
     bubble.appendChild(t);
   }
 }
 
 // ─── Delete ───────────────────────────────────────────────────────────────────
 function applyDelete(messageId) {
-  const el = document.querySelector(`[data-msg-id="${messageId}"]`);
-  if (el) el.remove();
+  document.querySelector(`[data-msg-id="${messageId}"]`)?.remove();
+}
+function confirmDelete(messageId) {
+  if (!confirm('Delete this message?')) return;
+  socket.emit('delete_message', { messageId });
 }
 
 // ─── File / Audio ─────────────────────────────────────────────────────────────
@@ -280,7 +399,6 @@ async function startRecording(e) {
     document.getElementById('record-btn').classList.add('recording');
   } catch { alert('Microphone access denied'); }
 }
-
 function stopRecording() {
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
     mediaRecorder.stop();
@@ -288,7 +406,6 @@ function stopRecording() {
     document.getElementById('record-btn').classList.remove('recording');
   }
 }
-
 async function uploadAudio() {
   const blob = new Blob(audioChunks, { type: 'audio/webm' });
   const form = new FormData();
@@ -306,14 +423,11 @@ function appendMessage(msg) {
   const wrapper = document.createElement('div');
   wrapper.className = 'msg-wrapper ' + (isMine ? 'mine' : 'theirs');
   wrapper.dataset.msgId = msg.id;
-
-  // Long-press on mobile to open context menu
   addLongPress(wrapper, () => openCtxMenu(msg.id, msg.type, wrapper));
 
   if (!isMine) {
     const sender = document.createElement('div');
-    sender.className = 'msg-sender';
-    sender.textContent = msg.username;
+    sender.className = 'msg-sender'; sender.textContent = msg.username;
     wrapper.appendChild(sender);
   }
 
@@ -325,8 +439,7 @@ function appendMessage(msg) {
     bubble.textContent = msg.content;
     if (msg.edited) {
       const tag = document.createElement('span');
-      tag.className = 'edited-tag';
-      tag.textContent = '(edited)';
+      tag.className = 'edited-tag'; tag.textContent = '(edited)';
       bubble.appendChild(tag);
     }
   } else if (msg.type === 'image') {
@@ -336,22 +449,18 @@ function appendMessage(msg) {
     bubble.appendChild(img);
   } else if (msg.type === 'audio') {
     const audio = document.createElement('audio');
-    audio.controls = true;
-    audio.src = msg.file_path;
+    audio.controls = true; audio.src = msg.file_path;
     bubble.appendChild(audio);
   } else {
     const a = document.createElement('a');
-    a.className = 'file-link';
-    a.href = msg.file_path;
-    a.download = msg.file_name || 'file';
-    a.target = '_blank';
+    a.className = 'file-link'; a.href = msg.file_path;
+    a.download = msg.file_name || 'file'; a.target = '_blank';
     a.innerHTML = '📄 ' + (msg.file_name || 'Download file');
     bubble.appendChild(a);
   }
-
   wrapper.appendChild(bubble);
 
-  // Footer row: time + action buttons
+  // Footer
   const footer = document.createElement('div');
   footer.className = 'msg-footer';
 
@@ -360,29 +469,20 @@ function appendMessage(msg) {
   time.textContent = new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   footer.appendChild(time);
 
-  // React button
   const reactBtn = document.createElement('button');
-  reactBtn.className = 'react-btn';
-  reactBtn.textContent = '😊';
-  reactBtn.title = 'React';
+  reactBtn.className = 'react-btn'; reactBtn.textContent = '😊'; reactBtn.title = 'React';
   reactBtn.onclick = (e) => { e.stopPropagation(); showEmojiPicker(msg.id, reactBtn, wrapper); };
   footer.appendChild(reactBtn);
 
-  // Edit button (text only)
   if (msg.type === 'text') {
     const editBtn = document.createElement('button');
-    editBtn.className = 'msg-action-btn';
-    editBtn.title = 'Edit';
-    editBtn.textContent = '✏️';
+    editBtn.className = 'msg-action-btn'; editBtn.title = 'Edit'; editBtn.textContent = '✏️';
     editBtn.onclick = (e) => { e.stopPropagation(); startEdit(msg.id); };
     footer.appendChild(editBtn);
   }
 
-  // Delete button
   const delBtn = document.createElement('button');
-  delBtn.className = 'msg-action-btn delete';
-  delBtn.title = 'Delete';
-  delBtn.textContent = '🗑';
+  delBtn.className = 'msg-action-btn delete'; delBtn.title = 'Delete'; delBtn.textContent = '🗑';
   delBtn.onclick = (e) => { e.stopPropagation(); confirmDelete(msg.id); };
   footer.appendChild(delBtn);
 
@@ -397,35 +497,21 @@ function appendMessage(msg) {
   scrollBottom();
 }
 
-function confirmDelete(messageId) {
-  if (!confirm('Delete this message?')) return;
-  socket.emit('delete_message', { messageId });
-}
-
-// ─── Context menu (long-press on mobile) ──────────────────────────────────────
+// ─── Context menu ─────────────────────────────────────────────────────────────
 function openCtxMenu(messageId, type, wrapperEl) {
   ctxTarget = { messageId, type };
   const menu = document.getElementById('ctx-menu');
-  // Show/hide edit option based on type
   menu.querySelectorAll('button')[1].style.display = type === 'text' ? '' : 'none';
   menu.classList.remove('hidden');
-
-  // Position near the wrapper
   const rect = wrapperEl.getBoundingClientRect();
   const mw = 160, mh = 120;
-  let left = rect.left;
-  let top = rect.bottom + 4;
+  let left = rect.left, top = rect.bottom + 4;
   if (left + mw > window.innerWidth) left = window.innerWidth - mw - 8;
   if (top + mh > window.innerHeight) top = rect.top - mh - 4;
   menu.style.left = Math.max(4, left) + 'px';
   menu.style.top = Math.max(4, top) + 'px';
 }
-
-function closeCtxMenu() {
-  document.getElementById('ctx-menu').classList.add('hidden');
-  ctxTarget = null;
-}
-
+function closeCtxMenu() { document.getElementById('ctx-menu').classList.add('hidden'); ctxTarget = null; }
 function ctxReact() {
   if (!ctxTarget) return;
   const wrapper = document.querySelector(`[data-msg-id="${ctxTarget.messageId}"]`);
@@ -433,30 +519,17 @@ function ctxReact() {
   closeCtxMenu();
   if (btn && wrapper) showEmojiPicker(ctxTarget.messageId, btn, wrapper);
 }
+function ctxEdit() { if (!ctxTarget) return; const id = ctxTarget.messageId; closeCtxMenu(); startEdit(id); }
+function ctxDelete() { if (!ctxTarget) return; const id = ctxTarget.messageId; closeCtxMenu(); confirmDelete(id); }
 
-function ctxEdit() {
-  if (!ctxTarget) return;
-  const id = ctxTarget.messageId;
-  closeCtxMenu();
-  startEdit(id);
-}
-
-function ctxDelete() {
-  if (!ctxTarget) return;
-  const id = ctxTarget.messageId;
-  closeCtxMenu();
-  confirmDelete(id);
-}
-
-// Long-press helper (mobile)
 function addLongPress(el, cb) {
-  let timer;
-  el.addEventListener('touchstart', () => { timer = setTimeout(cb, 500); }, { passive: true });
-  el.addEventListener('touchend', () => clearTimeout(timer));
-  el.addEventListener('touchmove', () => clearTimeout(timer));
+  let t;
+  el.addEventListener('touchstart', () => { t = setTimeout(cb, 500); }, { passive: true });
+  el.addEventListener('touchend', () => clearTimeout(t));
+  el.addEventListener('touchmove', () => clearTimeout(t));
 }
 
-// ─── Emoji Reactions ──────────────────────────────────────────────────────────
+// ─── Emoji reactions ──────────────────────────────────────────────────────────
 function buildEmojiPicker() {
   const list = document.getElementById('emoji-list');
   EMOJIS.forEach(emoji => {
@@ -466,39 +539,31 @@ function buildEmojiPicker() {
     list.appendChild(span);
   });
 }
-
 function showEmojiPicker(messageId, btn, wrapper) {
   const picker = document.getElementById('emoji-picker');
-  if (pickerTarget?.messageId === messageId && !picker.classList.contains('hidden')) {
-    hideEmojiPicker(); return;
-  }
+  if (pickerTarget?.messageId === messageId && !picker.classList.contains('hidden')) { hideEmojiPicker(); return; }
   document.querySelectorAll('.msg-wrapper.show-react').forEach(el => el.classList.remove('show-react'));
   wrapper.classList.add('show-react');
   pickerTarget = { messageId };
   picker.classList.remove('hidden');
-
   const rect = btn.getBoundingClientRect();
   const pw = 240, ph = 90;
-  let left = rect.left;
-  let top = rect.top - ph - 8;
+  let left = rect.left, top = rect.top - ph - 8;
   if (left + pw > window.innerWidth) left = window.innerWidth - pw - 8;
   if (top < 8) top = rect.bottom + 8;
   picker.style.left = left + 'px';
   picker.style.top = top + 'px';
 }
-
 function hideEmojiPicker() {
   document.getElementById('emoji-picker').classList.add('hidden');
   document.querySelectorAll('.msg-wrapper.show-react').forEach(el => el.classList.remove('show-react'));
   pickerTarget = null;
 }
-
 function pickEmoji(emoji) {
   if (!pickerTarget) return;
   socket.emit('toggle_reaction', { messageId: pickerTarget.messageId, emoji });
   hideEmojiPicker();
 }
-
 function renderReactions(messageId, reactions) {
   const row = document.getElementById('reactions-' + messageId);
   if (!row) return;
@@ -520,33 +585,29 @@ function renderReactions(messageId, reactions) {
   });
 }
 
-// ─── Global click handler ─────────────────────────────────────────────────────
+// ─── Global click ─────────────────────────────────────────────────────────────
 function handleGlobalClick(e) {
   const picker = document.getElementById('emoji-picker');
   const menu = document.getElementById('ctx-menu');
+  const panel = document.getElementById('online-panel');
+  const badge = document.getElementById('online-indicator');
 
-  if (!picker.classList.contains('hidden') && !picker.contains(e.target) && !e.target.classList.contains('react-btn')) {
+  if (!picker.classList.contains('hidden') && !picker.contains(e.target) && !e.target.classList.contains('react-btn'))
     hideEmojiPicker();
-  }
-  if (!menu.classList.contains('hidden') && !menu.contains(e.target)) {
+  if (!menu.classList.contains('hidden') && !menu.contains(e.target))
     closeCtxMenu();
-  }
+  if (!panel.classList.contains('hidden') && !panel.contains(e.target) && e.target !== badge)
+    closeOnlinePanel();
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function appendSystem(text) {
   const el = document.createElement('div');
-  el.className = 'system-msg';
-  el.textContent = text;
+  el.className = 'system-msg'; el.textContent = text;
   document.getElementById('messages').appendChild(el);
   scrollBottom();
 }
-
-function scrollBottom() {
-  const m = document.getElementById('messages');
-  m.scrollTop = m.scrollHeight;
-}
-
+function scrollBottom() { const m = document.getElementById('messages'); m.scrollTop = m.scrollHeight; }
 function show(id) { document.getElementById(id).classList.remove('hidden'); }
 function hide(id) { document.getElementById(id).classList.add('hidden'); }
 

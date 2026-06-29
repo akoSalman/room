@@ -65,6 +65,34 @@ app.post('/auth/login', async (req, res) => {
   res.json({ token, username });
 });
 
+// Profile update
+app.put('/profile', authMiddleware, async (req, res) => {
+  const { newUsername, currentPassword, newPassword } = req.body;
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  if (currentPassword) {
+    const valid = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!valid) return res.status(401).json({ error: 'Current password is incorrect' });
+  }
+
+  if (newUsername && newUsername !== user.username) {
+    const taken = db.prepare('SELECT id FROM users WHERE username = ? AND id != ?').get(newUsername, req.user.id);
+    if (taken) return res.status(409).json({ error: 'Username already taken' });
+    db.prepare('UPDATE users SET username = ? WHERE id = ?').run(newUsername, req.user.id);
+  }
+
+  if (newPassword) {
+    if (!currentPassword) return res.status(400).json({ error: 'Current password required to set new password' });
+    const hash = await bcrypt.hash(newPassword, 10);
+    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, req.user.id);
+  }
+
+  const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  const token = jwt.sign({ id: updated.id, username: updated.username }, JWT_SECRET);
+  res.json({ token, username: updated.username });
+});
+
 // Rooms
 app.get('/rooms', authMiddleware, (req, res) => {
   const rooms = db.prepare('SELECT * FROM rooms ORDER BY name').all();
@@ -161,6 +189,14 @@ io.on('connection', (socket) => {
     `).get(result.lastInsertRowid);
 
     io.to(String(roomId)).emit('message_received', msg);
+  });
+
+  socket.on('typing_start', ({ roomId }) => {
+    socket.to(String(roomId)).emit('user_typing', { username: socket.user.username });
+  });
+
+  socket.on('typing_stop', ({ roomId }) => {
+    socket.to(String(roomId)).emit('user_stopped_typing', { username: socket.user.username });
   });
 
   socket.on('edit_message', ({ messageId, content }) => {
