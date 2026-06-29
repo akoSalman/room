@@ -37,8 +37,9 @@
 
   <aside id="sidebar">
     <div class="sidebar-header">
-      <span id="current-user-display"></span>
+      <span id="current-user-display" class="sidebar-username"></span>
       <button onclick="logout()" class="icon-btn" title="Logout">⏏</button>
+      <button id="collapse-btn" onclick="toggleSidebar()" class="icon-btn" title="Collapse sidebar">‹</button>
     </div>
     <div class="room-create">
       <input id="new-room-name" type="text" placeholder="New room..." />

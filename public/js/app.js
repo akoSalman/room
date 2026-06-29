@@ -94,15 +94,31 @@ function connectSocket() {
   });
 }
 
-// ─── Mobile sidebar ───────────────────────────────────────────────────────────
+// ─── Sidebar ──────────────────────────────────────────────────────────────────
 function openSidebar() {
   document.getElementById('sidebar').classList.add('open');
+  document.getElementById('sidebar').classList.remove('collapsed');
   document.getElementById('sidebar-overlay').classList.add('open');
 }
 function closeSidebar() {
   document.getElementById('sidebar').classList.remove('open');
   document.getElementById('sidebar-overlay').classList.remove('open');
 }
+function collapseSidebar() {
+  document.getElementById('sidebar').classList.add('collapsed');
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-overlay').classList.remove('open');
+  document.getElementById('collapse-btn').textContent = '›';
+}
+function expandSidebar() {
+  document.getElementById('sidebar').classList.remove('collapsed');
+  document.getElementById('collapse-btn').textContent = '‹';
+}
+function toggleSidebar() {
+  const collapsed = document.getElementById('sidebar').classList.contains('collapsed');
+  collapsed ? expandSidebar() : collapseSidebar();
+}
+function isMobile() { return window.innerWidth <= 640; }
 
 // ─── Rooms ────────────────────────────────────────────────────────────────────
 async function loadRooms() {
@@ -113,16 +129,33 @@ async function loadRooms() {
   const general = rooms.find(r => r.name === 'General') || rooms[0];
   if (general) {
     const li = document.querySelector(`[data-room-id="${general.id}"]`);
-    if (li) joinRoom(general.id, general.name, li);
+    if (li) {
+      await joinRoom(general.id, general.name, li);
+      collapseSidebar();
+    }
   }
 }
 
 function addRoomToList(room) {
   if (document.querySelector(`[data-room-id="${room.id}"]`)) return;
   const li = document.createElement('li');
-  li.textContent = '# ' + room.name;
   li.dataset.roomId = room.id;
-  li.onclick = () => { joinRoom(room.id, room.name, li); closeSidebar(); };
+
+  const icon = document.createElement('span');
+  icon.className = 'room-icon';
+  icon.textContent = '#';
+
+  const label = document.createElement('span');
+  label.className = 'room-label';
+  label.textContent = room.name;
+
+  li.appendChild(icon);
+  li.appendChild(label);
+  li.title = room.name;
+  li.onclick = () => {
+    joinRoom(room.id, room.name, li);
+    if (isMobile()) closeSidebar(); else collapseSidebar();
+  };
   document.getElementById('room-list').appendChild(li);
 }
 

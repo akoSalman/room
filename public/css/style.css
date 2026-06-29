@@ -64,9 +64,23 @@ html, body {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  transition: transform .25s ease;
+  transition: width .25s ease, transform .25s ease;
   z-index: 20;
+  overflow: hidden;
 }
+/* Collapsed state on desktop */
+#sidebar.collapsed { width: 54px; }
+#sidebar.collapsed .sidebar-header { padding: 14px 0; justify-content: center; }
+#sidebar.collapsed .sidebar-username,
+#sidebar.collapsed .room-create,
+#sidebar.collapsed .room-label { display: none; }
+#sidebar.collapsed #room-list li {
+  padding: 14px 0;
+  justify-content: center;
+  font-size: 1.1rem;
+}
+#sidebar.collapsed #room-list li .room-label { display: none; }
+
 .sidebar-header {
   display: flex;
   align-items: center;
@@ -76,7 +90,9 @@ html, body {
   font-weight: 600;
   font-size: 0.95rem;
   flex-shrink: 0;
+  gap: 6px;
 }
+.sidebar-username { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .room-create { display: flex; gap: 6px; padding: 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .room-create input {
   flex: 1; min-width: 0;
@@ -93,7 +109,9 @@ html, body {
   padding: 14px 16px; cursor: pointer; border-bottom: 1px solid var(--border);
   transition: background .15s; font-size: 0.92rem;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  display: flex; align-items: center; gap: 8px;
 }
+#room-list li .room-icon { flex-shrink: 0; font-style: normal; }
 #room-list li:hover { background: var(--input-bg); }
 #room-list li.active { background: var(--mine-bg); color: #fff; }
 
@@ -315,9 +333,11 @@ html, body {
   #sidebar {
     position: fixed;
     top: 0; left: 0; bottom: 0;
+    width: var(--sidebar-w) !important; /* always full width when open on mobile */
     transform: translateX(-100%);
   }
   #sidebar.open { transform: translateX(0); box-shadow: 4px 0 20px rgba(0,0,0,.5); }
+  #sidebar.collapsed { transform: translateX(-100%); } /* collapsed = hidden on mobile */
   #sidebar-overlay.open { display: block; }
 
   .msg-wrapper { max-width: 88%; }
