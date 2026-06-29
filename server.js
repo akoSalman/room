@@ -242,6 +242,9 @@ io.on('connection', (socket) => {
     const info = onlineUsers.get(socket.id);
     onlineUsers.delete(socket.id);
     if (info?.roomId) {
+      // stop typing indicator for this user
+      io.to(info.roomId).emit('user_stopped_typing', { username: socket.user.username });
+      // update online list
       const roomOnline = [...onlineUsers.values()]
         .filter(u => u.roomId === info.roomId)
         .map(u => u.username);

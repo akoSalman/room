@@ -5,6 +5,7 @@ let socket = null;
 let socketReady = false;
 let mediaRecorder = null;
 let audioChunks = [];
+let isRecording = false;
 let pickerTarget = null;
 let editingMsgId = null;
 let ctxTarget = null;
@@ -16,6 +17,15 @@ const typingUsers = new Set();
 
 // Online users
 let onlineUsers = [];
+
+// Detect best supported audio MIME type (iOS Safari needs audio/mp4)
+function getSupportedMimeType() {
+  const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'];
+  for (const t of types) {
+    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(t)) return t;
+  }
+  return '';
+}
 
 const EMOJIS = ['👍','❤️','😂','😮','😢','🔥','👏','🎉','🤔','😍','👎','😡'];
 
@@ -264,6 +274,7 @@ async function joinRoom(roomId, roomName, li) {
   if (currentRoomId === roomId) return;
   cancelEdit();
   stopTypingSignal();
+  if (isRecording) stopRecording();
   typingUsers.clear(); renderTypingBar();
   currentRoomId = roomId;
   document.querySelectorAll('#room-list li').forEach(el => el.classList.remove('active'));
@@ -386,30 +397,55 @@ async function sendFile() {
   document.getElementById('file-input').value = '';
 }
 
-async function startRecording(e) {
-  if (e) e.preventDefault();
+// Toggle recording: click once to start, click again to stop & send
+async function toggleRecording() {
+  if (isRecording) {
+    stopRecording();
+  } else {
+    await startRecording();
+  }
+}
+
+async function startRecording() {
   if (!currentRoomId) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    return alert('Audio recording is not supported in this browser.');
+  }
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mimeType = getSupportedMimeType();
+    const options = mimeType ? { mimeType } : {};
     audioChunks = [];
-    mediaRecorder = new MediaRecorder(stream);
-    mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+    mediaRecorder = new MediaRecorder(stream, options);
+    mediaRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) audioChunks.push(e.data); };
     mediaRecorder.onstop = uploadAudio;
-    mediaRecorder.start();
+    mediaRecorder.start(100); // collect data every 100ms
+    isRecording = true;
     document.getElementById('record-btn').classList.add('recording');
-  } catch { alert('Microphone access denied'); }
+    document.getElementById('record-btn').title = 'Tap to stop recording';
+  } catch (err) {
+    alert('Microphone access denied. Please allow microphone in browser settings.');
+  }
 }
+
 function stopRecording() {
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
     mediaRecorder.stop();
     mediaRecorder.stream.getTracks().forEach(t => t.stop());
-    document.getElementById('record-btn').classList.remove('recording');
   }
+  isRecording = false;
+  document.getElementById('record-btn').classList.remove('recording');
+  document.getElementById('record-btn').title = 'Record voice message';
 }
+
 async function uploadAudio() {
-  const blob = new Blob(audioChunks, { type: 'audio/webm' });
+  if (audioChunks.length === 0) return; // nothing recorded
+  const mimeType = getSupportedMimeType() || 'audio/webm';
+  const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';
+  const blob = new Blob(audioChunks, { type: mimeType });
+  if (blob.size < 1000) return; // too small, probably empty
   const form = new FormData();
-  form.append('file', blob, 'voice-' + Date.now() + '.webm');
+  form.append('file', blob, `voice-${Date.now()}.${ext}`);
   const res = await fetch('/upload', { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: form }).then(r => r.json());
   if (res.error) return alert(res.error);
   socket.emit('send_message', { roomId: currentRoomId, type: 'audio', filePath: res.url, fileName: 'Voice message' });

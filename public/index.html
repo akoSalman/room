@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
   <title>ChatRoom</title>
   <link rel="stylesheet" href="/css/style.css" />
 </head>
@@ -53,26 +53,19 @@
 
   <div id="sidebar-overlay" onclick="closeSidebar()"></div>
 
-  <!-- Sidebar -->
   <aside id="sidebar">
-
-    <!-- Profile header -->
     <div class="sidebar-header" onclick="openProfile()">
       <div class="avatar" id="sidebar-avatar"></div>
       <span id="current-user-display" class="sidebar-username"></span>
       <button id="collapse-btn" class="icon-btn" title="Collapse" onclick="event.stopPropagation(); toggleSidebar()">‹</button>
     </div>
-
-    <!-- Room create -->
     <div class="room-create">
       <input id="new-room-name" type="text" placeholder="New room..." />
       <button onclick="createRoom()" title="Create room">+</button>
     </div>
-
     <ul id="room-list"></ul>
   </aside>
 
-  <!-- Chat area -->
   <main id="chat-area">
     <header id="chat-header">
       <button id="menu-btn" class="icon-btn" onclick="openSidebar()">☰</button>
@@ -80,7 +73,6 @@
       <button id="online-indicator" class="online-badge hidden" onclick="toggleOnlinePanel()"></button>
     </header>
 
-    <!-- Online users dropdown -->
     <div id="online-panel" class="hidden">
       <div class="online-panel-title">Online now</div>
       <ul id="online-list"></ul>
@@ -88,13 +80,11 @@
 
     <div id="messages"></div>
 
-    <!-- Typing indicator -->
     <div id="typing-bar" class="hidden">
       <span id="typing-text"></span>
       <span class="typing-dots"><span></span><span></span><span></span></span>
     </div>
 
-    <!-- Edit banner -->
     <div id="edit-banner" class="hidden">
       <span>✏️ Editing message</span>
       <button onclick="cancelEdit()">✕</button>
@@ -105,9 +95,8 @@
         📎
         <input type="file" id="file-input" style="display:none" onchange="sendFile()" />
       </label>
-      <button id="record-btn" class="icon-btn" title="Hold to record"
-        onmousedown="startRecording()" onmouseup="stopRecording()"
-        ontouchstart="startRecording(event)" ontouchend="stopRecording()">🎙</button>
+      <!-- Toggle record: click once to start, click again to stop & send -->
+      <button id="record-btn" class="icon-btn" title="Record voice message" onclick="toggleRecording()">🎙</button>
       <input id="msg-input" type="text" placeholder="Message..."
         onkeydown="handleInputKey(event)" oninput="onTypingInput()" />
       <button onclick="sendOrSave()" class="send-btn">➤</button>
@@ -122,10 +111,8 @@
       <h2>Profile</h2>
       <button class="icon-btn" onclick="closeProfile()">✕</button>
     </div>
-
     <div class="profile-avatar-big" id="profile-avatar-big"></div>
     <p class="profile-name" id="profile-name-display"></p>
-
     <div class="modal-section">
       <div class="field">
         <label>New username</label>
@@ -143,7 +130,6 @@
       <p id="profile-success" class="success"></p>
       <button class="btn-primary" onclick="saveProfile()">Save changes</button>
     </div>
-
     <div class="modal-section">
       <button class="btn-danger" onclick="logout()">Sign out</button>
     </div>
