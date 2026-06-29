@@ -98,12 +98,14 @@ function logout() {
   localStorage.clear(); token = null; username = null; currentRoomId = null; socketReady = false;
   if (socket) { socket.disconnect(); socket = null; }
   closeProfile();
+  document.body.classList.remove('in-app');
   show('auth-screen'); hide('app-screen');
 }
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 async function enterApp() {
   show('app-screen'); hide('auth-screen');
+  document.body.classList.add('in-app');
   dmDividerInserted = false;
   setAvatarInitials(username);
   document.getElementById('current-user-display').textContent = username;

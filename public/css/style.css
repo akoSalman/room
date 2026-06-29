@@ -26,31 +26,30 @@ html {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background: var(--bg);
   color: var(--text);
-  height: -webkit-fill-available;
-  height: 100%;
 }
 body {
-  height: 100%;
+  min-height: 100vh;
+  min-height: -webkit-fill-available;
+}
+
+/* App screen needs fixed height + no scroll on body */
+body.in-app {
+  height: 100vh;
   height: -webkit-fill-available;
   overflow: hidden;
 }
 
-.screen {
-  height: 100%;
-  height: -webkit-fill-available;
-}
+.screen { display: flex; flex-direction: column; }
 .hidden { display: none !important; }
 
 /* ── Auth ─────────────────────────────────────────── */
 #auth-screen {
-  display: flex;
-  align-items: flex-start;
+  min-height: 100vh;
+  min-height: -webkit-fill-available;
+  align-items: center;
   justify-content: center;
-  padding: 20px;
+  padding: max(20px, env(safe-area-inset-top)) 20px max(20px, env(safe-area-inset-bottom));
   overflow-y: auto;
-  min-height: 100%;
-  padding-top: max(20px, env(safe-area-inset-top));
-  padding-bottom: max(20px, env(safe-area-inset-bottom));
 }
 .auth-card {
   width: 100%; max-width: 400px;
@@ -88,7 +87,8 @@ body {
 /* ── App layout ───────────────────────────────────── */
 #app-screen {
   display: flex;
-  height: 100%;
+  flex-direction: row;
+  height: 100vh;
   height: -webkit-fill-available;
   position: relative;
   overflow: hidden;
