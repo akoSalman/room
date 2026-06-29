@@ -1,0 +1,20 @@
+[Unit]
+Description=ChatRoom Node.js App
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_DIRECTADMIN_USER
+WorkingDirectory=/home/YOUR_DIRECTADMIN_USER/domains/chat.akosalman.com/public_html
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+Environment=NODE_ENV=production
+Environment=PORT=3001
+Environment=JWT_SECRET=CHANGE_THIS_TO_A_LONG_RANDOM_STRING
+
+[Install]
+WantedBy=multi-user.target
