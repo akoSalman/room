@@ -163,6 +163,22 @@ io.on('connection', (socket) => {
     io.to(String(roomId)).emit('message_received', msg);
   });
 
+  socket.on('edit_message', ({ messageId, content }) => {
+    if (!content || !content.trim()) return;
+    const msg = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
+    if (!msg || msg.type !== 'text') return;
+    db.prepare('UPDATE messages SET content = ?, edited = 1 WHERE id = ?').run(content.trim(), messageId);
+    io.to(String(msg.room_id)).emit('message_edited', { messageId, content: content.trim() });
+  });
+
+  socket.on('delete_message', ({ messageId }) => {
+    const msg = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
+    if (!msg) return;
+    db.prepare('DELETE FROM reactions WHERE message_id = ?').run(messageId);
+    db.prepare('DELETE FROM messages WHERE id = ?').run(messageId);
+    io.to(String(msg.room_id)).emit('message_deleted', { messageId });
+  });
+
   socket.on('toggle_reaction', ({ messageId, emoji }) => {
     const existing = db.prepare(
       'SELECT id FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?'

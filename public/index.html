@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover"/>
   <title>ChatRoom</title>
   <link rel="stylesheet" href="/css/style.css" />
 </head>
@@ -33,7 +33,6 @@
 <!-- App Screen -->
 <div id="app-screen" class="screen hidden">
 
-  <!-- Mobile overlay -->
   <div id="sidebar-overlay" onclick="closeSidebar()"></div>
 
   <aside id="sidebar">
@@ -57,6 +56,12 @@
 
     <div id="messages"></div>
 
+    <!-- Edit mode indicator -->
+    <div id="edit-banner" class="hidden">
+      <span>✏️ Editing message</span>
+      <button onclick="cancelEdit()">✕</button>
+    </div>
+
     <div id="input-bar">
       <label class="icon-btn" title="Attach file">
         📎
@@ -65,10 +70,19 @@
       <button id="record-btn" class="icon-btn" title="Hold to record audio"
         onmousedown="startRecording()" onmouseup="stopRecording()"
         ontouchstart="startRecording(event)" ontouchend="stopRecording()">🎙</button>
-      <input id="msg-input" type="text" placeholder="Message..." onkeydown="if(event.key==='Enter') sendText()" />
-      <button onclick="sendText()" class="send-btn">➤</button>
+      <input id="msg-input" type="text" placeholder="Message..."
+        onkeydown="handleInputKey(event)" />
+      <button onclick="sendOrSave()" class="send-btn">➤</button>
     </div>
   </main>
+</div>
+
+<!-- Context menu -->
+<div id="ctx-menu" class="hidden">
+  <button onclick="ctxReact()">😊 &nbsp;React</button>
+  <button onclick="ctxEdit()">✏️ &nbsp;Edit</button>
+  <hr/>
+  <button class="danger" onclick="ctxDelete()">🗑 &nbsp;Delete</button>
 </div>
 
 <!-- Emoji Picker -->
