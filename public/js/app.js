@@ -19,8 +19,11 @@ const typingUsers = new Set();
 // Online users
 let onlineUsers = [];
 
-// DM rooms cache: otherUserId -> roomData
-const dmRoomsCache = {};
+// Unread counts per roomId
+const unreadCounts = {};
+
+// Whether DM divider has been inserted
+let dmDividerInserted = false;
 
 function getSupportedMimeType() {
   const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'];
@@ -101,6 +104,7 @@ function logout() {
 // ─── App ──────────────────────────────────────────────────────────────────────
 async function enterApp() {
   show('app-screen'); hide('auth-screen');
+  dmDividerInserted = false;
   setAvatarInitials(username);
   document.getElementById('current-user-display').textContent = username;
   await connectSocket();
@@ -124,7 +128,14 @@ function connectSocket() {
     socket = io({ auth: { token }, reconnectionAttempts: 5 });
     socket.once('connect', () => { socketReady = true; resolve(); });
     socket.on('connect_error', (err) => { if (err.message === 'Unauthorized') logout(); });
-    socket.on('message_received', appendMessage);
+    socket.on('message_received', (msg) => {
+      appendMessage(msg);
+      // Increment unread if this isn't the active room
+      if (String(msg.room_id) !== String(currentRoomId)) {
+        unreadCounts[msg.room_id] = (unreadCounts[msg.room_id] || 0) + 1;
+        updateUnreadBadge(msg.room_id);
+      }
+    });
     socket.on('message_edited', ({ messageId, content }) => applyEdit(messageId, content));
     socket.on('message_deleted', ({ messageId }) => applyDelete(messageId));
     socket.on('reactions_updated', ({ messageId, reactions }) => renderReactions(messageId, reactions));
@@ -136,6 +147,29 @@ function connectSocket() {
     socket.on('user_stopped_typing', ({ username: u }) => hideTyping(u));
     socket.on('dm_activity', ({ room }) => ensureDMInSidebar(room));
   });
+}
+
+// ─── Unread badges ────────────────────────────────────────────────────────────
+function updateUnreadBadge(roomId) {
+  const li = document.querySelector(`[data-room-id="${roomId}"]`);
+  if (!li) return;
+  let badge = li.querySelector('.unread-badge');
+  const count = unreadCounts[roomId] || 0;
+  if (count === 0) {
+    badge?.remove();
+    return;
+  }
+  if (!badge) {
+    badge = document.createElement('span');
+    badge.className = 'unread-badge';
+    li.appendChild(badge);
+  }
+  badge.textContent = count > 99 ? '99+' : count;
+}
+
+function clearUnread(roomId) {
+  delete unreadCounts[roomId];
+  updateUnreadBadge(roomId);
 }
 
 // ─── Typing ───────────────────────────────────────────────────────────────────
@@ -246,6 +280,7 @@ async function loadRooms() {
   const rooms = await api('/rooms');
   if (!Array.isArray(rooms)) return;
   document.getElementById('room-list').innerHTML = '';
+  dmDividerInserted = false;
   rooms.forEach(addRoomToList);
   const general = rooms.find(r => r.name === 'General') || rooms[0];
   if (general) {
@@ -269,7 +304,6 @@ function addRoomToList(room) {
   li.appendChild(icon);
   li.appendChild(label);
 
-  // Edit/delete buttons for room creator
   if (room.created_by) {
     const actions = document.createElement('div');
     actions.className = 'room-actions';
@@ -290,11 +324,7 @@ function addRoomToList(room) {
     actions.appendChild(delBtn);
     li.appendChild(actions);
 
-    // Only show actions for creator — hide by default, CSS shows on hover
-    // We track ownership client-side by storing created_by in dataset
     li.dataset.createdBy = room.created_by;
-    // We'll hide actions for non-owners via JS after username lookup isn't possible;
-    // instead we check via a hidden attribute and show/hide in CSS hover only for owner
     if (!isRoomOwner(room)) {
       actions.style.display = 'none';
       actions.classList.add('not-owner');
@@ -306,13 +336,10 @@ function addRoomToList(room) {
 }
 
 function isRoomOwner(room) {
-  // We can't easily get our own user id on the client without storing it.
-  // Store it when we log in.
   return room.created_by && String(room.created_by) === String(getUserId());
 }
 
 function getUserId() {
-  // Decode JWT to get user id
   if (!token) return null;
   try {
     const payload = JSON.parse(atob(token.split('.')[1]));
@@ -379,18 +406,21 @@ async function loadDMRooms() {
   rooms.forEach(r => addDMToSidebar(r, r.other_username));
 }
 
-function parseDMRoom(room) {
-  // room.name = __dm__<a>__<b>__
-  const match = room.name.match(/^__dm__(\d+)__(\d+)__$/);
-  if (!match) return null;
-  const myId = getUserId();
-  const otherId = parseInt(match[1]) === myId ? parseInt(match[2]) : parseInt(match[1]);
-  return otherId;
+function ensureDMDivider() {
+  if (dmDividerInserted) return;
+  dmDividerInserted = true;
+  const divider = document.createElement('li');
+  divider.className = 'dm-divider';
+  divider.textContent = 'Direct Messages';
+  divider.id = 'dm-divider';
+  document.getElementById('room-list').appendChild(divider);
 }
 
 function addDMToSidebar(room, otherUsername) {
   if (!otherUsername) return;
   if (document.querySelector(`[data-room-id="${room.id}"]`)) return;
+
+  ensureDMDivider();
 
   const li = document.createElement('li');
   li.dataset.roomId = room.id;
@@ -409,12 +439,11 @@ function addDMToSidebar(room, otherUsername) {
     joinRoom(room.id, otherUsername, li, true);
     isMobile() ? closeSidebar() : collapseSidebar();
   };
-  document.getElementById('dm-list').appendChild(li);
+  document.getElementById('room-list').appendChild(li);
 }
 
 function ensureDMInSidebar(room) {
   if (document.querySelector(`[data-room-id="${room.id}"]`)) return;
-  // Fetch the other username
   api('/dm-rooms').then(rooms => {
     if (!Array.isArray(rooms)) return;
     const found = rooms.find(r => r.id === room.id);
@@ -424,7 +453,6 @@ function ensureDMInSidebar(room) {
 
 async function openDM(otherUsername) {
   closeOnlinePanel();
-  // Find user id for this username
   const users = await api('/users');
   if (!Array.isArray(users)) return;
   const other = users.find(u => u.username === otherUsername);
@@ -433,7 +461,6 @@ async function openDM(otherUsername) {
   const res = await api('/dm/' + other.id, 'POST');
   if (res.error) return alert(res.error);
 
-  // Add to DM sidebar if not already there
   addDMToSidebar(res, res.otherUsername || otherUsername);
 
   const li = document.querySelector(`[data-room-id="${res.id}"]`);
@@ -450,7 +477,8 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   if (isRecording) stopRecording();
   typingUsers.clear(); renderTypingOverlay();
   currentRoomId = roomId;
-  document.querySelectorAll('#room-list li, #dm-list li').forEach(el => el.classList.remove('active'));
+  clearUnread(roomId);
+  document.querySelectorAll('#room-list li').forEach(el => el.classList.remove('active'));
   li.classList.add('active');
   document.getElementById('room-title').textContent = (isDM ? '💬 ' : '# ') + roomName;
   document.getElementById('messages').innerHTML = '';
@@ -628,6 +656,9 @@ async function uploadAudio() {
 
 // ─── Render messages ──────────────────────────────────────────────────────────
 function appendMessage(msg) {
+  // Don't render messages that don't belong to the current room
+  if (String(msg.room_id) !== String(currentRoomId)) return;
+
   const container = document.getElementById('messages');
   const isMine = msg.username === username;
 
@@ -714,9 +745,7 @@ function openCtxMenu(messageId, type, isMine, wrapperEl) {
   ctxTarget = { messageId, type, isMine };
   const menu = document.getElementById('ctx-menu');
   const buttons = menu.querySelectorAll('button');
-  // Edit button (index 1) — only for own text messages
   buttons[1].style.display = (isMine && type === 'text') ? '' : 'none';
-  // Delete button (index 2) — only for own messages
   menu.querySelector('button.danger').style.display = isMine ? '' : 'none';
   menu.querySelector('hr').style.display = isMine ? '' : 'none';
   menu.classList.remove('hidden');

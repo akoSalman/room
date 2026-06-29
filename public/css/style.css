@@ -110,7 +110,6 @@ body {
 #sidebar.collapsed .sidebar-username,
 #sidebar.collapsed .room-create,
 #sidebar.collapsed .room-label,
-#sidebar.collapsed .sidebar-section-label,
 #sidebar.collapsed .room-actions { display: none; }
 #sidebar.collapsed .sidebar-header { padding: 10px 0; justify-content: center; cursor: default; }
 #sidebar.collapsed #room-list li,
@@ -127,23 +126,34 @@ body {
 .room-create input:focus { outline: none; border-color: var(--accent); }
 .room-create button { background: var(--accent); border: none; color: #fff; border-radius: 8px; padding: 7px 13px; cursor: pointer; font-size: 1.1rem; flex-shrink: 0; }
 
-.sidebar-section-label { padding: 8px 14px 4px; font-size: 0.7rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; flex-shrink: 0; }
-.dm-section-label { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 10px; }
+#room-list { list-style: none; overflow-y: auto; flex: 1; -webkit-overflow-scrolling: touch; }
 
-#room-list, #dm-list { list-style: none; overflow-y: auto; -webkit-overflow-scrolling: touch; }
-#room-list { flex-shrink: 0; max-height: 40vh; }
-#dm-list { flex: 1; }
-
-#room-list li, #dm-list li {
+#room-list li {
   padding: 10px 16px; cursor: pointer; border-bottom: 1px solid var(--border);
   transition: background .15s; font-size: 0.9rem; white-space: nowrap;
   overflow: hidden; display: flex; align-items: center; gap: 8px; position: relative;
 }
-#room-list li .room-icon, #dm-list li .room-icon { flex-shrink: 0; color: var(--muted); }
-#room-list li .room-label, #dm-list li .room-label { flex: 1; overflow: hidden; text-overflow: ellipsis; }
-#room-list li:hover, #dm-list li:hover { background: var(--input-bg); }
-#room-list li.active, #dm-list li.active { background: var(--mine-bg); color: #fff; }
-#room-list li.active .room-icon, #dm-list li.active .room-icon { color: #fff; }
+#room-list li .room-icon { flex-shrink: 0; color: var(--muted); }
+#room-list li .room-label { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+#room-list li:hover { background: var(--input-bg); }
+#room-list li.active { background: var(--mine-bg); color: #fff; }
+#room-list li.active .room-icon { color: #fff; }
+
+/* DM divider inside the room list */
+#room-list li.dm-divider {
+  padding: 8px 14px 4px; font-size: 0.7rem; color: var(--muted); font-weight: 600;
+  text-transform: uppercase; letter-spacing: .05em; cursor: default;
+  border-top: 1px solid var(--border); margin-top: 2px; background: none !important;
+}
+
+/* Unread badge */
+.unread-badge {
+  background: var(--accent); color: #fff;
+  border-radius: 10px; padding: 1px 7px;
+  font-size: 0.7rem; font-weight: 700;
+  flex-shrink: 0; min-width: 18px; text-align: center;
+  line-height: 16px;
+}
 
 /* Room owner action buttons */
 .room-actions { display: none; gap: 2px; flex-shrink: 0; }
@@ -162,7 +172,7 @@ body {
 .online-badge { background: rgba(74,222,128,.15); border: 1px solid var(--online); color: var(--online); border-radius: 20px; padding: 3px 10px; font-size: 0.75rem; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0; transition: background .15s; }
 .online-badge:hover { background: rgba(74,222,128,.25); }
 
-#online-panel { position: absolute; top: 50px; right: 12px; background: var(--sidebar-bg); border: 1px solid var(--border); border-radius: 12px; min-width: 180px; box-shadow: 0 8px 24px rgba(0,0,0,.4); z-index: 50; overflow: hidden; }
+#online-panel { position: fixed; top: 54px; right: 12px; background: var(--sidebar-bg); border: 1px solid var(--border); border-radius: 12px; min-width: 180px; box-shadow: 0 8px 24px rgba(0,0,0,.4); z-index: 200; overflow: hidden; }
 .online-panel-title { padding: 10px 14px 6px; font-size: 0.75rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
 #online-list { list-style: none; padding-bottom: 8px; }
 #online-list li { display: flex; align-items: center; gap: 8px; padding: 8px 14px; font-size: 0.88rem; cursor: pointer; transition: background .12s; }
@@ -317,5 +327,4 @@ body {
   .msg-action-btn, .react-btn { opacity: 0.7; }
 
   .auth-card { padding: 28px 20px; }
-  #online-panel { right: 8px; top: 48px; }
 }
