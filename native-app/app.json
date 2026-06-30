@@ -30,8 +30,6 @@
       ["expo-av", { "microphonePermission": "Allow ChatRoom to record voice messages." }],
       ["expo-image-picker", { "photosPermission": "Allow ChatRoom to attach photos." }]
     ],
-    "extra": {
-      "eas": { "projectId": "YOUR_EAS_PROJECT_ID" }
-    }
+    "extra": {}
   }
 }
