@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Alert, Platform } from 'react-native';
 import { Audio } from 'expo-av';
 import { C } from '../theme';
 
@@ -39,21 +39,41 @@ export default function VoiceRecorder({ onCancel, onSend }: {
   }
 
   async function startRecording() {
-    await Audio.requestPermissionsAsync();
-    await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-    const { recording } = await Audio.Recording.createAsync(
-      Audio.RecordingOptionsPresets.HIGH_QUALITY
-    );
-    recordingRef.current = recording;
-
-    timerRef.current = setInterval(() => setSeconds(s => s + 1), 1000);
-    peakTimerRef.current = setInterval(async () => {
-      const status = await recording.getStatusAsync();
-      if (status.isRecording) {
-        const level = status.metering !== undefined ? Math.max(0, (status.metering + 60) / 60) : Math.random() * 0.7;
-        peaksRef.current.push(Math.min(1, level));
+    try {
+      const { status } = await Audio.requestPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert(
+          'Microphone Permission Required',
+          Platform.OS === 'android'
+            ? 'Please go to Settings → Apps → ChatRoom → Permissions and enable Microphone.'
+            : 'Please go to Settings → ChatRoom and enable Microphone.',
+          [{ text: 'OK', onPress: onCancel }]
+        );
+        return;
       }
-    }, 100);
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+      });
+      const { recording } = await Audio.Recording.createAsync(
+        { ...Audio.RecordingOptionsPresets.HIGH_QUALITY, isMeteringEnabled: true }
+      );
+      recordingRef.current = recording;
+      timerRef.current = setInterval(() => setSeconds(s => s + 1), 1000);
+      peakTimerRef.current = setInterval(async () => {
+        try {
+          const st = await recording.getStatusAsync();
+          if (st.isRecording) {
+            const level = st.metering !== undefined ? Math.max(0, (st.metering + 60) / 60) : Math.random() * 0.5 + 0.1;
+            peaksRef.current.push(Math.min(1, level));
+          }
+        } catch {}
+      }, 100);
+    } catch (err) {
+      Alert.alert('Recording Error', 'Could not start recording. Please check microphone permissions in Settings.');
+      onCancel();
+    }
   }
 
   async function togglePause() {

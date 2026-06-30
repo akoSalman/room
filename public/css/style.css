@@ -221,6 +221,31 @@ html {
 #edit-banner { display: flex; align-items: center; gap: 8px; padding: 6px 14px; background: rgba(82,136,193,.12); border-top: 1px solid var(--accent); font-size: 0.82rem; color: var(--accent); flex-shrink: 0; }
 #edit-banner button { margin-left: auto; background: none; border: none; color: var(--muted); cursor: pointer; font-size: 1rem; padding: 2px 6px; }
 
+/* ── Reply bar ────────────────────────────────────── */
+#reply-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px;
+  background: rgba(82,136,193,.08);
+  border-top: 1px solid var(--accent);
+  flex-shrink: 0;
+}
+.reply-bar-icon { color: var(--accent); font-size: 1rem; flex-shrink: 0; }
+.reply-bar-body { flex: 1; min-width: 0; }
+#reply-bar-user { display: block; font-size: 0.72rem; font-weight: 700; color: var(--accent); margin-bottom: 1px; }
+#reply-bar-text { display: block; font-size: 0.8rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#reply-bar button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 1rem; padding: 4px 6px; }
+
+/* ── Reply quote inside bubble ────────────────────── */
+.reply-quote {
+  display: flex; flex-direction: column; gap: 1px;
+  border-left: 3px solid var(--accent);
+  padding: 5px 8px; border-radius: 4px;
+  background: rgba(0,0,0,.18); margin-bottom: 6px;
+  cursor: default;
+}
+.reply-quote-user { font-size: 0.7rem; font-weight: 700; color: var(--accent); }
+.reply-quote-text { font-size: 0.8rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+
 /* ── Input bar ────────────────────────────────────── */
 #input-bar {
   display: flex; align-items: center; gap: 6px;
@@ -275,8 +300,8 @@ html {
 /* ── Voice player (sent messages) ────────────────── */
 .voice-player {
   display: flex; align-items: center; gap: 8px;
-  min-width: 200px; max-width: 260px;
-  padding: 4px 2px;
+  width: 100%; max-width: 260px; min-width: 0;
+  padding: 4px 2px; box-sizing: border-box;
 }
 .voice-play-btn {
   width: 36px; height: 36px; border-radius: 50%;
@@ -294,6 +319,7 @@ html {
 .voice-bars {
   display: flex; align-items: center; gap: 2px;
   height: 100%; position: relative; z-index: 1;
+  overflow: hidden;
 }
 .voice-bars .bar {
   width: 3px; border-radius: 2px;

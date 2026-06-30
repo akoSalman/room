@@ -4,6 +4,7 @@ import {
   StyleSheet, KeyboardAvoidingView, Platform, Alert,
   ActivityIndicator, Modal, ScrollView, Image,
 } from 'react-native';
+import * as Notifications from 'expo-notifications';
 import { Audio } from 'expo-av';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
@@ -12,12 +13,22 @@ import { apiFetch, getSocket, getToken, getUsername, BASE_URL } from '../api';
 import VoicePlayer from '../components/VoicePlayer';
 import VoiceRecorder from '../components/VoiceRecorder';
 
+// Show notifications even when app is foregrounded
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true, shouldPlaySound: true, shouldSetBadge: false,
+  }),
+});
+
 type Message = {
   id: number; room_id: number; user_id: number; username: string;
   type: string; content: string | null; file_path: string | null;
   file_name: string | null; edited: number; created_at: string;
+  reply_to_id?: number | null; reply_username?: string | null;
+  reply_content?: string | null; reply_type?: string | null;
 };
 type Reaction = { emoji: string; username: string; user_id: number };
+type ReplyTo = { id: number; username: string; content: string | null; type: string };
 
 const EMOJIS = ['👍','❤️','😂','😮','😢','🔥','👏','🎉','🤔','😍','👎','😡'];
 
@@ -36,10 +47,12 @@ export default function ChatScreen({ room, onBack }: {
   const [showEmojiFor, setShowEmojiFor] = useState<number | null>(null);
   const [recording, setRecording] = useState(false);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [replyTo, setReplyTo] = useState<ReplyTo | null>(null);
   const [showOnline, setShowOnline] = useState(false);
   const flatListRef = useRef<FlatList>(null);
   const typingTimer = useRef<any>(null);
   const socketRef = useRef<any>(null);
+  const meRef = useRef('');
   const title = room.is_dm ? (room.other_username || '') : room.name;
 
   const scrollBottom = useCallback(() => {
@@ -47,6 +60,9 @@ export default function ChatScreen({ room, onBack }: {
   }, []);
 
   useEffect(() => {
+    // Request notification permission
+    Notifications.requestPermissionsAsync().catch(() => {});
+
     let mounted = true;
     (async () => {
       const [msgs, u, sock] = await Promise.all([
@@ -56,6 +72,7 @@ export default function ChatScreen({ room, onBack }: {
       ]);
       if (!mounted) return;
       setMe(u || '');
+      meRef.current = u || '';
       if (Array.isArray(msgs)) setMessages(msgs);
       setLoading(false);
       scrollBottom();
@@ -67,6 +84,14 @@ export default function ChatScreen({ room, onBack }: {
         if (msg.room_id !== room.id) return;
         setMessages(prev => [...prev, msg]);
         scrollBottom();
+        // Show notification if message is from someone else
+        if (msg.username !== meRef.current) {
+          const body = msg.type === 'text' ? (msg.content || '') : msg.type === 'audio' ? '🎙 Voice message' : msg.type === 'image' ? '🖼 Image' : '📄 File';
+          Notifications.scheduleNotificationAsync({
+            content: { title: msg.username, body, sound: true },
+            trigger: null,
+          }).catch(() => {});
+        }
       });
       sock.on('message_edited', ({ messageId, content }: any) => {
         setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content, edited: 1 } : m));
@@ -104,9 +129,10 @@ export default function ChatScreen({ room, onBack }: {
       socketRef.current.emit('edit_message', { messageId: editingId, content: t });
       setEditingId(null);
     } else {
-      socketRef.current.emit('send_message', { roomId: room.id, type: 'text', content: t });
+      socketRef.current.emit('send_message', { roomId: room.id, type: 'text', content: t, replyToId: replyTo?.id ?? null });
     }
     setText('');
+    setReplyTo(null);
     emitStopTyping();
   }
 
@@ -145,8 +171,9 @@ export default function ChatScreen({ room, onBack }: {
     if (res.error) { Alert.alert('Error', res.error); return; }
     const type = mime.startsWith('image/') ? 'image' : mime.startsWith('audio/') ? 'audio' : 'file';
     socketRef.current?.emit('send_message', {
-      roomId: room.id, type, filePath: res.url, fileName: name,
+      roomId: room.id, type, filePath: res.url, fileName: name, replyToId: replyTo?.id ?? null,
     });
+    setReplyTo(null);
   }
 
   async function sendVoice(uri: string, peaks: number[]) {
@@ -161,8 +188,9 @@ export default function ChatScreen({ room, onBack }: {
     if (res.error) { Alert.alert('Error', res.error); return; }
     const peakStr = peaks.map(v => Math.round(v * 100)).join(',');
     socketRef.current?.emit('send_message', {
-      roomId: room.id, type: 'audio', filePath: res.url, fileName: peakStr,
+      roomId: room.id, type: 'audio', filePath: res.url, fileName: peakStr, replyToId: replyTo?.id ?? null,
     });
+    setReplyTo(null);
   }
 
   function toggleReact(messageId: number, emoji: string) {
@@ -179,6 +207,13 @@ export default function ChatScreen({ room, onBack }: {
 
   function fmtTime(iso: string) {
     return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function replyPreview(msg: Message): string {
+    if (msg.reply_type === 'audio') return '🎙 Voice message';
+    if (msg.reply_type === 'image') return '🖼 Image';
+    if (msg.reply_type === 'file') return '📄 File';
+    return (msg.reply_content || '').slice(0, 60);
   }
 
   function renderMessage({ item: msg }: { item: Message }) {
@@ -199,6 +234,14 @@ export default function ChatScreen({ room, onBack }: {
           onLongPress={() => setShowEmojiFor(msg.id)}
           activeOpacity={0.85}
         >
+          {/* Reply quote */}
+          {msg.reply_to_id && msg.reply_username && (
+            <View style={s.replyQuote}>
+              <Text style={s.replyQuoteUser}>{msg.reply_username}</Text>
+              <Text style={s.replyQuoteText} numberOfLines={1}>{replyPreview(msg)}</Text>
+            </View>
+          )}
+
           {msg.type === 'text' && (
             <Text style={s.msgText}>{msg.content}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}</Text>
           )}
@@ -233,11 +276,16 @@ export default function ChatScreen({ room, onBack }: {
 
         <View style={s.footer}>
           <Text style={s.time}>{fmtTime(msg.created_at)}</Text>
+          <TouchableOpacity onPress={() => setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type })}>
+            <Text style={s.footerBtn}>↩</Text>
+          </TouchableOpacity>
           {mine && (
             <>
-              <TouchableOpacity onPress={() => { setText(msg.content || ''); setEditingId(msg.id); }}>
-                <Text style={s.footerBtn}>✏️</Text>
-              </TouchableOpacity>
+              {msg.type === 'text' && (
+                <TouchableOpacity onPress={() => { setText(msg.content || ''); setEditingId(msg.id); }}>
+                  <Text style={s.footerBtn}>✏️</Text>
+                </TouchableOpacity>
+              )}
               <TouchableOpacity onPress={() => deleteMsg(msg.id)}>
                 <Text style={s.footerBtn}>🗑</Text>
               </TouchableOpacity>
@@ -292,6 +340,18 @@ export default function ChatScreen({ room, onBack }: {
         </TouchableOpacity>
       </Modal>
 
+      {/* Image lightbox */}
+      <Modal visible={!!lightboxUrl} transparent animationType="fade" onRequestClose={() => setLightboxUrl(null)}>
+        <TouchableOpacity style={s.lightboxOverlay} activeOpacity={1} onPress={() => setLightboxUrl(null)}>
+          <TouchableOpacity onPress={() => setLightboxUrl(null)} style={s.lightboxClose}>
+            <Text style={s.lightboxCloseText}>✕</Text>
+          </TouchableOpacity>
+          {lightboxUrl && (
+            <Image source={{ uri: lightboxUrl }} style={s.lightboxImage} resizeMode="contain" />
+          )}
+        </TouchableOpacity>
+      </Modal>
+
       {/* Messages */}
       {loading ? (
         <View style={s.loadingContainer}>
@@ -323,21 +383,21 @@ export default function ChatScreen({ room, onBack }: {
         </View>
       )}
 
-      {/* Image lightbox */}
-      <Modal visible={!!lightboxUrl} transparent animationType="fade" onRequestClose={() => setLightboxUrl(null)}>
-        <TouchableOpacity style={s.lightboxOverlay} activeOpacity={1} onPress={() => setLightboxUrl(null)}>
-          <TouchableOpacity onPress={() => setLightboxUrl(null)} style={s.lightboxClose}>
-            <Text style={s.lightboxCloseText}>✕</Text>
+      {/* Reply banner */}
+      {replyTo && !editingId && (
+        <View style={s.replyBanner}>
+          <Text style={s.replyBannerIcon}>↩</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={s.replyBannerUser}>{replyTo.username}</Text>
+            <Text style={s.replyBannerText} numberOfLines={1}>
+              {replyTo.type === 'audio' ? '🎙 Voice message' : replyTo.type === 'image' ? '🖼 Image' : replyTo.type === 'file' ? '📄 File' : (replyTo.content || '')}
+            </Text>
+          </View>
+          <TouchableOpacity onPress={() => setReplyTo(null)}>
+            <Text style={s.editClose}>✕</Text>
           </TouchableOpacity>
-          {lightboxUrl && (
-            <Image
-              source={{ uri: lightboxUrl }}
-              style={s.lightboxImage}
-              resizeMode="contain"
-            />
-          )}
-        </TouchableOpacity>
-      </Modal>
+        </View>
+      )}
 
       {/* Voice recorder or input bar */}
       {recording ? (
@@ -387,6 +447,7 @@ const s = StyleSheet.create({
   msgText: { color: C.text, fontSize: 15, lineHeight: 21 },
   edited: { color: C.muted, fontSize: 11 },
   fileLink: { color: '#93c5fd', fontSize: 14 },
+  msgImage: { width: 200, height: 180, borderRadius: 10 },
   footer: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3, paddingHorizontal: 4 },
   time: { color: C.muted, fontSize: 11 },
   footerBtn: { fontSize: 14, opacity: 0.6 },
@@ -401,13 +462,19 @@ const s = StyleSheet.create({
   editBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(82,136,193,0.12)', borderTopWidth: 1, borderTopColor: C.accent, padding: 10, paddingHorizontal: 14 },
   editText: { flex: 1, color: C.accent, fontSize: 13 },
   editClose: { color: C.muted, fontSize: 18 },
+  replyBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(82,136,193,0.08)', borderTopWidth: 1, borderTopColor: C.accent, padding: 10, paddingHorizontal: 14, gap: 8 },
+  replyBannerIcon: { color: C.accent, fontSize: 16 },
+  replyBannerUser: { color: C.accent, fontSize: 12, fontWeight: '700' },
+  replyBannerText: { color: C.muted, fontSize: 12 },
+  replyQuote: { borderLeftWidth: 3, borderLeftColor: C.accent, paddingLeft: 8, marginBottom: 6, borderRadius: 2 },
+  replyQuoteUser: { color: C.accent, fontSize: 11, fontWeight: '700', marginBottom: 1 },
+  replyQuoteText: { color: C.muted, fontSize: 12 },
   inputBar: { flexDirection: 'row', alignItems: 'flex-end', padding: 10, backgroundColor: C.header, borderTopWidth: 1, borderTopColor: C.border, gap: 6 },
   iconBtn: { padding: 8 },
   iconBtnText: { fontSize: 22 },
   input: { flex: 1, backgroundColor: C.inputBg, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 10, color: C.text, fontSize: 15, borderWidth: 1, borderColor: C.border, maxHeight: 120 },
   sendBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
   sendBtnText: { color: '#fff', fontSize: 16 },
-  msgImage: { width: 200, height: 180, borderRadius: 10 },
   lightboxOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', alignItems: 'center', justifyContent: 'center' },
   lightboxClose: { position: 'absolute', top: 50, right: 20, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
   lightboxCloseText: { color: '#fff', fontSize: 18 },

@@ -23,12 +23,17 @@
         "android.permission.RECORD_AUDIO",
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE",
-        "android.permission.CAMERA"
+        "android.permission.CAMERA",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.SCHEDULE_EXACT_ALARM",
+        "android.permission.POST_NOTIFICATIONS"
       ]
     },
     "plugins": [
       ["expo-av", { "microphonePermission": "Allow ChatRoom to record voice messages." }],
-      ["expo-image-picker", { "photosPermission": "Allow ChatRoom to attach photos." }]
+      ["expo-image-picker", { "photosPermission": "Allow ChatRoom to attach photos." }],
+      ["expo-notifications", { "icon": "./assets/icon.png", "color": "#17212b" }]
     ],
     "extra": {}
   }

@@ -78,6 +78,15 @@
       <button onclick="cancelEdit()">✕</button>
     </div>
 
+    <div id="reply-bar" class="hidden">
+      <span class="reply-bar-icon">↩</span>
+      <div class="reply-bar-body">
+        <span id="reply-bar-user"></span>
+        <span id="reply-bar-text"></span>
+      </div>
+      <button onclick="cancelReply()">✕</button>
+    </div>
+
     <!-- Normal input bar -->
     <div id="input-bar">
       <label class="icon-btn" title="Attach file">
@@ -158,6 +167,7 @@
 
 <!-- ── Context menu ───────────────────────────────── -->
 <div id="ctx-menu" class="hidden">
+  <button onclick="ctxReply()">↩ &nbsp;Reply</button>
   <button onclick="ctxReact()">😊 &nbsp;React</button>
   <button onclick="ctxEdit()">✏️ &nbsp;Edit</button>
   <hr/>

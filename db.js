@@ -49,6 +49,7 @@ db.exec(`
 try { db.exec('ALTER TABLE messages ADD COLUMN edited INTEGER DEFAULT 0'); } catch {}
 try { db.exec('ALTER TABLE rooms ADD COLUMN created_by INTEGER'); } catch {}
 try { db.exec('ALTER TABLE rooms ADD COLUMN is_dm INTEGER DEFAULT 0'); } catch {}
+try { db.exec('ALTER TABLE messages ADD COLUMN reply_to_id INTEGER'); } catch {}
 
 // Seed a default room
 const existing = db.prepare('SELECT id FROM rooms WHERE name = ?').get('General');

@@ -23,6 +23,7 @@ let editingRoomId = null;
 let typingTimer = null;
 let isTyping = false;
 const typingUsers = new Set();
+let replyTo = null; // { id, username, content, type }
 
 let onlineUsers = [];
 const unreadCounts = {};
@@ -43,6 +44,18 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
 }
 
+function requestNotifPermission() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+}
+function showNotif(msg) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  if (document.visibilityState === 'visible' && String(msg.room_id) === String(currentRoomId)) return;
+  const body = msg.type === 'text' ? (msg.content || '') : msg.type === 'audio' ? '🎙 Voice message' : msg.type === 'image' ? '🖼 Image' : '📄 File';
+  new Notification(msg.username, { body, icon: '/icons/icon-192.png', tag: 'chatroom-' + msg.room_id, silent: false });
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   buildEmojiPicker();
   document.addEventListener('click', handleGlobalClick);
@@ -53,7 +66,7 @@ window.addEventListener('DOMContentLoaded', () => {
     if (e.target.closest('#messages, #room-list, .modal-overlay, #online-panel')) return;
     e.preventDefault();
   }, { passive: false });
-  if (token && username) enterApp();
+  if (token && username) { enterApp(); requestNotifPermission(); }
 });
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -95,6 +108,7 @@ async function enterApp() {
   dmDividerInserted = false;
   setAvatarInitials(username);
   document.getElementById('current-user-display').textContent = username;
+  requestNotifPermission();
   await connectSocket();
   await loadRooms();
   await loadDMRooms();
@@ -127,6 +141,7 @@ function connectSocket() {
     });
 
     socket.on('message_received', (msg) => {
+      showNotif(msg);
       if (String(msg.room_id) !== String(currentRoomId)) {
         unreadCounts[msg.room_id] = (unreadCounts[msg.room_id] || 0) + 1;
         updateUnreadBadge(msg.room_id);
@@ -471,13 +486,25 @@ function renderOnlinePanel() {
 function handleInputKey(e) { if (e.key === 'Enter') sendOrSave(); }
 function sendOrSave() { editingMsgId ? saveEdit() : sendText(); }
 
+// ─── Reply ────────────────────────────────────────────────────────────────────
+function setReply(msg) {
+  replyTo = { id: msg.id, username: msg.username, content: msg.content, type: msg.type };
+  document.getElementById('reply-bar-user').textContent = msg.username;
+  const preview = msg.type === 'text' ? (msg.content || '').slice(0, 60) : msg.type === 'audio' ? '🎙 Voice message' : msg.type === 'image' ? '🖼 Image' : '📄 File';
+  document.getElementById('reply-bar-text').textContent = preview;
+  show('reply-bar');
+  document.getElementById('msg-input').focus();
+}
+function cancelReply() { replyTo = null; hide('reply-bar'); }
+
 function sendText() {
   const input = document.getElementById('msg-input');
   const content = input.value.trim();
   if (!content || !currentRoomId || !socketReady) return;
   stopTypingSignal();
-  socket.emit('send_message', { roomId: currentRoomId, type: 'text', content });
+  socket.emit('send_message', { roomId: currentRoomId, type: 'text', content, replyToId: replyTo?.id || null });
   input.value = '';
+  cancelReply();
 }
 
 function stopTypingSignal() {
@@ -534,7 +561,8 @@ async function sendFile() {
   const res = await fetch('/upload', { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: form }).then(r => r.json());
   if (res.error) return alert(res.error);
   const type = file.type.startsWith('audio/') ? 'audio' : file.type.startsWith('image/') ? 'image' : 'file';
-  socket.emit('send_message', { roomId: currentRoomId, type, content: null, filePath: res.url, fileName: res.name || file.name });
+  socket.emit('send_message', { roomId: currentRoomId, type, content: null, filePath: res.url, fileName: res.name || file.name, replyToId: replyTo?.id || null });
+  cancelReply();
   document.getElementById('file-input').value = '';
 }
 
@@ -722,8 +750,9 @@ async function sendRecording() {
   form.append('file', recordedBlob, `voice-${Date.now()}.${ext}`);
   const res = await fetch('/upload', { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: form }).then(r => r.json());
   if (res.error) { alert(res.error); return; }
-  socket.emit('send_message', { roomId: currentRoomId, type: 'audio', filePath: res.url, fileName: peaks });
+  socket.emit('send_message', { roomId: currentRoomId, type: 'audio', filePath: res.url, fileName: peaks, replyToId: replyTo?.id || null });
   resetRecordingUI();
+  cancelReply();
 }
 
 // ─── Render messages ──────────────────────────────────────────────────────────
@@ -734,7 +763,7 @@ function appendMessage(msg) {
   const wrapper = document.createElement('div');
   wrapper.className = 'msg-wrapper ' + (isMine ? 'mine' : 'theirs');
   wrapper.dataset.msgId = msg.id;
-  addLongPress(wrapper, () => openCtxMenu(msg.id, msg.type, isMine, wrapper));
+  addLongPress(wrapper, () => openCtxMenu(msg.id, msg.type, isMine, wrapper, msg));
 
   if (!isMine) {
     const sender = document.createElement('div');
@@ -744,6 +773,22 @@ function appendMessage(msg) {
 
   const bubble = document.createElement('div');
   bubble.className = 'msg-bubble';
+
+  if (msg.reply_to_id && msg.reply_username) {
+    const quote = document.createElement('div');
+    quote.className = 'reply-quote';
+    const quoteUser = document.createElement('span');
+    quoteUser.className = 'reply-quote-user';
+    quoteUser.textContent = msg.reply_username;
+    const quoteText = document.createElement('span');
+    quoteText.className = 'reply-quote-text';
+    quoteText.textContent = msg.reply_type === 'text' ? (msg.reply_content || '').slice(0, 80)
+      : msg.reply_type === 'audio' ? '🎙 Voice message'
+      : msg.reply_type === 'image' ? '🖼 Image' : '📄 File';
+    quote.appendChild(quoteUser);
+    quote.appendChild(quoteText);
+    bubble.appendChild(quote);
+  }
 
   if (msg.type === 'text') {
     bubble.dataset.text = msg.content;
@@ -798,8 +843,8 @@ function appendMessage(msg) {
 }
 
 // ─── Context menu ─────────────────────────────────────────────────────────────
-function openCtxMenu(messageId, type, isMine, wrapperEl) {
-  ctxTarget = { messageId, type, isMine };
+function openCtxMenu(messageId, type, isMine, wrapperEl, msg) {
+  ctxTarget = { messageId, type, isMine, username: msg?.username, content: msg?.content };
   const menu = document.getElementById('ctx-menu');
   menu.querySelectorAll('button')[1].style.display = (isMine && type === 'text') ? '' : 'none';
   menu.querySelector('button.danger').style.display = isMine ? '' : 'none';
@@ -814,6 +859,7 @@ function openCtxMenu(messageId, type, isMine, wrapperEl) {
   menu.style.top = Math.max(4, top) + 'px';
 }
 function closeCtxMenu() { document.getElementById('ctx-menu').classList.add('hidden'); ctxTarget = null; }
+function ctxReply() { if (!ctxTarget) return; const t = ctxTarget; closeCtxMenu(); setReply(t); }
 function ctxReact() {
   if (!ctxTarget) return;
   const wrapper = document.querySelector(`[data-msg-id="${ctxTarget.messageId}"]`);

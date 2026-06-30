@@ -161,8 +161,13 @@ app.get('/dm-rooms', authMiddleware, (req, res) => {
 // Messages
 app.get('/messages/:roomId', authMiddleware, (req, res) => {
   const messages = db.prepare(`
-    SELECT m.*, u.username FROM messages m
+    SELECT m.*, u.username,
+      rm.content AS reply_content, rm.type AS reply_type, rm.file_name AS reply_file_name,
+      ru.username AS reply_username
+    FROM messages m
     JOIN users u ON m.user_id = u.id
+    LEFT JOIN messages rm ON m.reply_to_id = rm.id
+    LEFT JOIN users ru ON rm.user_id = ru.id
     WHERE m.room_id = ?
     ORDER BY m.created_at DESC LIMIT 50
   `).all(req.params.roomId);
@@ -221,15 +226,21 @@ io.on('connection', (socket) => {
   });
 
   socket.on('send_message', (data) => {
-    const { roomId, type, content, filePath, fileName } = data;
+    const { roomId, type, content, filePath, fileName, replyToId } = data;
     const result = db.prepare(`
-      INSERT INTO messages (room_id, user_id, type, content, file_path, file_name)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(roomId, socket.user.id, type || 'text', content || null, filePath || null, fileName || null);
+      INSERT INTO messages (room_id, user_id, type, content, file_path, file_name, reply_to_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(roomId, socket.user.id, type || 'text', content || null, filePath || null, fileName || null, replyToId || null);
 
     const msg = db.prepare(`
-      SELECT m.*, u.username FROM messages m
-      JOIN users u ON m.user_id = u.id WHERE m.id = ?
+      SELECT m.*, u.username,
+        rm.content AS reply_content, rm.type AS reply_type, rm.file_name AS reply_file_name,
+        ru.username AS reply_username
+      FROM messages m
+      JOIN users u ON m.user_id = u.id
+      LEFT JOIN messages rm ON m.reply_to_id = rm.id
+      LEFT JOIN users ru ON rm.user_id = ru.id
+      WHERE m.id = ?
     `).get(result.lastInsertRowid);
 
     io.to(String(roomId)).emit('message_received', msg);
