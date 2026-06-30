@@ -11,18 +11,12 @@ let editingMsgId = null;
 let ctxTarget = null;
 let editingRoomId = null;
 
-// Typing state
 let typingTimer = null;
 let isTyping = false;
 const typingUsers = new Set();
 
-// Online users
 let onlineUsers = [];
-
-// Unread counts per roomId
 const unreadCounts = {};
-
-// Whether DM divider has been inserted
 let dmDividerInserted = false;
 
 function getSupportedMimeType() {
@@ -44,47 +38,20 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
-function switchTab(tab) {
-  document.getElementById('login-form').classList.toggle('hidden', tab !== 'login');
-  document.getElementById('register-form').classList.toggle('hidden', tab !== 'register');
-  document.getElementById('tab-login').classList.toggle('active', tab === 'login');
-  document.getElementById('tab-reg').classList.toggle('active', tab === 'register');
+async function signin() {
+  const user = document.getElementById('auth-user').value.trim();
+  const pass = document.getElementById('auth-pass').value;
+  if (!user || !pass) return showAuthError('Please enter username and password');
+  const btn = document.getElementById('auth-btn');
+  btn.disabled = true; btn.textContent = 'Please wait…';
   document.getElementById('auth-error').textContent = '';
-}
-
-async function login() {
-  const user = document.getElementById('login-user').value.trim();
-  const pass = document.getElementById('login-pass').value;
-  if (!user || !pass) return showAuthError('Please enter username and password');
-  setAuthLoading(true, 'login');
   try {
-    const res = await api('/auth/login', 'POST', { username: user, password: pass });
+    const res = await api('/auth/signin', 'POST', { username: user, password: pass });
     if (res.error) return showAuthError(res.error);
     saveSession(res.token, res.username);
     enterApp();
   } catch { showAuthError('Connection error — is the server running?'); }
-  finally { setAuthLoading(false, 'login'); }
-}
-
-async function register() {
-  const user = document.getElementById('reg-user').value.trim();
-  const pass = document.getElementById('reg-pass').value;
-  if (!user || !pass) return showAuthError('Please enter username and password');
-  setAuthLoading(true, 'register');
-  try {
-    const res = await api('/auth/register', 'POST', { username: user, password: pass });
-    if (res.error) return showAuthError(res.error);
-    saveSession(res.token, res.username);
-    enterApp();
-  } catch { showAuthError('Connection error — is the server running?'); }
-  finally { setAuthLoading(false, 'register'); }
-}
-
-function setAuthLoading(on, which) {
-  const btn = document.getElementById(which === 'login' ? 'login-btn' : 'register-btn');
-  if (!btn) return;
-  btn.disabled = on;
-  btn.textContent = on ? 'Please wait…' : (which === 'login' ? 'Sign In' : 'Create Account');
+  finally { btn.disabled = false; btn.textContent = 'Continue →'; }
 }
 
 function saveSession(t, u) {
@@ -120,22 +87,32 @@ function setAvatarInitials(name) {
   const pb = document.getElementById('profile-avatar-big');
   if (sa) sa.textContent = initials;
   if (pb) pb.textContent = initials;
-  if (document.getElementById('profile-name-display'))
-    document.getElementById('profile-name-display').textContent = name;
+  const pd = document.getElementById('profile-name-display');
+  if (pd) pd.textContent = name;
 }
 
 function connectSocket() {
   return new Promise((resolve) => {
     if (socket) socket.disconnect();
-    socket = io({ auth: { token }, reconnectionAttempts: 5 });
-    socket.once('connect', () => { socketReady = true; resolve(); });
-    socket.on('connect_error', (err) => { if (err.message === 'Unauthorized') logout(); });
+    socket = io({ auth: { token }, reconnectionAttempts: 10 });
+
+    socket.once('connect', () => { socketReady = true; hideConnectionBanner(); resolve(); });
+
+    socket.on('connect', () => { socketReady = true; hideConnectionBanner(); });
+    socket.on('disconnect', () => { socketReady = false; showConnectionBanner(); });
+    socket.on('reconnecting', () => showConnectionBanner());
+    socket.on('reconnect', () => { socketReady = true; hideConnectionBanner(); });
+    socket.on('connect_error', (err) => {
+      showConnectionBanner();
+      if (err.message === 'Unauthorized') logout();
+    });
+
     socket.on('message_received', (msg) => {
-      appendMessage(msg);
-      // Increment unread if this isn't the active room
       if (String(msg.room_id) !== String(currentRoomId)) {
         unreadCounts[msg.room_id] = (unreadCounts[msg.room_id] || 0) + 1;
         updateUnreadBadge(msg.room_id);
+      } else {
+        appendMessage(msg);
       }
     });
     socket.on('message_edited', ({ messageId, content }) => applyEdit(messageId, content));
@@ -151,16 +128,17 @@ function connectSocket() {
   });
 }
 
+// ─── Connection banner ────────────────────────────────────────────────────────
+function showConnectionBanner() { show('connection-banner'); }
+function hideConnectionBanner() { hide('connection-banner'); }
+
 // ─── Unread badges ────────────────────────────────────────────────────────────
 function updateUnreadBadge(roomId) {
   const li = document.querySelector(`[data-room-id="${roomId}"]`);
   if (!li) return;
   let badge = li.querySelector('.unread-badge');
   const count = unreadCounts[roomId] || 0;
-  if (count === 0) {
-    badge?.remove();
-    return;
-  }
+  if (count === 0) { badge?.remove(); return; }
   if (!badge) {
     badge = document.createElement('span');
     badge.className = 'unread-badge';
@@ -177,36 +155,22 @@ function clearUnread(roomId) {
 // ─── Typing ───────────────────────────────────────────────────────────────────
 function onTypingInput() {
   if (!currentRoomId || !socketReady) return;
-  if (!isTyping) {
-    isTyping = true;
-    socket.emit('typing_start', { roomId: currentRoomId });
-  }
+  if (!isTyping) { isTyping = true; socket.emit('typing_start', { roomId: currentRoomId }); }
   clearTimeout(typingTimer);
-  typingTimer = setTimeout(() => {
-    isTyping = false;
-    socket.emit('typing_stop', { roomId: currentRoomId });
-  }, 1500);
+  typingTimer = setTimeout(() => { isTyping = false; socket.emit('typing_stop', { roomId: currentRoomId }); }, 1500);
 }
 
-function showTyping(user) {
-  typingUsers.add(user);
-  renderTypingOverlay();
-}
-function hideTyping(user) {
-  typingUsers.delete(user);
-  renderTypingOverlay();
-}
-function renderTypingOverlay() {
-  const overlay = document.getElementById('typing-overlay');
-  if (typingUsers.size === 0) { overlay.classList.add('hidden'); return; }
+function showTyping(user) { typingUsers.add(user); renderTypingBar(); }
+function hideTyping(user) { typingUsers.delete(user); renderTypingBar(); }
+function renderTypingBar() {
+  const bar = document.getElementById('typing-bar');
+  if (typingUsers.size === 0) { bar.classList.add('hidden'); return; }
   const names = [...typingUsers];
-  const text = names.length === 1
-    ? `${names[0]} is typing`
-    : names.length === 2
-      ? `${names[0]} and ${names[1]} are typing`
-      : `${names[0]} and ${names.length - 1} others are typing`;
-  overlay.innerHTML = `<span>${text}</span><span class="typing-dots"><span></span><span></span><span></span></span>`;
-  overlay.classList.remove('hidden');
+  const text = names.length === 1 ? `${names[0]} is typing`
+    : names.length === 2 ? `${names[0]} and ${names[1]} are typing`
+    : `${names[0]} and ${names.length - 1} others are typing`;
+  bar.innerHTML = `<span>${text}</span><span class="typing-dots"><span></span><span></span><span></span></span>`;
+  bar.classList.remove('hidden');
 }
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
@@ -234,7 +198,7 @@ function toggleSidebar() {
 }
 function isMobile() { return window.innerWidth <= 640; }
 
-// ─── Profile modal ────────────────────────────────────────────────────────────
+// ─── Profile ──────────────────────────────────────────────────────────────────
 function openProfile() {
   if (document.getElementById('sidebar').classList.contains('collapsed')) return;
   document.getElementById('prof-username').value = '';
@@ -251,22 +215,14 @@ async function saveProfile() {
   const newUsername = document.getElementById('prof-username').value.trim();
   const currentPassword = document.getElementById('prof-cur-pass').value;
   const newPassword = document.getElementById('prof-new-pass').value;
-
   document.getElementById('profile-error').textContent = '';
   document.getElementById('profile-success').textContent = '';
-
-  if (!newUsername && !newPassword) {
+  if (!newUsername && !newPassword)
     return document.getElementById('profile-error').textContent = 'Nothing to update';
-  }
-  if (!currentPassword) {
+  if (!currentPassword)
     return document.getElementById('profile-error').textContent = 'Current password is required';
-  }
-
   const res = await api('/profile', 'PUT', { newUsername: newUsername || undefined, currentPassword, newPassword: newPassword || undefined });
-  if (res.error) {
-    document.getElementById('profile-error').textContent = res.error;
-    return;
-  }
+  if (res.error) { document.getElementById('profile-error').textContent = res.error; return; }
   saveSession(res.token, res.username);
   username = res.username;
   setAvatarInitials(res.username);
@@ -312,25 +268,19 @@ function addRoomToList(room) {
 
     const editBtn = document.createElement('button');
     editBtn.className = 'room-action-btn';
-    editBtn.title = 'Rename room';
-    editBtn.textContent = '✏️';
+    editBtn.title = 'Rename'; editBtn.textContent = '✏️';
     editBtn.onclick = (e) => { e.stopPropagation(); openRoomEdit(room.id, room.name); };
 
     const delBtn = document.createElement('button');
     delBtn.className = 'room-action-btn del';
-    delBtn.title = 'Delete room';
-    delBtn.textContent = '🗑';
+    delBtn.title = 'Delete'; delBtn.textContent = '🗑';
     delBtn.onclick = (e) => { e.stopPropagation(); confirmDeleteRoom(room.id, room.name); };
 
     actions.appendChild(editBtn);
     actions.appendChild(delBtn);
     li.appendChild(actions);
-
     li.dataset.createdBy = room.created_by;
-    if (!isRoomOwner(room)) {
-      actions.style.display = 'none';
-      actions.classList.add('not-owner');
-    }
+    if (!isRoomOwner(room)) actions.classList.add('not-owner');
   }
 
   li.onclick = () => { joinRoom(room.id, room.name, li); isMobile() ? closeSidebar() : collapseSidebar(); };
@@ -340,13 +290,9 @@ function addRoomToList(room) {
 function isRoomOwner(room) {
   return room.created_by && String(room.created_by) === String(getUserId());
 }
-
 function getUserId() {
   if (!token) return null;
-  try {
-    const payload = JSON.parse(atob(token.split('.')[1]));
-    return payload.id;
-  } catch { return null; }
+  try { return JSON.parse(atob(token.split('.')[1])).id; } catch { return null; }
 }
 
 function removeRoomFromList(roomId) {
@@ -357,16 +303,13 @@ function removeRoomFromList(roomId) {
     document.getElementById('messages').innerHTML = '';
   }
 }
-
 function updateRoomInList(room) {
   const li = document.querySelector(`[data-room-id="${room.id}"]`);
   if (!li) return;
   const label = li.querySelector('.room-label');
   if (label) label.textContent = room.name;
   li.title = room.name;
-  if (currentRoomId === room.id) {
-    document.getElementById('room-title').textContent = '# ' + room.name;
-  }
+  if (currentRoomId === room.id) document.getElementById('room-title').textContent = '# ' + room.name;
 }
 
 async function createRoom() {
@@ -385,14 +328,10 @@ function openRoomEdit(roomId, currentName) {
   document.getElementById('room-edit-error').textContent = '';
   show('room-edit-modal');
 }
-function closeRoomEdit() {
-  editingRoomId = null;
-  hide('room-edit-modal');
-}
+function closeRoomEdit() { editingRoomId = null; hide('room-edit-modal'); }
 function saveRoomEdit() {
   const name = document.getElementById('room-edit-name').value.trim();
-  if (!name) return;
-  if (!editingRoomId) return;
+  if (!name || !editingRoomId) return;
   socket.emit('edit_room', { roomId: editingRoomId, name });
   closeRoomEdit();
 }
@@ -411,36 +350,20 @@ async function loadDMRooms() {
 function ensureDMDivider() {
   if (dmDividerInserted) return;
   dmDividerInserted = true;
-  const divider = document.createElement('li');
-  divider.className = 'dm-divider';
-  divider.textContent = 'Direct Messages';
-  divider.id = 'dm-divider';
-  document.getElementById('room-list').appendChild(divider);
+  const d = document.createElement('li');
+  d.className = 'dm-divider'; d.id = 'dm-divider'; d.textContent = 'Direct Messages';
+  document.getElementById('room-list').appendChild(d);
 }
 
 function addDMToSidebar(room, otherUsername) {
-  if (!otherUsername) return;
-  if (document.querySelector(`[data-room-id="${room.id}"]`)) return;
-
+  if (!otherUsername || document.querySelector(`[data-room-id="${room.id}"]`)) return;
   ensureDMDivider();
-
   const li = document.createElement('li');
-  li.dataset.roomId = room.id;
-  li.dataset.isDm = '1';
-  li.title = otherUsername;
-
-  const icon = document.createElement('span');
-  icon.className = 'room-icon'; icon.textContent = '👤';
-
-  const label = document.createElement('span');
-  label.className = 'room-label'; label.textContent = otherUsername;
-
-  li.appendChild(icon);
-  li.appendChild(label);
-  li.onclick = () => {
-    joinRoom(room.id, otherUsername, li, true);
-    isMobile() ? closeSidebar() : collapseSidebar();
-  };
+  li.dataset.roomId = room.id; li.dataset.isDm = '1'; li.title = otherUsername;
+  const icon = document.createElement('span'); icon.className = 'room-icon'; icon.textContent = '👤';
+  const label = document.createElement('span'); label.className = 'room-label'; label.textContent = otherUsername;
+  li.appendChild(icon); li.appendChild(label);
+  li.onclick = () => { joinRoom(room.id, otherUsername, li, true); isMobile() ? closeSidebar() : collapseSidebar(); };
   document.getElementById('room-list').appendChild(li);
 }
 
@@ -459,25 +382,18 @@ async function openDM(otherUsername) {
   if (!Array.isArray(users)) return;
   const other = users.find(u => u.username === otherUsername);
   if (!other) return;
-
   const res = await api('/dm/' + other.id, 'POST');
   if (res.error) return alert(res.error);
-
   addDMToSidebar(res, res.otherUsername || otherUsername);
-
   const li = document.querySelector(`[data-room-id="${res.id}"]`);
-  if (li) {
-    joinRoom(res.id, res.otherUsername || otherUsername, li, true);
-    isMobile() ? closeSidebar() : collapseSidebar();
-  }
+  if (li) { joinRoom(res.id, res.otherUsername || otherUsername, li, true); isMobile() ? closeSidebar() : collapseSidebar(); }
 }
 
 async function joinRoom(roomId, roomName, li, isDM = false) {
   if (currentRoomId === roomId) return;
-  cancelEdit();
-  stopTypingSignal();
+  cancelEdit(); stopTypingSignal();
   if (isRecording) stopRecording();
-  typingUsers.clear(); renderTypingOverlay();
+  typingUsers.clear(); renderTypingBar();
   currentRoomId = roomId;
   clearUnread(roomId);
   document.querySelectorAll('#room-list li').forEach(el => el.classList.remove('active'));
@@ -500,26 +416,18 @@ function updateOnlineUsers(users) {
   badge.textContent = `● ${users.length} online`;
   if (!document.getElementById('online-panel').classList.contains('hidden')) renderOnlinePanel();
 }
-
 function toggleOnlinePanel() {
-  const panel = document.getElementById('online-panel');
-  panel.classList.contains('hidden') ? openOnlinePanel() : closeOnlinePanel();
+  document.getElementById('online-panel').classList.contains('hidden') ? openOnlinePanel() : closeOnlinePanel();
 }
-function openOnlinePanel() {
-  renderOnlinePanel();
-  document.getElementById('online-panel').classList.remove('hidden');
-}
-function closeOnlinePanel() { document.getElementById('online-panel').classList.add('hidden'); }
+function openOnlinePanel() { renderOnlinePanel(); show('online-panel'); }
+function closeOnlinePanel() { hide('online-panel'); }
 function renderOnlinePanel() {
   const ul = document.getElementById('online-list');
   ul.innerHTML = '';
   onlineUsers.forEach(u => {
     const li = document.createElement('li');
     li.textContent = u;
-    if (u !== username) {
-      li.title = `Message ${u}`;
-      li.onclick = () => openDM(u);
-    }
+    if (u !== username) { li.title = `Message ${u}`; li.onclick = () => openDM(u); }
     ul.appendChild(li);
   });
 }
@@ -539,8 +447,7 @@ function sendText() {
 
 function stopTypingSignal() {
   if (isTyping) {
-    isTyping = false;
-    clearTimeout(typingTimer);
+    isTyping = false; clearTimeout(typingTimer);
     if (currentRoomId) socket.emit('typing_stop', { roomId: currentRoomId });
   }
 }
@@ -552,8 +459,7 @@ function startEdit(messageId) {
   editingMsgId = messageId;
   const input = document.getElementById('msg-input');
   input.value = bubble.dataset.text || bubble.textContent.replace('(edited)', '').trim();
-  input.focus();
-  show('edit-banner');
+  input.focus(); show('edit-banner');
 }
 function saveEdit() {
   const content = document.getElementById('msg-input').value.trim();
@@ -574,17 +480,11 @@ function applyEdit(messageId, content) {
   const tag = bubble.querySelector('.edited-tag');
   bubble.textContent = content;
   if (tag) bubble.appendChild(tag);
-  else {
-    const t = document.createElement('span');
-    t.className = 'edited-tag'; t.textContent = '(edited)';
-    bubble.appendChild(t);
-  }
+  else { const t = document.createElement('span'); t.className = 'edited-tag'; t.textContent = '(edited)'; bubble.appendChild(t); }
 }
 
 // ─── Delete ───────────────────────────────────────────────────────────────────
-function applyDelete(messageId) {
-  document.querySelector(`[data-msg-id="${messageId}"]`)?.remove();
-}
+function applyDelete(messageId) { document.querySelector(`[data-msg-id="${messageId}"]`)?.remove(); }
 function confirmDelete(messageId) {
   if (!confirm('Delete this message?')) return;
   socket.emit('delete_message', { messageId });
@@ -603,48 +503,34 @@ async function sendFile() {
   document.getElementById('file-input').value = '';
 }
 
-async function toggleRecording() {
-  if (isRecording) {
-    stopRecording();
-  } else {
-    await startRecording();
-  }
-}
+async function toggleRecording() { isRecording ? stopRecording() : await startRecording(); }
 
 async function startRecording() {
   if (!currentRoomId) return;
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    return alert('Audio recording is not supported in this browser.');
-  }
+  if (!navigator.mediaDevices?.getUserMedia) return alert('Audio recording not supported in this browser.');
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const mimeType = getSupportedMimeType();
-    const options = mimeType ? { mimeType } : {};
     audioChunks = [];
-    mediaRecorder = new MediaRecorder(stream, options);
-    mediaRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) audioChunks.push(e.data); };
+    mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+    mediaRecorder.ondataavailable = e => { if (e.data?.size > 0) audioChunks.push(e.data); };
     mediaRecorder.onstop = uploadAudio;
     mediaRecorder.start(100);
     isRecording = true;
     document.getElementById('record-btn').classList.add('recording');
-    document.getElementById('record-btn').title = 'Tap to stop recording';
-  } catch (err) {
-    alert('Microphone access denied. Please allow microphone in browser settings.');
-  }
+    document.getElementById('record-btn').title = 'Tap to stop';
+  } catch { alert('Microphone access denied.'); }
 }
 
 function stopRecording() {
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    mediaRecorder.stop();
-    mediaRecorder.stream.getTracks().forEach(t => t.stop());
-  }
+  if (mediaRecorder?.state !== 'inactive') { mediaRecorder.stop(); mediaRecorder.stream.getTracks().forEach(t => t.stop()); }
   isRecording = false;
   document.getElementById('record-btn').classList.remove('recording');
   document.getElementById('record-btn').title = 'Record voice message';
 }
 
 async function uploadAudio() {
-  if (audioChunks.length === 0) return;
+  if (!audioChunks.length) return;
   const mimeType = getSupportedMimeType() || 'audio/webm';
   const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';
   const blob = new Blob(audioChunks, { type: mimeType });
@@ -658,9 +544,6 @@ async function uploadAudio() {
 
 // ─── Render messages ──────────────────────────────────────────────────────────
 function appendMessage(msg) {
-  // Don't render messages that don't belong to the current room
-  if (String(msg.room_id) !== String(currentRoomId)) return;
-
   const container = document.getElementById('messages');
   const isMine = msg.username === username;
 
@@ -681,15 +564,10 @@ function appendMessage(msg) {
   if (msg.type === 'text') {
     bubble.dataset.text = msg.content;
     bubble.textContent = msg.content;
-    if (msg.edited) {
-      const tag = document.createElement('span');
-      tag.className = 'edited-tag'; tag.textContent = '(edited)';
-      bubble.appendChild(tag);
-    }
+    if (msg.edited) { const tag = document.createElement('span'); tag.className = 'edited-tag'; tag.textContent = '(edited)'; bubble.appendChild(tag); }
   } else if (msg.type === 'image') {
     const img = document.createElement('img');
-    img.src = msg.file_path;
-    img.onclick = () => window.open(msg.file_path, '_blank');
+    img.src = msg.file_path; img.onclick = () => window.open(msg.file_path, '_blank');
     bubble.appendChild(img);
   } else if (msg.type === 'audio') {
     const audio = document.createElement('audio');
@@ -706,7 +584,6 @@ function appendMessage(msg) {
 
   const footer = document.createElement('div');
   footer.className = 'msg-footer';
-
   const time = document.createElement('span');
   time.className = 'msg-time';
   time.textContent = new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -724,7 +601,6 @@ function appendMessage(msg) {
       editBtn.onclick = (e) => { e.stopPropagation(); startEdit(msg.id); };
       footer.appendChild(editBtn);
     }
-
     const delBtn = document.createElement('button');
     delBtn.className = 'msg-action-btn delete'; delBtn.title = 'Delete'; delBtn.textContent = '🗑';
     delBtn.onclick = (e) => { e.stopPropagation(); confirmDelete(msg.id); };
@@ -732,12 +608,9 @@ function appendMessage(msg) {
   }
 
   wrapper.appendChild(footer);
-
   const reactionsRow = document.createElement('div');
-  reactionsRow.className = 'reactions-row';
-  reactionsRow.id = 'reactions-' + msg.id;
+  reactionsRow.className = 'reactions-row'; reactionsRow.id = 'reactions-' + msg.id;
   wrapper.appendChild(reactionsRow);
-
   container.appendChild(wrapper);
   scrollBottom();
 }
@@ -746,8 +619,7 @@ function appendMessage(msg) {
 function openCtxMenu(messageId, type, isMine, wrapperEl) {
   ctxTarget = { messageId, type, isMine };
   const menu = document.getElementById('ctx-menu');
-  const buttons = menu.querySelectorAll('button');
-  buttons[1].style.display = (isMine && type === 'text') ? '' : 'none';
+  menu.querySelectorAll('button')[1].style.display = (isMine && type === 'text') ? '' : 'none';
   menu.querySelector('button.danger').style.display = isMine ? '' : 'none';
   menu.querySelector('hr').style.display = isMine ? '' : 'none';
   menu.classList.remove('hidden');
@@ -782,8 +654,7 @@ function buildEmojiPicker() {
   const list = document.getElementById('emoji-list');
   EMOJIS.forEach(emoji => {
     const span = document.createElement('span');
-    span.textContent = emoji;
-    span.onclick = () => pickEmoji(emoji);
+    span.textContent = emoji; span.onclick = () => pickEmoji(emoji);
     list.appendChild(span);
   });
 }
@@ -799,8 +670,7 @@ function showEmojiPicker(messageId, btn, wrapper) {
   let left = rect.left, top = rect.top - ph - 8;
   if (left + pw > window.innerWidth) left = window.innerWidth - pw - 8;
   if (top < 8) top = rect.bottom + 8;
-  picker.style.left = left + 'px';
-  picker.style.top = top + 'px';
+  picker.style.left = left + 'px'; picker.style.top = top + 'px';
 }
 function hideEmojiPicker() {
   document.getElementById('emoji-picker').classList.add('hidden');
@@ -819,8 +689,7 @@ function renderReactions(messageId, reactions) {
   const groups = {};
   reactions.forEach(r => {
     if (!groups[r.emoji]) groups[r.emoji] = { count: 0, users: [], mine: false };
-    groups[r.emoji].count++;
-    groups[r.emoji].users.push(r.username);
+    groups[r.emoji].count++; groups[r.emoji].users.push(r.username);
     if (r.username === username) groups[r.emoji].mine = true;
   });
   Object.entries(groups).forEach(([emoji, data]) => {
@@ -839,7 +708,6 @@ function handleGlobalClick(e) {
   const menu = document.getElementById('ctx-menu');
   const panel = document.getElementById('online-panel');
   const badge = document.getElementById('online-indicator');
-
   if (!picker.classList.contains('hidden') && !picker.contains(e.target) && !e.target.classList.contains('react-btn'))
     hideEmojiPicker();
   if (!menu.classList.contains('hidden') && !menu.contains(e.target))

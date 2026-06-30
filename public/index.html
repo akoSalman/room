@@ -13,37 +13,18 @@
   <div class="auth-card">
     <div class="auth-logo">💬</div>
     <h1>ChatRoom</h1>
-    <p class="auth-sub">Connect with your team in real time</p>
-
-    <div class="auth-tabs">
-      <button id="tab-login"  class="auth-tab active" onclick="switchTab('login')">Sign In</button>
-      <button id="tab-reg"    class="auth-tab"        onclick="switchTab('register')">Sign Up</button>
+    <p class="auth-sub">Enter your username and password to sign in or create an account</p>
+    <div class="field">
+      <label>Username</label>
+      <input id="auth-user" type="text" placeholder="Your username" autocomplete="username"
+        onkeydown="if(event.key==='Enter')document.getElementById('auth-pass').focus()" />
     </div>
-
-    <div id="login-form">
-      <div class="field">
-        <label>Username</label>
-        <input id="login-user" type="text" placeholder="Enter your username" autocomplete="username" />
-      </div>
-      <div class="field">
-        <label>Password</label>
-        <input id="login-pass" type="password" placeholder="Enter your password" autocomplete="current-password" />
-      </div>
-      <button id="login-btn" class="btn-primary" onclick="login()">Sign In</button>
+    <div class="field">
+      <label>Password</label>
+      <input id="auth-pass" type="password" placeholder="Your password" autocomplete="current-password"
+        onkeydown="if(event.key==='Enter')signin()" />
     </div>
-
-    <div id="register-form" class="hidden">
-      <div class="field">
-        <label>Username</label>
-        <input id="reg-user" type="text" placeholder="Choose a username" autocomplete="username" />
-      </div>
-      <div class="field">
-        <label>Password</label>
-        <input id="reg-pass" type="password" placeholder="Choose a password" autocomplete="new-password" />
-      </div>
-      <button id="register-btn" class="btn-success" onclick="register()">Create Account</button>
-    </div>
-
+    <button id="auth-btn" class="btn-primary" onclick="signin()">Continue →</button>
     <p id="auth-error" class="error"></p>
   </div>
 </div>
@@ -60,7 +41,8 @@
       <button id="collapse-btn" class="icon-btn" title="Collapse" onclick="event.stopPropagation(); toggleSidebar()">‹</button>
     </div>
     <div class="room-create">
-      <input id="new-room-name" type="text" placeholder="New room..." />
+      <input id="new-room-name" type="text" placeholder="New room..."
+        onkeydown="if(event.key==='Enter')createRoom()" />
       <button onclick="createRoom()" title="Create room">+</button>
     </div>
     <ul id="room-list"></ul>
@@ -73,14 +55,16 @@
       <button id="online-indicator" class="online-badge hidden" onclick="toggleOnlinePanel()"></button>
     </header>
 
+    <div id="connection-banner" class="hidden">⟳ Connecting…</div>
+
     <div id="online-panel" class="hidden">
       <div class="online-panel-title">Online now</div>
       <ul id="online-list"></ul>
     </div>
 
-    <div id="typing-overlay" class="hidden"></div>
-
     <div id="messages"></div>
+
+    <div id="typing-bar" class="hidden"></div>
 
     <div id="edit-banner" class="hidden">
       <span>✏️ Editing message</span>
@@ -155,7 +139,8 @@
     <div class="modal-section">
       <div class="field">
         <label>Room name</label>
-        <input id="room-edit-name" type="text" placeholder="Room name" />
+        <input id="room-edit-name" type="text" placeholder="Room name"
+          onkeydown="if(event.key==='Enter')saveRoomEdit()" />
       </div>
       <p id="room-edit-error" class="error"></p>
       <button class="btn-primary" onclick="saveRoomEdit()">Save</button>

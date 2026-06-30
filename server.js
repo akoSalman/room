@@ -41,28 +41,25 @@ function authMiddleware(req, res, next) {
   }
 }
 
-// Auth
-app.post('/auth/register', async (req, res) => {
+// Auth — single endpoint: login if user exists, register if not
+app.post('/auth/signin', async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+  if (user) {
+    const valid = await bcrypt.compare(password, user.password_hash);
+    if (!valid) return res.status(401).json({ error: 'Wrong password' });
+    const token = jwt.sign({ id: user.id, username }, JWT_SECRET);
+    return res.json({ token, username, isNew: false });
+  }
   try {
     const hash = await bcrypt.hash(password, 10);
     const result = db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(username, hash);
     const token = jwt.sign({ id: result.lastInsertRowid, username }, JWT_SECRET);
-    res.json({ token, username });
+    res.json({ token, username, isNew: true });
   } catch {
-    res.status(409).json({ error: 'Username already taken' });
+    res.status(409).json({ error: 'Something went wrong, try again' });
   }
-});
-
-app.post('/auth/login', async (req, res) => {
-  const { username, password } = req.body;
-  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
-  if (!user) return res.status(401).json({ error: 'Invalid credentials' });
-  const valid = await bcrypt.compare(password, user.password_hash);
-  if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
-  const token = jwt.sign({ id: user.id, username }, JWT_SECRET);
-  res.json({ token, username });
 });
 
 // Profile update
