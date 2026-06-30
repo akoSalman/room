@@ -39,6 +39,10 @@ function getSupportedMimeType() {
 const EMOJIS = ['👍','❤️','😂','😮','😢','🔥','👏','🎉','🤔','😍','👎','😡'];
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   buildEmojiPicker();
   document.addEventListener('click', handleGlobalClick);
