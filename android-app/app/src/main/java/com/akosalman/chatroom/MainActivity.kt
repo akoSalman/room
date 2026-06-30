@@ -88,7 +88,6 @@ class MainActivity : AppCompatActivity() {
             mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
             // Cache-first: loads from cache instantly, syncs in background
             cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
-            setAppCacheEnabled(true)
             databaseEnabled = true
         }
 
