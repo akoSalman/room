@@ -71,15 +71,38 @@
       <button onclick="cancelEdit()">✕</button>
     </div>
 
+    <!-- Normal input bar -->
     <div id="input-bar">
       <label class="icon-btn" title="Attach file">
         📎
         <input type="file" id="file-input" style="display:none" onchange="sendFile()" />
       </label>
-      <button id="record-btn" class="icon-btn" title="Record voice message" onclick="toggleRecording()">🎙</button>
+      <button id="record-btn" class="icon-btn" title="Record voice message" onclick="startRecording()">🎙</button>
       <input id="msg-input" type="text" placeholder="Message..."
         onkeydown="handleInputKey(event)" oninput="onTypingInput()" />
       <button onclick="sendOrSave()" class="send-btn">➤</button>
+    </div>
+
+    <!-- Recording in-progress bar -->
+    <div id="recording-bar" class="hidden">
+      <button class="icon-btn rec-delete-btn" onclick="cancelRecording()" title="Delete">🗑</button>
+      <div class="rec-dot"></div>
+      <div id="rec-waveform" class="rec-waveform"></div>
+      <span id="rec-timer" class="rec-timer">0:00</span>
+      <button id="rec-pause-btn" class="icon-btn" onclick="togglePauseRecording()" title="Pause">⏸</button>
+      <button class="icon-btn rec-stop-btn" onclick="stopRecording()" title="Stop & preview">⏹</button>
+    </div>
+
+    <!-- Preview bar (before sending) -->
+    <div id="preview-bar" class="hidden">
+      <button class="icon-btn" onclick="cancelPreview()" title="Delete">🗑</button>
+      <button id="preview-play-btn" class="icon-btn" onclick="togglePreviewPlay()" title="Play">▶</button>
+      <div id="preview-waveform" class="voice-waveform">
+        <div class="voice-progress" id="preview-progress"></div>
+        <div id="preview-bars" class="voice-bars"></div>
+      </div>
+      <span id="preview-duration" class="voice-duration">0:00</span>
+      <button class="send-btn" onclick="sendRecording()" title="Send">➤</button>
     </div>
   </main>
 </div>

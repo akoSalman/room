@@ -6,6 +6,15 @@ let socketReady = false;
 let mediaRecorder = null;
 let audioChunks = [];
 let isRecording = false;
+let recTimerInterval = null;
+let recSeconds = 0;
+let recAnalyser = null;
+let recAnimFrame = null;
+let recAudioCtx = null;
+let previewAudio = null;
+let previewWaveformPeaks = [];
+let recordedBlob = null;
+let recordedMime = '';
 let pickerTarget = null;
 let editingMsgId = null;
 let ctxTarget = null;
@@ -508,43 +517,192 @@ async function sendFile() {
   document.getElementById('file-input').value = '';
 }
 
-async function toggleRecording() { isRecording ? stopRecording() : await startRecording(); }
+// ─── Recording ────────────────────────────────────────────────────────────────
 
 async function startRecording() {
   if (!currentRoomId) return;
-  if (!navigator.mediaDevices?.getUserMedia) return alert('Audio recording not supported in this browser.');
+  if (!navigator.mediaDevices?.getUserMedia) return alert('Audio recording not supported.');
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const mimeType = getSupportedMimeType();
+    recordedMime = getSupportedMimeType() || 'audio/webm';
     audioChunks = [];
-    mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+    previewWaveformPeaks = [];
+    mediaRecorder = new MediaRecorder(stream, recordedMime ? { mimeType: recordedMime } : {});
     mediaRecorder.ondataavailable = e => { if (e.data?.size > 0) audioChunks.push(e.data); };
-    mediaRecorder.onstop = uploadAudio;
+    mediaRecorder.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      recordedBlob = new Blob(audioChunks, { type: recordedMime });
+      if (recordedBlob.size < 500) { resetRecordingUI(); return; }
+      showPreviewBar();
+    };
     mediaRecorder.start(100);
     isRecording = true;
-    document.getElementById('record-btn').classList.add('recording');
-    document.getElementById('record-btn').title = 'Tap to stop';
+
+    // Web Audio analyser for live waveform
+    recAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const source = recAudioCtx.createMediaStreamSource(stream);
+    recAnalyser = recAudioCtx.createAnalyser();
+    recAnalyser.fftSize = 64;
+    source.connect(recAnalyser);
+
+    recSeconds = 0;
+    updateRecTimer();
+    recTimerInterval = setInterval(() => { recSeconds++; updateRecTimer(); }, 1000);
+
+    show('recording-bar'); hide('input-bar');
+    buildRecWaveformBars();
+    animateRecWaveform();
   } catch { alert('Microphone access denied.'); }
 }
 
-function stopRecording() {
-  if (mediaRecorder?.state !== 'inactive') { mediaRecorder.stop(); mediaRecorder.stream.getTracks().forEach(t => t.stop()); }
-  isRecording = false;
-  document.getElementById('record-btn').classList.remove('recording');
-  document.getElementById('record-btn').title = 'Record voice message';
+function buildRecWaveformBars() {
+  const el = document.getElementById('rec-waveform');
+  el.innerHTML = '';
+  for (let i = 0; i < 40; i++) {
+    const b = document.createElement('div');
+    b.className = 'bar';
+    b.style.height = '4px';
+    el.appendChild(b);
+  }
 }
 
-async function uploadAudio() {
-  if (!audioChunks.length) return;
-  const mimeType = getSupportedMimeType() || 'audio/webm';
-  const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';
-  const blob = new Blob(audioChunks, { type: mimeType });
-  if (blob.size < 1000) return;
+function animateRecWaveform() {
+  if (!recAnalyser) return;
+  const bars = document.querySelectorAll('#rec-waveform .bar');
+  const data = new Uint8Array(recAnalyser.frequencyBinCount);
+  function frame() {
+    recAnalyser.getByteFrequencyData(data);
+    const peak = data.reduce((s, v) => s + v, 0) / data.length / 255;
+    previewWaveformPeaks.push(peak);
+    // Shift bars left, append new
+    const heights = Array.from(bars).map(b => parseInt(b.style.height));
+    heights.shift();
+    heights.push(Math.max(4, Math.round(peak * 30)));
+    bars.forEach((b, i) => b.style.height = heights[i] + 'px');
+    recAnimFrame = requestAnimationFrame(frame);
+  }
+  recAnimFrame = requestAnimationFrame(frame);
+}
+
+function togglePauseRecording() {
+  if (!mediaRecorder) return;
+  const btn = document.getElementById('rec-pause-btn');
+  if (mediaRecorder.state === 'recording') {
+    mediaRecorder.pause();
+    clearInterval(recTimerInterval);
+    cancelAnimationFrame(recAnimFrame);
+    btn.textContent = '▶';
+  } else if (mediaRecorder.state === 'paused') {
+    mediaRecorder.resume();
+    recTimerInterval = setInterval(() => { recSeconds++; updateRecTimer(); }, 1000);
+    animateRecWaveform();
+    btn.textContent = '⏸';
+  }
+}
+
+function stopRecording() {
+  clearInterval(recTimerInterval);
+  cancelAnimationFrame(recAnimFrame);
+  if (recAudioCtx) { recAudioCtx.close(); recAudioCtx = null; recAnalyser = null; }
+  if (mediaRecorder?.state !== 'inactive') mediaRecorder.stop();
+  isRecording = false;
+}
+
+function cancelRecording() {
+  clearInterval(recTimerInterval);
+  cancelAnimationFrame(recAnimFrame);
+  if (recAudioCtx) { recAudioCtx.close(); recAudioCtx = null; recAnalyser = null; }
+  if (mediaRecorder?.state !== 'inactive') {
+    mediaRecorder.onstop = null;
+    mediaRecorder.stop();
+    mediaRecorder.stream?.getTracks().forEach(t => t.stop());
+  }
+  isRecording = false;
+  resetRecordingUI();
+}
+
+function resetRecordingUI() {
+  hide('recording-bar'); hide('preview-bar'); show('input-bar');
+  document.getElementById('rec-pause-btn').textContent = '⏸';
+  if (previewAudio) { previewAudio.pause(); previewAudio = null; }
+  recordedBlob = null;
+}
+
+function updateRecTimer() {
+  const m = Math.floor(recSeconds / 60);
+  const s = String(recSeconds % 60).padStart(2, '0');
+  document.getElementById('rec-timer').textContent = `${m}:${s}`;
+}
+
+// ─── Preview bar ──────────────────────────────────────────────────────────────
+
+function showPreviewBar() {
+  hide('recording-bar'); show('preview-bar');
+  // Build waveform bars from collected peaks
+  const bars = document.getElementById('preview-bars');
+  bars.innerHTML = '';
+  const peaks = normalizePeaks(previewWaveformPeaks, 50);
+  peaks.forEach(h => {
+    const b = document.createElement('div');
+    b.className = 'bar';
+    b.style.height = Math.max(3, Math.round(h * 30)) + 'px';
+    bars.appendChild(b);
+  });
+  // Set up preview audio
+  const url = URL.createObjectURL(recordedBlob);
+  previewAudio = new Audio(url);
+  previewAudio.onended = () => {
+    document.getElementById('preview-play-btn').textContent = '▶';
+    updatePreviewBars(1);
+  };
+  previewAudio.ontimeupdate = () => {
+    const pct = previewAudio.duration ? previewAudio.currentTime / previewAudio.duration : 0;
+    updatePreviewBars(pct);
+    document.getElementById('preview-duration').textContent = fmtTime(previewAudio.currentTime);
+  };
+  previewAudio.onloadedmetadata = () => {
+    document.getElementById('preview-duration').textContent = fmtTime(previewAudio.duration);
+  };
+}
+
+function normalizePeaks(raw, count) {
+  if (!raw.length) return Array(count).fill(0.2);
+  const step = raw.length / count;
+  return Array.from({ length: count }, (_, i) => {
+    const slice = raw.slice(Math.floor(i * step), Math.floor((i + 1) * step));
+    return slice.length ? Math.max(...slice) : 0;
+  });
+}
+
+function updatePreviewBars(pct) {
+  const bars = document.querySelectorAll('#preview-bars .bar');
+  bars.forEach((b, i) => b.classList.toggle('played', i / bars.length < pct));
+}
+
+function togglePreviewPlay() {
+  if (!previewAudio) return;
+  const btn = document.getElementById('preview-play-btn');
+  if (previewAudio.paused) { previewAudio.play(); btn.textContent = '⏸'; }
+  else { previewAudio.pause(); btn.textContent = '▶'; }
+}
+
+function cancelPreview() {
+  if (previewAudio) { previewAudio.pause(); previewAudio = null; }
+  resetRecordingUI();
+}
+
+async function sendRecording() {
+  if (!recordedBlob || recordedBlob.size < 500) return;
+  if (previewAudio) { previewAudio.pause(); previewAudio = null; }
+  const ext = recordedMime.includes('mp4') ? 'mp4' : recordedMime.includes('ogg') ? 'ogg' : 'webm';
   const form = new FormData();
-  form.append('file', blob, `voice-${Date.now()}.${ext}`);
+  // Store normalized peaks in content field for waveform rendering
+  const peaks = normalizePeaks(previewWaveformPeaks, 50).map(v => Math.round(v * 100)).join(',');
+  form.append('file', recordedBlob, `voice-${Date.now()}.${ext}`);
   const res = await fetch('/upload', { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: form }).then(r => r.json());
-  if (res.error) return alert(res.error);
-  socket.emit('send_message', { roomId: currentRoomId, type: 'audio', filePath: res.url, fileName: 'Voice message' });
+  if (res.error) { alert(res.error); return; }
+  socket.emit('send_message', { roomId: currentRoomId, type: 'audio', filePath: res.url, fileName: peaks });
+  resetRecordingUI();
 }
 
 // ─── Render messages ──────────────────────────────────────────────────────────
@@ -575,9 +733,7 @@ function appendMessage(msg) {
     img.src = msg.file_path; img.onclick = () => window.open(msg.file_path, '_blank');
     bubble.appendChild(img);
   } else if (msg.type === 'audio') {
-    const audio = document.createElement('audio');
-    audio.controls = true; audio.src = msg.file_path;
-    bubble.appendChild(audio);
+    bubble.appendChild(buildVoicePlayer(msg));
   } else {
     const a = document.createElement('a');
     a.className = 'file-link'; a.href = msg.file_path;
@@ -705,6 +861,109 @@ function renderReactions(messageId, reactions) {
     chip.onclick = () => socket.emit('toggle_reaction', { messageId, emoji });
     row.appendChild(chip);
   });
+}
+
+// ─── Voice player builder ─────────────────────────────────────────────────────
+
+function fmtTime(s) {
+  if (!isFinite(s)) return '0:00';
+  const m = Math.floor(s / 60);
+  return `${m}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+}
+
+function buildVoicePlayer(msg) {
+  const peaks = (msg.file_name || '').split(',').map(Number).filter(n => !isNaN(n));
+  const normalizedPeaks = peaks.length >= 10 ? peaks.map(v => v / 100) : Array(50).fill(null).map(() => 0.2 + Math.random() * 0.6);
+
+  const player = document.createElement('div');
+  player.className = 'voice-player';
+
+  const playBtn = document.createElement('button');
+  playBtn.className = 'voice-play-btn';
+  playBtn.innerHTML = '▶';
+
+  // Waveform
+  const waveWrap = document.createElement('div');
+  waveWrap.className = 'voice-waveform';
+  waveWrap.style.cursor = 'pointer';
+
+  const barsEl = document.createElement('div');
+  barsEl.className = 'voice-bars';
+  const barCount = 50;
+  const peaksSampled = normalizePeaks(normalizedPeaks, barCount);
+  peaksSampled.forEach(h => {
+    const b = document.createElement('div');
+    b.className = 'bar';
+    b.style.height = Math.max(3, Math.round(h * 28)) + 'px';
+    barsEl.appendChild(b);
+  });
+  waveWrap.appendChild(barsEl);
+
+  // Meta: duration + speed
+  const meta = document.createElement('div');
+  meta.className = 'voice-meta';
+  const durEl = document.createElement('span');
+  durEl.className = 'voice-duration';
+  durEl.textContent = '0:00';
+  const speedBtn = document.createElement('button');
+  speedBtn.className = 'voice-speed-btn';
+  const speeds = [1, 1.5, 2];
+  let speedIdx = 0;
+  speedBtn.textContent = '1×';
+  meta.appendChild(durEl);
+  meta.appendChild(speedBtn);
+
+  player.appendChild(playBtn);
+  player.appendChild(waveWrap);
+  player.appendChild(meta);
+
+  // Audio element (hidden)
+  const audio = new Audio(msg.file_path);
+  let playing = false;
+  let rafId = null;
+
+  function updateBars() {
+    if (!audio.duration) return;
+    const pct = audio.currentTime / audio.duration;
+    const bars = barsEl.querySelectorAll('.bar');
+    bars.forEach((b, i) => b.classList.toggle('played', i / bars.length < pct));
+    durEl.textContent = fmtTime(audio.currentTime);
+  }
+
+  function startRAF() {
+    function tick() { updateBars(); if (!audio.paused) rafId = requestAnimationFrame(tick); }
+    rafId = requestAnimationFrame(tick);
+  }
+
+  audio.onloadedmetadata = () => { durEl.textContent = fmtTime(audio.duration); };
+  audio.onended = () => {
+    playing = false; playBtn.innerHTML = '▶';
+    cancelAnimationFrame(rafId);
+    updateBars();
+    durEl.textContent = fmtTime(audio.duration);
+  };
+
+  playBtn.onclick = () => {
+    if (playing) { audio.pause(); playBtn.innerHTML = '▶'; playing = false; cancelAnimationFrame(rafId); }
+    else { audio.play(); playBtn.innerHTML = '⏸'; playing = true; startRAF(); }
+  };
+
+  // Seek on waveform click
+  waveWrap.onclick = e => {
+    if (!audio.duration) return;
+    const rect = waveWrap.getBoundingClientRect();
+    audio.currentTime = ((e.clientX - rect.left) / rect.width) * audio.duration;
+    updateBars();
+  };
+
+  // Speed control
+  speedBtn.onclick = () => {
+    speedIdx = (speedIdx + 1) % speeds.length;
+    audio.playbackRate = speeds[speedIdx];
+    speedBtn.textContent = speeds[speedIdx] + '×';
+  };
+
+  return player;
 }
 
 // ─── Global click ─────────────────────────────────────────────────────────────

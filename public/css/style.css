@@ -238,9 +238,90 @@ html {
 .icon-btn:hover { background: var(--input-bg); }
 
 #record-btn { position: relative; }
-#record-btn.recording { color: var(--danger); }
-#record-btn.recording::after { content: ''; position: absolute; inset: 0; border-radius: 8px; background: rgba(239,68,68,.15); animation: pulse 1s infinite; }
+
+/* ── Recording bar ────────────────────────────────── */
+#recording-bar, #preview-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px;
+  padding-bottom: max(10px, calc(var(--sab) + 8px));
+  background: var(--header-bg);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* Pulsing red dot */
+.rec-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--danger); flex-shrink: 0;
+  animation: pulse 1s infinite;
+}
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+
+.rec-timer { font-size: 0.88rem; color: var(--danger); font-weight: 600; font-variant-numeric: tabular-nums; min-width: 34px; }
+.rec-stop-btn { color: var(--danger); }
+.rec-delete-btn { color: var(--muted); }
+
+/* Live waveform during recording */
+.rec-waveform {
+  flex: 1; display: flex; align-items: center; gap: 2px;
+  height: 32px; overflow: hidden;
+}
+.rec-waveform .bar {
+  width: 3px; border-radius: 2px; background: var(--danger);
+  flex-shrink: 0; opacity: 0.7;
+  transition: height 0.08s ease;
+}
+
+/* ── Voice player (sent messages) ────────────────── */
+.voice-player {
+  display: flex; align-items: center; gap: 8px;
+  min-width: 200px; max-width: 260px;
+  padding: 4px 2px;
+}
+.voice-play-btn {
+  width: 36px; height: 36px; border-radius: 50%;
+  background: var(--accent); border: none; color: #fff;
+  font-size: 0.9rem; cursor: pointer; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  transition: background .15s;
+}
+.voice-play-btn:hover { background: var(--accent-hover); }
+
+.voice-waveform {
+  flex: 1; position: relative; height: 32px;
+  cursor: pointer;
+}
+.voice-bars {
+  display: flex; align-items: center; gap: 2px;
+  height: 100%; position: relative; z-index: 1;
+}
+.voice-bars .bar {
+  width: 3px; border-radius: 2px;
+  background: rgba(255,255,255,0.35); flex-shrink: 0;
+}
+.mine .voice-bars .bar { background: rgba(255,255,255,0.4); }
+.theirs .voice-bars .bar { background: rgba(209,213,219,0.4); }
+.voice-bars .bar.played { background: var(--accent); }
+.mine .voice-bars .bar.played { background: #fff; }
+
+.voice-progress {
+  position: absolute; top: 0; left: 0; height: 100%;
+  width: 0%; pointer-events: none; z-index: 0;
+}
+
+.voice-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; flex-shrink: 0; }
+.voice-duration { font-size: 0.72rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.voice-speed-btn {
+  font-size: 0.65rem; font-weight: 700; color: var(--accent);
+  background: rgba(82,136,193,.15); border: 1px solid var(--accent);
+  border-radius: 4px; padding: 1px 4px; cursor: pointer; line-height: 1.4;
+  white-space: nowrap;
+}
+.voice-speed-btn:hover { background: rgba(82,136,193,.3); }
+
+/* Preview bar waveform */
+#preview-waveform .bar { background: var(--accent); opacity: 0.5; }
+#preview-waveform .bar.played { opacity: 1; }
 
 /* ── Message bubbles ──────────────────────────────── */
 .msg-wrapper { display: flex; flex-direction: column; max-width: 72%; }
