@@ -25,19 +25,14 @@
 }
 
 /* ── Base ─────────────────────────────────────────── */
-html {
+html, body {
   height: 100%;
+  overflow: hidden;
+}
+html {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background: var(--bg);
   color: var(--text);
-}
-body {
-  min-height: 100%;
-}
-body.in-app {
-  height: 100%;
-  overflow: hidden;
-  max-width: 100vw;
 }
 
 .screen { display: flex; flex-direction: column; }
@@ -45,7 +40,8 @@ body.in-app {
 
 /* ── Auth ─────────────────────────────────────────── */
 #auth-screen {
-  min-height: 100vh;
+  position: fixed;
+  inset: 0;
   align-items: center;
   justify-content: center;
   padding: max(24px, var(--sat)) 16px max(24px, var(--sab));
