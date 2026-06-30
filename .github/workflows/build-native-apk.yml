@@ -59,8 +59,9 @@ jobs:
 
       - name: Build release APK
         run: |
+          KEYSTORE=$(pwd)/android/app/chatroom.keystore
           cd android && ./gradlew assembleRelease --no-daemon \
-            -Pandroid.injected.signing.store.file=app/chatroom.keystore \
+            -Pandroid.injected.signing.store.file=$KEYSTORE \
             -Pandroid.injected.signing.store.password=chatroom123 \
             -Pandroid.injected.signing.key.alias=chatroom \
             -Pandroid.injected.signing.key.password=chatroom123
