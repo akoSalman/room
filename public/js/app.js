@@ -34,6 +34,11 @@ window.addEventListener('DOMContentLoaded', () => {
   buildEmojiPicker();
   document.addEventListener('click', handleGlobalClick);
   document.addEventListener('contextmenu', e => e.preventDefault());
+  // Prevent document-level scroll from touch gestures on mobile
+  document.addEventListener('touchmove', e => {
+    if (e.target.closest('#messages, #room-list, .modal-overlay, #online-panel')) return;
+    e.preventDefault();
+  }, { passive: false });
   if (token && username) enterApp();
 });
 
