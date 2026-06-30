@@ -47,6 +47,7 @@ window.addEventListener('DOMContentLoaded', () => {
   buildEmojiPicker();
   document.addEventListener('click', handleGlobalClick);
   document.addEventListener('contextmenu', e => e.preventDefault());
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
   // Prevent document-level scroll from touch gestures on mobile
   document.addEventListener('touchmove', e => {
     if (e.target.closest('#messages, #room-list, .modal-overlay, #online-panel')) return;
@@ -225,7 +226,44 @@ function openProfile() {
   document.getElementById('profile-error').textContent = '';
   document.getElementById('profile-success').textContent = '';
   setAvatarInitials(username);
+  loadMyRooms();
   show('profile-modal');
+}
+
+async function loadMyRooms() {
+  const rooms = await api('/rooms');
+  const list = document.getElementById('my-rooms-list');
+  list.innerHTML = '';
+  const myId = getUserId();
+  const mine = Array.isArray(rooms) ? rooms.filter(r => String(r.created_by) === String(myId)) : [];
+  if (!mine.length) {
+    const li = document.createElement('li');
+    li.className = 'my-room-empty';
+    li.textContent = 'No rooms created yet';
+    list.appendChild(li);
+    return;
+  }
+  mine.forEach(r => {
+    const li = document.createElement('li');
+    li.className = 'my-room-item';
+    const name = document.createElement('span');
+    name.className = 'my-room-name';
+    name.textContent = '# ' + r.name;
+    const editBtn = document.createElement('button');
+    editBtn.className = 'room-action-btn';
+    editBtn.textContent = '✏️';
+    editBtn.title = 'Rename';
+    editBtn.onclick = () => { closeProfile(); openRoomEdit(r.id, r.name); };
+    const delBtn = document.createElement('button');
+    delBtn.className = 'room-action-btn del';
+    delBtn.textContent = '🗑';
+    delBtn.title = 'Delete';
+    delBtn.onclick = () => { closeProfile(); confirmDeleteRoom(r.id, r.name); };
+    li.appendChild(name);
+    li.appendChild(editBtn);
+    li.appendChild(delBtn);
+    list.appendChild(li);
+  });
 }
 function closeProfile() { hide('profile-modal'); }
 
@@ -279,27 +317,6 @@ function addRoomToList(room) {
 
   li.appendChild(icon);
   li.appendChild(label);
-
-  if (room.created_by) {
-    const actions = document.createElement('div');
-    actions.className = 'room-actions';
-
-    const editBtn = document.createElement('button');
-    editBtn.className = 'room-action-btn';
-    editBtn.title = 'Rename'; editBtn.textContent = '✏️';
-    editBtn.onclick = (e) => { e.stopPropagation(); openRoomEdit(room.id, room.name); };
-
-    const delBtn = document.createElement('button');
-    delBtn.className = 'room-action-btn del';
-    delBtn.title = 'Delete'; delBtn.textContent = '🗑';
-    delBtn.onclick = (e) => { e.stopPropagation(); confirmDeleteRoom(room.id, room.name); };
-
-    actions.appendChild(editBtn);
-    actions.appendChild(delBtn);
-    li.appendChild(actions);
-    li.dataset.createdBy = room.created_by;
-    if (!isRoomOwner(room)) actions.classList.add('not-owner');
-  }
 
   li.onclick = () => { joinRoom(room.id, room.name, li); isMobile() ? closeSidebar() : collapseSidebar(); };
   document.getElementById('room-list').appendChild(li);
@@ -734,7 +751,7 @@ function appendMessage(msg) {
     if (msg.edited) { const tag = document.createElement('span'); tag.className = 'edited-tag'; tag.textContent = '(edited)'; bubble.appendChild(tag); }
   } else if (msg.type === 'image') {
     const img = document.createElement('img');
-    img.src = msg.file_path; img.onclick = () => window.open(msg.file_path, '_blank');
+    img.src = msg.file_path; img.onclick = () => openLightbox(msg.file_path);
     bubble.appendChild(img);
   } else if (msg.type === 'audio') {
     bubble.appendChild(buildVoicePlayer(msg));
@@ -969,6 +986,13 @@ function buildVoicePlayer(msg) {
 
   return player;
 }
+
+// ─── Lightbox ─────────────────────────────────────────────────────────────────
+function openLightbox(src) {
+  document.getElementById('lightbox-img').src = src;
+  show('lightbox');
+}
+function closeLightbox() { hide('lightbox'); }
 
 // ─── Global click ─────────────────────────────────────────────────────────────
 function handleGlobalClick(e) {

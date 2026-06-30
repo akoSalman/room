@@ -141,9 +141,19 @@
       <button class="btn-primary" onclick="saveProfile()">Save changes</button>
     </div>
     <div class="modal-section">
+      <div class="my-rooms-header">My Rooms</div>
+      <ul id="my-rooms-list"></ul>
+    </div>
+    <div class="modal-section">
       <button class="btn-danger" onclick="logout()">Sign out</button>
     </div>
   </div>
+</div>
+
+<!-- ── Lightbox ──────────────────────────────────── -->
+<div id="lightbox" class="hidden" onclick="closeLightbox()">
+  <button class="lightbox-close" onclick="closeLightbox()">✕</button>
+  <img id="lightbox-img" src="" onclick="event.stopPropagation()" />
 </div>
 
 <!-- ── Context menu ───────────────────────────────── -->

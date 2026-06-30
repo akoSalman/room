@@ -374,6 +374,42 @@ html {
 .profile-avatar-big { width: 72px; height: 72px; border-radius: 50%; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 1.8rem; font-weight: 700; text-transform: uppercase; margin: 20px auto 8px; }
 .profile-name { text-align: center; font-weight: 600; font-size: 1rem; margin-bottom: 4px; }
 
+/* ── Lightbox ────────────────────────────────────── */
+#lightbox {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.92);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 2000; cursor: zoom-out;
+}
+#lightbox.hidden { display: none !important; }
+#lightbox img {
+  max-width: 92vw; max-height: 92vh;
+  object-fit: contain; border-radius: 6px;
+  cursor: default; box-shadow: 0 8px 40px rgba(0,0,0,.6);
+}
+.lightbox-close {
+  position: fixed; top: 16px; right: 16px;
+  background: rgba(255,255,255,.15); border: none; color: #fff;
+  font-size: 18px; border-radius: 50%; width: 38px; height: 38px;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: background .15s; z-index: 2001;
+}
+.lightbox-close:hover { background: rgba(255,255,255,.25); }
+
+/* ── My Rooms in profile ─────────────────────────── */
+.my-rooms-header {
+  font-size: 0.72rem; color: var(--muted); font-weight: 700;
+  text-transform: uppercase; letter-spacing: .05em; margin-bottom: 10px;
+}
+#my-rooms-list { list-style: none; padding: 0; margin: 0; }
+.my-room-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 0; border-bottom: 1px solid var(--border);
+}
+.my-room-item:last-child { border-bottom: none; }
+.my-room-name { flex: 1; color: var(--text); font-size: 0.9rem; }
+.my-room-empty { color: var(--muted); font-size: 0.85rem; padding: 6px 0; }
+
 /* ── System messages ──────────────────────────────── */
 .system-msg { text-align: center; font-size: 0.75rem; color: var(--muted); padding: 4px; }
 

@@ -10,6 +10,15 @@ export async function getUsername() {
   return AsyncStorage.getItem('username');
 }
 
+export async function getUserId(): Promise<number | null> {
+  const token = await getToken();
+  if (!token) return null;
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    return payload.id ?? null;
+  } catch { return null; }
+}
+
 export async function apiFetch(path: string, method = 'GET', body?: object) {
   const token = await getToken();
   const res = await fetch(`${BASE_URL}${path}`, {

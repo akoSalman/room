@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   View, Text, TextInput, FlatList, TouchableOpacity,
   StyleSheet, KeyboardAvoidingView, Platform, Alert,
-  ActivityIndicator, Modal, ScrollView,
+  ActivityIndicator, Modal, ScrollView, Image,
 } from 'react-native';
 import { Audio } from 'expo-av';
 import * as DocumentPicker from 'expo-document-picker';
@@ -35,6 +35,7 @@ export default function ChatScreen({ room, onBack }: {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [showEmojiFor, setShowEmojiFor] = useState<number | null>(null);
   const [recording, setRecording] = useState(false);
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [showOnline, setShowOnline] = useState(false);
   const flatListRef = useRef<FlatList>(null);
   const typingTimer = useRef<any>(null);
@@ -202,7 +203,13 @@ export default function ChatScreen({ room, onBack }: {
             <Text style={s.msgText}>{msg.content}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}</Text>
           )}
           {msg.type === 'image' && (
-            <Text style={s.fileLink}>🖼 {msg.file_name || 'Image'}</Text>
+            <TouchableOpacity onPress={() => setLightboxUrl(`${BASE_URL}${msg.file_path}`)}>
+              <Image
+                source={{ uri: `${BASE_URL}${msg.file_path}` }}
+                style={s.msgImage}
+                resizeMode="cover"
+              />
+            </TouchableOpacity>
           )}
           {msg.type === 'audio' && (
             <VoicePlayer url={`${BASE_URL}${msg.file_path}`} peaks={msg.file_name || ''} mine={mine} />
@@ -316,6 +323,22 @@ export default function ChatScreen({ room, onBack }: {
         </View>
       )}
 
+      {/* Image lightbox */}
+      <Modal visible={!!lightboxUrl} transparent animationType="fade" onRequestClose={() => setLightboxUrl(null)}>
+        <TouchableOpacity style={s.lightboxOverlay} activeOpacity={1} onPress={() => setLightboxUrl(null)}>
+          <TouchableOpacity onPress={() => setLightboxUrl(null)} style={s.lightboxClose}>
+            <Text style={s.lightboxCloseText}>✕</Text>
+          </TouchableOpacity>
+          {lightboxUrl && (
+            <Image
+              source={{ uri: lightboxUrl }}
+              style={s.lightboxImage}
+              resizeMode="contain"
+            />
+          )}
+        </TouchableOpacity>
+      </Modal>
+
       {/* Voice recorder or input bar */}
       {recording ? (
         <VoiceRecorder
@@ -384,6 +407,11 @@ const s = StyleSheet.create({
   input: { flex: 1, backgroundColor: C.inputBg, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 10, color: C.text, fontSize: 15, borderWidth: 1, borderColor: C.border, maxHeight: 120 },
   sendBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
   sendBtnText: { color: '#fff', fontSize: 16 },
+  msgImage: { width: 200, height: 180, borderRadius: 10 },
+  lightboxOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', alignItems: 'center', justifyContent: 'center' },
+  lightboxClose: { position: 'absolute', top: 50, right: 20, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
+  lightboxCloseText: { color: '#fff', fontSize: 18 },
+  lightboxImage: { width: '100%', height: '85%' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-start', alignItems: 'flex-end', paddingTop: 80, paddingRight: 12 },
   onlinePanel: { backgroundColor: C.sidebar, borderRadius: 12, padding: 14, borderWidth: 1, borderColor: C.border, minWidth: 180 },
   onlinePanelTitle: { color: C.muted, fontSize: 11, fontWeight: '600', letterSpacing: 0.5, marginBottom: 8 },
