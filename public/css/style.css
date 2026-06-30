@@ -82,10 +82,10 @@ body.in-app {
 
 /* ── App layout ───────────────────────────────────── */
 #app-screen {
+  position: fixed;
+  inset: 0;
   flex-direction: row;
-  height: 100%;
   overflow: hidden;
-  max-width: 100vw;
 }
 
 /* ── Sidebar overlay ──────────────────────────────── */
