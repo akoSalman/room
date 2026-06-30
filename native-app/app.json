@@ -1,0 +1,37 @@
+{
+  "expo": {
+    "name": "ChatRoom",
+    "slug": "chatroom-native",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0e1621",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0e1621"
+    },
+    "android": {
+      "package": "com.akosalman.chatroom",
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#17212b"
+      },
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.CAMERA"
+      ]
+    },
+    "plugins": [
+      ["expo-av", { "microphonePermission": "Allow ChatRoom to record voice messages." }],
+      ["expo-image-picker", { "photosPermission": "Allow ChatRoom to attach photos." }]
+    ],
+    "extra": {
+      "eas": { "projectId": "YOUR_EAS_PROJECT_ID" }
+    }
+  }
+}
