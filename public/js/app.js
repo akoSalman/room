@@ -823,6 +823,11 @@ function appendMessage(msg) {
   time.textContent = new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   footer.appendChild(time);
 
+  const replyBtn = document.createElement('button');
+  replyBtn.className = 'msg-action-btn'; replyBtn.title = 'Reply'; replyBtn.textContent = '↩';
+  replyBtn.onclick = (e) => { e.stopPropagation(); setReply(msg); };
+  footer.appendChild(replyBtn);
+
   const reactBtn = document.createElement('button');
   reactBtn.className = 'react-btn'; reactBtn.textContent = '😊'; reactBtn.title = 'React';
   reactBtn.onclick = (e) => { e.stopPropagation(); showEmojiPicker(msg.id, reactBtn, wrapper); };

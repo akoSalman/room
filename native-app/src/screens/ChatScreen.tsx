@@ -299,8 +299,11 @@ export default function ChatScreen({ room, onBack }: {
 
         <View style={s.footer}>
           <Text style={s.time}>{fmtTime(msg.created_at)}</Text>
-          <TouchableOpacity onPress={() => setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type })}>
-            <Text style={s.footerBtn}>↩</Text>
+          <TouchableOpacity
+            style={s.footerBtnTouch}
+            onPress={() => setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type })}
+          >
+            <Text style={s.replyFooterBtn}>↩ Reply</Text>
           </TouchableOpacity>
           {mine && (
             <>
@@ -475,6 +478,8 @@ const s = StyleSheet.create({
   footer: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3, paddingHorizontal: 4 },
   time: { color: C.muted, fontSize: 11 },
   footerBtn: { fontSize: 14, opacity: 0.6 },
+  footerBtnTouch: { paddingVertical: 2, paddingHorizontal: 4 },
+  replyFooterBtn: { fontSize: 12, color: C.accent, fontWeight: '600' },
   reactRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 4 },
   reactChip: { backgroundColor: C.inputBg, borderWidth: 1, borderColor: C.border, borderRadius: 20, paddingHorizontal: 8, paddingVertical: 3 },
   reactMine: { borderColor: C.accent, backgroundColor: 'rgba(82,136,193,0.15)' },
