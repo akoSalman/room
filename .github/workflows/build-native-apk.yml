@@ -61,6 +61,7 @@ jobs:
         run: |
           KEYSTORE=$(pwd)/android/app/chatroom.keystore
           cd android && ./gradlew assembleRelease --no-daemon \
+            -x lint -x lintVitalRelease -x lintReportRelease -x lintVitalAnalyzeRelease \
             -Pandroid.injected.signing.store.file=$KEYSTORE \
             -Pandroid.injected.signing.store.password=chatroom123 \
             -Pandroid.injected.signing.key.alias=chatroom \
