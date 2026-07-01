@@ -67,6 +67,8 @@ window.addEventListener('DOMContentLoaded', () => {
     e.preventDefault();
   }, { passive: false });
   if (token && username) { enterApp(); requestNotifPermission(); }
+
+  document.getElementById('messages').addEventListener('scroll', () => updateScrollFab());
 });
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -451,6 +453,8 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   document.getElementById('room-title').textContent = (isDM ? '💬 ' : '# ') + roomName;
   document.getElementById('messages').innerHTML = '';
   document.getElementById('online-indicator').classList.add('hidden');
+  jumpBackMsgId = null;
+  document.getElementById('scroll-fab').classList.add('hidden');
   socket.emit('join_room', roomId);
   const msgs = await api('/messages/' + roomId);
   if (Array.isArray(msgs)) msgs.forEach(appendMessage);
@@ -1052,12 +1056,66 @@ function buildVoicePlayer(msg) {
 }
 
 // ─── Jump to replied message ────────────────────────────────────────────────────
+let jumpBackMsgId = null;
+
 function jumpToMessage(messageId) {
   const target = document.querySelector(`[data-msg-id="${messageId}"]`);
   if (!target) return;
+
+  // Remember where we came from so the FAB can bring us back
+  const container = document.getElementById('messages');
+  const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
+  if (!nearBottom) {
+    const visible = [...container.querySelectorAll('.msg-wrapper')].find(el => {
+      const r = el.getBoundingClientRect();
+      const cr = container.getBoundingClientRect();
+      return r.top >= cr.top && r.top <= cr.bottom;
+    });
+    jumpBackMsgId = visible ? visible.dataset.msgId : null;
+  } else {
+    jumpBackMsgId = 'bottom';
+  }
+  updateScrollFab();
+
   target.scrollIntoView({ behavior: 'smooth', block: 'center' });
   target.classList.add('msg-highlight');
   setTimeout(() => target.classList.remove('msg-highlight'), 1500);
+}
+
+function handleScrollFabClick() {
+  if (jumpBackMsgId && jumpBackMsgId !== 'bottom') {
+    const el = document.querySelector(`[data-msg-id="${jumpBackMsgId}"]`);
+    jumpBackMsgId = null;
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.add('msg-highlight');
+      setTimeout(() => el.classList.remove('msg-highlight'), 1500);
+      updateScrollFab();
+      return;
+    }
+  }
+  jumpBackMsgId = null;
+  scrollBottom();
+  updateScrollFab();
+}
+
+function updateScrollFab() {
+  const container = document.getElementById('messages');
+  const fab = document.getElementById('scroll-fab');
+  if (!container || !fab) return;
+  const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
+
+  if (jumpBackMsgId && jumpBackMsgId !== 'bottom') {
+    fab.textContent = '↩';
+    fab.title = 'Back to where you were';
+    fab.classList.remove('hidden');
+    return;
+  }
+  jumpBackMsgId = null;
+  fab.textContent = '↓';
+  fab.title = 'Scroll to latest';
+  if (nearBottom) fab.classList.add('hidden');
+  else fab.classList.remove('hidden');
 }
 
 // ─── Lightbox ─────────────────────────────────────────────────────────────────

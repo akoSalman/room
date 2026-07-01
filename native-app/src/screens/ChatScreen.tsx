@@ -57,8 +57,12 @@ export default function ChatScreen({ room, onBack }: {
   const [replyTo, setReplyTo] = useState<ReplyTo | null>(null);
   const [showOnline, setShowOnline] = useState(false);
   const [highlightId, setHighlightId] = useState<number | null>(null);
+  const [showScrollFab, setShowScrollFab] = useState(false);
+  const [jumpBackId, setJumpBackId] = useState<number | 'bottom' | null>(null);
   const flatListRef = useRef<FlatList>(null);
   const messagesRef = useRef<Message[]>([]);
+  const visibleIdRef = useRef<number | null>(null);
+  const isNearBottomRef = useRef(true);
   const typingTimer = useRef<any>(null);
   const socketRef = useRef<any>(null);
   const meRef = useRef('');
@@ -70,13 +74,50 @@ export default function ChatScreen({ room, onBack }: {
 
   useEffect(() => { messagesRef.current = messages; }, [messages]);
 
-  function jumpToMessage(messageId: number) {
+  function scrollToId(messageId: number) {
     const index = messagesRef.current.findIndex(m => m.id === messageId);
-    if (index === -1) return;
+    if (index === -1) return false;
     flatListRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.5 });
+    return true;
+  }
+
+  function jumpToMessage(messageId: number) {
+    setJumpBackId(isNearBottomRef.current ? 'bottom' : (visibleIdRef.current ?? 'bottom'));
+    if (!scrollToId(messageId)) return;
     setHighlightId(messageId);
     setTimeout(() => setHighlightId(null), 1500);
   }
+
+  function handleScrollFabPress() {
+    if (jumpBackId && jumpBackId !== 'bottom') {
+      const id = jumpBackId;
+      setJumpBackId(null);
+      if (scrollToId(id)) {
+        setHighlightId(id);
+        setTimeout(() => setHighlightId(null), 1500);
+        return;
+      }
+    }
+    setJumpBackId(null);
+    scrollBottom();
+  }
+
+  const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
+    if (viewableItems.length > 0) {
+      visibleIdRef.current = viewableItems[0].item.id;
+    }
+  }).current;
+  const viewabilityConfigRef = useRef({ itemVisiblePercentThreshold: 50 }).current;
+
+  function onMessagesScroll(e: any) {
+    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+    const nearBottom = contentSize.height - contentOffset.y - layoutMeasurement.height < 80;
+    isNearBottomRef.current = nearBottom;
+    setShowScrollFab(!nearBottom);
+  }
+
+  const fabVisible = showScrollFab || jumpBackId !== null;
+  const fabIsBack = jumpBackId !== null && jumpBackId !== 'bottom';
 
   useEffect(() => {
     // Request notification permission
@@ -410,13 +451,23 @@ export default function ChatScreen({ room, onBack }: {
           keyExtractor={m => String(m.id)}
           renderItem={renderMessage}
           contentContainerStyle={s.messagesList}
-          onContentSizeChange={scrollBottom}
+          onContentSizeChange={() => { if (isNearBottomRef.current) scrollBottom(); }}
+          onScroll={onMessagesScroll}
+          scrollEventThrottle={100}
+          onViewableItemsChanged={onViewableItemsChanged}
+          viewabilityConfig={viewabilityConfigRef}
           onScrollToIndexFailed={info => {
             setTimeout(() => {
               flatListRef.current?.scrollToIndex({ index: info.index, animated: true, viewPosition: 0.5 });
             }, 100);
           }}
         />
+      )}
+
+      {fabVisible && (
+        <TouchableOpacity style={s.scrollFab} onPress={handleScrollFabPress}>
+          <Text style={s.scrollFabIcon}>{fabIsBack ? '↩' : '↓'}</Text>
+        </TouchableOpacity>
       )}
 
       {/* Typing indicator */}
@@ -530,6 +581,12 @@ const s = StyleSheet.create({
   input: { flex: 1, backgroundColor: C.inputBg, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 10, color: C.text, fontSize: 15, borderWidth: 1, borderColor: C.border, maxHeight: 120 },
   sendBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
   sendBtnText: { color: '#fff', fontSize: 16 },
+  scrollFab: {
+    position: 'absolute', right: 16, bottom: 90, width: 44, height: 44, borderRadius: 22,
+    backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center',
+    elevation: 4, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 6, shadowOffset: { width: 0, height: 2 },
+  },
+  scrollFabIcon: { color: '#fff', fontSize: 18, fontWeight: '700' },
   lightboxOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', alignItems: 'center', justifyContent: 'center' },
   lightboxClose: { position: 'absolute', top: 50, right: 20, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
   lightboxSave: { position: 'absolute', top: 50, right: 68, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
