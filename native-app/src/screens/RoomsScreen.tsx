@@ -27,6 +27,7 @@ export default function RoomsScreen({ onSelectRoom, onLogout }: {
   const [profileError, setProfileError] = useState('');
   const [profileSuccess, setProfileSuccess] = useState('');
   const [savingProfile, setSavingProfile] = useState(false);
+  const [unread, setUnread] = useState<Record<number, number>>({});
 
   const load = useCallback(async () => {
     const [r, d, u, id] = await Promise.all([
@@ -43,6 +44,26 @@ export default function RoomsScreen({ onSelectRoom, onLogout }: {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    let sock: any;
+    (async () => {
+      sock = await getSocket();
+      sock.on('message_received', (msg: any) => {
+        setUnread(prev => ({ ...prev, [msg.room_id]: (prev[msg.room_id] || 0) + 1 }));
+      });
+      sock.on('dm_activity', () => load());
+    })();
+    return () => {
+      sock?.off('message_received');
+      sock?.off('dm_activity');
+    };
+  }, [load]);
+
+  function selectRoom(room: Room) {
+    setUnread(prev => ({ ...prev, [room.id]: 0 }));
+    onSelectRoom(room);
+  }
 
   async function createRoom() {
     if (!newRoom.trim()) return;
@@ -140,10 +161,16 @@ export default function RoomsScreen({ onSelectRoom, onLogout }: {
               <Text style={s.divider}>{item.name}</Text>
             );
             const label = item.is_dm ? (item.other_username || item.name) : item.name;
+            const count = unread[item.id] || 0;
             return (
-              <TouchableOpacity style={s.roomItem} onPress={() => onSelectRoom(item)}>
+              <TouchableOpacity style={s.roomItem} onPress={() => selectRoom(item)}>
                 <Text style={s.roomIcon}>{item.is_dm ? '💬' : '#'}</Text>
                 <Text style={s.roomName}>{label}</Text>
+                {count > 0 && (
+                  <View style={s.unreadBadge}>
+                    <Text style={s.unreadBadgeText}>{count > 99 ? '99+' : count}</Text>
+                  </View>
+                )}
               </TouchableOpacity>
             );
           }}
@@ -261,7 +288,9 @@ const s = StyleSheet.create({
   createBtnText: { color: '#fff', fontSize: 20, fontWeight: '700' },
   roomItem: { flexDirection: 'row', alignItems: 'center', padding: 14, borderBottomWidth: 1, borderBottomColor: C.border, gap: 10 },
   roomIcon: { fontSize: 16, color: C.muted },
-  roomName: { color: C.text, fontSize: 15 },
+  roomName: { flex: 1, color: C.text, fontSize: 15 },
+  unreadBadge: { backgroundColor: C.accent, borderRadius: 10, minWidth: 20, height: 20, paddingHorizontal: 5, alignItems: 'center', justifyContent: 'center' },
+  unreadBadgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
   divider: { color: C.muted, fontSize: 11, fontWeight: '600', padding: 10, paddingTop: 14, letterSpacing: 0.5 },
 
   // Profile modal

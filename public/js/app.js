@@ -539,8 +539,13 @@ function applyEdit(messageId, content) {
   if (!wrapper) return;
   const bubble = wrapper.querySelector('.msg-bubble');
   bubble.dataset.text = content;
+  const quote = bubble.querySelector('.reply-quote');
   const tag = bubble.querySelector('.edited-tag');
-  bubble.textContent = content;
+  bubble.innerHTML = '';
+  if (quote) bubble.appendChild(quote);
+  const textSpan = document.createElement('span');
+  textSpan.textContent = content;
+  bubble.appendChild(textSpan);
   if (tag) bubble.appendChild(tag);
   else { const t = document.createElement('span'); t.className = 'edited-tag'; t.textContent = '(edited)'; bubble.appendChild(t); }
 }
@@ -792,7 +797,9 @@ function appendMessage(msg) {
 
   if (msg.type === 'text') {
     bubble.dataset.text = msg.content;
-    bubble.textContent = msg.content;
+    const textSpan = document.createElement('span');
+    textSpan.textContent = msg.content;
+    bubble.appendChild(textSpan);
     if (msg.edited) { const tag = document.createElement('span'); tag.className = 'edited-tag'; tag.textContent = '(edited)'; bubble.appendChild(tag); }
   } else if (msg.type === 'image') {
     const img = document.createElement('img');
@@ -859,7 +866,12 @@ function openCtxMenu(messageId, type, isMine, wrapperEl, msg) {
   menu.style.top = Math.max(4, top) + 'px';
 }
 function closeCtxMenu() { document.getElementById('ctx-menu').classList.add('hidden'); ctxTarget = null; }
-function ctxReply() { if (!ctxTarget) return; const t = ctxTarget; closeCtxMenu(); setReply(t); }
+function ctxReply() {
+  if (!ctxTarget) return;
+  const t = ctxTarget;
+  closeCtxMenu();
+  setReply({ id: t.messageId, username: t.username, content: t.content, type: t.type });
+}
 function ctxReact() {
   if (!ctxTarget) return;
   const wrapper = document.querySelector(`[data-msg-id="${ctxTarget.messageId}"]`);

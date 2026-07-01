@@ -138,23 +138,27 @@ app.post('/dm/:userId', authMiddleware, (req, res) => {
 });
 
 app.get('/dm-rooms', authMiddleware, (req, res) => {
-  // Return DM rooms where the current user has sent at least one message, or is part of
+  // Return DM rooms the current user is part of (name format: __dm__{a}__{b}__)
   const myId = req.user.id;
-  const rooms = db.prepare(`
-    SELECT r.*, u.username as other_username
-    FROM rooms r
-    JOIN users u ON (
-      CASE
-        WHEN CAST(SUBSTR(r.name, 6, INSTR(SUBSTR(r.name,6),'__') - 1) AS INTEGER) = ?
-          THEN u.id = CAST(SUBSTR(r.name, 6 + INSTR(SUBSTR(r.name,6),'__') + 1, LENGTH(r.name)) AS INTEGER)
-        ELSE u.id = CAST(SUBSTR(r.name, 6, INSTR(SUBSTR(r.name,6),'__') - 1) AS INTEGER)
-      END
-    )
-    WHERE r.is_dm = 1
-      AND r.name LIKE '%__' || ? || '__%'
-      AND EXISTS (SELECT 1 FROM messages m WHERE m.room_id = r.id)
-    ORDER BY r.created_at DESC
-  `).all(myId, myId);
+  const dmRooms = db.prepare(`
+    SELECT * FROM rooms
+    WHERE is_dm = 1
+      AND EXISTS (SELECT 1 FROM messages m WHERE m.room_id = rooms.id)
+  `).all();
+
+  const rooms = [];
+  for (const room of dmRooms) {
+    const parts = room.name.split('__').filter(Boolean); // ['dm', 'a', 'b']
+    if (parts.length !== 3) continue;
+    const a = parseInt(parts[1]);
+    const b = parseInt(parts[2]);
+    if (a !== myId && b !== myId) continue;
+    const otherId = a === myId ? b : a;
+    const other = db.prepare('SELECT username FROM users WHERE id = ?').get(otherId);
+    if (!other) continue;
+    rooms.push({ ...room, other_username: other.username });
+  }
+  rooms.sort((x, y) => new Date(y.created_at) - new Date(x.created_at));
   res.json(rooms);
 });
 
@@ -207,7 +211,18 @@ io.use((socket, next) => {
   }
 });
 
+function getRoomMemberIds(room) {
+  if (!room.is_dm) return db.prepare('SELECT id FROM users').all().map(u => u.id);
+  const parts = room.name.split('__').filter(Boolean);
+  if (parts.length !== 3) return [];
+  return [parseInt(parts[1]), parseInt(parts[2])];
+}
+
 io.on('connection', (socket) => {
+  // Personal channel so the user receives message events for unread badges
+  // even when not actively viewing that room (or before a new DM room exists).
+  socket.join('user:' + socket.user.id);
+
   socket.on('join_room', (roomId) => {
     const prev = onlineUsers.get(socket.id);
     if (prev?.roomId) {
@@ -218,7 +233,7 @@ io.on('connection', (socket) => {
       io.to(prev.roomId).emit('room_online', { users: oldOnline });
     }
     onlineUsers.set(socket.id, { userId: socket.user.id, username: socket.user.username, roomId: String(roomId) });
-    socket.join(String(roomId));
+    socket.join(String(roomId)); // presence room (active room only)
     const roomOnline = [...onlineUsers.values()]
       .filter(u => u.roomId === String(roomId))
       .map(u => u.username);
@@ -243,10 +258,11 @@ io.on('connection', (socket) => {
       WHERE m.id = ?
     `).get(result.lastInsertRowid);
 
-    io.to(String(roomId)).emit('message_received', msg);
+    const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+    const memberIds = room ? getRoomMemberIds(room) : [];
+    memberIds.forEach(id => io.to('user:' + id).emit('message_received', msg));
 
     // Notify the other DM participant so they can add the DM room to sidebar
-    const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
     if (room && room.is_dm) {
       io.emit('dm_activity', { room });
     }
