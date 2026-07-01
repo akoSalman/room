@@ -1,6 +1,7 @@
 let token = localStorage.getItem('token');
 let username = localStorage.getItem('username');
 let currentRoomId = null;
+let currentRoomIsDM = false;
 let socket = null;
 let socketReady = false;
 let mediaRecorder = null;
@@ -447,6 +448,7 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   if (isRecording) stopRecording();
   typingUsers.clear(); renderTypingBar();
   currentRoomId = roomId;
+  currentRoomIsDM = isDM;
   clearUnread(roomId);
   document.querySelectorAll('#room-list li').forEach(el => el.classList.remove('active'));
   li.classList.add('active');
@@ -777,6 +779,11 @@ function appendMessage(msg) {
   if (!isMine) {
     const sender = document.createElement('div');
     sender.className = 'msg-sender'; sender.textContent = msg.username;
+    if (!currentRoomIsDM) {
+      sender.classList.add('clickable');
+      sender.title = `Message ${msg.username}`;
+      sender.onclick = (e) => { e.stopPropagation(); openDM(msg.username); };
+    }
     wrapper.appendChild(sender);
   }
 

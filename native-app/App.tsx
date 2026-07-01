@@ -32,7 +32,7 @@ export default function App() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
-        <StatusBar barStyle="light-content" backgroundColor={C.header} />
+        <StatusBar barStyle="dark-content" backgroundColor={C.header} />
         <SafeAreaView style={{ flex: 1, backgroundColor: C.bg }} edges={['top']}>
           {screen === 'auth' && (
             <AuthScreen onLogin={() => setScreen('rooms')} />
@@ -44,7 +44,12 @@ export default function App() {
             />
           )}
           {screen === 'chat' && room && (
-            <ChatScreen room={room} onBack={() => setScreen('rooms')} />
+            <ChatScreen
+              key={room.id}
+              room={room}
+              onBack={() => setScreen('rooms')}
+              onOpenDM={r => setRoom(r)}
+            />
           )}
         </SafeAreaView>
       </SafeAreaProvider>

@@ -39,9 +39,10 @@ type ReplyTo = { id: number; username: string; content: string | null; type: str
 
 const EMOJIS = ['👍','❤️','😂','😮','😢','🔥','👏','🎉','🤔','😍','👎','😡'];
 
-export default function ChatScreen({ room, onBack }: {
+export default function ChatScreen({ room, onBack, onOpenDM }: {
   room: { id: number; name: string; is_dm: number; other_username?: string };
   onBack: () => void;
+  onOpenDM: (room: { id: number; name: string; is_dm: number; other_username?: string }) => void;
 }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [reactions, setReactions] = useState<Record<number, Reaction[]>>({});
@@ -275,6 +276,18 @@ export default function ChatScreen({ room, onBack }: {
     return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
 
+  async function openDM(otherUsername: string) {
+    if (otherUsername === me) return;
+    setShowOnline(false);
+    const users = await apiFetch('/users');
+    if (!Array.isArray(users)) return;
+    const other = users.find((u: any) => u.username === otherUsername);
+    if (!other) return;
+    const res = await apiFetch(`/dm/${other.id}`, 'POST');
+    if (res.error) { Alert.alert('Error', res.error); return; }
+    onOpenDM({ id: res.id, name: res.name, is_dm: 1, other_username: res.otherUsername || otherUsername });
+  }
+
   async function saveImage() {
     if (!lightboxUrl) return;
     try {
@@ -314,7 +327,15 @@ export default function ChatScreen({ room, onBack }: {
         style={[s.msgWrapper, mine ? s.mine : s.theirs]}
         onLayout={e => { itemLayoutsRef.current[msg.id] = e.nativeEvent.layout.y; }}
       >
-        {!mine && <Text style={s.sender}>{msg.username}</Text>}
+        {!mine && (
+          room.is_dm ? (
+            <Text style={s.sender}>{msg.username}</Text>
+          ) : (
+            <TouchableOpacity onPress={() => openDM(msg.username)}>
+              <Text style={s.sender}>{msg.username}</Text>
+            </TouchableOpacity>
+          )
+        )}
         <SwipeableMessage
           onSwipeRight={() => setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type })}
           onSwipeLeft={mine ? () => deleteMsg(msg.id) : undefined}
@@ -427,11 +448,21 @@ export default function ChatScreen({ room, onBack }: {
 
       {/* Online users modal */}
       <Modal visible={showOnline} transparent animationType="fade" onRequestClose={() => setShowOnline(false)}>
-        <TouchableOpacity style={s.modalOverlay} onPress={() => setShowOnline(false)}>
-          <View style={s.onlinePanel}>
-            <Text style={s.onlinePanelTitle}>ONLINE NOW</Text>
-            {online.map(u => <Text key={u} style={s.onlineUser}>🟢 {u}</Text>)}
-          </View>
+        <TouchableOpacity style={s.modalOverlay} activeOpacity={1} onPress={() => setShowOnline(false)}>
+          <TouchableOpacity activeOpacity={1} onPress={e => e.stopPropagation()} style={s.onlinePanel}>
+            <Text style={s.onlinePanelTitle}>ONLINE NOW · TAP TO MESSAGE</Text>
+            {online.filter(u => u !== me).length === 0 ? (
+              <Text style={s.onlineEmpty}>No one else is online</Text>
+            ) : (
+              online.filter(u => u !== me).map(u => (
+                <TouchableOpacity key={u} style={s.onlineUserRow} onPress={() => openDM(u)} activeOpacity={0.6}>
+                  <View style={s.onlineDot} />
+                  <Text style={s.onlineUser}>{u}</Text>
+                  <Text style={s.onlineUserChevron}>›</Text>
+                </TouchableOpacity>
+              ))
+            )}
+          </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
 
@@ -602,7 +633,11 @@ const s = StyleSheet.create({
   lightboxCloseText: { color: '#fff', fontSize: 18 },
   lightboxImage: { width: '100%', height: '85%' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-start', alignItems: 'flex-end', paddingTop: 80, paddingRight: 12 },
-  onlinePanel: { backgroundColor: C.sidebar, borderRadius: 12, padding: 14, borderWidth: 1, borderColor: C.border, minWidth: 180 },
+  onlinePanel: { backgroundColor: C.sidebar, borderRadius: 12, padding: 14, borderWidth: 1, borderColor: C.border, minWidth: 220 },
   onlinePanelTitle: { color: C.muted, fontSize: 11, fontWeight: '600', letterSpacing: 0.5, marginBottom: 8 },
-  onlineUser: { color: C.online, fontSize: 14, paddingVertical: 4 },
+  onlineEmpty: { color: C.muted, fontSize: 13, paddingVertical: 8 },
+  onlineUserRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: C.border },
+  onlineDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: C.online },
+  onlineUser: { flex: 1, color: C.text, fontSize: 14, fontWeight: '600' },
+  onlineUserChevron: { color: C.muted, fontSize: 16 },
 });

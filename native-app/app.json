@@ -5,19 +5,19 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "dark",
-    "backgroundColor": "#0e1621",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#f5f7fa",
     "splash": {
       "image": "./assets/splash.png",
       "resizeMode": "contain",
-      "backgroundColor": "#0e1621"
+      "backgroundColor": "#f5f7fa"
     },
     "android": {
       "package": "com.akosalman.chatroom",
       "versionCode": 1,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#17212b"
+        "backgroundColor": "#ffffff"
       },
       "permissions": [
         "android.permission.RECORD_AUDIO",
@@ -33,7 +33,7 @@
     "plugins": [
       ["expo-av", { "microphonePermission": "Allow ChatRoom to record voice messages." }],
       ["expo-image-picker", { "photosPermission": "Allow ChatRoom to attach photos." }],
-      ["expo-notifications", { "icon": "./assets/icon.png", "color": "#17212b" }],
+      ["expo-notifications", { "icon": "./assets/icon.png", "color": "#3b7dd8" }],
       ["expo-media-library", { "photosPermission": "Allow ChatRoom to save images to your device.", "savePhotosPermission": "Allow ChatRoom to save images to your device." }]
     ],
     "extra": {}

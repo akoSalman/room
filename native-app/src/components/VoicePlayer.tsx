@@ -70,8 +70,8 @@ export default function VoicePlayer({ url, peaks: rawPeaks, mine }: {
     await soundRef.current?.setRateAsync(SPEEDS[next], true);
   }
 
-  const barColor = mine ? 'rgba(255,255,255,0.9)' : C.accent;
-  const barUnplayed = mine ? 'rgba(255,255,255,0.3)' : 'rgba(82,136,193,0.3)';
+  const barColor = C.accent;
+  const barUnplayed = mine ? 'rgba(59,125,216,0.3)' : 'rgba(31,41,55,0.25)';
 
   return (
     <View style={s.container}>
