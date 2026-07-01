@@ -28,7 +28,7 @@ const storage = multer.diskStorage({
     cb(null, unique + path.extname(file.originalname));
   }
 });
-const upload = multer({ storage, limits: { fileSize: 20 * 1024 * 1024 } });
+const upload = multer({ storage, limits: { fileSize: 80 * 1024 * 1024 } });
 
 function authMiddleware(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];

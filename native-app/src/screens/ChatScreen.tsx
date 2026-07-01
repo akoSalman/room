@@ -5,7 +5,7 @@ import {
   ActivityIndicator, Modal, ScrollView, Image,
 } from 'react-native';
 import * as Notifications from 'expo-notifications';
-import { Audio } from 'expo-av';
+import { Audio, Video, ResizeMode } from 'expo-av';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
@@ -19,6 +19,7 @@ import VoicePlayer from '../components/VoicePlayer';
 import VoiceRecorder from '../components/VoiceRecorder';
 import ZoomableImage from '../components/ZoomableImage';
 import SwipeableMessage from '../components/SwipeableMessage';
+import MusicPlayer from '../components/MusicPlayer';
 
 // Show notifications even when app is foregrounded
 Notifications.setNotificationHandler({
@@ -57,6 +58,8 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<ReplyTo | null>(null);
   const [showOnline, setShowOnline] = useState(false);
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [showScrollFab, setShowScrollFab] = useState(false);
   const [backStackSize, setBackStackSize] = useState(0);
@@ -153,7 +156,7 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
         scrollBottom();
         // Show notification if message is from someone else
         if (msg.username !== meRef.current) {
-          const body = msg.type === 'text' ? (msg.content || '') : msg.type === 'audio' ? '🎙 Voice message' : msg.type === 'image' ? '🖼 Image' : '📄 File';
+          const body = msg.type === 'text' ? (msg.content || '') : msg.type === 'audio' ? '🎙 Voice message' : msg.type === 'image' ? '🖼 Image' : msg.type === 'video' ? '🎥 Video' : msg.type === 'music' ? '🎵 Audio file' : '📄 File';
           Notifications.scheduleNotificationAsync({
             content: { title: msg.username, body, sound: true },
             trigger: null,
@@ -214,16 +217,40 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
   }
 
   async function pickFile() {
+    setShowAttachMenu(false);
     const res = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
     if (res.canceled) return;
     uploadFile(res.assets[0].uri, res.assets[0].name, res.assets[0].mimeType || 'application/octet-stream');
   }
 
-  async function pickImage() {
-    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images });
+  async function pickFromGallery() {
+    setShowAttachMenu(false);
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission Required', 'Please allow access to your photo library.');
+      return;
+    }
+    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.All });
     if (res.canceled) return;
     const asset = res.assets[0];
-    uploadFile(asset.uri, 'photo.jpg', 'image/jpeg');
+    const isVideo = asset.type === 'video';
+    uploadFile(asset.uri, isVideo ? 'video.mp4' : 'photo.jpg', isVideo ? 'video/mp4' : 'image/jpeg');
+  }
+
+  async function pickFromCamera(mode: 'photo' | 'video') {
+    setShowAttachMenu(false);
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission Required', 'Please allow camera access in Settings to use this feature.');
+      return;
+    }
+    const res = mode === 'photo'
+      ? await ImagePicker.launchCameraAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images })
+      : await ImagePicker.launchCameraAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Videos, videoMaxDuration: 60 });
+    if (res.canceled) return;
+    const asset = res.assets[0];
+    if (mode === 'photo') uploadFile(asset.uri, 'photo.jpg', 'image/jpeg');
+    else uploadFile(asset.uri, 'video.mp4', 'video/mp4');
   }
 
   async function uploadFile(uri: string, name: string, mime: string) {
@@ -236,7 +263,9 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
       body: form,
     }).then(r => r.json());
     if (res.error) { Alert.alert('Error', res.error); return; }
-    const type = mime.startsWith('image/') ? 'image' : mime.startsWith('audio/') ? 'audio' : 'file';
+    const type = mime.startsWith('image/') ? 'image'
+      : mime.startsWith('video/') ? 'video'
+      : mime.startsWith('audio/') ? 'music' : 'file';
     socketRef.current?.emit('send_message', {
       roomId: room.id, type, filePath: res.url, fileName: name, replyToId: replyTo?.id ?? null,
     });
@@ -308,6 +337,8 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
   function replyPreview(msg: Message): string {
     if (msg.reply_type === 'audio') return '🎙 Voice message';
     if (msg.reply_type === 'image') return '🖼 Image';
+    if (msg.reply_type === 'video') return '🎥 Video';
+    if (msg.reply_type === 'music') return '🎵 Audio file';
     if (msg.reply_type === 'file') return '📄 File';
     return (msg.reply_content || '').slice(0, 60);
   }
@@ -331,7 +362,10 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
           room.is_dm ? (
             <Text style={s.sender}>{msg.username}</Text>
           ) : (
-            <TouchableOpacity onPress={() => openDM(msg.username)}>
+            <TouchableOpacity style={s.senderChip} onPress={() => openDM(msg.username)} activeOpacity={0.6}>
+              <View style={s.senderAvatar}>
+                <Text style={s.senderAvatarText}>{msg.username.slice(0, 2).toUpperCase()}</Text>
+              </View>
               <Text style={s.sender}>{msg.username}</Text>
             </TouchableOpacity>
           )
@@ -367,6 +401,16 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
           )}
           {msg.type === 'audio' && (
             <VoicePlayer url={`${BASE_URL}${msg.file_path}`} peaks={msg.file_name || ''} mine={mine} />
+          )}
+          {msg.type === 'music' && (
+            <MusicPlayer url={`${BASE_URL}${msg.file_path}`} fileName={msg.file_name || 'Audio'} mine={mine} />
+          )}
+          {msg.type === 'video' && (
+            <TouchableOpacity onPress={() => setVideoUrl(`${BASE_URL}${msg.file_path}`)}>
+              <View style={s.videoThumb}>
+                <Text style={s.videoPlayIcon}>▶</Text>
+              </View>
+            </TouchableOpacity>
           )}
           {msg.type === 'file' && (
             <Text style={s.fileLink}>📄 {msg.file_name || 'File'}</Text>
@@ -447,20 +491,35 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
       </View>
 
       {/* Online users modal */}
-      <Modal visible={showOnline} transparent animationType="fade" onRequestClose={() => setShowOnline(false)}>
-        <TouchableOpacity style={s.modalOverlay} activeOpacity={1} onPress={() => setShowOnline(false)}>
-          <TouchableOpacity activeOpacity={1} onPress={e => e.stopPropagation()} style={s.onlinePanel}>
-            <Text style={s.onlinePanelTitle}>ONLINE NOW · TAP TO MESSAGE</Text>
+      <Modal visible={showOnline} transparent animationType="slide" onRequestClose={() => setShowOnline(false)}>
+        <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowOnline(false)}>
+          <TouchableOpacity activeOpacity={1} onPress={e => e.stopPropagation()} style={s.onlineSheet}>
+            <View style={s.sheetHandle} />
+            <View style={s.onlineSheetHeader}>
+              <Text style={s.onlineSheetTitle}>Online Now</Text>
+              <TouchableOpacity onPress={() => setShowOnline(false)}>
+                <Text style={s.onlineSheetClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={s.onlinePanelTitle}>Tap a person to start a direct message</Text>
             {online.filter(u => u !== me).length === 0 ? (
-              <Text style={s.onlineEmpty}>No one else is online</Text>
+              <Text style={s.onlineEmpty}>No one else is online right now</Text>
             ) : (
-              online.filter(u => u !== me).map(u => (
-                <TouchableOpacity key={u} style={s.onlineUserRow} onPress={() => openDM(u)} activeOpacity={0.6}>
-                  <View style={s.onlineDot} />
-                  <Text style={s.onlineUser}>{u}</Text>
-                  <Text style={s.onlineUserChevron}>›</Text>
-                </TouchableOpacity>
-              ))
+              <ScrollView style={{ maxHeight: 360 }} showsVerticalScrollIndicator={false}>
+                {online.filter(u => u !== me).map(u => (
+                  <TouchableOpacity key={u} style={s.onlineUserRow} onPress={() => openDM(u)} activeOpacity={0.6}>
+                    <View style={s.onlineAvatar}>
+                      <Text style={s.onlineAvatarText}>{u.slice(0, 2).toUpperCase()}</Text>
+                      <View style={s.onlineAvatarDot} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.onlineUser}>{u}</Text>
+                      <Text style={s.onlineUserSub}>Active now</Text>
+                    </View>
+                    <Text style={s.onlineUserChevron}>💬</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
             )}
           </TouchableOpacity>
         </TouchableOpacity>
@@ -476,6 +535,24 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
             <Text style={s.lightboxCloseText}>⬇</Text>
           </TouchableOpacity>
           {lightboxUrl && <ZoomableImage uri={lightboxUrl} />}
+        </View>
+      </Modal>
+
+      {/* Video player */}
+      <Modal visible={!!videoUrl} transparent animationType="fade" onRequestClose={() => setVideoUrl(null)}>
+        <View style={s.lightboxOverlay}>
+          <TouchableOpacity onPress={() => setVideoUrl(null)} style={s.lightboxClose}>
+            <Text style={s.lightboxCloseText}>✕</Text>
+          </TouchableOpacity>
+          {videoUrl && (
+            <Video
+              source={{ uri: videoUrl }}
+              style={s.videoFullscreen}
+              useNativeControls
+              resizeMode={ResizeMode.CONTAIN}
+              shouldPlay
+            />
+          )}
         </View>
       </Modal>
 
@@ -532,7 +609,7 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
           <View style={{ flex: 1 }}>
             <Text style={s.replyBannerUser}>{replyTo.username}</Text>
             <Text style={s.replyBannerText} numberOfLines={1}>
-              {replyTo.type === 'audio' ? '🎙 Voice message' : replyTo.type === 'image' ? '🖼 Image' : replyTo.type === 'file' ? '📄 File' : (replyTo.content || '')}
+              {replyTo.type === 'audio' ? '🎙 Voice message' : replyTo.type === 'image' ? '🖼 Image' : replyTo.type === 'video' ? '🎥 Video' : replyTo.type === 'music' ? '🎵 Audio file' : replyTo.type === 'file' ? '📄 File' : (replyTo.content || '')}
             </Text>
           </View>
           <TouchableOpacity onPress={() => setReplyTo(null)}>
@@ -540,6 +617,34 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
           </TouchableOpacity>
         </View>
       )}
+
+      {/* Attach menu */}
+      <Modal visible={showAttachMenu} transparent animationType="slide" onRequestClose={() => setShowAttachMenu(false)}>
+        <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowAttachMenu(false)}>
+          <TouchableOpacity activeOpacity={1} onPress={e => e.stopPropagation()} style={s.attachSheet}>
+            <View style={s.sheetHandle} />
+            <TouchableOpacity style={s.attachOption} onPress={() => pickFromCamera('photo')}>
+              <Text style={s.attachOptionIcon}>📷</Text>
+              <Text style={s.attachOptionText}>Take Photo</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={s.attachOption} onPress={() => pickFromCamera('video')}>
+              <Text style={s.attachOptionIcon}>🎥</Text>
+              <Text style={s.attachOptionText}>Record Video</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={s.attachOption} onPress={pickFromGallery}>
+              <Text style={s.attachOptionIcon}>🖼</Text>
+              <Text style={s.attachOptionText}>Photo & Video Library</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={s.attachOption} onPress={pickFile}>
+              <Text style={s.attachOptionIcon}>📄</Text>
+              <Text style={s.attachOptionText}>Choose File</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={s.attachCancel} onPress={() => setShowAttachMenu(false)}>
+              <Text style={s.attachCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Voice recorder or input bar */}
       {recording ? (
@@ -549,7 +654,7 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
         />
       ) : (
         <View style={s.inputBar}>
-          <TouchableOpacity onPress={pickFile} style={s.iconBtn}>
+          <TouchableOpacity onPress={() => setShowAttachMenu(true)} style={s.iconBtn}>
             <Text style={s.iconBtnText}>📎</Text>
           </TouchableOpacity>
           <TouchableOpacity onPress={() => setRecording(true)} style={s.iconBtn}>
@@ -583,7 +688,10 @@ const s = StyleSheet.create({
   msgWrapper: { maxWidth: '80%', marginVertical: 2 },
   mine: { alignSelf: 'flex-end', alignItems: 'flex-end' },
   theirs: { alignSelf: 'flex-start', alignItems: 'flex-start' },
-  sender: { fontSize: 11, color: C.accent, marginBottom: 2, paddingHorizontal: 4 },
+  sender: { fontSize: 11.5, color: C.accent, fontWeight: '700' },
+  senderChip: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 3, paddingHorizontal: 4, paddingVertical: 2 },
+  senderAvatar: { width: 16, height: 16, borderRadius: 8, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
+  senderAvatarText: { color: '#fff', fontSize: 8, fontWeight: '700' },
   bubble: { borderRadius: 12, padding: 10, maxWidth: '100%' },
   bubbleHighlight: { borderWidth: 2, borderColor: C.accent },
   mineBubble: { backgroundColor: C.mine, borderBottomRightRadius: 3 },
@@ -592,6 +700,9 @@ const s = StyleSheet.create({
   edited: { color: C.muted, fontSize: 11 },
   fileLink: { color: '#93c5fd', fontSize: 14 },
   msgImage: { width: 200, height: 180, borderRadius: 10 },
+  videoThumb: { width: 200, height: 140, borderRadius: 10, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center' },
+  videoPlayIcon: { color: '#fff', fontSize: 30 },
+  videoFullscreen: { width: '100%', height: '70%' },
   footer: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3, paddingHorizontal: 4 },
   time: { color: C.muted, fontSize: 11 },
   footerBtn: { fontSize: 14, opacity: 0.6 },
@@ -628,16 +739,29 @@ const s = StyleSheet.create({
   },
   scrollFabIcon: { color: '#fff', fontSize: 18, fontWeight: '700' },
   lightboxOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', alignItems: 'center', justifyContent: 'center' },
+  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  sheetHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: C.border, alignSelf: 'center', marginTop: 10, marginBottom: 6 },
+  attachSheet: { backgroundColor: C.sidebar, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingBottom: 24 },
+  attachOption: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingHorizontal: 22, paddingVertical: 14 },
+  attachOptionIcon: { fontSize: 22, width: 28, textAlign: 'center' },
+  attachOptionText: { color: C.text, fontSize: 16, fontWeight: '500' },
+  attachCancel: { marginTop: 8, marginHorizontal: 16, backgroundColor: C.inputBg, borderRadius: 12, padding: 14, alignItems: 'center' },
+  attachCancelText: { color: C.muted, fontSize: 15, fontWeight: '600' },
   lightboxClose: { position: 'absolute', top: 50, end: 20, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
   lightboxSave: { position: 'absolute', top: 50, end: 68, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
   lightboxCloseText: { color: '#fff', fontSize: 18 },
   lightboxImage: { width: '100%', height: '85%' },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-start', alignItems: 'flex-end', paddingTop: 80, paddingRight: 12 },
-  onlinePanel: { backgroundColor: C.sidebar, borderRadius: 12, padding: 14, borderWidth: 1, borderColor: C.border, minWidth: 220 },
-  onlinePanelTitle: { color: C.muted, fontSize: 11, fontWeight: '600', letterSpacing: 0.5, marginBottom: 8 },
-  onlineEmpty: { color: C.muted, fontSize: 13, paddingVertical: 8 },
-  onlineUserRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: C.border },
-  onlineDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: C.online },
-  onlineUser: { flex: 1, color: C.text, fontSize: 14, fontWeight: '600' },
-  onlineUserChevron: { color: C.muted, fontSize: 16 },
+  onlineSheet: { backgroundColor: C.sidebar, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingBottom: 24, maxHeight: '75%' },
+  onlineSheetHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 4, paddingBottom: 6 },
+  onlineSheetTitle: { color: C.text, fontWeight: '700', fontSize: 17 },
+  onlineSheetClose: { color: C.muted, fontSize: 18, padding: 4 },
+  onlinePanelTitle: { color: C.muted, fontSize: 12.5, paddingHorizontal: 20, marginBottom: 10 },
+  onlineEmpty: { color: C.muted, fontSize: 13, paddingVertical: 20, textAlign: 'center' },
+  onlineUserRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: C.border },
+  onlineAvatar: { width: 42, height: 42, borderRadius: 21, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
+  onlineAvatarText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  onlineAvatarDot: { position: 'absolute', bottom: -1, end: -1, width: 12, height: 12, borderRadius: 6, backgroundColor: C.online, borderWidth: 2, borderColor: C.sidebar },
+  onlineUser: { color: C.text, fontSize: 15, fontWeight: '600' },
+  onlineUserSub: { color: C.online, fontSize: 11.5, marginTop: 1 },
+  onlineUserChevron: { color: C.muted, fontSize: 18 },
 });

@@ -53,7 +53,7 @@ function requestNotifPermission() {
 function showNotif(msg) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   if (document.visibilityState === 'visible' && String(msg.room_id) === String(currentRoomId)) return;
-  const body = msg.type === 'text' ? (msg.content || '') : msg.type === 'audio' ? '🎙 Voice message' : msg.type === 'image' ? '🖼 Image' : '📄 File';
+  const body = msg.type === 'text' ? (msg.content || '') : msg.type === 'audio' ? '🎙 Voice message' : msg.type === 'image' ? '🖼 Image' : msg.type === 'video' ? '🎥 Video' : msg.type === 'music' ? '🎵 Audio file' : '📄 File';
   new Notification(msg.username, { body, icon: '/icons/icon-192.png', tag: 'chatroom-' + msg.room_id, silent: false });
 }
 
@@ -496,7 +496,7 @@ function sendOrSave() { editingMsgId ? saveEdit() : sendText(); }
 function setReply(msg) {
   replyTo = { id: msg.id, username: msg.username, content: msg.content, type: msg.type };
   document.getElementById('reply-bar-user').textContent = msg.username;
-  const preview = msg.type === 'text' ? (msg.content || '').slice(0, 60) : msg.type === 'audio' ? '🎙 Voice message' : msg.type === 'image' ? '🖼 Image' : '📄 File';
+  const preview = msg.type === 'text' ? (msg.content || '').slice(0, 60) : msg.type === 'audio' ? '🎙 Voice message' : msg.type === 'image' ? '🖼 Image' : msg.type === 'video' ? '🎥 Video' : msg.type === 'music' ? '🎵 Audio file' : '📄 File';
   document.getElementById('reply-bar-text').textContent = preview;
   show('reply-bar');
   document.getElementById('msg-input').focus();
@@ -571,7 +571,9 @@ async function sendFile() {
   form.append('file', file);
   const res = await fetch('/upload', { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: form }).then(r => r.json());
   if (res.error) return alert(res.error);
-  const type = file.type.startsWith('audio/') ? 'audio' : file.type.startsWith('image/') ? 'image' : 'file';
+  const type = file.type.startsWith('image/') ? 'image'
+    : file.type.startsWith('video/') ? 'video'
+    : file.type.startsWith('audio/') ? 'music' : 'file';
   socket.emit('send_message', { roomId: currentRoomId, type, content: null, filePath: res.url, fileName: res.name || file.name, replyToId: replyTo?.id || null });
   cancelReply();
   document.getElementById('file-input').value = '';
@@ -801,7 +803,9 @@ function appendMessage(msg) {
     quoteText.className = 'reply-quote-text';
     quoteText.textContent = msg.reply_type === 'text' ? (msg.reply_content || '').slice(0, 80)
       : msg.reply_type === 'audio' ? '🎙 Voice message'
-      : msg.reply_type === 'image' ? '🖼 Image' : '📄 File';
+      : msg.reply_type === 'image' ? '🖼 Image'
+      : msg.reply_type === 'video' ? '🎥 Video'
+      : msg.reply_type === 'music' ? '🎵 Audio file' : '📄 File';
     quote.appendChild(quoteUser);
     quote.appendChild(quoteText);
     bubble.appendChild(quote);
@@ -819,6 +823,20 @@ function appendMessage(msg) {
     bubble.appendChild(img);
   } else if (msg.type === 'audio') {
     bubble.appendChild(buildVoicePlayer(msg));
+  } else if (msg.type === 'video') {
+    const video = document.createElement('video');
+    video.src = msg.file_path; video.controls = true; video.className = 'msg-video';
+    video.preload = 'metadata';
+    bubble.appendChild(video);
+  } else if (msg.type === 'music') {
+    const wrap = document.createElement('div');
+    wrap.className = 'music-player';
+    const label = document.createElement('div');
+    label.className = 'music-label'; label.textContent = '🎵 ' + (msg.file_name || 'Audio');
+    const audio = document.createElement('audio');
+    audio.src = msg.file_path; audio.controls = true; audio.className = 'music-audio';
+    wrap.appendChild(label); wrap.appendChild(audio);
+    bubble.appendChild(wrap);
   } else {
     const a = document.createElement('a');
     a.className = 'file-link'; a.href = msg.file_path;

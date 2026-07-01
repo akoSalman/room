@@ -376,13 +376,24 @@ html {
 .msg-wrapper.mine { align-self: flex-end; align-items: flex-end; }
 .msg-wrapper.theirs { align-self: flex-start; align-items: flex-start; }
 .msg-sender { font-size: 0.72rem; color: var(--accent); margin-bottom: 2px; padding: 0 4px; }
-.msg-sender.clickable { cursor: pointer; text-decoration: underline; text-decoration-color: transparent; transition: text-decoration-color .15s; }
-.msg-sender.clickable:hover { text-decoration-color: var(--accent); }
+.msg-sender.clickable {
+  cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border-radius: 20px; margin-left: 4px;
+  background: rgba(59,125,216,0.1); font-weight: 600;
+  transition: background .15s, transform .1s;
+}
+.msg-sender.clickable::before { content: '💬'; font-size: 0.68rem; }
+.msg-sender.clickable:hover { background: rgba(59,125,216,0.2); }
+.msg-sender.clickable:active { transform: scale(0.96); background: rgba(59,125,216,0.28); }
 .msg-bubble { padding: 8px 12px; border-radius: var(--radius); font-size: 0.92rem; line-height: 1.45; word-break: break-word; overflow-wrap: break-word; max-width: 100%; }
 .mine .msg-bubble { background: var(--mine-bg); border-bottom-right-radius: 4px; }
 .theirs .msg-bubble { background: var(--msg-bg); border-bottom-left-radius: 4px; }
 .msg-bubble img { max-width: 200px; max-height: 180px; border-radius: 8px; display: block; cursor: pointer; }
 .msg-bubble audio { display: block; max-width: 220px; width: 100%; }
+.msg-video { display: block; max-width: 260px; max-height: 220px; border-radius: 8px; background: #000; }
+.music-player { display: flex; flex-direction: column; gap: 6px; min-width: 220px; max-width: 100%; }
+.music-label { font-size: 0.82rem; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.music-audio { display: block; width: 100%; max-width: 240px; }
 .file-link { display: flex; align-items: center; gap: 8px; color: #93c5fd; text-decoration: none; font-size: 0.88rem; }
 .file-link:hover { text-decoration: underline; }
 .edited-tag { font-size: 0.65rem; color: var(--muted); margin-left: 4px; }
