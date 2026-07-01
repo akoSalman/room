@@ -6,6 +6,9 @@ on:
     paths: ['native-app/**']
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -73,3 +76,14 @@ jobs:
           name: ChatRoom-${{ github.run_number }}
           path: native-app/android/app/build/outputs/apk/release/app-release.apk
           retention-days: 30
+
+      - name: Publish latest APK as a stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk ../ChatRoom-latest.apk
+          gh release delete latest-apk --yes --cleanup-tag || true
+          gh release create latest-apk ../ChatRoom-latest.apk \
+            --title "ChatRoom (latest build)" \
+            --notes "Automated build from commit ${{ github.sha }} (run #${{ github.run_number }}). Always points to the most recent successful build." \
+            --repo ${{ github.repository }}

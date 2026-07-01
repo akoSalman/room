@@ -64,6 +64,7 @@ export default function ChatScreen({ room, onBack }: {
   const visibleIdRef = useRef<number | null>(null);
   const isNearBottomRef = useRef(true);
   const jumpBackStackRef = useRef<Array<number | 'bottom'>>([]);
+  const itemLayoutsRef = useRef<Record<number, number>>({});
   const typingTimer = useRef<any>(null);
   const socketRef = useRef<any>(null);
   const meRef = useRef('');
@@ -78,7 +79,12 @@ export default function ChatScreen({ room, onBack }: {
   function scrollToId(messageId: number) {
     const index = messagesRef.current.findIndex(m => m.id === messageId);
     if (index === -1) return false;
-    flatListRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.5 });
+    const y = itemLayoutsRef.current[messageId];
+    if (y !== undefined) {
+      flatListRef.current?.scrollToOffset({ offset: Math.max(0, y - 60), animated: true });
+    } else {
+      flatListRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.3 });
+    }
     return true;
   }
 
@@ -304,7 +310,10 @@ export default function ChatScreen({ room, onBack }: {
     });
 
     return (
-      <View style={[s.msgWrapper, mine ? s.mine : s.theirs]}>
+      <View
+        style={[s.msgWrapper, mine ? s.mine : s.theirs]}
+        onLayout={e => { itemLayoutsRef.current[msg.id] = e.nativeEvent.layout.y; }}
+      >
         {!mine && <Text style={s.sender}>{msg.username}</Text>}
         <SwipeableMessage
           onSwipeRight={() => setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type })}

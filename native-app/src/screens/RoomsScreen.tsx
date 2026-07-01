@@ -1,10 +1,12 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, TextInput,
-  StyleSheet, Alert, ActivityIndicator, Modal, ScrollView,
+  StyleSheet, Alert, ActivityIndicator, Modal, ScrollView, Linking,
 } from 'react-native';
 import { C } from '../theme';
 import { apiFetch, getUsername, getUserId, getSocket, setAuth } from '../api';
+
+const LATEST_APK_URL = 'https://github.com/akoSalman/room/releases/download/latest-apk/ChatRoom-latest.apk';
 
 type Room = { id: number; name: string; is_dm: number; other_username?: string; created_by?: number };
 
@@ -241,6 +243,15 @@ export default function RoomsScreen({ onSelectRoom, onLogout }: {
               )}
             </View>
 
+            {/* App Update */}
+            <View style={s.section}>
+              <Text style={s.sectionTitle}>APP UPDATE</Text>
+              <Text style={s.updateHint}>Download the latest build of the app.</Text>
+              <TouchableOpacity style={s.updateBtn} onPress={() => Linking.openURL(LATEST_APK_URL)}>
+                <Text style={s.updateBtnText}>⬇ Download latest APK</Text>
+              </TouchableOpacity>
+            </View>
+
             {/* Logout */}
             <View style={s.section}>
               <TouchableOpacity style={s.logoutBtn} onPress={() => { setShowProfile(false); onLogout(); }}>
@@ -318,6 +329,9 @@ const s = StyleSheet.create({
   roomActionIcon: { fontSize: 18 },
   logoutBtn: { backgroundColor: C.danger, borderRadius: 10, padding: 13, alignItems: 'center' },
   logoutBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  updateHint: { color: C.muted, fontSize: 13, marginBottom: 10 },
+  updateBtn: { backgroundColor: C.accent, borderRadius: 10, padding: 13, alignItems: 'center' },
+  updateBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
 
   // Rename modal
   renameCard: { backgroundColor: C.sidebar, margin: 32, borderRadius: 16, padding: 20, borderWidth: 1, borderColor: C.border },
