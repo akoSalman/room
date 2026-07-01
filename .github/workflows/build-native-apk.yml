@@ -30,6 +30,11 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Stamp build version
+        run: |
+          echo "// Stamped by CI (build-native-apk.yml) with the GitHub Actions run number." > src/version.ts
+          echo "export const BUILD_VERSION = ${{ github.run_number }};" >> src/version.ts
+
       - name: Install dependencies
         run: npm install
 
@@ -81,6 +86,6 @@ jobs:
           cp android/app/build/outputs/apk/release/app-release.apk ../ChatRoom-latest.apk
           gh release delete latest-apk --yes --cleanup-tag --repo akoSalman/room-releases || true
           gh release create latest-apk ../ChatRoom-latest.apk \
-            --title "ChatRoom (latest build)" \
-            --notes "Automated build from commit ${{ github.sha }} (run #${{ github.run_number }}). Always points to the most recent successful build." \
+            --title "ChatRoom v${{ github.run_number }}" \
+            --notes "version:${{ github.run_number }} — automated build from commit ${{ github.sha }}. Always points to the most recent successful build." \
             --repo akoSalman/room-releases

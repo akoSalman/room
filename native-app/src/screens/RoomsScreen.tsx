@@ -5,8 +5,10 @@ import {
 } from 'react-native';
 import { C, isRTL } from '../theme';
 import { apiFetch, getUsername, getUserId, getSocket, setAuth } from '../api';
+import { BUILD_VERSION } from '../version';
 
 const LATEST_APK_URL = 'https://github.com/akoSalman/room-releases/releases/download/latest-apk/ChatRoom-latest.apk';
+const LATEST_RELEASE_API = 'https://api.github.com/repos/akoSalman/room-releases/releases/tags/latest-apk';
 
 type Room = { id: number; name: string; is_dm: number; other_username?: string; created_by?: number };
 
@@ -30,6 +32,8 @@ export default function RoomsScreen({ onSelectRoom, onLogout }: {
   const [profileSuccess, setProfileSuccess] = useState('');
   const [savingProfile, setSavingProfile] = useState(false);
   const [unread, setUnread] = useState<Record<number, number>>({});
+  const [latestVersion, setLatestVersion] = useState<number | null>(null);
+  const [versionCheckFailed, setVersionCheckFailed] = useState(false);
 
   const load = useCallback(async () => {
     const [r, d, u, id] = await Promise.all([
@@ -105,6 +109,18 @@ export default function RoomsScreen({ onSelectRoom, onLogout }: {
   const myRooms = rooms.filter(r => r.created_by !== undefined && r.created_by === myId);
   const initials = (name: string) => name.slice(0, 2).toUpperCase();
 
+  async function checkLatestVersion() {
+    setVersionCheckFailed(false);
+    try {
+      const res = await fetch(LATEST_RELEASE_API).then(r => r.json());
+      const match = /version:(\d+)/.exec(res.body || '') || /v(\d+)/.exec(res.name || '');
+      if (match) setLatestVersion(parseInt(match[1]));
+      else setVersionCheckFailed(true);
+    } catch {
+      setVersionCheckFailed(true);
+    }
+  }
+
   async function saveProfile() {
     setProfileError('');
     setProfileSuccess('');
@@ -129,7 +145,7 @@ export default function RoomsScreen({ onSelectRoom, onLogout }: {
     <View style={s.container}>
       {/* Header */}
       <View style={s.header}>
-        <TouchableOpacity onPress={() => setShowProfile(true)}>
+        <TouchableOpacity onPress={() => { setShowProfile(true); checkLatestVersion(); }}>
           <View style={s.avatar}><Text style={s.avatarText}>{initials(me)}</Text></View>
         </TouchableOpacity>
         <Text style={s.headerTitle}>{me}</Text>
@@ -246,10 +262,24 @@ export default function RoomsScreen({ onSelectRoom, onLogout }: {
             {/* App Update */}
             <View style={s.section}>
               <Text style={s.sectionTitle}>APP UPDATE</Text>
-              <Text style={s.updateHint}>Download the latest build of the app.</Text>
-              <TouchableOpacity style={s.updateBtn} onPress={() => Linking.openURL(LATEST_APK_URL)}>
-                <Text style={s.updateBtnText}>⬇ Download latest APK</Text>
-              </TouchableOpacity>
+              <Text style={s.updateHint}>
+                Current version: {BUILD_VERSION || 'dev'}
+                {latestVersion !== null ? `  ·  Latest: ${latestVersion}` : ''}
+              </Text>
+              {latestVersion !== null && BUILD_VERSION === latestVersion ? (
+                <View style={s.upToDateBox}>
+                  <Text style={s.upToDateText}>✓ You are up to date</Text>
+                </View>
+              ) : (
+                <TouchableOpacity style={s.updateBtn} onPress={() => Linking.openURL(LATEST_APK_URL)}>
+                  <Text style={s.updateBtnText}>
+                    ⬇ Download {latestVersion !== null ? `version ${latestVersion}` : 'latest APK'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+              {versionCheckFailed && (
+                <Text style={s.versionCheckError}>Could not check for updates</Text>
+              )}
             </View>
 
             {/* Logout */}
@@ -332,6 +362,9 @@ const s = StyleSheet.create({
   updateHint: { color: C.muted, fontSize: 13, marginBottom: 10 },
   updateBtn: { backgroundColor: C.accent, borderRadius: 10, padding: 13, alignItems: 'center' },
   updateBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  upToDateBox: { backgroundColor: 'rgba(22,163,74,0.12)', borderWidth: 1, borderColor: C.success, borderRadius: 10, padding: 13, alignItems: 'center' },
+  upToDateText: { color: C.success, fontWeight: '700', fontSize: 15 },
+  versionCheckError: { color: C.muted, fontSize: 12, marginTop: 8, textAlign: 'center' },
 
   // Rename modal
   renameCard: { backgroundColor: C.sidebar, margin: 32, borderRadius: 16, padding: 20, borderWidth: 1, borderColor: C.border },

@@ -27,6 +27,7 @@ let editingRoomId = null;
 let typingTimer = null;
 let isTyping = false;
 const typingUsers = new Set();
+const recordingUsers = new Set();
 let replyTo = null; // { id, username, content, type }
 
 let onlineUsers = [];
@@ -167,6 +168,8 @@ function connectSocket() {
     socket.on('room_updated', (room) => updateRoomInList(room));
     socket.on('user_typing', ({ username: u }) => showTyping(u));
     socket.on('user_stopped_typing', ({ username: u }) => hideTyping(u));
+    socket.on('user_recording', ({ username: u }) => showRecordingUser(u));
+    socket.on('user_stopped_recording', ({ username: u }) => hideRecordingUser(u));
     socket.on('dm_activity', ({ room }) => ensureDMInSidebar(room));
   });
 }
@@ -205,13 +208,23 @@ function onTypingInput() {
 
 function showTyping(user) { typingUsers.add(user); renderTypingBar(); }
 function hideTyping(user) { typingUsers.delete(user); renderTypingBar(); }
+function showRecordingUser(user) { recordingUsers.add(user); renderTypingBar(); }
+function hideRecordingUser(user) { recordingUsers.delete(user); renderTypingBar(); }
 function renderTypingBar() {
   const bar = document.getElementById('typing-bar');
-  if (typingUsers.size === 0) { bar.classList.add('hidden'); return; }
-  const names = [...typingUsers];
-  const text = names.length === 1 ? `${names[0]} is typing`
-    : names.length === 2 ? `${names[0]} and ${names[1]} are typing`
-    : `${names[0]} and ${names.length - 1} others are typing`;
+  if (typingUsers.size === 0 && recordingUsers.size === 0) { bar.classList.add('hidden'); return; }
+  // Recording takes priority over typing in the indicator
+  let text;
+  if (recordingUsers.size > 0) {
+    const names = [...recordingUsers];
+    text = names.length === 1 ? `🎙 ${names[0]} is recording`
+      : `🎙 ${names[0]} and ${names.length - 1} others are recording`;
+  } else {
+    const names = [...typingUsers];
+    text = names.length === 1 ? `${names[0]} is typing`
+      : names.length === 2 ? `${names[0]} and ${names[1]} are typing`
+      : `${names[0]} and ${names.length - 1} others are typing`;
+  }
   bar.innerHTML = `<span>${text}</span><span class="typing-dots"><span></span><span></span><span></span></span>`;
   bar.classList.remove('hidden');
 }
@@ -251,7 +264,17 @@ function openProfile() {
   document.getElementById('profile-success').textContent = '';
   setAvatarInitials(username);
   loadMyRooms();
+  loadLatestAppVersion();
   show('profile-modal');
+}
+
+async function loadLatestAppVersion() {
+  const hint = document.getElementById('update-hint');
+  try {
+    const res = await fetch('https://api.github.com/repos/akoSalman/room-releases/releases/tags/latest-apk').then(r => r.json());
+    const match = /version:(\d+)/.exec(res.body || '') || /v(\d+)/.exec(res.name || '');
+    if (match) hint.textContent = `Latest Android build: version ${match[1]} (mobile only).`;
+  } catch { /* keep default hint */ }
 }
 
 async function loadMyRooms() {
@@ -452,7 +475,7 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   if (currentRoomId === roomId) return;
   cancelEdit(); stopTypingSignal();
   if (isRecording) stopRecording();
-  typingUsers.clear(); renderTypingBar();
+  typingUsers.clear(); recordingUsers.clear(); renderTypingBar();
   currentRoomId = roomId;
   currentRoomIsDM = isDM;
   clearUnread(roomId);
@@ -625,6 +648,7 @@ async function startRecording() {
     };
     mediaRecorder.start(100);
     isRecording = true;
+    socket?.emit('recording_start', { roomId: currentRoomId });
 
     // Web Audio analyser for live waveform
     recAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -694,6 +718,7 @@ function stopRecording() {
   if (recAudioCtx) { recAudioCtx.close(); recAudioCtx = null; recAnalyser = null; }
   if (mediaRecorder?.state !== 'inactive') mediaRecorder.stop();
   isRecording = false;
+  socket?.emit('recording_stop', { roomId: currentRoomId });
 }
 
 function cancelRecording() {
@@ -706,6 +731,7 @@ function cancelRecording() {
     mediaRecorder.stream?.getTracks().forEach(t => t.stop());
   }
   isRecording = false;
+  socket?.emit('recording_stop', { roomId: currentRoomId });
   resetRecordingUI();
 }
 
@@ -1145,8 +1171,14 @@ function currentVisibleMsgMarker() {
   return visible ? visible.dataset.msgId : 'bottom';
 }
 
-function jumpToMessage(messageId) {
-  const target = document.querySelector(`[data-msg-id="${messageId}"]`);
+async function jumpToMessage(messageId) {
+  let target = document.querySelector(`[data-msg-id="${messageId}"]`);
+
+  // Target is older than what's loaded — page backwards until we find it
+  while (!target && hasMoreOlderMsgs) {
+    await loadOlderMessages();
+    target = document.querySelector(`[data-msg-id="${messageId}"]`);
+  }
   if (!target) return;
 
   // Push where we came from so the FAB can walk back through each reply level

@@ -291,6 +291,14 @@ io.on('connection', (socket) => {
     socket.to(String(roomId)).emit('user_stopped_typing', { username: socket.user.username });
   });
 
+  socket.on('recording_start', ({ roomId }) => {
+    socket.to(String(roomId)).emit('user_recording', { username: socket.user.username });
+  });
+
+  socket.on('recording_stop', ({ roomId }) => {
+    socket.to(String(roomId)).emit('user_stopped_recording', { username: socket.user.username });
+  });
+
   socket.on('edit_message', ({ messageId, content }) => {
     if (!content || !content.trim()) return;
     const msg = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
@@ -358,6 +366,7 @@ io.on('connection', (socket) => {
     onlineUsers.delete(socket.id);
     if (info?.roomId) {
       io.to(info.roomId).emit('user_stopped_typing', { username: socket.user.username });
+      io.to(info.roomId).emit('user_stopped_recording', { username: socket.user.username });
       const roomOnline = [...onlineUsers.values()]
         .filter(u => u.roomId === info.roomId)
         .map(u => u.username);

@@ -52,6 +52,7 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
   const [me, setMe] = useState('');
   const [online, setOnline] = useState<string[]>([]);
   const [typing, setTyping] = useState<string[]>([]);
+  const [recordingUsers, setRecordingUsers] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [showEmojiFor, setShowEmojiFor] = useState<number | null>(null);
@@ -96,11 +97,18 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
     return true;
   }
 
-  function jumpToMessage(messageId: number) {
+  async function jumpToMessage(messageId: number) {
+    // Target may be older than what's loaded — page backwards until we find it
+    while (messagesRef.current.findIndex(m => m.id === messageId) === -1 && hasMoreOlderRef.current) {
+      await loadOlderMessages();
+    }
+    if (messagesRef.current.findIndex(m => m.id === messageId) === -1) return;
+
     // Push where we came from so the FAB can walk back through each reply level
     jumpBackStackRef.current.push(isNearBottomRef.current ? 'bottom' : (visibleIdRef.current ?? 'bottom'));
     setBackStackSize(jumpBackStackRef.current.length);
-    if (!scrollToId(messageId)) return;
+    // Give freshly prepended rows a moment to render before scrolling
+    setTimeout(() => scrollToId(messageId), 50);
     setHighlightId(messageId);
     setTimeout(() => setHighlightId(null), 1500);
   }
@@ -140,7 +148,9 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
     setLoadingOlder(false);
     if (!Array.isArray(older) || !older.length) { hasMoreOlderRef.current = false; return; }
     hasMoreOlderRef.current = older.length >= MESSAGES_PAGE_SIZE;
-    setMessages(prev => [...older, ...prev]);
+    // Sync the ref immediately so callers awaiting this (e.g. reply backfill) see the new page
+    messagesRef.current = [...older, ...messagesRef.current];
+    setMessages(messagesRef.current);
   }
 
   const fabVisible = showScrollFab || backStackSize > 0;
@@ -199,6 +209,12 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
       sock.on('user_stopped_typing', ({ username: u }: any) => {
         setTyping(prev => prev.filter(x => x !== u));
       });
+      sock.on('user_recording', ({ username: u }: any) => {
+        setRecordingUsers(prev => prev.includes(u) ? prev : [...prev, u]);
+      });
+      sock.on('user_stopped_recording', ({ username: u }: any) => {
+        setRecordingUsers(prev => prev.filter(x => x !== u));
+      });
     })();
     return () => {
       mounted = false;
@@ -209,6 +225,8 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
       socketRef.current?.off('room_online');
       socketRef.current?.off('user_typing');
       socketRef.current?.off('user_stopped_typing');
+      socketRef.current?.off('user_recording');
+      socketRef.current?.off('user_stopped_recording');
     };
   }, [room.id]);
 
@@ -307,6 +325,16 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
       roomId: room.id, type: 'audio', filePath: res.url, fileName: peakStr, replyToId: replyTo?.id ?? null,
     });
     setReplyTo(null);
+  }
+
+  function startRecordingUI() {
+    setRecording(true);
+    socketRef.current?.emit('recording_start', { roomId: room.id });
+  }
+
+  function stopRecordingUI() {
+    setRecording(false);
+    socketRef.current?.emit('recording_stop', { roomId: room.id });
   }
 
   function toggleReact(messageId: number, emoji: string) {
@@ -613,10 +641,12 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
         </TouchableOpacity>
       )}
 
-      {/* Typing indicator */}
-      {typing.filter(u => u !== me).length > 0 && (
+      {/* Recording / typing indicator (recording takes priority) */}
+      {recordingUsers.filter(u => u !== me).length > 0 ? (
+        <Text style={s.recordingBar}>🎙 {recordingUsers.filter(u => u !== me).join(', ')} is recording…</Text>
+      ) : typing.filter(u => u !== me).length > 0 ? (
         <Text style={s.typingBar}>{typing.filter(u => u !== me).join(', ')} is typing…</Text>
-      )}
+      ) : null}
 
       {/* Edit banner */}
       {editingId && (
@@ -675,15 +705,15 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
       {/* Voice recorder or input bar */}
       {recording ? (
         <VoiceRecorder
-          onCancel={() => setRecording(false)}
-          onSend={(uri, peaks) => { setRecording(false); sendVoice(uri, peaks); }}
+          onCancel={() => stopRecordingUI()}
+          onSend={(uri, peaks) => { stopRecordingUI(); sendVoice(uri, peaks); }}
         />
       ) : (
         <View style={s.inputBar}>
           <TouchableOpacity onPress={() => setShowAttachMenu(true)} style={s.iconBtn}>
             <Text style={s.iconBtnText}>📎</Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => setRecording(true)} style={s.iconBtn}>
+          <TouchableOpacity onPress={() => startRecordingUI()} style={s.iconBtn}>
             <Text style={s.iconBtnText}>🎙</Text>
           </TouchableOpacity>
           <TextInput
@@ -742,6 +772,7 @@ const s = StyleSheet.create({
   emojiBtn: { padding: 6 },
   emoji: { fontSize: 22 },
   typingBar: { color: C.success, fontSize: 12, textAlign: 'center', paddingVertical: 4, paddingHorizontal: 12 },
+  recordingBar: { color: C.danger, fontSize: 12, textAlign: 'center', paddingVertical: 4, paddingHorizontal: 12, fontWeight: '600' },
   editBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(82,136,193,0.12)', borderTopWidth: 1, borderTopColor: C.accent, padding: 10, paddingHorizontal: 14 },
   editText: { flex: 1, color: C.accent, fontSize: 13 },
   editClose: { color: C.muted, fontSize: 18 },
