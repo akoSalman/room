@@ -1,3 +1,7 @@
+import { I18nManager } from 'react-native';
+
+export const isRTL = I18nManager.isRTL;
+
 export const C = {
   bg:        '#f5f7fa',
   sidebar:   '#ffffff',

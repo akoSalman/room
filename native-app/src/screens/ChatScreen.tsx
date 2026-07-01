@@ -13,7 +13,7 @@ import * as FileSystem from 'expo-file-system';
 import {
   PinchGestureHandler, PanGestureHandler, State as GHState,
 } from 'react-native-gesture-handler';
-import { C } from '../theme';
+import { C, isRTL } from '../theme';
 import { apiFetch, getSocket, getToken, getUsername, BASE_URL } from '../api';
 import VoicePlayer from '../components/VoicePlayer';
 import VoiceRecorder from '../components/VoiceRecorder';
@@ -618,18 +618,18 @@ const s = StyleSheet.create({
   inputBar: { flexDirection: 'row', alignItems: 'flex-end', padding: 10, backgroundColor: C.header, borderTopWidth: 1, borderTopColor: C.border, gap: 6 },
   iconBtn: { padding: 8 },
   iconBtnText: { fontSize: 22 },
-  input: { flex: 1, backgroundColor: C.inputBg, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 10, color: C.text, fontSize: 15, borderWidth: 1, borderColor: C.border, maxHeight: 120 },
+  input: { flex: 1, backgroundColor: C.inputBg, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 10, color: C.text, fontSize: 15, borderWidth: 1, borderColor: C.border, maxHeight: 120, textAlign: isRTL ? 'right' : 'left' },
   sendBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
   sendBtnText: { color: '#fff', fontSize: 16 },
   scrollFab: {
-    position: 'absolute', right: 16, bottom: 90, width: 44, height: 44, borderRadius: 22,
+    position: 'absolute', end: 16, bottom: 90, width: 44, height: 44, borderRadius: 22,
     backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center',
     elevation: 4, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 6, shadowOffset: { width: 0, height: 2 },
   },
   scrollFabIcon: { color: '#fff', fontSize: 18, fontWeight: '700' },
   lightboxOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', alignItems: 'center', justifyContent: 'center' },
-  lightboxClose: { position: 'absolute', top: 50, right: 20, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
-  lightboxSave: { position: 'absolute', top: 50, right: 68, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
+  lightboxClose: { position: 'absolute', top: 50, end: 20, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
+  lightboxSave: { position: 'absolute', top: 50, end: 68, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
   lightboxCloseText: { color: '#fff', fontSize: 18 },
   lightboxImage: { width: '100%', height: '85%' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-start', alignItems: 'flex-end', paddingTop: 80, paddingRight: 12 },

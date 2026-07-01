@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { StatusBar, View } from 'react-native';
+import { StatusBar, View, I18nManager } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -8,6 +8,9 @@ import RoomsScreen from './src/screens/RoomsScreen';
 import ChatScreen from './src/screens/ChatScreen';
 import { disconnectSocket } from './src/api';
 import { C } from './src/theme';
+
+// Let the OS mirror layout automatically on RTL locales (e.g. Persian, Arabic)
+I18nManager.allowRTL(true);
 
 type Room = { id: number; name: string; is_dm: number; other_username?: string };
 type Screen = 'auth' | 'rooms' | 'chat';

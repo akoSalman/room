@@ -3,7 +3,7 @@ import {
   View, Text, FlatList, TouchableOpacity, TextInput,
   StyleSheet, Alert, ActivityIndicator, Modal, ScrollView, Linking,
 } from 'react-native';
-import { C } from '../theme';
+import { C, isRTL } from '../theme';
 import { apiFetch, getUsername, getUserId, getSocket, setAuth } from '../api';
 
 const LATEST_APK_URL = 'https://github.com/akoSalman/room-releases/releases/download/latest-apk/ChatRoom-latest.apk';
@@ -294,7 +294,7 @@ const s = StyleSheet.create({
   headerTitle: { flex: 1, color: C.text, fontWeight: '600', fontSize: 15 },
   logout: { color: C.danger, fontSize: 20, padding: 4 },
   createRow: { flexDirection: 'row', padding: 10, gap: 8, borderBottomWidth: 1, borderBottomColor: C.border },
-  createInput: { flex: 1, backgroundColor: C.inputBg, borderRadius: 8, padding: 8, color: C.text, fontSize: 14, borderWidth: 1, borderColor: C.border },
+  createInput: { flex: 1, backgroundColor: C.inputBg, borderRadius: 8, padding: 8, color: C.text, fontSize: 14, borderWidth: 1, borderColor: C.border, textAlign: isRTL ? 'right' : 'left' },
   createBtn: { backgroundColor: C.accent, borderRadius: 8, paddingHorizontal: 14, justifyContent: 'center' },
   createBtnText: { color: '#fff', fontSize: 20, fontWeight: '700' },
   roomItem: { flexDirection: 'row', alignItems: 'center', padding: 14, borderBottomWidth: 1, borderBottomColor: C.border, gap: 10 },
@@ -318,7 +318,7 @@ const s = StyleSheet.create({
   section: { paddingHorizontal: 20, paddingVertical: 14, borderTopWidth: 1, borderTopColor: C.border },
   sectionTitle: { color: C.muted, fontSize: 11, fontWeight: '700', letterSpacing: 0.5, marginBottom: 10 },
   emptyRooms: { color: C.muted, fontSize: 14 },
-  profileInput: { backgroundColor: C.inputBg, borderRadius: 8, padding: 10, color: C.text, fontSize: 14, borderWidth: 1, borderColor: C.border, marginBottom: 10 },
+  profileInput: { backgroundColor: C.inputBg, borderRadius: 8, padding: 10, color: C.text, fontSize: 14, borderWidth: 1, borderColor: C.border, marginBottom: 10, textAlign: isRTL ? 'right' : 'left' },
   profileErrorText: { color: C.danger, fontSize: 12, marginBottom: 8 },
   profileSuccessText: { color: C.online, fontSize: 12, marginBottom: 8 },
   saveProfileBtn: { backgroundColor: C.accent, borderRadius: 10, padding: 12, alignItems: 'center' },
@@ -336,7 +336,7 @@ const s = StyleSheet.create({
   // Rename modal
   renameCard: { backgroundColor: C.sidebar, margin: 32, borderRadius: 16, padding: 20, borderWidth: 1, borderColor: C.border },
   renameTitle: { color: C.text, fontWeight: '700', fontSize: 16, marginBottom: 14 },
-  renameInput: { backgroundColor: C.inputBg, borderRadius: 8, padding: 12, color: C.text, fontSize: 15, borderWidth: 1, borderColor: C.border, marginBottom: 16 },
+  renameInput: { backgroundColor: C.inputBg, borderRadius: 8, padding: 12, color: C.text, fontSize: 15, borderWidth: 1, borderColor: C.border, marginBottom: 16, textAlign: isRTL ? 'right' : 'left' },
   renameRow: { flexDirection: 'row', gap: 10 },
   renameCancel: { flex: 1, backgroundColor: C.inputBg, borderRadius: 8, padding: 12, alignItems: 'center' },
   renameCancelText: { color: C.muted, fontWeight: '600' },
