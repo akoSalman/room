@@ -782,6 +782,7 @@ function appendMessage(msg) {
   if (msg.reply_to_id && msg.reply_username) {
     const quote = document.createElement('div');
     quote.className = 'reply-quote';
+    quote.onclick = (e) => { e.stopPropagation(); jumpToMessage(msg.reply_to_id); };
     const quoteUser = document.createElement('span');
     quoteUser.className = 'reply-quote-user';
     quoteUser.textContent = msg.reply_username;
@@ -1048,6 +1049,15 @@ function buildVoicePlayer(msg) {
   };
 
   return player;
+}
+
+// ─── Jump to replied message ────────────────────────────────────────────────────
+function jumpToMessage(messageId) {
+  const target = document.querySelector(`[data-msg-id="${messageId}"]`);
+  if (!target) return;
+  target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  target.classList.add('msg-highlight');
+  setTimeout(() => target.classList.remove('msg-highlight'), 1500);
 }
 
 // ─── Lightbox ─────────────────────────────────────────────────────────────────

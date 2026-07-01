@@ -241,10 +241,20 @@ html {
   border-left: 3px solid var(--accent);
   padding: 5px 8px; border-radius: 4px;
   background: rgba(0,0,0,.18); margin-bottom: 6px;
-  cursor: default;
+  cursor: pointer;
 }
+.reply-quote:hover { background: rgba(0,0,0,.28); }
 .reply-quote-user { font-size: 0.7rem; font-weight: 700; color: var(--accent); }
 .reply-quote-text { font-size: 0.8rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+
+.msg-highlight .msg-bubble {
+  animation: msg-highlight-flash 1.5s ease;
+}
+@keyframes msg-highlight-flash {
+  0% { box-shadow: 0 0 0 2px var(--accent); }
+  70% { box-shadow: 0 0 0 2px var(--accent); }
+  100% { box-shadow: none; }
+}
 
 /* ── Input bar ────────────────────────────────────── */
 #input-bar {

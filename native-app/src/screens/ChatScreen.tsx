@@ -55,7 +55,9 @@ export default function ChatScreen({ room, onBack }: {
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<ReplyTo | null>(null);
   const [showOnline, setShowOnline] = useState(false);
+  const [highlightId, setHighlightId] = useState<number | null>(null);
   const flatListRef = useRef<FlatList>(null);
+  const messagesRef = useRef<Message[]>([]);
   const typingTimer = useRef<any>(null);
   const socketRef = useRef<any>(null);
   const meRef = useRef('');
@@ -64,6 +66,16 @@ export default function ChatScreen({ room, onBack }: {
   const scrollBottom = useCallback(() => {
     setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
   }, []);
+
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+
+  function jumpToMessage(messageId: number) {
+    const index = messagesRef.current.findIndex(m => m.id === messageId);
+    if (index === -1) return;
+    flatListRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.5 });
+    setHighlightId(messageId);
+    setTimeout(() => setHighlightId(null), 1500);
+  }
 
   useEffect(() => {
     // Request notification permission
@@ -253,16 +265,16 @@ export default function ChatScreen({ room, onBack }: {
       <View style={[s.msgWrapper, mine ? s.mine : s.theirs]}>
         {!mine && <Text style={s.sender}>{msg.username}</Text>}
         <TouchableOpacity
-          style={[s.bubble, mine ? s.mineBubble : s.theirsBubble]}
+          style={[s.bubble, mine ? s.mineBubble : s.theirsBubble, highlightId === msg.id && s.bubbleHighlight]}
           onLongPress={() => setShowEmojiFor(msg.id)}
           activeOpacity={0.85}
         >
           {/* Reply quote */}
           {msg.reply_to_id && msg.reply_username && (
-            <View style={s.replyQuote}>
+            <TouchableOpacity style={s.replyQuote} onPress={() => jumpToMessage(msg.reply_to_id!)}>
               <Text style={s.replyQuoteUser}>{msg.reply_username}</Text>
               <Text style={s.replyQuoteText} numberOfLines={1}>{replyPreview(msg)}</Text>
-            </View>
+            </TouchableOpacity>
           )}
 
           {msg.type === 'text' && (
@@ -392,6 +404,11 @@ export default function ChatScreen({ room, onBack }: {
           renderItem={renderMessage}
           contentContainerStyle={s.messagesList}
           onContentSizeChange={scrollBottom}
+          onScrollToIndexFailed={info => {
+            setTimeout(() => {
+              flatListRef.current?.scrollToIndex({ index: info.index, animated: true, viewPosition: 0.5 });
+            }, 100);
+          }}
         />
       )}
 
@@ -469,6 +486,7 @@ const s = StyleSheet.create({
   theirs: { alignSelf: 'flex-start', alignItems: 'flex-start' },
   sender: { fontSize: 11, color: C.accent, marginBottom: 2, paddingHorizontal: 4 },
   bubble: { borderRadius: 12, padding: 10, maxWidth: '100%' },
+  bubbleHighlight: { borderWidth: 2, borderColor: C.accent },
   mineBubble: { backgroundColor: C.mine, borderBottomRightRadius: 3 },
   theirsBubble: { backgroundColor: C.msgBg, borderBottomLeftRadius: 3 },
   msgText: { color: C.text, fontSize: 15, lineHeight: 21 },
