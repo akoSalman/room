@@ -162,6 +162,7 @@
 <!-- ── Lightbox ──────────────────────────────────── -->
 <div id="lightbox" class="hidden" onclick="closeLightbox()">
   <button class="lightbox-close" onclick="closeLightbox()">✕</button>
+  <button class="lightbox-download" onclick="event.stopPropagation(); downloadLightboxImage()">⬇</button>
   <img id="lightbox-img" src="" onclick="event.stopPropagation()" />
 </div>
 

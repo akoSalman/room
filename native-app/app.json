@@ -33,7 +33,8 @@
     "plugins": [
       ["expo-av", { "microphonePermission": "Allow ChatRoom to record voice messages." }],
       ["expo-image-picker", { "photosPermission": "Allow ChatRoom to attach photos." }],
-      ["expo-notifications", { "icon": "./assets/icon.png", "color": "#17212b" }]
+      ["expo-notifications", { "icon": "./assets/icon.png", "color": "#17212b" }],
+      ["expo-media-library", { "photosPermission": "Allow ChatRoom to save images to your device.", "savePhotosPermission": "Allow ChatRoom to save images to your device." }]
     ],
     "extra": {}
   }

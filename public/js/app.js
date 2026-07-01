@@ -1034,11 +1034,83 @@ function buildVoicePlayer(msg) {
 }
 
 // ─── Lightbox ─────────────────────────────────────────────────────────────────
+let lightboxScale = 1, lightboxX = 0, lightboxY = 0;
+let lightboxSrc = '';
+
 function openLightbox(src) {
-  document.getElementById('lightbox-img').src = src;
+  lightboxSrc = src;
+  lightboxScale = 1; lightboxX = 0; lightboxY = 0;
+  const img = document.getElementById('lightbox-img');
+  img.src = src;
+  applyLightboxTransform();
   show('lightbox');
 }
 function closeLightbox() { hide('lightbox'); }
+
+function applyLightboxTransform() {
+  const img = document.getElementById('lightbox-img');
+  img.style.transform = `translate(${lightboxX}px, ${lightboxY}px) scale(${lightboxScale})`;
+}
+
+function lightboxZoom(delta, clientX, clientY) {
+  const prevScale = lightboxScale;
+  lightboxScale = Math.min(5, Math.max(1, lightboxScale + delta));
+  if (lightboxScale === 1) { lightboxX = 0; lightboxY = 0; }
+  applyLightboxTransform();
+}
+
+function downloadLightboxImage() {
+  const a = document.createElement('a');
+  a.href = lightboxSrc;
+  a.download = lightboxSrc.split('/').pop() || 'image.jpg';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+(function setupLightboxGestures() {
+  function init() {
+    const img = document.getElementById('lightbox-img');
+    if (!img) return;
+    img.addEventListener('wheel', e => {
+      e.preventDefault();
+      lightboxZoom(e.deltaY < 0 ? 0.2 : -0.2);
+    });
+    let dragging = false, startX = 0, startY = 0;
+    img.addEventListener('mousedown', e => {
+      if (lightboxScale <= 1) return;
+      dragging = true; startX = e.clientX - lightboxX; startY = e.clientY - lightboxY;
+    });
+    window.addEventListener('mousemove', e => {
+      if (!dragging) return;
+      lightboxX = e.clientX - startX; lightboxY = e.clientY - startY;
+      applyLightboxTransform();
+    });
+    window.addEventListener('mouseup', () => dragging = false);
+
+    let lastDist = null, lastMidX = 0, lastMidY = 0;
+    img.addEventListener('touchstart', e => {
+      if (e.touches.length === 2) {
+        lastDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+      } else if (e.touches.length === 1 && lightboxScale > 1) {
+        lastMidX = e.touches[0].clientX - lightboxX; lastMidY = e.touches[0].clientY - lightboxY;
+      }
+    });
+    img.addEventListener('touchmove', e => {
+      if (e.touches.length === 2 && lastDist) {
+        const dist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+        lightboxZoom((dist - lastDist) * 0.01);
+        lastDist = dist;
+      } else if (e.touches.length === 1 && lightboxScale > 1) {
+        lightboxX = e.touches[0].clientX - lastMidX; lightboxY = e.touches[0].clientY - lastMidY;
+        applyLightboxTransform();
+      }
+    }, { passive: false });
+    img.addEventListener('touchend', e => { if (e.touches.length < 2) lastDist = null; });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
 
 // ─── Global click ─────────────────────────────────────────────────────────────
 function handleGlobalClick(e) {

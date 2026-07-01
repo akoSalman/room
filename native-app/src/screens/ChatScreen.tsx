@@ -8,10 +8,16 @@ import * as Notifications from 'expo-notifications';
 import { Audio } from 'expo-av';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
+import * as MediaLibrary from 'expo-media-library';
+import * as FileSystem from 'expo-file-system';
+import {
+  PinchGestureHandler, PanGestureHandler, State as GHState,
+} from 'react-native-gesture-handler';
 import { C } from '../theme';
 import { apiFetch, getSocket, getToken, getUsername, BASE_URL } from '../api';
 import VoicePlayer from '../components/VoicePlayer';
 import VoiceRecorder from '../components/VoiceRecorder';
+import ZoomableImage from '../components/ZoomableImage';
 
 // Show notifications even when app is foregrounded
 Notifications.setNotificationHandler({
@@ -209,6 +215,23 @@ export default function ChatScreen({ room, onBack }: {
     return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
 
+  async function saveImage() {
+    if (!lightboxUrl) return;
+    try {
+      const { status } = await MediaLibrary.requestPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Please allow access to save images to your device.');
+        return;
+      }
+      const localUri = FileSystem.cacheDirectory + `chatroom-${Date.now()}.jpg`;
+      const { uri } = await FileSystem.downloadAsync(lightboxUrl, localUri);
+      await MediaLibrary.saveToLibraryAsync(uri);
+      Alert.alert('Saved', 'Image saved to your gallery.');
+    } catch {
+      Alert.alert('Error', 'Could not save the image.');
+    }
+  }
+
   function replyPreview(msg: Message): string {
     if (msg.reply_type === 'audio') return '🎙 Voice message';
     if (msg.reply_type === 'image') return '🖼 Image';
@@ -342,14 +365,15 @@ export default function ChatScreen({ room, onBack }: {
 
       {/* Image lightbox */}
       <Modal visible={!!lightboxUrl} transparent animationType="fade" onRequestClose={() => setLightboxUrl(null)}>
-        <TouchableOpacity style={s.lightboxOverlay} activeOpacity={1} onPress={() => setLightboxUrl(null)}>
+        <View style={s.lightboxOverlay}>
           <TouchableOpacity onPress={() => setLightboxUrl(null)} style={s.lightboxClose}>
             <Text style={s.lightboxCloseText}>✕</Text>
           </TouchableOpacity>
-          {lightboxUrl && (
-            <Image source={{ uri: lightboxUrl }} style={s.lightboxImage} resizeMode="contain" />
-          )}
-        </TouchableOpacity>
+          <TouchableOpacity onPress={saveImage} style={s.lightboxSave}>
+            <Text style={s.lightboxCloseText}>⬇</Text>
+          </TouchableOpacity>
+          {lightboxUrl && <ZoomableImage uri={lightboxUrl} />}
+        </View>
       </Modal>
 
       {/* Messages */}
@@ -477,6 +501,7 @@ const s = StyleSheet.create({
   sendBtnText: { color: '#fff', fontSize: 16 },
   lightboxOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', alignItems: 'center', justifyContent: 'center' },
   lightboxClose: { position: 'absolute', top: 50, right: 20, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
+  lightboxSave: { position: 'absolute', top: 50, right: 68, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
   lightboxCloseText: { color: '#fff', fontSize: 18 },
   lightboxImage: { width: '100%', height: '85%' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-start', alignItems: 'flex-end', paddingTop: 80, paddingRight: 12 },

@@ -99,12 +99,12 @@ export default function VoicePlayer({ url, peaks: rawPeaks, mine }: {
 }
 
 const s = StyleSheet.create({
-  container: { flexDirection: 'row', alignItems: 'center', gap: 8, minWidth: 180, maxWidth: 240, paddingVertical: 2 },
-  playBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
+  container: { flexDirection: 'row', alignItems: 'center', gap: 8, width: 200, maxWidth: '100%', paddingVertical: 2 },
+  playBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   playIcon: { color: '#fff', fontSize: 14 },
-  waveform: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 2, height: 32 },
-  bar: { width: 3, borderRadius: 2 },
-  meta: { alignItems: 'flex-end', gap: 3 },
+  waveform: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 1, height: 32, overflow: 'hidden' },
+  bar: { flex: 1, minWidth: 1, maxWidth: 3, borderRadius: 2 },
+  meta: { alignItems: 'flex-end', gap: 3, flexShrink: 0 },
   duration: { color: C.muted, fontSize: 11, fontVariant: ['tabular-nums'] },
   speedBtn: { backgroundColor: 'rgba(82,136,193,0.2)', borderWidth: 1, borderColor: C.accent, borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1 },
   speedText: { color: C.accent, fontSize: 10, fontWeight: '700' },

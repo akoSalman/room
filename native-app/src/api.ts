@@ -10,6 +10,11 @@ export async function getUsername() {
   return AsyncStorage.getItem('username');
 }
 
+export async function setAuth(token: string, username: string) {
+  await AsyncStorage.setItem('token', token);
+  await AsyncStorage.setItem('username', username);
+}
+
 export async function getUserId(): Promise<number | null> {
   const token = await getToken();
   if (!token) return null;

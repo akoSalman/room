@@ -4,7 +4,7 @@ import {
   StyleSheet, Alert, ActivityIndicator, Modal, ScrollView,
 } from 'react-native';
 import { C } from '../theme';
-import { apiFetch, getUsername, getUserId, getSocket } from '../api';
+import { apiFetch, getUsername, getUserId, getSocket, setAuth } from '../api';
 
 type Room = { id: number; name: string; is_dm: number; other_username?: string; created_by?: number };
 
@@ -21,6 +21,12 @@ export default function RoomsScreen({ onSelectRoom, onLogout }: {
   const [showProfile, setShowProfile] = useState(false);
   const [renamingRoom, setRenamingRoom] = useState<Room | null>(null);
   const [renameText, setRenameText] = useState('');
+  const [newUsername, setNewUsername] = useState('');
+  const [curPass, setCurPass] = useState('');
+  const [newPass, setNewPass] = useState('');
+  const [profileError, setProfileError] = useState('');
+  const [profileSuccess, setProfileSuccess] = useState('');
+  const [savingProfile, setSavingProfile] = useState(false);
 
   const load = useCallback(async () => {
     const [r, d, u, id] = await Promise.all([
@@ -75,6 +81,26 @@ export default function RoomsScreen({ onSelectRoom, onLogout }: {
 
   const myRooms = rooms.filter(r => r.created_by !== undefined && r.created_by === myId);
   const initials = (name: string) => name.slice(0, 2).toUpperCase();
+
+  async function saveProfile() {
+    setProfileError('');
+    setProfileSuccess('');
+    if (!curPass) { setProfileError('Current password is required to save changes'); return; }
+    setSavingProfile(true);
+    const res = await apiFetch('/profile', 'PUT', {
+      newUsername: newUsername.trim() || undefined,
+      currentPassword: curPass,
+      newPassword: newPass || undefined,
+    });
+    setSavingProfile(false);
+    if (res.error) { setProfileError(res.error); return; }
+    await setAuth(res.token, res.username);
+    setMe(res.username);
+    setNewUsername('');
+    setCurPass('');
+    setNewPass('');
+    setProfileSuccess('Profile updated');
+  }
 
   return (
     <View style={s.container}>
@@ -144,6 +170,28 @@ export default function RoomsScreen({ onSelectRoom, onLogout }: {
               <Text style={s.profileName}>{me}</Text>
             </View>
 
+            {/* Edit profile */}
+            <View style={s.section}>
+              <Text style={s.sectionTitle}>EDIT PROFILE</Text>
+              <TextInput
+                style={s.profileInput} placeholder="New username" placeholderTextColor={C.muted}
+                value={newUsername} onChangeText={setNewUsername} autoCapitalize="none"
+              />
+              <TextInput
+                style={s.profileInput} placeholder="Current password (required)" placeholderTextColor={C.muted}
+                value={curPass} onChangeText={setCurPass} secureTextEntry
+              />
+              <TextInput
+                style={s.profileInput} placeholder="New password (optional)" placeholderTextColor={C.muted}
+                value={newPass} onChangeText={setNewPass} secureTextEntry
+              />
+              {!!profileError && <Text style={s.profileErrorText}>{profileError}</Text>}
+              {!!profileSuccess && <Text style={s.profileSuccessText}>{profileSuccess}</Text>}
+              <TouchableOpacity style={s.saveProfileBtn} onPress={saveProfile} disabled={savingProfile}>
+                <Text style={s.saveProfileBtnText}>{savingProfile ? 'Saving...' : 'Save changes'}</Text>
+              </TouchableOpacity>
+            </View>
+
             {/* My Rooms */}
             <View style={s.section}>
               <Text style={s.sectionTitle}>MY ROOMS</Text>
@@ -206,7 +254,7 @@ const s = StyleSheet.create({
   avatar: { width: 34, height: 34, borderRadius: 17, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
   avatarText: { color: '#fff', fontWeight: '700', fontSize: 13 },
   headerTitle: { flex: 1, color: C.text, fontWeight: '600', fontSize: 15 },
-  logout: { color: C.muted, fontSize: 20, padding: 4 },
+  logout: { color: C.danger, fontSize: 20, padding: 4 },
   createRow: { flexDirection: 'row', padding: 10, gap: 8, borderBottomWidth: 1, borderBottomColor: C.border },
   createInput: { flex: 1, backgroundColor: C.inputBg, borderRadius: 8, padding: 8, color: C.text, fontSize: 14, borderWidth: 1, borderColor: C.border },
   createBtn: { backgroundColor: C.accent, borderRadius: 8, paddingHorizontal: 14, justifyContent: 'center' },
@@ -230,6 +278,11 @@ const s = StyleSheet.create({
   section: { paddingHorizontal: 20, paddingVertical: 14, borderTopWidth: 1, borderTopColor: C.border },
   sectionTitle: { color: C.muted, fontSize: 11, fontWeight: '700', letterSpacing: 0.5, marginBottom: 10 },
   emptyRooms: { color: C.muted, fontSize: 14 },
+  profileInput: { backgroundColor: C.inputBg, borderRadius: 8, padding: 10, color: C.text, fontSize: 14, borderWidth: 1, borderColor: C.border, marginBottom: 10 },
+  profileErrorText: { color: C.danger, fontSize: 12, marginBottom: 8 },
+  profileSuccessText: { color: C.online, fontSize: 12, marginBottom: 8 },
+  saveProfileBtn: { backgroundColor: C.accent, borderRadius: 10, padding: 12, alignItems: 'center' },
+  saveProfileBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
   myRoomRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: C.border, gap: 6 },
   myRoomName: { flex: 1, color: C.text, fontSize: 15 },
   roomActionBtn: { padding: 6 },
