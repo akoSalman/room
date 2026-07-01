@@ -289,7 +289,7 @@ const s = StyleSheet.create({
   roomItem: { flexDirection: 'row', alignItems: 'center', padding: 14, borderBottomWidth: 1, borderBottomColor: C.border, gap: 10 },
   roomIcon: { fontSize: 16, color: C.muted },
   roomName: { flex: 1, color: C.text, fontSize: 15 },
-  unreadBadge: { backgroundColor: C.accent, borderRadius: 10, minWidth: 20, height: 20, paddingHorizontal: 5, alignItems: 'center', justifyContent: 'center' },
+  unreadBadge: { backgroundColor: C.online, borderRadius: 10, minWidth: 20, height: 20, paddingHorizontal: 5, alignItems: 'center', justifyContent: 'center' },
   unreadBadgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
   divider: { color: C.muted, fontSize: 11, fontWeight: '600', padding: 10, paddingTop: 14, letterSpacing: 0.5 },
 

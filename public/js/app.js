@@ -463,7 +463,7 @@ function updateOnlineUsers(users) {
   const badge = document.getElementById('online-indicator');
   if (!users.length) { badge.classList.add('hidden'); return; }
   badge.classList.remove('hidden');
-  badge.textContent = `● ${users.length} online`;
+  badge.textContent = `● ${users.length} online ›`;
   if (!document.getElementById('online-panel').classList.contains('hidden')) renderOnlinePanel();
 }
 function toggleOnlinePanel() {

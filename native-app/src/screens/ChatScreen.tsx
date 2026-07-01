@@ -18,6 +18,7 @@ import { apiFetch, getSocket, getToken, getUsername, BASE_URL } from '../api';
 import VoicePlayer from '../components/VoicePlayer';
 import VoiceRecorder from '../components/VoiceRecorder';
 import ZoomableImage from '../components/ZoomableImage';
+import SwipeableMessage from '../components/SwipeableMessage';
 
 // Show notifications even when app is foregrounded
 Notifications.setNotificationHandler({
@@ -264,6 +265,10 @@ export default function ChatScreen({ room, onBack }: {
     return (
       <View style={[s.msgWrapper, mine ? s.mine : s.theirs]}>
         {!mine && <Text style={s.sender}>{msg.username}</Text>}
+        <SwipeableMessage
+          onSwipeRight={() => setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type })}
+          onSwipeLeft={mine ? () => deleteMsg(msg.id) : undefined}
+        >
         <TouchableOpacity
           style={[s.bubble, mine ? s.mineBubble : s.theirsBubble, highlightId === msg.id && s.bubbleHighlight]}
           onLongPress={() => setShowEmojiFor(msg.id)}
@@ -296,6 +301,7 @@ export default function ChatScreen({ room, onBack }: {
             <Text style={s.fileLink}>📄 {msg.file_name || 'File'}</Text>
           )}
         </TouchableOpacity>
+        </SwipeableMessage>
 
         {/* Reactions */}
         {Object.keys(grouped).length > 0 && (
@@ -362,8 +368,9 @@ export default function ChatScreen({ room, onBack }: {
         </TouchableOpacity>
         <Text style={s.headerTitle} numberOfLines={1}>{room.is_dm ? '💬 ' : '# '}{title}</Text>
         {online.length > 0 && (
-          <TouchableOpacity style={s.onlineBadge} onPress={() => setShowOnline(true)}>
+          <TouchableOpacity style={s.onlineBadge} onPress={() => setShowOnline(true)} activeOpacity={0.6}>
             <Text style={s.onlineText}>● {online.length} online</Text>
+            <Text style={s.onlineChevron}>›</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -373,7 +380,7 @@ export default function ChatScreen({ room, onBack }: {
         <TouchableOpacity style={s.modalOverlay} onPress={() => setShowOnline(false)}>
           <View style={s.onlinePanel}>
             <Text style={s.onlinePanelTitle}>ONLINE NOW</Text>
-            {online.map(u => <Text key={u} style={s.onlineUser}>● {u}</Text>)}
+            {online.map(u => <Text key={u} style={s.onlineUser}>🟢 {u}</Text>)}
           </View>
         </TouchableOpacity>
       </Modal>
@@ -477,8 +484,9 @@ const s = StyleSheet.create({
   backBtn: { padding: 4 },
   backText: { color: C.accent, fontSize: 28, lineHeight: 32 },
   headerTitle: { flex: 1, color: C.text, fontWeight: '600', fontSize: 16 },
-  onlineBadge: { backgroundColor: 'rgba(74,222,128,0.15)', borderWidth: 1, borderColor: C.online, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4 },
+  onlineBadge: { flexDirection: 'row', alignItems: 'center', gap: 2, backgroundColor: 'rgba(74,222,128,0.15)', borderWidth: 1, borderColor: C.online, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4 },
   onlineText: { color: C.online, fontSize: 12, fontWeight: '600' },
+  onlineChevron: { color: C.online, fontSize: 14, fontWeight: '700', marginLeft: 1 },
   loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   messagesList: { padding: 12, gap: 6 },
   msgWrapper: { maxWidth: '80%', marginVertical: 2 },
