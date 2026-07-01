@@ -39,6 +39,7 @@ type Reaction = { emoji: string; username: string; user_id: number };
 type ReplyTo = { id: number; username: string; content: string | null; type: string };
 
 const EMOJIS = ['👍','❤️','😂','😮','😢','🔥','👏','🎉','🤔','😍','👎','😡'];
+const MESSAGES_PAGE_SIZE = 30;
 
 export default function ChatScreen({ room, onBack, onOpenDM }: {
   room: { id: number; name: string; is_dm: number; other_username?: string };
@@ -62,6 +63,9 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [showScrollFab, setShowScrollFab] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const hasMoreOlderRef = useRef(true);
+  const loadingOlderRef = useRef(false);
   const [backStackSize, setBackStackSize] = useState(0);
   const flatListRef = useRef<FlatList>(null);
   const messagesRef = useRef<Message[]>([]);
@@ -126,6 +130,19 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
     setShowScrollFab(!nearBottom);
   }
 
+  async function loadOlderMessages() {
+    if (loadingOlderRef.current || !hasMoreOlderRef.current || !messagesRef.current.length) return;
+    loadingOlderRef.current = true;
+    setLoadingOlder(true);
+    const oldestId = messagesRef.current[0].id;
+    const older = await apiFetch(`/messages/${room.id}?before=${oldestId}`);
+    loadingOlderRef.current = false;
+    setLoadingOlder(false);
+    if (!Array.isArray(older) || !older.length) { hasMoreOlderRef.current = false; return; }
+    hasMoreOlderRef.current = older.length >= MESSAGES_PAGE_SIZE;
+    setMessages(prev => [...older, ...prev]);
+  }
+
   const fabVisible = showScrollFab || backStackSize > 0;
   const fabIsBack = backStackSize > 0;
 
@@ -143,7 +160,10 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
       if (!mounted) return;
       setMe(u || '');
       meRef.current = u || '';
-      if (Array.isArray(msgs)) setMessages(msgs);
+      if (Array.isArray(msgs)) {
+        setMessages(msgs);
+        hasMoreOlderRef.current = msgs.length >= MESSAGES_PAGE_SIZE;
+      }
       setLoading(false);
       scrollBottom();
 
@@ -573,6 +593,12 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
           scrollEventThrottle={100}
           onViewableItemsChanged={onViewableItemsChanged}
           viewabilityConfig={viewabilityConfigRef}
+          onStartReached={loadOlderMessages}
+          onStartReachedThreshold={0.5}
+          maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+          ListHeaderComponent={loadingOlder ? (
+            <ActivityIndicator color={C.accent} size="small" style={{ marginVertical: 10 }} />
+          ) : null}
           onScrollToIndexFailed={info => {
             setTimeout(() => {
               flatListRef.current?.scrollToIndex({ index: info.index, animated: true, viewPosition: 0.5 });

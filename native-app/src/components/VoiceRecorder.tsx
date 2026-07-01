@@ -105,7 +105,7 @@ export default function VoiceRecorder({ onCancel, onSend }: {
         status => {
           if (!status.isLoaded) return;
           setPreviewProgress(status.positionMillis / (status.durationMillis || 1));
-          if (status.didJustFinish) { setPreviewPlaying(false); setPreviewProgress(0); }
+          if (status.didJustFinish) { setPreviewPlaying(false); setPreviewProgress(0); sound.setPositionAsync(0); }
         }
       );
       previewSoundRef.current = sound;
@@ -114,7 +114,12 @@ export default function VoiceRecorder({ onCancel, onSend }: {
       const st = await previewSoundRef.current.getStatusAsync();
       if (!st.isLoaded) return;
       if (st.isPlaying) { await previewSoundRef.current.pauseAsync(); setPreviewPlaying(false); }
-      else { await previewSoundRef.current.playAsync(); setPreviewPlaying(true); }
+      else {
+        if (st.didJustFinish || st.positionMillis >= (st.durationMillis || 0)) {
+          await previewSoundRef.current.setPositionAsync(0);
+        }
+        await previewSoundRef.current.playAsync(); setPreviewPlaying(true);
+      }
     }
   }
 

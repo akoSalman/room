@@ -162,19 +162,34 @@ app.get('/dm-rooms', authMiddleware, (req, res) => {
   res.json(rooms);
 });
 
-// Messages
+// Messages (paginated: most recent page by default, or the page before
+// `before` (a message id) for infinite-scroll-up loading of older history)
+const MESSAGES_PAGE_SIZE = 30;
 app.get('/messages/:roomId', authMiddleware, (req, res) => {
-  const messages = db.prepare(`
-    SELECT m.*, u.username,
-      rm.content AS reply_content, rm.type AS reply_type, rm.file_name AS reply_file_name,
-      ru.username AS reply_username
-    FROM messages m
-    JOIN users u ON m.user_id = u.id
-    LEFT JOIN messages rm ON m.reply_to_id = rm.id
-    LEFT JOIN users ru ON rm.user_id = ru.id
-    WHERE m.room_id = ?
-    ORDER BY m.created_at DESC LIMIT 50
-  `).all(req.params.roomId);
+  const before = parseInt(req.query.before);
+  const messages = before
+    ? db.prepare(`
+        SELECT m.*, u.username,
+          rm.content AS reply_content, rm.type AS reply_type, rm.file_name AS reply_file_name,
+          ru.username AS reply_username
+        FROM messages m
+        JOIN users u ON m.user_id = u.id
+        LEFT JOIN messages rm ON m.reply_to_id = rm.id
+        LEFT JOIN users ru ON rm.user_id = ru.id
+        WHERE m.room_id = ? AND m.id < ?
+        ORDER BY m.created_at DESC LIMIT ?
+      `).all(req.params.roomId, before, MESSAGES_PAGE_SIZE)
+    : db.prepare(`
+        SELECT m.*, u.username,
+          rm.content AS reply_content, rm.type AS reply_type, rm.file_name AS reply_file_name,
+          ru.username AS reply_username
+        FROM messages m
+        JOIN users u ON m.user_id = u.id
+        LEFT JOIN messages rm ON m.reply_to_id = rm.id
+        LEFT JOIN users ru ON rm.user_id = ru.id
+        WHERE m.room_id = ?
+        ORDER BY m.created_at DESC LIMIT ?
+      `).all(req.params.roomId, MESSAGES_PAGE_SIZE);
   res.json(messages.reverse());
 });
 

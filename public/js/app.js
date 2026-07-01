@@ -2,6 +2,9 @@ let token = localStorage.getItem('token');
 let username = localStorage.getItem('username');
 let currentRoomId = null;
 let currentRoomIsDM = false;
+let oldestLoadedMsgId = null;
+let hasMoreOlderMsgs = true;
+let loadingOlderMsgs = false;
 let socket = null;
 let socketReady = false;
 let mediaRecorder = null;
@@ -69,7 +72,10 @@ window.addEventListener('DOMContentLoaded', () => {
   }, { passive: false });
   if (token && username) { enterApp(); requestNotifPermission(); }
 
-  document.getElementById('messages').addEventListener('scroll', () => updateScrollFab());
+  document.getElementById('messages').addEventListener('scroll', () => {
+    updateScrollFab();
+    if (document.getElementById('messages').scrollTop < 80) loadOlderMessages();
+  });
 });
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -457,10 +463,30 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   document.getElementById('online-indicator').classList.add('hidden');
   jumpBackStack = [];
   document.getElementById('scroll-fab').classList.add('hidden');
+  oldestLoadedMsgId = null;
+  hasMoreOlderMsgs = true;
+  loadingOlderMsgs = false;
   socket.emit('join_room', roomId);
   const msgs = await api('/messages/' + roomId);
-  if (Array.isArray(msgs)) msgs.forEach(appendMessage);
+  if (Array.isArray(msgs)) {
+    msgs.forEach(appendMessage);
+    if (msgs.length) oldestLoadedMsgId = msgs[0].id;
+    hasMoreOlderMsgs = msgs.length >= MESSAGES_PAGE_SIZE;
+  }
   scrollBottom();
+}
+
+const MESSAGES_PAGE_SIZE = 30;
+
+async function loadOlderMessages() {
+  if (loadingOlderMsgs || !hasMoreOlderMsgs || !currentRoomId || !oldestLoadedMsgId) return;
+  loadingOlderMsgs = true;
+  const older = await api(`/messages/${currentRoomId}?before=${oldestLoadedMsgId}`);
+  loadingOlderMsgs = false;
+  if (!Array.isArray(older) || !older.length) { hasMoreOlderMsgs = false; return; }
+  oldestLoadedMsgId = older[0].id;
+  hasMoreOlderMsgs = older.length >= MESSAGES_PAGE_SIZE;
+  prependMessages(older);
 }
 
 // ─── Online users ─────────────────────────────────────────────────────────────
@@ -715,6 +741,7 @@ function showPreviewBar() {
   previewAudio = new Audio(url);
   previewAudio.onended = () => {
     document.getElementById('preview-play-btn').textContent = '▶';
+    previewAudio.currentTime = 0;
     updatePreviewBars(1);
   };
   previewAudio.ontimeupdate = () => {
@@ -744,8 +771,10 @@ function updatePreviewBars(pct) {
 function togglePreviewPlay() {
   if (!previewAudio) return;
   const btn = document.getElementById('preview-play-btn');
-  if (previewAudio.paused) { previewAudio.play(); btn.textContent = '⏸'; }
-  else { previewAudio.pause(); btn.textContent = '▶'; }
+  if (previewAudio.paused) {
+    if (previewAudio.ended || previewAudio.currentTime >= previewAudio.duration) previewAudio.currentTime = 0;
+    previewAudio.play(); btn.textContent = '⏸';
+  } else { previewAudio.pause(); btn.textContent = '▶'; }
 }
 
 function cancelPreview() {
@@ -769,8 +798,7 @@ async function sendRecording() {
 }
 
 // ─── Render messages ──────────────────────────────────────────────────────────
-function appendMessage(msg) {
-  const container = document.getElementById('messages');
+function buildMessageElement(msg) {
   const isMine = msg.username === username;
 
   const wrapper = document.createElement('div');
@@ -880,8 +908,26 @@ function appendMessage(msg) {
   const reactionsRow = document.createElement('div');
   reactionsRow.className = 'reactions-row'; reactionsRow.id = 'reactions-' + msg.id;
   wrapper.appendChild(reactionsRow);
-  container.appendChild(wrapper);
+  return wrapper;
+}
+
+function appendMessage(msg) {
+  const container = document.getElementById('messages');
+  container.appendChild(buildMessageElement(msg));
   scrollBottom();
+}
+
+// Prepend a page of older messages (already in ascending/chronological order)
+// while preserving the user's current scroll position.
+function prependMessages(msgs) {
+  if (!msgs.length) return;
+  const container = document.getElementById('messages');
+  const prevScrollHeight = container.scrollHeight;
+  const prevScrollTop = container.scrollTop;
+  const frag = document.createDocumentFragment();
+  msgs.forEach(m => frag.appendChild(buildMessageElement(m)));
+  container.insertBefore(frag, container.firstChild);
+  container.scrollTop = prevScrollTop + (container.scrollHeight - prevScrollHeight);
 }
 
 // ─── Context menu ─────────────────────────────────────────────────────────────
@@ -1053,13 +1099,17 @@ function buildVoicePlayer(msg) {
   audio.onended = () => {
     playing = false; playBtn.innerHTML = '▶';
     cancelAnimationFrame(rafId);
+    audio.currentTime = 0;
     updateBars();
     durEl.textContent = fmtTime(audio.duration);
   };
 
   playBtn.onclick = () => {
     if (playing) { audio.pause(); playBtn.innerHTML = '▶'; playing = false; cancelAnimationFrame(rafId); }
-    else { audio.play(); playBtn.innerHTML = '⏸'; playing = true; startRAF(); }
+    else {
+      if (audio.ended || audio.currentTime >= audio.duration) audio.currentTime = 0;
+      audio.play(); playBtn.innerHTML = '⏸'; playing = true; startRAF();
+    }
   };
 
   // Seek on waveform click

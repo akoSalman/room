@@ -46,6 +46,7 @@ export default function VoicePlayer({ url, peaks: rawPeaks, mine }: {
           if (status.didJustFinish) {
             setPlaying(false);
             setProgress(0);
+            sound.setPositionAsync(0);
           }
         }
       );
@@ -58,6 +59,9 @@ export default function VoicePlayer({ url, peaks: rawPeaks, mine }: {
         await soundRef.current.pauseAsync();
         setPlaying(false);
       } else {
+        if (status.didJustFinish || status.positionMillis >= (status.durationMillis || 0)) {
+          await soundRef.current.setPositionAsync(0);
+        }
         await soundRef.current.playAsync();
         setPlaying(true);
       }

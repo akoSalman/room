@@ -29,7 +29,7 @@ export default function MusicPlayer({ url, fileName, mine }: {
           if (!status.isLoaded) return;
           setProgress(status.positionMillis / (status.durationMillis || 1));
           setDuration((status.durationMillis || 0) / 1000);
-          if (status.didJustFinish) { setPlaying(false); setProgress(0); }
+          if (status.didJustFinish) { setPlaying(false); setProgress(0); sound.setPositionAsync(0); }
         }
       );
       soundRef.current = sound;
@@ -38,7 +38,12 @@ export default function MusicPlayer({ url, fileName, mine }: {
       const status = await soundRef.current.getStatusAsync();
       if (!status.isLoaded) return;
       if (status.isPlaying) { await soundRef.current.pauseAsync(); setPlaying(false); }
-      else { await soundRef.current.playAsync(); setPlaying(true); }
+      else {
+        if (status.didJustFinish || status.positionMillis >= (status.durationMillis || 0)) {
+          await soundRef.current.setPositionAsync(0);
+        }
+        await soundRef.current.playAsync(); setPlaying(true);
+      }
     }
   }
 
