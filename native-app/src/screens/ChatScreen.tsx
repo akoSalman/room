@@ -58,11 +58,12 @@ export default function ChatScreen({ room, onBack }: {
   const [showOnline, setShowOnline] = useState(false);
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [showScrollFab, setShowScrollFab] = useState(false);
-  const [jumpBackId, setJumpBackId] = useState<number | 'bottom' | null>(null);
+  const [backStackSize, setBackStackSize] = useState(0);
   const flatListRef = useRef<FlatList>(null);
   const messagesRef = useRef<Message[]>([]);
   const visibleIdRef = useRef<number | null>(null);
   const isNearBottomRef = useRef(true);
+  const jumpBackStackRef = useRef<Array<number | 'bottom'>>([]);
   const typingTimer = useRef<any>(null);
   const socketRef = useRef<any>(null);
   const meRef = useRef('');
@@ -82,23 +83,22 @@ export default function ChatScreen({ room, onBack }: {
   }
 
   function jumpToMessage(messageId: number) {
-    setJumpBackId(isNearBottomRef.current ? 'bottom' : (visibleIdRef.current ?? 'bottom'));
+    // Push where we came from so the FAB can walk back through each reply level
+    jumpBackStackRef.current.push(isNearBottomRef.current ? 'bottom' : (visibleIdRef.current ?? 'bottom'));
+    setBackStackSize(jumpBackStackRef.current.length);
     if (!scrollToId(messageId)) return;
     setHighlightId(messageId);
     setTimeout(() => setHighlightId(null), 1500);
   }
 
   function handleScrollFabPress() {
-    if (jumpBackId && jumpBackId !== 'bottom') {
-      const id = jumpBackId;
-      setJumpBackId(null);
-      if (scrollToId(id)) {
-        setHighlightId(id);
-        setTimeout(() => setHighlightId(null), 1500);
-        return;
-      }
+    const marker = jumpBackStackRef.current.pop();
+    setBackStackSize(jumpBackStackRef.current.length);
+    if (marker && marker !== 'bottom' && scrollToId(marker)) {
+      setHighlightId(marker);
+      setTimeout(() => setHighlightId(null), 1500);
+      return;
     }
-    setJumpBackId(null);
     scrollBottom();
   }
 
@@ -116,8 +116,8 @@ export default function ChatScreen({ room, onBack }: {
     setShowScrollFab(!nearBottom);
   }
 
-  const fabVisible = showScrollFab || jumpBackId !== null;
-  const fabIsBack = jumpBackId !== null && jumpBackId !== 'bottom';
+  const fabVisible = showScrollFab || backStackSize > 0;
+  const fabIsBack = backStackSize > 0;
 
   useEffect(() => {
     // Request notification permission

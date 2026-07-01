@@ -453,7 +453,7 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   document.getElementById('room-title').textContent = (isDM ? '💬 ' : '# ') + roomName;
   document.getElementById('messages').innerHTML = '';
   document.getElementById('online-indicator').classList.add('hidden');
-  jumpBackMsgId = null;
+  jumpBackStack = [];
   document.getElementById('scroll-fab').classList.add('hidden');
   socket.emit('join_room', roomId);
   const msgs = await api('/messages/' + roomId);
@@ -1055,26 +1055,27 @@ function buildVoicePlayer(msg) {
   return player;
 }
 
-// ─── Jump to replied message ────────────────────────────────────────────────────
-let jumpBackMsgId = null;
+// ─── Jump to replied message (multi-level back stack) ──────────────────────────
+let jumpBackStack = [];
+
+function currentVisibleMsgMarker() {
+  const container = document.getElementById('messages');
+  const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
+  if (nearBottom) return 'bottom';
+  const visible = [...container.querySelectorAll('.msg-wrapper')].find(el => {
+    const r = el.getBoundingClientRect();
+    const cr = container.getBoundingClientRect();
+    return r.top >= cr.top && r.top <= cr.bottom;
+  });
+  return visible ? visible.dataset.msgId : 'bottom';
+}
 
 function jumpToMessage(messageId) {
   const target = document.querySelector(`[data-msg-id="${messageId}"]`);
   if (!target) return;
 
-  // Remember where we came from so the FAB can bring us back
-  const container = document.getElementById('messages');
-  const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
-  if (!nearBottom) {
-    const visible = [...container.querySelectorAll('.msg-wrapper')].find(el => {
-      const r = el.getBoundingClientRect();
-      const cr = container.getBoundingClientRect();
-      return r.top >= cr.top && r.top <= cr.bottom;
-    });
-    jumpBackMsgId = visible ? visible.dataset.msgId : null;
-  } else {
-    jumpBackMsgId = 'bottom';
-  }
+  // Push where we came from so the FAB can walk back through each reply level
+  jumpBackStack.push(currentVisibleMsgMarker());
   updateScrollFab();
 
   target.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1083,18 +1084,22 @@ function jumpToMessage(messageId) {
 }
 
 function handleScrollFabClick() {
-  if (jumpBackMsgId && jumpBackMsgId !== 'bottom') {
-    const el = document.querySelector(`[data-msg-id="${jumpBackMsgId}"]`);
-    jumpBackMsgId = null;
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      el.classList.add('msg-highlight');
-      setTimeout(() => el.classList.remove('msg-highlight'), 1500);
-      updateScrollFab();
-      return;
+  if (jumpBackStack.length > 0) {
+    const marker = jumpBackStack.pop();
+    if (marker && marker !== 'bottom') {
+      const el = document.querySelector(`[data-msg-id="${marker}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.classList.add('msg-highlight');
+        setTimeout(() => el.classList.remove('msg-highlight'), 1500);
+        updateScrollFab();
+        return;
+      }
     }
+    scrollBottom();
+    updateScrollFab();
+    return;
   }
-  jumpBackMsgId = null;
   scrollBottom();
   updateScrollFab();
 }
@@ -1105,13 +1110,12 @@ function updateScrollFab() {
   if (!container || !fab) return;
   const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
 
-  if (jumpBackMsgId && jumpBackMsgId !== 'bottom') {
+  if (jumpBackStack.length > 0) {
     fab.textContent = '↩';
-    fab.title = 'Back to where you were';
+    fab.title = `Back (${jumpBackStack.length})`;
     fab.classList.remove('hidden');
     return;
   }
-  jumpBackMsgId = null;
   fab.textContent = '↓';
   fab.title = 'Scroll to latest';
   if (nearBottom) fab.classList.add('hidden');
