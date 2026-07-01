@@ -6,7 +6,7 @@ import {
 import { C } from '../theme';
 import { apiFetch, getUsername, getUserId, getSocket, setAuth } from '../api';
 
-const LATEST_APK_URL = 'https://github.com/akoSalman/room/releases/download/latest-apk/ChatRoom-latest.apk';
+const LATEST_APK_URL = 'https://github.com/akoSalman/room-releases/releases/download/latest-apk/ChatRoom-latest.apk';
 
 type Room = { id: number; name: string; is_dm: number; other_username?: string; created_by?: number };
 
