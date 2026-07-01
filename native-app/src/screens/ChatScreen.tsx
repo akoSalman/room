@@ -58,10 +58,8 @@ export default function ChatScreen({ room, onBack }: {
   const [showOnline, setShowOnline] = useState(false);
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [showScrollFab, setShowScrollFab] = useState(false);
-  const [jumpBackId, setJumpBackId] = useState<number | 'bottom' | null>(null);
   const flatListRef = useRef<FlatList>(null);
   const messagesRef = useRef<Message[]>([]);
-  const visibleIdRef = useRef<number | null>(null);
   const isNearBottomRef = useRef(true);
   const typingTimer = useRef<any>(null);
   const socketRef = useRef<any>(null);
@@ -82,32 +80,14 @@ export default function ChatScreen({ room, onBack }: {
   }
 
   function jumpToMessage(messageId: number) {
-    setJumpBackId(isNearBottomRef.current ? 'bottom' : (visibleIdRef.current ?? 'bottom'));
     if (!scrollToId(messageId)) return;
     setHighlightId(messageId);
     setTimeout(() => setHighlightId(null), 1500);
   }
 
   function handleScrollFabPress() {
-    if (jumpBackId && jumpBackId !== 'bottom') {
-      const id = jumpBackId;
-      setJumpBackId(null);
-      if (scrollToId(id)) {
-        setHighlightId(id);
-        setTimeout(() => setHighlightId(null), 1500);
-        return;
-      }
-    }
-    setJumpBackId(null);
     scrollBottom();
   }
-
-  const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
-    if (viewableItems.length > 0) {
-      visibleIdRef.current = viewableItems[0].item.id;
-    }
-  }).current;
-  const viewabilityConfigRef = useRef({ itemVisiblePercentThreshold: 50 }).current;
 
   function onMessagesScroll(e: any) {
     const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
@@ -115,9 +95,6 @@ export default function ChatScreen({ room, onBack }: {
     isNearBottomRef.current = nearBottom;
     setShowScrollFab(!nearBottom);
   }
-
-  const fabVisible = showScrollFab || jumpBackId !== null;
-  const fabIsBack = jumpBackId !== null && jumpBackId !== 'bottom';
 
   useEffect(() => {
     // Request notification permission
@@ -454,8 +431,6 @@ export default function ChatScreen({ room, onBack }: {
           onContentSizeChange={() => { if (isNearBottomRef.current) scrollBottom(); }}
           onScroll={onMessagesScroll}
           scrollEventThrottle={100}
-          onViewableItemsChanged={onViewableItemsChanged}
-          viewabilityConfig={viewabilityConfigRef}
           onScrollToIndexFailed={info => {
             setTimeout(() => {
               flatListRef.current?.scrollToIndex({ index: info.index, animated: true, viewPosition: 0.5 });
@@ -464,9 +439,9 @@ export default function ChatScreen({ room, onBack }: {
         />
       )}
 
-      {fabVisible && (
+      {showScrollFab && (
         <TouchableOpacity style={s.scrollFab} onPress={handleScrollFabPress}>
-          <Text style={s.scrollFabIcon}>{fabIsBack ? '↩' : '↓'}</Text>
+          <Text style={s.scrollFabIcon}>↓</Text>
         </TouchableOpacity>
       )}
 
