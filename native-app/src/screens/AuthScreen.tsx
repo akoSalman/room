@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
   StyleSheet, ActivityIndicator, KeyboardAvoidingView,
-  Platform, ScrollView, Alert,
+  Platform, ScrollView, Alert, Image,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { C } from '../theme';
@@ -40,7 +40,7 @@ export default function AuthScreen({ onLogin }: { onLogin: () => void }) {
   return (
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={s.flex}>
       <ScrollView contentContainerStyle={s.container} keyboardShouldPersistTaps="handled">
-        <Text style={s.logo}>💬</Text>
+        <Image source={require('../../assets/icon.png')} style={s.logoImg} />
         <Text style={s.title}>ChatRoom</Text>
         <Text style={s.sub}>Sign in or create an account</Text>
 
@@ -70,7 +70,7 @@ export default function AuthScreen({ onLogin }: { onLogin: () => void }) {
 const s = StyleSheet.create({
   flex: { flex: 1, backgroundColor: C.bg },
   container: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
-  logo: { fontSize: 56, marginBottom: 8 },
+  logoImg: { width: 88, height: 88, borderRadius: 22, marginBottom: 12 },
   title: { fontSize: 28, fontWeight: '700', color: C.text, marginBottom: 4 },
   sub: { fontSize: 14, color: C.muted, marginBottom: 32, textAlign: 'center' },
   card: { width: '100%', maxWidth: 380, backgroundColor: C.sidebar, borderRadius: 20, padding: 24, borderWidth: 1, borderColor: C.border },

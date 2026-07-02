@@ -39,7 +39,7 @@ type Reaction = { emoji: string; username: string; user_id: number };
 type ReplyTo = { id: number; username: string; content: string | null; type: string };
 
 const EMOJIS = ['👍','❤️','😂','😮','😢','🔥','👏','🎉','🤔','😍','👎','😡'];
-const MESSAGES_PAGE_SIZE = 30;
+const MESSAGES_PAGE_SIZE = 15;
 
 export default function ChatScreen({ room, onBack, onOpenDM }: {
   room: { id: number; name: string; is_dm: number; other_username?: string };

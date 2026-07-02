@@ -499,7 +499,7 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   scrollBottom();
 }
 
-const MESSAGES_PAGE_SIZE = 30;
+const MESSAGES_PAGE_SIZE = 15;
 
 async function loadOlderMessages() {
   if (loadingOlderMsgs || !hasMoreOlderMsgs || !currentRoomId || !oldestLoadedMsgId) return;
