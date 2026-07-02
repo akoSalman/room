@@ -17,6 +17,11 @@ class AudioManager {
   duration = 0; // seconds
   rate = 1;
 
+  // Bumped on every play() call so overlapping calls (e.g. rapid re-taps
+  // while a previous load is still in flight) can detect they've been
+  // superseded and unload themselves instead of playing alongside the winner.
+  private playToken = 0;
+
   private listeners = new Set<Listener>();
   private finishHandler: FinishHandler | null = null;
 
@@ -29,6 +34,10 @@ class AudioManager {
   setFinishHandler(cb: FinishHandler | null) { this.finishHandler = cb; }
 
   async play(id: number, uri: string, label: string, roomId: number | null = null, roomMeta: any = null) {
+    // Claim this play request immediately so any call already in flight
+    // (e.g. from a prior tap) knows it's been superseded once it resolves.
+    const token = ++this.playToken;
+
     try {
       await Audio.setAudioModeAsync({
         staysActiveInBackground: true,
@@ -39,11 +48,14 @@ class AudioManager {
         allowsRecordingIOS: false,
       });
     } catch {}
+    if (token !== this.playToken) return; // superseded while awaiting audio mode
 
     if (this.sound) {
       try { await this.sound.unloadAsync(); } catch {}
       this.sound = null;
     }
+    if (token !== this.playToken) return; // superseded while unloading previous sound
+
     this.currentId = id;
     this.roomId = roomId;
     this.roomMeta = roomMeta;
@@ -58,6 +70,7 @@ class AudioManager {
         { uri },
         { shouldPlay: true, rate: this.rate, shouldCorrectPitch: true },
         status => {
+          if (token !== this.playToken) return; // stale sound's status updates — ignore
           if (!status.isLoaded) return;
           this.progress = status.positionMillis / (status.durationMillis || 1);
           this.duration = (status.durationMillis || 0) / 1000;
@@ -74,9 +87,16 @@ class AudioManager {
           this.emit();
         }
       );
+      if (token !== this.playToken) {
+        // A newer play() call won the race while this one was loading —
+        // don't let this sound become (or keep playing as) an orphan.
+        try { await sound.unloadAsync(); } catch {}
+        return;
+      }
       this.sound = sound;
       this.emit();
     } catch {
+      if (token !== this.playToken) return;
       this.currentId = null;
       this.playing = false;
       this.emit();
@@ -101,6 +121,7 @@ class AudioManager {
   }
 
   async stop() {
+    ++this.playToken; // invalidate any in-flight play() so it unloads itself instead of taking over
     if (this.sound) {
       try { await this.sound.unloadAsync(); } catch {}
       this.sound = null;
