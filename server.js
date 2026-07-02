@@ -139,8 +139,15 @@ app.post('/rooms', authMiddleware, (req, res) => {
 let fcmCreds = null;
 try {
   const svcPath = process.env.FIREBASE_SERVICE_ACCOUNT || path.join(__dirname, 'firebase-service-account.json');
-  if (fs.existsSync(svcPath)) fcmCreds = JSON.parse(fs.readFileSync(svcPath, 'utf8'));
-} catch {}
+  if (fs.existsSync(svcPath)) {
+    fcmCreds = JSON.parse(fs.readFileSync(svcPath, 'utf8'));
+    console.log(`[FCM] Loaded service account for project "${fcmCreds.project_id}" from ${svcPath}`);
+  } else {
+    console.warn(`[FCM] No service account found at ${svcPath} — push notifications disabled`);
+  }
+} catch (err) {
+  console.error('[FCM] Failed to load/parse service account:', err.message);
+}
 let fcmToken = null;
 let fcmTokenExp = 0;
 
@@ -160,7 +167,10 @@ async function getFcmAccessToken() {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: `grant_type=${encodeURIComponent('urn:ietf:params:oauth:grant-type:jwt-bearer')}&assertion=${encodeURIComponent(assertion)}`,
   }).then(r => r.json());
-  if (!res.access_token) return null;
+  if (!res.access_token) {
+    console.error('[FCM] Failed to obtain access token:', JSON.stringify(res));
+    return null;
+  }
   fcmToken = res.access_token;
   fcmTokenExp = Date.now() + 50 * 60 * 1000;
   return fcmToken;
@@ -187,13 +197,18 @@ async function sendPushToUsers(userIds, title, body, data = {}) {
             android: { priority: 'high', notification: { channel_id: 'messages' } },
           },
         }),
-      }).then(r => {
+      }).then(async r => {
         if (r.status === 404 || r.status === 400) {
           db.prepare('DELETE FROM push_tokens WHERE token = ?').run(t);
+          console.warn(`[FCM] Removed invalid token (status ${r.status})`);
+        } else if (!r.ok) {
+          console.error(`[FCM] Send failed (status ${r.status}):`, await r.text());
         }
-      }).catch(() => {})
+      }).catch(err => console.error('[FCM] Send request error:', err.message))
     ));
-  } catch {}
+  } catch (err) {
+    console.error('[FCM] sendPushToUsers error:', err.message);
+  }
 }
 
 function messagePreview(msg) {
