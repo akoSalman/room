@@ -164,7 +164,7 @@ app.get('/dm-rooms', authMiddleware, (req, res) => {
 
 // Messages (paginated: most recent page by default, or the page before
 // `before` (a message id) for infinite-scroll-up loading of older history)
-const MESSAGES_PAGE_SIZE = 15;
+const MESSAGES_PAGE_SIZE = 20;
 app.get('/messages/:roomId', authMiddleware, (req, res) => {
   const before = parseInt(req.query.before);
   const messages = before

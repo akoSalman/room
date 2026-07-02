@@ -39,7 +39,7 @@ type Reaction = { emoji: string; username: string; user_id: number };
 type ReplyTo = { id: number; username: string; content: string | null; type: string };
 
 const EMOJIS = ['👍','❤️','😂','😮','😢','🔥','👏','🎉','🤔','😍','👎','😡'];
-const MESSAGES_PAGE_SIZE = 15;
+const MESSAGES_PAGE_SIZE = 20;
 
 export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
   room: { id: number; name: string; is_dm: number; other_username?: string };
@@ -74,14 +74,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
   const visibleIdRef = useRef<number | null>(null);
   const isNearBottomRef = useRef(true);
   const jumpBackStackRef = useRef<Array<number | 'bottom'>>([]);
-  const itemLayoutsRef = useRef<Record<number, number>>({});
   const typingTimer = useRef<any>(null);
   const socketRef = useRef<any>(null);
   const meRef = useRef('');
   const title = room.is_dm ? (room.other_username || '') : room.name;
 
+  // The FlatList is inverted (index 0 renders at the visual bottom), so the
+  // latest message is on screen from the first frame with no scroll jump.
+  const invertedMessages = React.useMemo(() => [...messages].reverse(), [messages]);
+
   const scrollBottom = useCallback(() => {
-    setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+    flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
   }, []);
 
   useEffect(() => { messagesRef.current = messages; }, [messages]);
@@ -89,12 +92,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
   function scrollToId(messageId: number) {
     const index = messagesRef.current.findIndex(m => m.id === messageId);
     if (index === -1) return false;
-    const y = itemLayoutsRef.current[messageId];
-    if (y !== undefined) {
-      flatListRef.current?.scrollToOffset({ offset: Math.max(0, y - 60), animated: true });
-    } else {
-      flatListRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.3 });
-    }
+    const invertedIndex = messagesRef.current.length - 1 - index;
+    flatListRef.current?.scrollToIndex({ index: invertedIndex, animated: true, viewPosition: 0.5 });
     return true;
   }
 
@@ -133,8 +132,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
   const viewabilityConfigRef = useRef({ itemVisiblePercentThreshold: 50 }).current;
 
   function onMessagesScroll(e: any) {
-    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
-    const nearBottom = contentSize.height - contentOffset.y - layoutMeasurement.height < 80;
+    // Inverted list: offset 0 == visual bottom (latest message)
+    const nearBottom = e.nativeEvent.contentOffset.y < 80;
     isNearBottomRef.current = nearBottom;
     setShowScrollFab(!nearBottom);
   }
@@ -176,7 +175,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
         hasMoreOlderRef.current = msgs.length >= MESSAGES_PAGE_SIZE;
       }
       setLoading(false);
-      scrollBottom();
 
       socketRef.current = sock;
       sock.emit('join_room', room.id);
@@ -184,7 +182,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
       sock.on('message_received', (msg: Message) => {
         if (msg.room_id !== room.id) return;
         setMessages(prev => [...prev, msg]);
-        scrollBottom();
+        if (isNearBottomRef.current) scrollBottom();
         // Show notification if message is from someone else
         if (msg.username !== meRef.current) {
           const body = msg.type === 'text' ? (msg.content || '') : msg.type === 'audio' ? '🎙 Voice message' : msg.type === 'image' ? '🖼 Image' : msg.type === 'video' ? '🎥 Video' : msg.type === 'music' ? '🎵 Audio file' : '📄 File';
@@ -405,7 +403,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
     return (
       <View
         style={[s.msgWrapper, mine ? s.mine : s.theirs]}
-        onLayout={e => { itemLayoutsRef.current[msg.id] = e.nativeEvent.layout.y; }}
       >
         {!mine && (
           room.is_dm ? (
@@ -616,19 +613,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
       ) : (
         <FlatList
           ref={flatListRef}
-          data={messages}
+          data={invertedMessages}
+          inverted
           keyExtractor={m => String(m.id)}
           renderItem={renderMessage}
           contentContainerStyle={s.messagesList}
-          onContentSizeChange={() => { if (isNearBottomRef.current) scrollBottom(); }}
           onScroll={onMessagesScroll}
           scrollEventThrottle={100}
           onViewableItemsChanged={onViewableItemsChanged}
           viewabilityConfig={viewabilityConfigRef}
-          onStartReached={loadOlderMessages}
-          onStartReachedThreshold={0.5}
-          maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
-          ListHeaderComponent={loadingOlder ? (
+          onEndReached={loadOlderMessages}
+          onEndReachedThreshold={1.5}
+          ListFooterComponent={loadingOlder ? (
             <ActivityIndicator color={C.accent} size="small" style={{ marginVertical: 10 }} />
           ) : null}
           onScrollToIndexFailed={info => {

@@ -46,7 +46,9 @@ export default function VoicePlayer({ url, peaks: rawPeaks, mine }: {
           if (status.didJustFinish) {
             setPlaying(false);
             setProgress(0);
-            sound.setPositionAsync(0);
+            // stopAsync (not a seek) — seeking a finished player restarts
+            // playback on Android, which made clips replay in a loop
+            sound.stopAsync();
           }
         }
       );

@@ -105,7 +105,7 @@ export default function VoiceRecorder({ onCancel, onSend }: {
         status => {
           if (!status.isLoaded) return;
           setPreviewProgress(status.positionMillis / (status.durationMillis || 1));
-          if (status.didJustFinish) { setPreviewPlaying(false); setPreviewProgress(0); sound.setPositionAsync(0); }
+          if (status.didJustFinish) { setPreviewPlaying(false); setPreviewProgress(0); sound.stopAsync(); }
         }
       );
       previewSoundRef.current = sound;

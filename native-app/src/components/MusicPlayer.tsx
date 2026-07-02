@@ -29,7 +29,7 @@ export default function MusicPlayer({ url, fileName, mine }: {
           if (!status.isLoaded) return;
           setProgress(status.positionMillis / (status.durationMillis || 1));
           setDuration((status.durationMillis || 0) / 1000);
-          if (status.didJustFinish) { setPlaying(false); setProgress(0); sound.setPositionAsync(0); }
+          if (status.didJustFinish) { setPlaying(false); setProgress(0); sound.stopAsync(); }
         }
       );
       soundRef.current = sound;
