@@ -51,6 +51,15 @@ try { db.exec('ALTER TABLE rooms ADD COLUMN created_by INTEGER'); } catch {}
 try { db.exec('ALTER TABLE rooms ADD COLUMN is_dm INTEGER DEFAULT 0'); } catch {}
 try { db.exec('ALTER TABLE messages ADD COLUMN reply_to_id INTEGER'); } catch {}
 try { db.exec('ALTER TABLE users ADD COLUMN avatar TEXT'); } catch {}
+try { db.exec('ALTER TABLE rooms ADD COLUMN is_private INTEGER DEFAULT 0'); } catch {}
+try { db.exec('ALTER TABLE messages ADD COLUMN forwarded_from TEXT'); } catch {}
+db.exec(`
+  CREATE TABLE IF NOT EXISTS room_members (
+    room_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    UNIQUE(room_id, user_id)
+  );
+`);
 
 // Seed a default room
 const existing = db.prepare('SELECT id FROM rooms WHERE name = ?').get('General');

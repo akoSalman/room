@@ -41,22 +41,30 @@ function authMiddleware(req, res, next) {
   }
 }
 
-// Auth — single endpoint: login if user exists, register if not
+// Auth — usernames are unique identifiers. Login only signs in existing users;
+// creating an account requires an explicit register flag (clients confirm with
+// the user first), so a renamed account's old username is never silently
+// re-created by a stale login.
 app.post('/auth/signin', async (req, res) => {
-  const { username, password } = req.body;
+  const { username, password, register } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
-  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+  const uname = String(username).trim();
+  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(uname);
   if (user) {
+    if (register) return res.status(409).json({ error: 'Username already taken' });
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) return res.status(401).json({ error: 'Wrong password' });
-    const token = jwt.sign({ id: user.id, username }, JWT_SECRET);
-    return res.json({ token, username, avatar: user.avatar || null, isNew: false });
+    const token = jwt.sign({ id: user.id, username: uname }, JWT_SECRET);
+    return res.json({ token, username: uname, avatar: user.avatar || null, isNew: false });
+  }
+  if (!register) {
+    return res.status(404).json({ error: 'No account with this username', canRegister: true });
   }
   try {
     const hash = await bcrypt.hash(password, 10);
-    const result = db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(username, hash);
-    const token = jwt.sign({ id: result.lastInsertRowid, username }, JWT_SECRET);
-    res.json({ token, username, avatar: null, isNew: true });
+    const result = db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(uname, hash);
+    const token = jwt.sign({ id: result.lastInsertRowid, username: uname }, JWT_SECRET);
+    res.json({ token, username: uname, avatar: null, isNew: true });
   } catch {
     res.status(409).json({ error: 'Something went wrong, try again' });
   }
@@ -96,23 +104,68 @@ app.put('/profile', authMiddleware, async (req, res) => {
   res.json({ token, username: updated.username, avatar: updated.avatar || null });
 });
 
-// Rooms
+// Rooms: public ones + private ones the user owns or is a member of
 app.get('/rooms', authMiddleware, (req, res) => {
-  const rooms = db.prepare('SELECT * FROM rooms WHERE is_dm = 0 ORDER BY name').all();
+  const rooms = db.prepare(`
+    SELECT * FROM rooms
+    WHERE is_dm = 0 AND (
+      is_private = 0
+      OR created_by = ?
+      OR EXISTS (SELECT 1 FROM room_members rm WHERE rm.room_id = rooms.id AND rm.user_id = ?)
+    )
+    ORDER BY name
+  `).all(req.user.id, req.user.id);
   res.json(rooms);
 });
 
 app.post('/rooms', authMiddleware, (req, res) => {
-  const { name } = req.body;
+  const { name, isPrivate } = req.body;
   if (!name) return res.status(400).json({ error: 'Room name required' });
   try {
-    const result = db.prepare('INSERT INTO rooms (name, created_by) VALUES (?, ?)').run(name.trim(), req.user.id);
+    const result = db.prepare('INSERT INTO rooms (name, created_by, is_private) VALUES (?, ?, ?)')
+      .run(name.trim(), req.user.id, isPrivate ? 1 : 0);
     const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(result.lastInsertRowid);
-    io.emit('room_created', room);
+    db.prepare('INSERT OR IGNORE INTO room_members (room_id, user_id) VALUES (?, ?)').run(room.id, req.user.id);
+    if (!room.is_private) io.emit('room_created', room);
     res.json(room);
   } catch {
     res.status(409).json({ error: 'Room already exists' });
   }
+});
+
+function canAccessRoom(userId, room) {
+  if (!room) return false;
+  if (room.is_dm) {
+    const parts = room.name.split('__').filter(Boolean);
+    return parts.length === 3 && (parseInt(parts[1]) === userId || parseInt(parts[2]) === userId);
+  }
+  if (!room.is_private) return true;
+  if (room.created_by === userId) return true;
+  return !!db.prepare('SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?').get(room.id, userId);
+}
+
+// Search users and public rooms by name
+app.get('/search', authMiddleware, (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (!q) return res.json({ users: [], rooms: [] });
+  const like = '%' + q.replace(/[%_]/g, '') + '%';
+  const users = db.prepare(
+    'SELECT id, username, avatar FROM users WHERE username LIKE ? AND id != ? ORDER BY username LIMIT 10'
+  ).all(like, req.user.id);
+  const rooms = db.prepare(
+    'SELECT id, name, is_private FROM rooms WHERE is_dm = 0 AND is_private = 0 AND name LIKE ? ORDER BY name LIMIT 10'
+  ).all(like);
+  res.json({ users, rooms });
+});
+
+// Room info (for link joining + room profile)
+app.get('/room-info/:roomId', authMiddleware, (req, res) => {
+  const room = db.prepare('SELECT id, name, is_private, is_dm, created_by FROM rooms WHERE id = ?').get(req.params.roomId);
+  if (!room || room.is_dm) return res.status(404).json({ error: 'Room not found' });
+  if (room.is_private && !canAccessRoom(req.user.id, db.prepare('SELECT * FROM rooms WHERE id = ?').get(room.id))) {
+    return res.status(403).json({ error: 'This room is private' });
+  }
+  res.json(room);
 });
 
 // Users list (for DMs)
@@ -172,6 +225,8 @@ app.get('/dm-rooms', authMiddleware, (req, res) => {
 // `before` (a message id) for infinite-scroll-up loading of older history)
 const MESSAGES_PAGE_SIZE = 20;
 app.get('/messages/:roomId', authMiddleware, (req, res) => {
+  const roomRow = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
+  if (!canAccessRoom(req.user.id, roomRow)) return res.status(403).json({ error: 'Not a member of this room' });
   const before = parseInt(req.query.before);
   const messages = before
     ? db.prepare(`
@@ -219,6 +274,11 @@ app.post('/upload', authMiddleware, upload.single('file'), (req, res) => {
   });
 });
 
+// Shareable room links: /join/<roomId> opens the web app on that room
+app.get('/join/:roomId', (req, res) => {
+  res.redirect('/?join=' + encodeURIComponent(req.params.roomId));
+});
+
 // Socket.IO
 const onlineUsers = new Map(); // socketId -> { userId, username, roomId }
 
@@ -233,10 +293,17 @@ io.use((socket, next) => {
 });
 
 function getRoomMemberIds(room) {
-  if (!room.is_dm) return db.prepare('SELECT id FROM users').all().map(u => u.id);
-  const parts = room.name.split('__').filter(Boolean);
-  if (parts.length !== 3) return [];
-  return [parseInt(parts[1]), parseInt(parts[2])];
+  if (room.is_dm) {
+    const parts = room.name.split('__').filter(Boolean);
+    if (parts.length !== 3) return [];
+    return [parseInt(parts[1]), parseInt(parts[2])];
+  }
+  if (room.is_private) {
+    const ids = db.prepare('SELECT user_id FROM room_members WHERE room_id = ?').all(room.id).map(r => r.user_id);
+    if (room.created_by && !ids.includes(room.created_by)) ids.push(room.created_by);
+    return ids;
+  }
+  return db.prepare('SELECT id FROM users').all().map(u => u.id);
 }
 
 io.on('connection', (socket) => {
@@ -303,6 +370,93 @@ io.on('connection', (socket) => {
 
   socket.on('recording_stop', ({ roomId }) => {
     socket.to(String(roomId)).emit('user_stopped_recording', { username: socket.user.username });
+  });
+
+  // Private-room invitation: owner invites a user; an invite message lands in
+  // the invitee's DM with the owner, and joining happens on acceptance.
+  socket.on('invite_to_room', ({ roomId, username }, ack) => {
+    const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+    if (!room || room.is_dm || room.created_by !== socket.user.id) {
+      return typeof ack === 'function' && ack({ error: 'Only the room owner can invite' });
+    }
+    const target = db.prepare('SELECT * FROM users WHERE username = ?').get(String(username || '').trim());
+    if (!target) return typeof ack === 'function' && ack({ error: 'User not found' });
+    if (target.id === socket.user.id) return typeof ack === 'function' && ack({ error: 'That is you' });
+    const already = db.prepare('SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?').get(room.id, target.id);
+    if (already) return typeof ack === 'function' && ack({ error: 'Already a member' });
+
+    // find/create the DM room between owner and invitee
+    const a = Math.min(socket.user.id, target.id);
+    const b = Math.max(socket.user.id, target.id);
+    const dmName = `__dm__${a}__${b}__`;
+    let dm = db.prepare('SELECT * FROM rooms WHERE name = ?').get(dmName);
+    if (!dm) {
+      const r = db.prepare('INSERT INTO rooms (name, created_by, is_dm) VALUES (?, ?, 1)').run(dmName, socket.user.id);
+      dm = db.prepare('SELECT * FROM rooms WHERE id = ?').get(r.lastInsertRowid);
+    }
+    const content = JSON.stringify({ roomId: room.id, roomName: room.name });
+    const result = db.prepare(
+      'INSERT INTO messages (room_id, user_id, type, content) VALUES (?, ?, ?, ?)'
+    ).run(dm.id, socket.user.id, 'invite', content);
+    const msg = db.prepare(`
+      SELECT m.*, u.username, u.avatar FROM messages m JOIN users u ON m.user_id = u.id WHERE m.id = ?
+    `).get(result.lastInsertRowid);
+    [socket.user.id, target.id].forEach(id => io.to('user:' + id).emit('message_received', msg));
+    io.emit('dm_activity', { room: dm });
+    if (typeof ack === 'function') ack({ ok: true });
+  });
+
+  socket.on('accept_invite', ({ roomId }, ack) => {
+    const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+    if (!room || room.is_dm) return typeof ack === 'function' && ack({ error: 'Room no longer exists' });
+    // verify a matching invite message exists in one of the user's DMs
+    const invite = db.prepare(`
+      SELECT m.id FROM messages m
+      JOIN rooms r ON m.room_id = r.id
+      WHERE m.type = 'invite' AND r.is_dm = 1
+        AND r.name LIKE '%\_\_' || ? || '\_\_%' ESCAPE '\'
+        AND m.content LIKE ?
+      LIMIT 1
+    `).get(socket.user.id, '%"roomId":' + room.id + '%');
+    if (room.is_private && !invite) return typeof ack === 'function' && ack({ error: 'No invitation found' });
+    db.prepare('INSERT OR IGNORE INTO room_members (room_id, user_id) VALUES (?, ?)').run(room.id, socket.user.id);
+    io.to('user:' + socket.user.id).emit('room_created', room); // adds it to their sidebar
+    if (typeof ack === 'function') ack({ ok: true, room });
+  });
+
+  // Forward a message to another room/DM. Messages that live in private rooms
+  // must stay there.
+  socket.on('forward_message', ({ messageId, toRoomId }, ack) => {
+    const src = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
+    if (!src) return typeof ack === 'function' && ack({ error: 'Message not found' });
+    const srcRoom = db.prepare('SELECT * FROM rooms WHERE id = ?').get(src.room_id);
+    const dstRoom = db.prepare('SELECT * FROM rooms WHERE id = ?').get(toRoomId);
+    if (!canAccessRoom(socket.user.id, srcRoom) || !canAccessRoom(socket.user.id, dstRoom)) {
+      return typeof ack === 'function' && ack({ error: 'Not allowed' });
+    }
+    if (srcRoom && !srcRoom.is_dm && srcRoom.is_private && srcRoom.id !== dstRoom.id) {
+      return typeof ack === 'function' && ack({ error: 'Messages from a private room cannot be forwarded' });
+    }
+    if (src.type === 'invite') return typeof ack === 'function' && ack({ error: 'Invitations cannot be forwarded' });
+    const origSender = db.prepare('SELECT username FROM users WHERE id = ?').get(src.user_id);
+    const result = db.prepare(`
+      INSERT INTO messages (room_id, user_id, type, content, file_path, file_name, forwarded_from)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(dstRoom.id, socket.user.id, src.type, src.content, src.file_path, src.file_name,
+           src.forwarded_from || (origSender ? origSender.username : null));
+    const msg = db.prepare(`
+      SELECT m.*, u.username, u.avatar,
+        rm.content AS reply_content, rm.type AS reply_type, rm.file_name AS reply_file_name,
+        ru.username AS reply_username
+      FROM messages m
+      JOIN users u ON m.user_id = u.id
+      LEFT JOIN messages rm ON m.reply_to_id = rm.id
+      LEFT JOIN users ru ON rm.user_id = ru.id
+      WHERE m.id = ?
+    `).get(result.lastInsertRowid);
+    getRoomMemberIds(dstRoom).forEach(id => io.to('user:' + id).emit('message_received', msg));
+    if (dstRoom.is_dm) io.emit('dm_activity', { room: dstRoom });
+    if (typeof ack === 'function') ack({ ok: true });
   });
 
   socket.on('edit_message', ({ messageId, content }) => {

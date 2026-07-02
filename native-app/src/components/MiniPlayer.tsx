@@ -5,7 +5,10 @@ import { audioManager } from '../audioManager';
 
 // Persistent playback bar shown at the top of the app while audio plays
 // outside the chat it belongs to.
-export default function MiniPlayer({ hideForRoomId }: { hideForRoomId?: number | null }) {
+export default function MiniPlayer({ hideForRoomId, onNavigate }: {
+  hideForRoomId?: number | null;
+  onNavigate?: (room: any, msgId: number) => void;
+}) {
   const [, forceUpdate] = useReducer(x => x + 1, 0);
   useEffect(() => audioManager.subscribe(forceUpdate), []);
 
@@ -17,12 +20,20 @@ export default function MiniPlayer({ hideForRoomId }: { hideForRoomId?: number |
       <TouchableOpacity style={s.playBtn} onPress={() => audioManager.toggle()}>
         <Text style={s.playIcon}>{audioManager.playing ? '⏸' : '▶'}</Text>
       </TouchableOpacity>
-      <View style={s.info}>
+      <TouchableOpacity
+        style={s.info}
+        activeOpacity={0.7}
+        onPress={() => {
+          if (onNavigate && audioManager.roomMeta && audioManager.currentId != null) {
+            onNavigate(audioManager.roomMeta, audioManager.currentId);
+          }
+        }}
+      >
         <Text style={s.label} numberOfLines={1}>{audioManager.label || 'Voice message'}</Text>
         <View style={s.track}>
           <View style={[s.fill, { width: `${Math.min(100, audioManager.progress * 100)}%` }]} />
         </View>
-      </View>
+      </TouchableOpacity>
       <TouchableOpacity style={s.closeBtn} onPress={() => audioManager.stop()}>
         <Text style={s.closeIcon}>✕</Text>
       </TouchableOpacity>

@@ -73,6 +73,13 @@ window.addEventListener('DOMContentLoaded', () => {
   }, { passive: false });
   if (token && username) { enterApp(); requestNotifPermission(); }
 
+  // Shared room link: /?join=<roomId>
+  const joinParam = new URLSearchParams(location.search).get('join');
+  if (joinParam && token) {
+    setTimeout(() => joinRoomById(joinParam), 800);
+    history.replaceState(null, '', '/');
+  }
+
   document.getElementById('messages').addEventListener('scroll', () => {
     updateScrollFab();
     if (document.getElementById('messages').scrollTop < 80) loadOlderMessages();
@@ -88,7 +95,13 @@ async function signin() {
   btn.disabled = true; btn.textContent = 'Please wait…';
   document.getElementById('auth-error').textContent = '';
   try {
-    const res = await api('/auth/signin', 'POST', { username: user, password: pass });
+    let res = await api('/auth/signin', 'POST', { username: user, password: pass });
+    if (res.error && res.canRegister) {
+      if (!confirm(`No account named "${user}" exists. The username is available — create a new account?`)) {
+        return showAuthError('');
+      }
+      res = await api('/auth/signin', 'POST', { username: user, password: pass, register: true });
+    }
     if (res.error) return showAuthError(res.error);
     saveSession(res.token, res.username, res.avatar);
     enterApp();
@@ -145,13 +158,23 @@ function buildAvatarPicker() {
   const grid = document.getElementById('avatar-emoji-grid');
   if (!grid || grid.childElementCount) return;
   const current = localStorage.getItem('avatar');
-  AVATAR_EMOJIS.forEach(e => {
+  const FIRST_ROW = 7;
+  AVATAR_EMOJIS.forEach((e, i) => {
     const cell = document.createElement('button');
-    cell.className = 'avatar-emoji-cell' + (current === e ? ' active' : '');
+    cell.className = 'avatar-emoji-cell' + (current === e ? ' active' : '') + (i >= FIRST_ROW ? ' extra hidden' : '');
     cell.textContent = e;
     cell.onclick = () => setAvatarEmoji(e);
     grid.appendChild(cell);
   });
+  const more = document.createElement('button');
+  more.className = 'avatar-emoji-cell more-toggle';
+  more.textContent = '⋯';
+  more.onclick = () => {
+    const expanded = more.classList.toggle('expanded');
+    grid.querySelectorAll('.avatar-emoji-cell.extra').forEach(c => c.classList.toggle('hidden', !expanded));
+    more.textContent = expanded ? '×' : '⋯';
+  };
+  grid.appendChild(more);
 }
 
 async function setAvatarEmoji(emoji) {
@@ -299,6 +322,71 @@ function openProfile() {
   show('profile-modal');
 }
 
+function copyRoomLink() {
+  if (!currentRoomId || currentRoomIsDM) return;
+  const link = location.origin + '/join/' + currentRoomId;
+  (navigator.clipboard?.writeText(link) || Promise.reject()).then(
+    () => alert('Room link copied:\n' + link),
+    () => prompt('Room link (copy it):', link)
+  );
+}
+
+// ─── Sidebar search ───────────────────────────────────────────────────────────
+let sidebarSearchTimer = null;
+function onSidebarSearch() {
+  const q = document.getElementById('sidebar-search').value.trim();
+  clearTimeout(sidebarSearchTimer);
+  const box = document.getElementById('search-results');
+  if (!q) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+  sidebarSearchTimer = setTimeout(async () => {
+    const res = await api('/search?q=' + encodeURIComponent(q));
+    if (!res || res.error) return;
+    box.innerHTML = '';
+    if (!res.users.length && !res.rooms.length) {
+      const d = document.createElement('div'); d.className = 'search-empty'; d.textContent = 'No results';
+      box.appendChild(d);
+    }
+    res.users.forEach(u => {
+      const d = document.createElement('div');
+      d.className = 'search-result';
+      d.innerHTML = `<span>${u.avatar || '👤'}</span><b></b><em>Message</em>`;
+      d.querySelector('b').textContent = u.username;
+      d.onclick = () => { clearSidebarSearch(); openDM(u.username); };
+      box.appendChild(d);
+    });
+    res.rooms.forEach(r => {
+      const d = document.createElement('div');
+      d.className = 'search-result';
+      d.innerHTML = `<span>#</span><b></b><em>Join</em>`;
+      d.querySelector('b').textContent = r.name;
+      d.onclick = () => { clearSidebarSearch(); joinRoomById(r.id); };
+      box.appendChild(d);
+    });
+    box.classList.remove('hidden');
+  }, 300);
+}
+function clearSidebarSearch() {
+  document.getElementById('sidebar-search').value = '';
+  const box = document.getElementById('search-results');
+  box.classList.add('hidden'); box.innerHTML = '';
+}
+
+function openCreateRoomModal() { show('create-room-modal'); document.getElementById('create-room-name').focus(); }
+function closeCreateRoomModal() { hide('create-room-modal'); }
+async function submitCreateRoom() {
+  const name = document.getElementById('create-room-name').value.trim();
+  const isPrivate = document.getElementById('create-room-private').checked;
+  if (!name) return;
+  const res = await api('/rooms', 'POST', { name, isPrivate });
+  if (res.error) return alert(res.error);
+  document.getElementById('create-room-name').value = '';
+  document.getElementById('create-room-private').checked = false;
+  closeCreateRoomModal();
+  if (!document.querySelector(`[data-room-id="${res.id}"]`)) addRoomToList(res);
+  const li = document.querySelector(`[data-room-id="${res.id}"]`);
+  if (li) joinRoom(res.id, res.name, li, false);
+}
+
 async function loadLatestAppVersion() {
   const hint = document.getElementById('update-hint');
   try {
@@ -388,7 +476,7 @@ function addRoomToList(room) {
   li.title = room.name;
 
   const icon = document.createElement('span');
-  icon.className = 'room-icon'; icon.textContent = '#';
+  icon.className = 'room-icon'; icon.textContent = room.is_private ? '🔒' : '#';
 
   const label = document.createElement('span');
   label.className = 'room-label'; label.textContent = room.name;
@@ -515,6 +603,7 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   document.getElementById('room-title').textContent = (isDM ? '💬 ' : '# ') + roomName;
   document.getElementById('messages').innerHTML = '';
   document.getElementById('online-indicator').classList.add('hidden');
+  document.getElementById('room-link-btn').classList.toggle('hidden', isDM);
   jumpBackStack = [];
   document.getElementById('scroll-fab').classList.add('hidden');
   oldestLoadedMsgId = null;
@@ -547,12 +636,22 @@ async function loadOlderMessages() {
 function updateOnlineUsers(users) {
   onlineUsers = users;
   const badge = document.getElementById('online-indicator');
+  if (currentRoomIsDM) {
+    // DMs: just show whether the peer is online — no member list
+    const peer = (document.getElementById('room-title').textContent || '').replace('💬', '').trim();
+    const peerOnline = users.includes(peer);
+    closeOnlinePanel();
+    if (peerOnline) { badge.textContent = '● online'; badge.classList.remove('hidden'); }
+    else badge.classList.add('hidden');
+    return;
+  }
   if (!users.length) { badge.classList.add('hidden'); return; }
   badge.classList.remove('hidden');
   badge.textContent = `● ${users.length} online ›`;
   if (!document.getElementById('online-panel').classList.contains('hidden')) renderOnlinePanel();
 }
 function toggleOnlinePanel() {
+  if (currentRoomIsDM) return; // DM badge is informational only
   document.getElementById('online-panel').classList.contains('hidden') ? openOnlinePanel() : closeOnlinePanel();
 }
 function openOnlinePanel() { renderOnlinePanel(); show('online-panel'); }
@@ -854,6 +953,44 @@ async function sendRecording() {
   cancelReply();
 }
 
+// ─── Links in messages ────────────────────────────────────────────────────────
+function appendLinkifiedText(container, content) {
+  const URL_RE = /(https?:\/\/[^\s]+)/g;
+  const parts = content.split(URL_RE);
+  parts.forEach(part => {
+    if (/^https?:\/\//.test(part)) {
+      const a = document.createElement('a');
+      a.href = part; a.textContent = part; a.className = 'msg-link';
+      const joinMatch = /\/join\/(\d+)/.exec(part);
+      if (joinMatch && part.startsWith(location.origin)) {
+        a.onclick = (e) => { e.preventDefault(); joinRoomById(joinMatch[1]); };
+      } else {
+        a.target = '_blank'; a.rel = 'noopener';
+      }
+      container.appendChild(a);
+    } else if (part) {
+      container.appendChild(document.createTextNode(part));
+    }
+  });
+}
+
+async function joinRoomById(roomId) {
+  const info = await api('/room-info/' + roomId);
+  if (info.error) return alert(info.error);
+  let li = document.querySelector(`[data-room-id="${info.id}"]`);
+  if (!li) { addRoomToList(info); li = document.querySelector(`[data-room-id="${info.id}"]`); }
+  if (li) joinRoom(info.id, info.name, li, false);
+}
+
+function acceptInvite(roomId) {
+  socket.emit('accept_invite', { roomId }, (res) => {
+    if (res?.error) return alert(res.error);
+    addRoomToList(res.room);
+    const li = document.querySelector(`[data-room-id="${res.room.id}"]`);
+    if (li) joinRoom(res.room.id, res.room.name, li, false);
+  });
+}
+
 // ─── Global audio coordination ───────────────────────────────────────────────
 // Only one piece of media plays at a time across the whole app.
 let currentMedia = null; // { el, stop } — el is an Audio/video element
@@ -917,12 +1054,37 @@ function buildMessageElement(msg) {
     bubble.appendChild(quote);
   }
 
+  if (msg.forwarded_from) {
+    const fwd = document.createElement('div');
+    fwd.className = 'forwarded-label';
+    fwd.textContent = '↪ Forwarded from ' + msg.forwarded_from;
+    bubble.appendChild(fwd);
+  }
+
   if (msg.type === 'text') {
     bubble.dataset.text = msg.content;
     const textSpan = document.createElement('span');
-    textSpan.textContent = msg.content;
+    appendLinkifiedText(textSpan, msg.content || '');
     bubble.appendChild(textSpan);
     if (msg.edited) { const tag = document.createElement('span'); tag.className = 'edited-tag'; tag.textContent = '(edited)'; bubble.appendChild(tag); }
+  } else if (msg.type === 'invite') {
+    let inv = null;
+    try { inv = JSON.parse(msg.content || ''); } catch {}
+    const card = document.createElement('div');
+    card.className = 'invite-card';
+    const title = document.createElement('div');
+    title.className = 'invite-title'; title.textContent = '🔒 Room invitation';
+    const text = document.createElement('div');
+    text.className = 'invite-text';
+    text.textContent = (msg.username === username ? 'You invited someone to' : `${msg.username} invited you to`) + ` “${inv?.roomName || 'a room'}”`;
+    card.appendChild(title); card.appendChild(text);
+    if (msg.username !== username && inv?.roomId) {
+      const btn = document.createElement('button');
+      btn.className = 'invite-join-btn'; btn.textContent = 'Join room';
+      btn.onclick = (e) => { e.stopPropagation(); acceptInvite(inv.roomId); };
+      card.appendChild(btn);
+    }
+    bubble.appendChild(card);
   } else if (msg.type === 'image') {
     const img = document.createElement('img');
     img.src = msg.file_path; img.onclick = () => openLightbox(msg.file_path);
@@ -958,7 +1120,8 @@ function buildMessageElement(msg) {
   footer.className = 'msg-footer';
   const time = document.createElement('span');
   time.className = 'msg-time';
-  time.textContent = new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const created = msg.created_at.includes('T') ? msg.created_at : msg.created_at.replace(' ', 'T') + 'Z';
+  time.textContent = new Date(created).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   footer.appendChild(time);
 
   const replyBtn = document.createElement('button');
@@ -1014,7 +1177,7 @@ function prependMessages(msgs) {
 function openCtxMenu(messageId, type, isMine, wrapperEl, msg) {
   ctxTarget = { messageId, type, isMine, username: msg?.username, content: msg?.content };
   const menu = document.getElementById('ctx-menu');
-  menu.querySelectorAll('button')[1].style.display = (isMine && type === 'text') ? '' : 'none';
+  document.getElementById('ctx-edit-btn').style.display = (isMine && type === 'text') ? '' : 'none';
   menu.querySelector('button.danger').style.display = isMine ? '' : 'none';
   menu.querySelector('hr').style.display = isMine ? '' : 'none';
   menu.classList.remove('hidden');
@@ -1033,6 +1196,38 @@ function ctxReply() {
   closeCtxMenu();
   setReply({ id: t.messageId, username: t.username, content: t.content, type: t.type });
 }
+
+function ctxForward() {
+  if (!ctxTarget) return;
+  const id = ctxTarget.messageId;
+  closeCtxMenu();
+  openForwardModal(id);
+}
+
+let forwardMsgId = null;
+async function openForwardModal(messageId) {
+  forwardMsgId = messageId;
+  const list = document.getElementById('forward-list');
+  list.innerHTML = '';
+  const [rooms, dms] = await Promise.all([api('/rooms'), api('/dm-rooms')]);
+  const targets = [
+    ...(Array.isArray(rooms) ? rooms.map(r => ({ id: r.id, label: (r.is_private ? '🔒 ' : '# ') + r.name })) : []),
+    ...(Array.isArray(dms) ? dms.map(d => ({ id: d.id, label: '💬 ' + d.other_username })) : []),
+  ];
+  targets.forEach(t => {
+    const li = document.createElement('li');
+    li.textContent = t.label;
+    li.onclick = () => {
+      socket.emit('forward_message', { messageId: forwardMsgId, toRoomId: t.id }, (res) => {
+        if (res?.error) alert(res.error);
+      });
+      closeForwardModal();
+    };
+    list.appendChild(li);
+  });
+  show('forward-modal');
+}
+function closeForwardModal() { forwardMsgId = null; hide('forward-modal'); }
 function ctxReact() {
   if (!ctxTarget) return;
   const wrapper = document.querySelector(`[data-msg-id="${ctxTarget.messageId}"]`);

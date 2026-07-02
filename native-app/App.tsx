@@ -21,6 +21,7 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>('auth');
   const [room, setRoom] = useState<Room | null>(null);
   const [openProfileOnRooms, setOpenProfileOnRooms] = useState(false);
+  const [pendingJumpMsgId, setPendingJumpMsgId] = useState<number | null>(null);
 
   useEffect(() => {
     AsyncStorage.getItem('token').then(t => {
@@ -56,7 +57,10 @@ export default function App() {
         <StatusBar barStyle="dark-content" backgroundColor={C.header} />
         <SafeAreaView style={{ flex: 1, backgroundColor: C.bg }} edges={['top']}>
           {screen !== 'auth' && (
-            <MiniPlayer hideForRoomId={screen === 'chat' && room ? room.id : null} />
+            <MiniPlayer
+              hideForRoomId={screen === 'chat' && room ? room.id : null}
+              onNavigate={(r, msgId) => { setRoom(r); setPendingJumpMsgId(msgId); setScreen('chat'); }}
+            />
           )}
           {screen === 'auth' && (
             <AuthScreen onLogin={() => setScreen('rooms')} />
@@ -73,9 +77,10 @@ export default function App() {
             <ChatScreen
               key={room.id}
               room={room}
-              onBack={() => setScreen('rooms')}
-              onOpenDM={r => setRoom(r)}
-              onOpenProfile={() => { setOpenProfileOnRooms(true); setScreen('rooms'); }}
+              onBack={() => { setScreen('rooms'); setPendingJumpMsgId(null); }}
+              onOpenDM={r => { setRoom(r); setPendingJumpMsgId(null); }}
+              onOpenProfile={() => { setOpenProfileOnRooms(true); setScreen('rooms'); setPendingJumpMsgId(null); }}
+              initialJumpMsgId={pendingJumpMsgId}
             />
           )}
         </SafeAreaView>

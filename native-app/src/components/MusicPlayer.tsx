@@ -8,8 +8,8 @@ function fmtTime(s: number) {
   return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 }
 
-export default function MusicPlayer({ url, fileName, mine, msgId, roomId }: {
-  url: string; fileName: string; mine: boolean; msgId: number; roomId: number;
+export default function MusicPlayer({ url, fileName, mine, msgId, roomId, roomMeta }: {
+  url: string; fileName: string; mine: boolean; msgId: number; roomId: number; roomMeta?: any;
 }) {
   const [, forceUpdate] = useReducer(x => x + 1, 0);
   useEffect(() => audioManager.subscribe(forceUpdate), []);
@@ -21,7 +21,7 @@ export default function MusicPlayer({ url, fileName, mine, msgId, roomId }: {
 
   function toggle() {
     if (isCurrent) audioManager.toggle();
-    else audioManager.play(msgId, url, `🎵 ${fileName}`, roomId);
+    else audioManager.play(msgId, url, `🎵 ${fileName}`, roomId, roomMeta);
   }
 
   return (

@@ -49,10 +49,11 @@
       <button id="collapse-btn" class="icon-btn" title="Collapse" onclick="event.stopPropagation(); toggleSidebar()">‹</button>
     </div>
     <div class="room-create">
-      <input id="new-room-name" type="text" placeholder="New room..."
-        onkeydown="if(event.key==='Enter')createRoom()" />
-      <button onclick="createRoom()" title="Create room">+</button>
+      <input id="sidebar-search" type="text" placeholder="Search users or rooms…"
+        oninput="onSidebarSearch()" />
+      <button onclick="openCreateRoomModal()" title="Create room">+</button>
     </div>
+    <div id="search-results" class="hidden"></div>
     <ul id="room-list"></ul>
   </aside>
 
@@ -60,6 +61,7 @@
     <header id="chat-header">
       <button id="menu-btn" class="icon-btn" onclick="openSidebar()">☰</button>
       <span id="room-title">Select a room</span>
+      <button id="room-link-btn" class="icon-btn hidden" title="Copy room link" onclick="copyRoomLink()">🔗</button>
       <button id="online-indicator" class="online-badge hidden" onclick="toggleOnlinePanel()"></button>
     </header>
 
@@ -179,11 +181,45 @@
   <img id="lightbox-img" src="" onclick="event.stopPropagation()" />
 </div>
 
+<!-- ── Forward modal ──────────────────────────────── -->
+<div id="forward-modal" class="modal-overlay hidden" onclick="closeForwardModal()">
+  <div class="modal-card" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h2>Forward to…</h2>
+      <button class="icon-btn" onclick="closeForwardModal()">✕</button>
+    </div>
+    <ul id="forward-list" class="forward-list"></ul>
+  </div>
+</div>
+
+<!-- ── Create room modal ──────────────────────────── -->
+<div id="create-room-modal" class="modal-overlay hidden" onclick="closeCreateRoomModal()">
+  <div class="modal-card" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h2>Create Room</h2>
+      <button class="icon-btn" onclick="closeCreateRoomModal()">✕</button>
+    </div>
+    <div class="modal-section">
+      <div class="field">
+        <label>Room name</label>
+        <input id="create-room-name" type="text" placeholder="e.g. gaming"
+          onkeydown="if(event.key==='Enter')submitCreateRoom()" />
+      </div>
+      <label class="privacy-check">
+        <input type="checkbox" id="create-room-private" />
+        <span><b>Private room</b><br/><small>Only invited members can see and join it</small></span>
+      </label>
+      <button class="btn-primary" onclick="submitCreateRoom()">Create</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Context menu ───────────────────────────────── -->
 <div id="ctx-menu" class="hidden">
   <button onclick="ctxReply()">↩ &nbsp;Reply</button>
+  <button onclick="ctxForward()">↪ &nbsp;Forward</button>
   <button onclick="ctxReact()">😊 &nbsp;React</button>
-  <button onclick="ctxEdit()">✏️ &nbsp;Edit</button>
+  <button id="ctx-edit-btn" onclick="ctxEdit()">✏️ &nbsp;Edit</button>
   <hr/>
   <button class="danger" onclick="ctxDelete()">🗑 &nbsp;Delete</button>
 </div>

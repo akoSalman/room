@@ -10,6 +10,7 @@ class AudioManager {
   sound: Audio.Sound | null = null;
   currentId: number | null = null;
   roomId: number | null = null;
+  roomMeta: any = null; // full room object, for navigating back to the chat
   label = '';
   playing = false;
   progress = 0; // 0..1
@@ -27,7 +28,7 @@ class AudioManager {
 
   setFinishHandler(cb: FinishHandler | null) { this.finishHandler = cb; }
 
-  async play(id: number, uri: string, label: string, roomId: number | null = null) {
+  async play(id: number, uri: string, label: string, roomId: number | null = null, roomMeta: any = null) {
     try {
       await Audio.setAudioModeAsync({
         staysActiveInBackground: true,
@@ -45,6 +46,7 @@ class AudioManager {
     }
     this.currentId = id;
     this.roomId = roomId;
+    this.roomMeta = roomMeta;
     this.label = label;
     this.playing = true;
     this.progress = 0;
@@ -105,6 +107,7 @@ class AudioManager {
     }
     this.currentId = null;
     this.roomId = null;
+    this.roomMeta = null;
     this.playing = false;
     this.progress = 0;
     this.emit();

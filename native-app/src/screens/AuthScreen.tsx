@@ -13,7 +13,7 @@ export default function AuthScreen({ onLogin }: { onLogin: () => void }) {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
 
-  async function signin() {
+  async function signin(register = false) {
     if (!username.trim() || !password.trim()) {
       Alert.alert('Error', 'Username and password are required.');
       return;
@@ -23,9 +23,21 @@ export default function AuthScreen({ onLogin }: { onLogin: () => void }) {
       const res = await fetch(`${BASE_URL}/auth/signin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: username.trim(), password }),
+        body: JSON.stringify({ username: username.trim(), password, register }),
       }).then(r => r.json());
 
+      if (res.error && res.canRegister) {
+        // Username is free — confirm before creating a brand-new account
+        Alert.alert(
+          'Create account?',
+          `No account named "${username.trim()}" exists. The username is available — create a new account?`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Create account', onPress: () => signin(true) },
+          ]
+        );
+        return;
+      }
       if (res.error) { Alert.alert('Error', res.error); return; }
       await AsyncStorage.setItem('token', res.token);
       await AsyncStorage.setItem('username', res.username);
@@ -58,9 +70,9 @@ export default function AuthScreen({ onLogin }: { onLogin: () => void }) {
           <TextInput
             style={s.input} placeholder="Your password" placeholderTextColor={C.muted}
             value={password} onChangeText={setPassword}
-            secureTextEntry onSubmitEditing={signin}
+            secureTextEntry onSubmitEditing={() => signin()}
           />
-          <TouchableOpacity style={s.btn} onPress={signin} disabled={loading}>
+          <TouchableOpacity style={s.btn} onPress={() => signin()} disabled={loading}>
             {loading ? <ActivityIndicator color="#fff" /> : <Text style={s.btnText}>Continue →</Text>}
           </TouchableOpacity>
         </View>

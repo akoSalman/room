@@ -25,6 +25,11 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   const [rooms, setRooms] = useState<Room[]>([]);
   const [dms, setDms] = useState<Room[]>([]);
   const [newRoom, setNewRoom] = useState('');
+  const [newRoomPrivate, setNewRoomPrivate] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+  const [search, setSearch] = useState('');
+  const [searchResults, setSearchResults] = useState<{ users: any[]; rooms: any[] } | null>(null);
+  const [showAllEmojis, setShowAllEmojis] = useState(false);
   const [me, setMe] = useState('');
   const [myId, setMyId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -84,6 +89,29 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
     };
   }, [load]);
 
+  const searchTimer = useRef<any>(null);
+  function onSearchChange(q: string) {
+    setSearch(q);
+    clearTimeout(searchTimer.current);
+    if (!q.trim()) { setSearchResults(null); return; }
+    searchTimer.current = setTimeout(async () => {
+      const res = await apiFetch(`/search?q=${encodeURIComponent(q.trim())}`);
+      if (res && !res.error) setSearchResults(res);
+    }, 300);
+  }
+
+  async function openDMWithUser(user: any) {
+    const res = await apiFetch(`/dm/${user.id}`, 'POST');
+    if (res.error) { Alert.alert('Error', res.error); return; }
+    setSearch(''); setSearchResults(null);
+    onSelectRoom({ id: res.id, name: res.name, is_dm: 1, other_username: res.otherUsername || user.username });
+  }
+
+  function openFoundRoom(r: any) {
+    setSearch(''); setSearchResults(null);
+    onSelectRoom({ id: r.id, name: r.name, is_dm: 0 });
+  }
+
   function selectRoom(room: Room) {
     setUnread(prev => ({ ...prev, [room.id]: 0 }));
     onSelectRoom(room);
@@ -91,9 +119,11 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
 
   async function createRoom() {
     if (!newRoom.trim()) return;
-    const res = await apiFetch('/rooms', 'POST', { name: newRoom.trim() });
+    const res = await apiFetch('/rooms', 'POST', { name: newRoom.trim(), isPrivate: newRoomPrivate });
     if (res.error) { Alert.alert('Error', res.error); return; }
     setNewRoom('');
+    setNewRoomPrivate(false);
+    setShowCreate(false);
     load();
   }
 
@@ -220,17 +250,39 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
         <TouchableOpacity onPress={onLogout}><Text style={s.logout}>⎋</Text></TouchableOpacity>
       </View>
 
-      {/* New room input */}
+      {/* Search users & rooms; + creates a room */}
       <View style={s.createRow}>
         <TextInput
-          style={s.createInput} placeholder="New room..." placeholderTextColor={C.muted}
-          value={newRoom} onChangeText={setNewRoom}
-          onSubmitEditing={createRoom}
+          style={s.createInput} placeholder="Search users or rooms…" placeholderTextColor={C.muted}
+          value={search} onChangeText={onSearchChange} autoCapitalize="none"
         />
-        <TouchableOpacity style={s.createBtn} onPress={createRoom}>
+        <TouchableOpacity style={s.createBtn} onPress={() => setShowCreate(true)}>
           <Text style={s.createBtnText}>+</Text>
         </TouchableOpacity>
       </View>
+
+      {/* Search results */}
+      {searchResults && (
+        <ScrollView style={s.searchResults} keyboardShouldPersistTaps="handled">
+          {searchResults.users.length === 0 && searchResults.rooms.length === 0 && (
+            <Text style={s.searchEmpty}>No users or rooms found</Text>
+          )}
+          {searchResults.users.map(u => (
+            <TouchableOpacity key={'u' + u.id} style={s.searchRow} onPress={() => openDMWithUser(u)}>
+              <Text style={s.searchIcon}>{u.avatar || '👤'}</Text>
+              <Text style={s.searchName}>{u.username}</Text>
+              <Text style={s.searchAction}>Message</Text>
+            </TouchableOpacity>
+          ))}
+          {searchResults.rooms.map(r => (
+            <TouchableOpacity key={'r' + r.id} style={s.searchRow} onPress={() => openFoundRoom(r)}>
+              <Text style={s.searchIcon}>#</Text>
+              <Text style={s.searchName}>{r.name}</Text>
+              <Text style={s.searchAction}>Join</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      )}
 
       {loading ? (
         <ActivityIndicator color={C.accent} style={{ marginTop: 40 }} />
@@ -250,7 +302,7 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
             const count = unread[item.id] || 0;
             return (
               <TouchableOpacity style={s.roomItem} onPress={() => selectRoom(item)}>
-                <Text style={s.roomIcon}>{item.is_dm ? '💬' : '#'}</Text>
+                <Text style={s.roomIcon}>{item.is_dm ? '💬' : item.is_private ? '🔒' : '#'}</Text>
                 <Text style={s.roomName}>{label}</Text>
                 {count > 0 && (
                   <View style={s.unreadBadge}>
@@ -288,11 +340,11 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
               <Text style={s.profileName}>{me}</Text>
             </View>
 
-            {/* Profile picture (emoji) picker */}
+            {/* Profile picture (emoji) picker: one row + expandable sheet */}
             <View style={s.section}>
               <Text style={s.sectionTitle}>PROFILE PICTURE</Text>
               <View style={s.emojiGrid}>
-                {AVATAR_EMOJIS.map(e => (
+                {AVATAR_EMOJIS.slice(0, 6).map(e => (
                   <TouchableOpacity
                     key={e}
                     style={[s.emojiCell, myAvatar === e && s.emojiCellActive]}
@@ -301,6 +353,9 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
                     <Text style={s.emojiCellText}>{e}</Text>
                   </TouchableOpacity>
                 ))}
+                <TouchableOpacity style={s.emojiCell} onPress={() => setShowAllEmojis(true)}>
+                  <Text style={s.emojiMoreText}>⋯</Text>
+                </TouchableOpacity>
               </View>
               {myAvatar && (
                 <TouchableOpacity style={s.removeAvatarBtn} onPress={() => setAvatarEmoji(null)}>
@@ -401,6 +456,60 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
         </TouchableOpacity>
       </Modal>
 
+      {/* All-emojis picker */}
+      <Modal visible={showAllEmojis} transparent animationType="fade" onRequestClose={() => setShowAllEmojis(false)}>
+        <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowAllEmojis(false)}>
+          <TouchableOpacity activeOpacity={1} onPress={e => e.stopPropagation()} style={s.renameCard}>
+            <Text style={s.renameTitle}>Choose a profile picture</Text>
+            <View style={s.emojiGrid}>
+              {AVATAR_EMOJIS.map(e => (
+                <TouchableOpacity
+                  key={e}
+                  style={[s.emojiCell, myAvatar === e && s.emojiCellActive]}
+                  onPress={() => { setAvatarEmoji(e); setShowAllEmojis(false); }}
+                >
+                  <Text style={s.emojiCellText}>{e}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <TouchableOpacity style={s.renameCancel} onPress={() => setShowAllEmojis(false)}>
+              <Text style={s.renameCancelText}>Close</Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Create Room Modal */}
+      <Modal visible={showCreate} transparent animationType="fade" onRequestClose={() => setShowCreate(false)}>
+        <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowCreate(false)}>
+          <TouchableOpacity activeOpacity={1} onPress={e => e.stopPropagation()} style={s.renameCard}>
+            <Text style={s.renameTitle}>Create Room</Text>
+            <TextInput
+              style={s.renameInput} value={newRoom} onChangeText={setNewRoom}
+              placeholder="Room name" placeholderTextColor={C.muted} autoFocus
+              onSubmitEditing={createRoom}
+            />
+            <TouchableOpacity style={s.privacyRow} onPress={() => setNewRoomPrivate(p => !p)}>
+              <View style={[s.checkbox, newRoomPrivate && s.checkboxOn]}>
+                {newRoomPrivate && <Text style={s.checkboxTick}>✓</Text>}
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={s.privacyLabel}>Private room</Text>
+                <Text style={s.privacyHint}>Only invited members can see and join it</Text>
+              </View>
+            </TouchableOpacity>
+            <View style={s.renameRow}>
+              <TouchableOpacity style={s.renameCancel} onPress={() => setShowCreate(false)}>
+                <Text style={s.renameCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={s.renameSave} onPress={createRoom}>
+                <Text style={s.renameSaveText}>Create</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
       {/* Rename Modal */}
       <Modal visible={!!renamingRoom} transparent animationType="fade" onRequestClose={() => setRenamingRoom(null)}>
         <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setRenamingRoom(null)}>
@@ -460,6 +569,19 @@ const s = StyleSheet.create({
   emojiCell: { width: 44, height: 44, borderRadius: 10, backgroundColor: C.inputBg, borderWidth: 2, borderColor: 'transparent', alignItems: 'center', justifyContent: 'center' },
   emojiCellActive: { borderColor: C.accent, backgroundColor: 'rgba(59,125,216,0.12)' },
   emojiCellText: { fontSize: 24 },
+  emojiMoreText: { fontSize: 22, color: C.muted, fontWeight: '700' },
+  searchResults: { maxHeight: 240, borderBottomWidth: 1, borderBottomColor: C.border, backgroundColor: C.sidebar },
+  searchEmpty: { color: C.muted, fontSize: 13, textAlign: 'center', padding: 14 },
+  searchRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: C.border },
+  searchIcon: { fontSize: 17, width: 24, textAlign: 'center' },
+  searchName: { flex: 1, color: C.text, fontSize: 14.5, fontWeight: '600' },
+  searchAction: { color: C.accent, fontSize: 12.5, fontWeight: '700' },
+  privacyRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 },
+  checkbox: { width: 22, height: 22, borderRadius: 6, borderWidth: 2, borderColor: C.border, alignItems: 'center', justifyContent: 'center' },
+  checkboxOn: { backgroundColor: C.accent, borderColor: C.accent },
+  checkboxTick: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  privacyLabel: { color: C.text, fontSize: 14.5, fontWeight: '600' },
+  privacyHint: { color: C.muted, fontSize: 12 },
   removeAvatarBtn: { marginTop: 12, alignItems: 'center', padding: 8 },
   removeAvatarText: { color: C.danger, fontSize: 13, fontWeight: '600' },
   profileName: { color: C.text, fontWeight: '600', fontSize: 17 },

@@ -534,3 +534,33 @@ html {
 }
 .emoji-avatar { font-size: 1.3rem !important; }
 .profile-avatar-big.emoji-avatar { font-size: 2.6rem !important; }
+
+
+/* ── Search results / forward / invites / links ───── */
+#search-results { border-bottom: 1px solid var(--border); max-height: 240px; overflow-y: auto; background: var(--sidebar-bg); }
+.search-result { display: flex; align-items: center; gap: 8px; padding: 9px 14px; cursor: pointer; font-size: 0.88rem; border-bottom: 1px solid var(--border); }
+.search-result:hover { background: var(--input-bg); }
+.search-result b { flex: 1; font-weight: 600; }
+.search-result em { color: var(--accent); font-style: normal; font-size: 0.75rem; font-weight: 700; }
+.search-empty { color: var(--muted); font-size: 0.85rem; padding: 12px; text-align: center; }
+
+.forward-list { list-style: none; max-height: 320px; overflow-y: auto; padding: 8px 0; }
+.forward-list li { padding: 11px 20px; cursor: pointer; font-size: 0.92rem; }
+.forward-list li:hover { background: var(--input-bg); }
+
+.forwarded-label { font-size: 0.72rem; color: var(--muted); font-style: italic; margin-bottom: 4px; }
+
+.msg-link { color: var(--accent); text-decoration: underline; word-break: break-all; }
+
+.invite-card { display: flex; flex-direction: column; gap: 6px; min-width: 200px; }
+.invite-title { font-weight: 700; font-size: 0.88rem; }
+.invite-text { color: var(--muted); font-size: 0.84rem; }
+.invite-join-btn { background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 8px; font-weight: 700; cursor: pointer; margin-top: 4px; }
+.invite-join-btn:hover { background: var(--accent-hover); }
+
+.privacy-check { display: flex; gap: 10px; align-items: flex-start; margin: 6px 0 14px; cursor: pointer; font-size: 0.88rem; }
+.privacy-check small { color: var(--muted); }
+
+.avatar-emoji-cell.more-toggle { color: var(--muted); font-weight: 700; }
+
+#room-link-btn { font-size: 0.95rem; }

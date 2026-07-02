@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   View, Text, TextInput, FlatList, TouchableOpacity,
   StyleSheet, KeyboardAvoidingView, Platform, Alert,
-  ActivityIndicator, Modal, ScrollView, Image,
+  ActivityIndicator, Modal, ScrollView, Image, Linking, Share,
 } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { Audio, Video, ResizeMode } from 'expo-av';
@@ -32,7 +32,7 @@ Notifications.setNotificationHandler({
 type Message = {
   id: number; room_id: number; user_id: number; username: string; avatar?: string | null;
   type: string; content: string | null; file_path: string | null;
-  file_name: string | null; edited: number; created_at: string;
+  file_name: string | null; edited: number; created_at: string; forwarded_from?: string | null;
   reply_to_id?: number | null; reply_username?: string | null;
   reply_content?: string | null; reply_type?: string | null;
 };
@@ -42,11 +42,12 @@ type ReplyTo = { id: number; username: string; content: string | null; type: str
 const EMOJIS = ['👍','❤️','😂','😮','😢','🔥','👏','🎉','🤔','😍','👎','😡'];
 const MESSAGES_PAGE_SIZE = 20;
 
-export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
-  room: { id: number; name: string; is_dm: number; other_username?: string };
+export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, initialJumpMsgId }: {
+  room: { id: number; name: string; is_dm: number; other_username?: string; is_private?: number; created_by?: number };
   onBack: () => void;
   onOpenDM: (room: { id: number; name: string; is_dm: number; other_username?: string }) => void;
   onOpenProfile: () => void;
+  initialJumpMsgId?: number | null;
 }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [reactions, setReactions] = useState<Record<number, Reaction[]>>({});
@@ -65,6 +66,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
   const [showOnline, setShowOnline] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [forwardMsg, setForwardMsg] = useState<Message | null>(null);
+  const [forwardTargets, setForwardTargets] = useState<any[]>([]);
+  const [showRoomInfo, setShowRoomInfo] = useState(false);
+  const [inviteName, setInviteName] = useState('');
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [showScrollFab, setShowScrollFab] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -171,10 +176,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
         next.id,
         `${BASE_URL}${next.file_path}`,
         `🎙 ${next.username} · voice message`,
-        room.id
+        room.id,
+        room
       );
     });
-    return () => audioManager.setFinishHandler(null);
+    // Intentionally NOT cleared on unmount: playback continues in the mini
+    // player after leaving the chat and should keep chaining voice messages.
   }, [room.id]);
 
   useEffect(() => {
@@ -194,9 +201,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
       getAvatar().then(setMyAvatar);
       if (Array.isArray(msgs)) {
         setMessages(msgs);
+        messagesRef.current = msgs;
         hasMoreOlderRef.current = msgs.length >= MESSAGES_PAGE_SIZE;
       }
       setLoading(false);
+      if (initialJumpMsgId) setTimeout(() => jumpToMessage(initialJumpMsgId), 300);
 
       socketRef.current = sock;
       sock.emit('join_room', room.id);
@@ -372,7 +381,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
   }
 
   function fmtTime(iso: string) {
-    return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    // created_at is UTC ("YYYY-MM-DD HH:MM:SS"); mark it as such so it's
+    // rendered in the device's local timezone
+    const d = new Date(iso.includes('T') ? iso : iso.replace(' ', 'T') + 'Z');
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
 
   async function openDM(otherUsername: string) {
@@ -402,6 +414,70 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
     } catch {
       Alert.alert('Error', 'Could not save the image.');
     }
+  }
+
+  const URL_RE = /(https?:\/\/[^\s]+)/g;
+
+  function renderTextWithLinks(content: string) {
+    const parts = content.split(URL_RE);
+    return parts.map((part, i) =>
+      URL_RE.test(part) && part.startsWith('http') ? (
+        <Text key={i} style={s.link} onPress={() => handleLinkPress(part)}>{part}</Text>
+      ) : (
+        <Text key={i}>{part}</Text>
+      )
+    );
+  }
+
+  async function handleLinkPress(url: string) {
+    // In-app room links join directly
+    const m = /\/join\/(\d+)/.exec(url);
+    if (m) {
+      const info = await apiFetch(`/room-info/${m[1]}`);
+      if (info.error) { Alert.alert('Cannot join', info.error); return; }
+      onOpenDM({ id: info.id, name: info.name, is_dm: 0 });
+      return;
+    }
+    Linking.openURL(url).catch(() => {});
+  }
+
+  async function openForwardPicker(msg: Message) {
+    const [rooms, dms] = await Promise.all([apiFetch('/rooms'), apiFetch('/dm-rooms')]);
+    const targets = [
+      ...(Array.isArray(rooms) ? rooms.map((r: any) => ({ ...r, _label: `# ${r.name}` })) : []),
+      ...(Array.isArray(dms) ? dms.map((d: any) => ({ ...d, _label: `💬 ${d.other_username}` })) : []),
+    ];
+    setForwardTargets(targets);
+    setForwardMsg(msg);
+  }
+
+  function doForward(target: any) {
+    if (!forwardMsg) return;
+    socketRef.current?.emit('forward_message', { messageId: forwardMsg.id, toRoomId: target.id }, (res: any) => {
+      if (res?.error) Alert.alert('Cannot forward', res.error);
+    });
+    setForwardMsg(null);
+  }
+
+  function acceptInvite(inviteContent: string | null) {
+    let parsed: any = null;
+    try { parsed = JSON.parse(inviteContent || ''); } catch {}
+    if (!parsed?.roomId) return;
+    socketRef.current?.emit('accept_invite', { roomId: parsed.roomId }, (res: any) => {
+      if (res?.error) { Alert.alert('Cannot join', res.error); return; }
+      onOpenDM({ id: res.room.id, name: res.room.name, is_dm: 0 });
+    });
+  }
+
+  const roomLink = `${BASE_URL}/join/${room.id}`;
+
+  function sendInvite() {
+    const name = inviteName.trim();
+    if (!name) return;
+    socketRef.current?.emit('invite_to_room', { roomId: room.id, username: name }, (res: any) => {
+      if (res?.error) Alert.alert('Invite failed', res.error);
+      else { Alert.alert('Invitation sent', `${name} received an invite in their DMs.`); setInviteName(''); }
+    });
   }
 
   function replyPreview(msg: Message): string {
@@ -460,9 +536,27 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
             </TouchableOpacity>
           )}
 
+          {msg.forwarded_from ? (
+            <Text style={s.forwardedLabel}>↪ Forwarded from {msg.forwarded_from}</Text>
+          ) : null}
           {msg.type === 'text' && (
-            <Text style={s.msgText}>{msg.content}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}</Text>
+            <Text style={s.msgText}>{renderTextWithLinks(msg.content || '')}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}</Text>
           )}
+          {msg.type === 'invite' && (() => {
+            let inv: any = null;
+            try { inv = JSON.parse(msg.content || ''); } catch {}
+            return (
+              <View style={s.inviteCard}>
+                <Text style={s.inviteTitle}>🔒 Room invitation</Text>
+                <Text style={s.inviteText}>{msg.username === me ? `You invited someone to` : `${msg.username} invited you to`} “{inv?.roomName || 'a room'}”</Text>
+                {msg.username !== me && (
+                  <TouchableOpacity style={s.inviteBtn} onPress={() => acceptInvite(msg.content)}>
+                    <Text style={s.inviteBtnText}>Join room</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            );
+          })()}
           {msg.type === 'image' && (
             <TouchableOpacity onPress={() => setLightboxUrl(`${BASE_URL}${msg.file_path}`)}>
               <Image
@@ -473,10 +567,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
             </TouchableOpacity>
           )}
           {msg.type === 'audio' && (
-            <VoicePlayer url={`${BASE_URL}${msg.file_path}`} peaks={msg.file_name || ''} mine={mine} msgId={msg.id} roomId={room.id} label={`🎙 ${msg.username} · voice message`} />
+            <VoicePlayer url={`${BASE_URL}${msg.file_path}`} peaks={msg.file_name || ''} mine={mine} msgId={msg.id} roomId={room.id} roomMeta={room} label={`🎙 ${msg.username} · voice message`} />
           )}
           {msg.type === 'music' && (
-            <MusicPlayer url={`${BASE_URL}${msg.file_path}`} fileName={msg.file_name || 'Audio'} mine={mine} msgId={msg.id} roomId={room.id} />
+            <MusicPlayer url={`${BASE_URL}${msg.file_path}`} fileName={msg.file_name || 'Audio'} mine={mine} msgId={msg.id} roomId={room.id} roomMeta={room} />
           )}
           {msg.type === 'video' && (
             <TouchableOpacity onPress={() => setVideoUrl(`${BASE_URL}${msg.file_path}`)}>
@@ -511,6 +605,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
           >
             <Text style={s.replyFooterBtn}>↩ Reply</Text>
           </TouchableOpacity>
+          {msg.type !== 'invite' && (
+            <TouchableOpacity style={s.footerBtnTouch} onPress={() => openForwardPicker(msg)}>
+              <Text style={s.replyFooterBtn}>↪ Fwd</Text>
+            </TouchableOpacity>
+          )}
           {mine && (
             <>
               {msg.type === 'text' && (
@@ -556,19 +655,24 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
           <Text style={s.backText}>‹</Text>
           <Text style={s.backLabel}>Chats</Text>
         </TouchableOpacity>
-        <View style={s.headerCenter}>
+        <TouchableOpacity style={s.headerCenter} activeOpacity={0.7}
+          onPress={() => { if (!room.is_dm) setShowRoomInfo(true); }}>
           <View style={s.roomAvatar}>
-            <Text style={s.roomAvatarText}>{room.is_dm ? '💬' : '#'}</Text>
+            <Text style={s.roomAvatarText}>{room.is_dm ? '💬' : room.is_private ? '🔒' : '#'}</Text>
           </View>
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={s.headerTitle} numberOfLines={1}>{title}</Text>
-            {online.length > 0 && (
+            {room.is_dm ? (
+              online.includes(room.other_username || '') ? (
+                <Text style={s.headerSubtitle}>● online</Text>
+              ) : null
+            ) : online.length > 0 ? (
               <TouchableOpacity onPress={() => setShowOnline(true)} hitSlop={{ top: 6, bottom: 6 }}>
                 <Text style={s.headerSubtitle}>● {online.length} online · tap to view</Text>
               </TouchableOpacity>
-            )}
+            ) : null}
           </View>
-        </View>
+        </TouchableOpacity>
         <TouchableOpacity onPress={onOpenProfile} style={s.headerAvatar} activeOpacity={0.7}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
           {myAvatar
@@ -740,6 +844,64 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
         </TouchableOpacity>
       </Modal>
 
+      {/* Forward picker */}
+      <Modal visible={!!forwardMsg} transparent animationType="slide" onRequestClose={() => setForwardMsg(null)}>
+        <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setForwardMsg(null)}>
+          <TouchableOpacity activeOpacity={1} onPress={e => e.stopPropagation()} style={s.attachSheet}>
+            <View style={s.sheetHandle} />
+            <Text style={s.forwardTitle}>Forward to…</Text>
+            <ScrollView style={{ maxHeight: 380 }}>
+              {forwardTargets.map(t => (
+                <TouchableOpacity key={`${t.is_dm ? 'd' : 'r'}${t.id}`} style={s.attachOption} onPress={() => doForward(t)}>
+                  <Text style={s.attachOptionText}>{t._label}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            <TouchableOpacity style={s.attachCancel} onPress={() => setForwardMsg(null)}>
+              <Text style={s.attachCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Room info */}
+      <Modal visible={showRoomInfo} transparent animationType="slide" onRequestClose={() => setShowRoomInfo(false)}>
+        <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowRoomInfo(false)}>
+          <TouchableOpacity activeOpacity={1} onPress={e => e.stopPropagation()} style={s.attachSheet}>
+            <View style={s.sheetHandle} />
+            <Text style={s.forwardTitle}>{room.is_private ? '🔒 ' : '# '}{room.name}</Text>
+            {!room.is_private && (
+              <View style={s.roomLinkBox}>
+                <Text style={s.roomLinkLabel}>ROOM LINK · SHARE TO INVITE</Text>
+                <Text style={s.roomLinkText} selectable>{roomLink}</Text>
+                <TouchableOpacity style={s.shareBtn} onPress={() => Share.share({ message: roomLink })}>
+                  <Text style={s.shareBtnText}>Share link</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+            {!!room.is_private && (
+              <View style={s.roomLinkBox}>
+                <Text style={s.roomLinkLabel}>
+                  {room.created_by ? 'ADD MEMBER (OWNER ONLY)' : 'PRIVATE ROOM'}
+                </Text>
+                <TextInput
+                  style={s.inviteInput} placeholder="Username to invite" placeholderTextColor={C.muted}
+                  value={inviteName} onChangeText={setInviteName} autoCapitalize="none"
+                  onSubmitEditing={sendInvite}
+                />
+                <TouchableOpacity style={s.shareBtn} onPress={sendInvite}>
+                  <Text style={s.shareBtnText}>Send invitation</Text>
+                </TouchableOpacity>
+                <Text style={s.inviteHint}>The user gets an invitation in their DMs and joins once they accept.</Text>
+              </View>
+            )}
+            <TouchableOpacity style={s.attachCancel} onPress={() => setShowRoomInfo(false)}>
+              <Text style={s.attachCancelText}>Close</Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
       {/* Voice recorder or input bar */}
       {recording ? (
         <VoiceRecorder
@@ -851,6 +1013,21 @@ const s = StyleSheet.create({
   attachOptionText: { color: C.text, fontSize: 16, fontWeight: '500' },
   attachCancel: { marginTop: 8, marginHorizontal: 16, backgroundColor: C.inputBg, borderRadius: 12, padding: 14, alignItems: 'center' },
   attachCancelText: { color: C.muted, fontSize: 15, fontWeight: '600' },
+  forwardTitle: { color: C.text, fontWeight: '700', fontSize: 16, paddingHorizontal: 20, paddingVertical: 10 },
+  link: { color: C.accent, textDecorationLine: 'underline' },
+  forwardedLabel: { color: C.muted, fontSize: 11, fontStyle: 'italic', marginBottom: 4 },
+  inviteCard: { gap: 6, minWidth: 200 },
+  inviteTitle: { color: C.text, fontWeight: '700', fontSize: 14 },
+  inviteText: { color: C.muted, fontSize: 13 },
+  inviteBtn: { backgroundColor: C.accent, borderRadius: 8, paddingVertical: 8, alignItems: 'center', marginTop: 4 },
+  inviteBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  roomLinkBox: { marginHorizontal: 20, marginBottom: 10, gap: 8 },
+  roomLinkLabel: { color: C.muted, fontSize: 10.5, fontWeight: '700', letterSpacing: 0.5 },
+  roomLinkText: { color: C.accent, fontSize: 13, backgroundColor: C.inputBg, borderRadius: 8, padding: 10 },
+  shareBtn: { backgroundColor: C.accent, borderRadius: 10, padding: 12, alignItems: 'center' },
+  shareBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  inviteInput: { backgroundColor: C.inputBg, borderRadius: 8, padding: 10, color: C.text, fontSize: 14, borderWidth: 1, borderColor: C.border },
+  inviteHint: { color: C.muted, fontSize: 11.5 },
   lightboxClose: { position: 'absolute', top: 50, end: 20, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
   lightboxSave: { position: 'absolute', top: 50, end: 68, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
   lightboxCloseText: { color: '#fff', fontSize: 18 },
