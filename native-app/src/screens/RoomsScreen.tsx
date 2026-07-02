@@ -1,8 +1,10 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, TextInput,
-  StyleSheet, Alert, ActivityIndicator, Modal, ScrollView, Linking,
+  StyleSheet, Alert, ActivityIndicator, Modal, ScrollView, Linking, Platform,
 } from 'react-native';
+import * as FileSystem from 'expo-file-system';
+import * as IntentLauncher from 'expo-intent-launcher';
 import { C, isRTL } from '../theme';
 import { apiFetch, getUsername, getUserId, getSocket, setAuth } from '../api';
 import { BUILD_VERSION } from '../version';
@@ -34,6 +36,8 @@ export default function RoomsScreen({ onSelectRoom, onLogout }: {
   const [unread, setUnread] = useState<Record<number, number>>({});
   const [latestVersion, setLatestVersion] = useState<number | null>(null);
   const [versionCheckFailed, setVersionCheckFailed] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<number | null>(null); // 0..1 while downloading
+  const updateDownloadRef = useRef<FileSystem.DownloadResumable | null>(null);
 
   const load = useCallback(async () => {
     const [r, d, u, id] = await Promise.all([
@@ -118,6 +122,45 @@ export default function RoomsScreen({ onSelectRoom, onLogout }: {
       else setVersionCheckFailed(true);
     } catch {
       setVersionCheckFailed(true);
+    }
+  }
+
+  async function downloadAndInstallUpdate() {
+    if (updateProgress !== null) return; // already downloading
+    if (Platform.OS !== 'android') {
+      Linking.openURL(LATEST_APK_URL);
+      return;
+    }
+    setUpdateProgress(0);
+    const dest = FileSystem.cacheDirectory + 'ChatRoom-update.apk';
+    try {
+      const dl = FileSystem.createDownloadResumable(
+        LATEST_APK_URL, dest, {},
+        p => {
+          if (p.totalBytesExpectedToWrite > 0) {
+            setUpdateProgress(p.totalBytesWritten / p.totalBytesExpectedToWrite);
+          }
+        }
+      );
+      updateDownloadRef.current = dl;
+      const result = await dl.downloadAsync();
+      setUpdateProgress(null);
+      if (!result?.uri) { Alert.alert('Update failed', 'Could not download the update.'); return; }
+      const contentUri = await FileSystem.getContentUriAsync(result.uri);
+      await IntentLauncher.startActivityAsync('android.intent.action.INSTALL_PACKAGE', {
+        data: contentUri,
+        flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
+      });
+    } catch (e) {
+      setUpdateProgress(null);
+      Alert.alert(
+        'Update failed',
+        'Could not download or start the installer. You can download the APK manually instead.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Download manually', onPress: () => Linking.openURL(LATEST_APK_URL) },
+        ]
+      );
     }
   }
 
@@ -262,18 +305,32 @@ export default function RoomsScreen({ onSelectRoom, onLogout }: {
             {/* App Update */}
             <View style={s.section}>
               <Text style={s.sectionTitle}>APP UPDATE</Text>
-              <Text style={s.updateHint}>
-                Current version: {BUILD_VERSION || 'dev'}
-                {latestVersion !== null ? `  ·  Latest: ${latestVersion}` : ''}
-              </Text>
+              <View style={s.versionRow}>
+                <View style={s.versionBox}>
+                  <Text style={s.versionLabel}>CURRENT</Text>
+                  <Text style={s.versionValue}>{BUILD_VERSION ? `v${BUILD_VERSION}` : 'dev'}</Text>
+                </View>
+                <Text style={s.versionArrow}>→</Text>
+                <View style={s.versionBox}>
+                  <Text style={s.versionLabel}>LATEST</Text>
+                  <Text style={s.versionValue}>{latestVersion !== null ? `v${latestVersion}` : '…'}</Text>
+                </View>
+              </View>
               {latestVersion !== null && BUILD_VERSION === latestVersion ? (
                 <View style={s.upToDateBox}>
                   <Text style={s.upToDateText}>✓ You are up to date</Text>
                 </View>
+              ) : updateProgress !== null ? (
+                <View style={s.updateProgressWrap}>
+                  <View style={s.updateProgressTrack}>
+                    <View style={[s.updateProgressFill, { width: `${Math.round(updateProgress * 100)}%` }]} />
+                  </View>
+                  <Text style={s.updateProgressText}>Downloading update… {Math.round(updateProgress * 100)}%</Text>
+                </View>
               ) : (
-                <TouchableOpacity style={s.updateBtn} onPress={() => Linking.openURL(LATEST_APK_URL)}>
+                <TouchableOpacity style={s.updateBtn} onPress={downloadAndInstallUpdate}>
                   <Text style={s.updateBtnText}>
-                    ⬇ Download {latestVersion !== null ? `version ${latestVersion}` : 'latest APK'}
+                    ⚡ Update {latestVersion !== null ? `to version ${latestVersion}` : 'now'}
                   </Text>
                 </TouchableOpacity>
               )}
@@ -365,6 +422,15 @@ const s = StyleSheet.create({
   upToDateBox: { backgroundColor: 'rgba(22,163,74,0.12)', borderWidth: 1, borderColor: C.success, borderRadius: 10, padding: 13, alignItems: 'center' },
   upToDateText: { color: C.success, fontWeight: '700', fontSize: 15 },
   versionCheckError: { color: C.muted, fontSize: 12, marginTop: 8, textAlign: 'center' },
+  versionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 14, marginBottom: 12 },
+  versionBox: { alignItems: 'center', backgroundColor: C.inputBg, borderRadius: 10, paddingVertical: 8, paddingHorizontal: 18, borderWidth: 1, borderColor: C.border },
+  versionLabel: { color: C.muted, fontSize: 10, fontWeight: '700', letterSpacing: 0.5 },
+  versionValue: { color: C.text, fontSize: 16, fontWeight: '700', marginTop: 2 },
+  versionArrow: { color: C.muted, fontSize: 18 },
+  updateProgressWrap: { gap: 8 },
+  updateProgressTrack: { height: 8, borderRadius: 4, backgroundColor: C.inputBg, overflow: 'hidden', borderWidth: 1, borderColor: C.border },
+  updateProgressFill: { height: '100%', backgroundColor: C.accent },
+  updateProgressText: { color: C.muted, fontSize: 12, textAlign: 'center' },
 
   // Rename modal
   renameCard: { backgroundColor: C.sidebar, margin: 32, borderRadius: 16, padding: 20, borderWidth: 1, borderColor: C.border },

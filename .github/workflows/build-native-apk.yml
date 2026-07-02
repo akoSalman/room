@@ -34,6 +34,14 @@ jobs:
         run: |
           echo "// Stamped by CI (build-native-apk.yml) with the GitHub Actions run number." > src/version.ts
           echo "export const BUILD_VERSION = ${{ github.run_number }};" >> src/version.ts
+          # Android only installs an update if versionCode increases
+          node -e "
+            const fs = require('fs');
+            const cfg = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+            cfg.expo.android.versionCode = ${{ github.run_number }};
+            cfg.expo.version = '1.0.${{ github.run_number }}';
+            fs.writeFileSync('app.json', JSON.stringify(cfg, null, 2));
+          "
 
       - name: Install dependencies
         run: npm install
@@ -44,14 +52,11 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
-      - name: Generate signing keystore
-        run: |
-          keytool -genkeypair -v \
-            -keystore android/app/chatroom.keystore \
-            -alias chatroom \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=ChatRoom,O=Android,C=US" \
-            -storepass chatroom123 -keypass chatroom123 -noprompt
+      # Use the persistent keystore committed to the repo so every build has the
+      # SAME signature — Android refuses to update an app when signatures differ,
+      # which previously forced users to uninstall before installing a new build.
+      - name: Copy persistent signing keystore
+        run: cp signing/chatroom.keystore android/app/chatroom.keystore
 
       - name: Cache Gradle
         uses: actions/cache@v4
