@@ -34,6 +34,15 @@ jobs:
         run: |
           echo "// Stamped by CI (build-native-apk.yml) with the GitHub Actions run number." > src/version.ts
           echo "export const BUILD_VERSION = ${{ github.run_number }};" >> src/version.ts
+          # Enable Firebase push when google-services.json is committed
+          if [ -f google-services.json ]; then
+            node -e "
+              const fs = require('fs');
+              const cfg = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+              cfg.expo.android.googleServicesFile = './google-services.json';
+              fs.writeFileSync('app.json', JSON.stringify(cfg, null, 2));
+            "
+          fi
           # Android only installs an update if versionCode increases
           node -e "
             const fs = require('fs');

@@ -133,6 +133,106 @@ app.post('/rooms', authMiddleware, (req, res) => {
   }
 });
 
+// ── Push notifications via Firebase Cloud Messaging (HTTP v1) ─────────────────
+// Activates automatically when a Firebase service-account JSON is present
+// (FIREBASE_SERVICE_ACCOUNT env var or ./firebase-service-account.json).
+let fcmCreds = null;
+try {
+  const svcPath = process.env.FIREBASE_SERVICE_ACCOUNT || path.join(__dirname, 'firebase-service-account.json');
+  if (fs.existsSync(svcPath)) fcmCreds = JSON.parse(fs.readFileSync(svcPath, 'utf8'));
+} catch {}
+let fcmToken = null;
+let fcmTokenExp = 0;
+
+async function getFcmAccessToken() {
+  if (!fcmCreds) return null;
+  if (fcmToken && Date.now() < fcmTokenExp) return fcmToken;
+  const now = Math.floor(Date.now() / 1000);
+  const assertion = jwt.sign({
+    iss: fcmCreds.client_email,
+    scope: 'https://www.googleapis.com/auth/firebase.messaging',
+    aud: fcmCreds.token_uri,
+    iat: now,
+    exp: now + 3600,
+  }, fcmCreds.private_key, { algorithm: 'RS256' });
+  const res = await fetch(fcmCreds.token_uri, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `grant_type=${encodeURIComponent('urn:ietf:params:oauth:grant-type:jwt-bearer')}&assertion=${encodeURIComponent(assertion)}`,
+  }).then(r => r.json());
+  if (!res.access_token) return null;
+  fcmToken = res.access_token;
+  fcmTokenExp = Date.now() + 50 * 60 * 1000;
+  return fcmToken;
+}
+
+async function sendPushToUsers(userIds, title, body, data = {}) {
+  if (!fcmCreds || !userIds.length) return;
+  try {
+    const placeholders = userIds.map(() => '?').join(',');
+    const tokens = db.prepare(`SELECT token FROM push_tokens WHERE user_id IN (${placeholders})`)
+      .all(...userIds).map(r => r.token);
+    if (!tokens.length) return;
+    const access = await getFcmAccessToken();
+    if (!access) return;
+    await Promise.all(tokens.map(t =>
+      fetch(`https://fcm.googleapis.com/v1/projects/${fcmCreds.project_id}/messages:send`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${access}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: {
+            token: t,
+            notification: { title, body },
+            data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])),
+            android: { priority: 'high', notification: { channel_id: 'messages' } },
+          },
+        }),
+      }).then(r => {
+        if (r.status === 404 || r.status === 400) {
+          db.prepare('DELETE FROM push_tokens WHERE token = ?').run(t);
+        }
+      }).catch(() => {})
+    ));
+  } catch {}
+}
+
+function messagePreview(msg) {
+  return msg.type === 'text' ? (msg.content || '').slice(0, 100)
+    : msg.type === 'audio' ? '🎙 Voice message'
+    : msg.type === 'image' ? '🖼 Image'
+    : msg.type === 'video' ? '🎥 Video'
+    : msg.type === 'music' ? '🎵 Audio file'
+    : msg.type === 'invite' ? '🔒 Room invitation' : '📄 File';
+}
+
+// Register/unregister device push tokens
+app.post('/push-token', authMiddleware, (req, res) => {
+  const { token, platform } = req.body;
+  if (!token) return res.status(400).json({ error: 'Token required' });
+  db.prepare('INSERT INTO push_tokens (user_id, token, platform) VALUES (?, ?, ?) ON CONFLICT(token) DO UPDATE SET user_id = excluded.user_id')
+    .run(req.user.id, String(token), platform || null);
+  res.json({ ok: true });
+});
+app.delete('/push-token', authMiddleware, (req, res) => {
+  const { token } = req.body || {};
+  if (token) db.prepare('DELETE FROM push_tokens WHERE token = ? AND user_id = ?').run(String(token), req.user.id);
+  res.json({ ok: true });
+});
+
+// Per-room unread counts based on server-side read positions
+app.get('/unread-counts', authMiddleware, (req, res) => {
+  const rows = db.prepare(`
+    SELECT m.room_id, COUNT(*) AS cnt
+    FROM messages m
+    LEFT JOIN room_reads rr ON rr.room_id = m.room_id AND rr.user_id = ?
+    WHERE m.user_id != ? AND m.id > COALESCE(rr.last_read_msg_id, 0)
+    GROUP BY m.room_id
+  `).all(req.user.id, req.user.id);
+  const counts = {};
+  rows.forEach(r => { counts[r.room_id] = r.cnt; });
+  res.json(counts);
+});
+
 function canAccessRoom(userId, room) {
   if (!room) return false;
   if (room.is_dm) {
@@ -378,6 +478,15 @@ io.on('connection', (socket) => {
     const memberIds = room ? getRoomMemberIds(room) : [];
     memberIds.forEach(id => io.to('user:' + id).emit('message_received', msg));
 
+    // Push notification for everyone but the sender (reaches closed apps)
+    const roomLabel = room && !room.is_dm ? ` · ${room.name}` : '';
+    sendPushToUsers(
+      memberIds.filter(id => id !== socket.user.id),
+      msg.username + roomLabel,
+      messagePreview(msg),
+      { roomId: String(roomId), msgId: String(msg.id) }
+    );
+
     // Notify the other DM participant so they can add the DM room to sidebar
     if (room && room.is_dm) {
       io.emit('dm_activity', { room });
@@ -390,6 +499,15 @@ io.on('connection', (socket) => {
 
   socket.on('typing_stop', ({ roomId }) => {
     socket.to(String(roomId)).emit('user_stopped_typing', { username: socket.user.username });
+  });
+
+  socket.on('mark_read', ({ roomId, lastMsgId }) => {
+    if (!roomId || !lastMsgId) return;
+    db.prepare(`
+      INSERT INTO room_reads (user_id, room_id, last_read_msg_id) VALUES (?, ?, ?)
+      ON CONFLICT(user_id, room_id) DO UPDATE SET
+        last_read_msg_id = MAX(last_read_msg_id, excluded.last_read_msg_id)
+    `).run(socket.user.id, roomId, lastMsgId);
   });
 
   socket.on('recording_start', ({ roomId }) => {
@@ -482,7 +600,14 @@ io.on('connection', (socket) => {
       LEFT JOIN users ru ON rm.user_id = ru.id
       WHERE m.id = ?
     `).get(result.lastInsertRowid);
-    getRoomMemberIds(dstRoom).forEach(id => io.to('user:' + id).emit('message_received', msg));
+    const dstMembers = getRoomMemberIds(dstRoom);
+    dstMembers.forEach(id => io.to('user:' + id).emit('message_received', msg));
+    sendPushToUsers(
+      dstMembers.filter(id => id !== socket.user.id),
+      msg.username + (dstRoom.is_dm ? '' : ` · ${dstRoom.name}`),
+      messagePreview(msg),
+      { roomId: String(dstRoom.id), msgId: String(msg.id) }
+    );
     if (dstRoom.is_dm) io.emit('dm_activity', { room: dstRoom });
     if (typeof ack === 'function') ack({ ok: true });
   });

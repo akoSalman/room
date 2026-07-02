@@ -50,17 +50,19 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   const updateDownloadRef = useRef<FileSystem.DownloadResumable | null>(null);
 
   const load = useCallback(async () => {
-    const [r, d, u, id] = await Promise.all([
+    const [r, d, u, id, counts] = await Promise.all([
       apiFetch('/rooms'),
       apiFetch('/dm-rooms'),
       getUsername(),
       getUserId(),
+      apiFetch('/unread-counts'),
     ]);
     if (Array.isArray(r)) setRooms(r);
     if (Array.isArray(d)) setDms(d);
     setMe(u || '');
     setMyId(id);
     getAvatar().then(setMyAvatar);
+    if (counts && !counts.error) setUnread(counts);
     setLoading(false);
   }, []);
 

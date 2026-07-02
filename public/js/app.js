@@ -149,6 +149,14 @@ async function enterApp() {
   await connectSocket();
   await loadRooms();
   await loadDMRooms();
+  // Restore unread badges from the server-side read positions
+  const counts = await api('/unread-counts');
+  if (counts && !counts.error) {
+    Object.entries(counts).forEach(([roomId, cnt]) => {
+      unreadCounts[roomId] = cnt;
+      updateUnreadBadge(roomId);
+    });
+  }
 }
 
 function setAvatarInitials(name) {
@@ -221,6 +229,7 @@ function connectSocket() {
         }
       } else {
         appendMessage(msg);
+        socket.emit('mark_read', { roomId: msg.room_id, lastMsgId: msg.id });
       }
     });
     socket.on('message_edited', ({ messageId, content }) => applyEdit(messageId, content));
@@ -685,7 +694,10 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   const msgs = await api('/messages/' + roomId);
   if (Array.isArray(msgs)) {
     msgs.forEach(appendMessage);
-    if (msgs.length) oldestLoadedMsgId = msgs[0].id;
+    if (msgs.length) {
+      oldestLoadedMsgId = msgs[0].id;
+      socket.emit('mark_read', { roomId, lastMsgId: msgs[msgs.length - 1].id });
+    }
     hasMoreOlderMsgs = msgs.length >= MESSAGES_PAGE_SIZE;
   }
   scrollBottom();

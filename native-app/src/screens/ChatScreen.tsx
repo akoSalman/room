@@ -193,6 +193,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         setMessages(msgs);
         messagesRef.current = msgs;
         hasMoreOlderRef.current = msgs.length >= MESSAGES_PAGE_SIZE;
+        if (msgs.length) sock.emit('mark_read', { roomId: room.id, lastMsgId: msgs[msgs.length - 1].id });
       }
       setLoading(false);
       if (initialJumpMsgId) setTimeout(() => jumpToMessage(initialJumpMsgId), 300);
@@ -204,6 +205,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         if (msg.room_id !== room.id) return;
         setMessages(prev => [...prev, msg]);
         if (isNearBottomRef.current) scrollBottom();
+        sock.emit('mark_read', { roomId: room.id, lastMsgId: msg.id });
       });
       sock.on('message_edited', ({ messageId, content }: any) => {
         setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content, edited: 1 } : m));

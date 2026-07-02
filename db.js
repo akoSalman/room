@@ -60,6 +60,21 @@ db.exec(`
     UNIQUE(room_id, user_id)
   );
 `);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS push_tokens (
+    user_id INTEGER NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    platform TEXT
+  );
+`);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS room_reads (
+    user_id INTEGER NOT NULL,
+    room_id INTEGER NOT NULL,
+    last_read_msg_id INTEGER DEFAULT 0,
+    UNIQUE(user_id, room_id)
+  );
+`);
 
 // Seed a default room
 const existing = db.prepare('SELECT id FROM rooms WHERE name = ?').get('General');

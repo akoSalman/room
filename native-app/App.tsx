@@ -8,7 +8,7 @@ import AuthScreen from './src/screens/AuthScreen';
 import RoomsScreen from './src/screens/RoomsScreen';
 import ChatScreen from './src/screens/ChatScreen';
 import MiniPlayer from './src/components/MiniPlayer';
-import { disconnectSocket, getSocket, getUsername } from './src/api';
+import { disconnectSocket, getSocket, getUsername, apiFetch } from './src/api';
 import { audioManager } from './src/audioManager';
 import { C } from './src/theme';
 
@@ -39,12 +39,32 @@ export default function App() {
   const [openProfileOnRooms, setOpenProfileOnRooms] = useState(false);
   const [pendingJumpMsgId, setPendingJumpMsgId] = useState<number | null>(null);
 
+  const pushRegisteredRef = React.useRef(false);
+
   useEffect(() => {
     AsyncStorage.getItem('token').then(t => {
       if (t) setScreen('rooms');
     });
     Notifications.requestPermissionsAsync().catch(() => {});
   }, []);
+
+  // Register the device FCM token so the server can push notifications that
+  // arrive even when the app is closed. Silently no-ops until the build
+  // includes google-services.json (Firebase config).
+  useEffect(() => {
+    if (screen === 'auth') return;
+    (async () => {
+      try {
+        const perm = await Notifications.getPermissionsAsync();
+        if (!perm.granted) return;
+        const tok = await Notifications.getDevicePushTokenAsync();
+        if (tok?.data) {
+          const res = await apiFetch('/push-token', 'POST', { token: String(tok.data), platform: 'android' });
+          if (res?.ok) pushRegisteredRef.current = true;
+        }
+      } catch {}
+    })();
+  }, [screen === 'auth']);
 
   // Global notifications: any message from someone else, in any room except
   // the one currently open, raises a local notification.
@@ -56,6 +76,7 @@ export default function App() {
       const uname = await getUsername();
       sock = await getSocket();
       handler = (msg: any) => {
+        if (pushRegisteredRef.current) return; // FCM push covers notifications
         if (msg.username === uname) return;
         if (screen === 'chat' && room && msg.room_id === room.id) return;
         const body = msg.type === 'text' ? (msg.content || '')
