@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Alert, Platform } from 'react-native';
 import { Audio } from 'expo-av';
 import { C } from '../theme';
+import { audioManager } from '../audioManager';
 
 function fmtTime(s: number) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
@@ -98,6 +99,7 @@ export default function VoiceRecorder({ onCancel, onSend }: {
   }
 
   async function togglePreview() {
+    audioManager.stop(); // one audio source at a time
     if (!previewSoundRef.current) {
       const { sound } = await Audio.Sound.createAsync(
         { uri },

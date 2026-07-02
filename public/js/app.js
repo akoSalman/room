@@ -90,16 +90,20 @@ async function signin() {
   try {
     const res = await api('/auth/signin', 'POST', { username: user, password: pass });
     if (res.error) return showAuthError(res.error);
-    saveSession(res.token, res.username);
+    saveSession(res.token, res.username, res.avatar);
     enterApp();
   } catch { showAuthError('Connection error — is the server running?'); }
   finally { btn.disabled = false; btn.textContent = 'Continue →'; }
 }
 
-function saveSession(t, u) {
+function saveSession(t, u, avatar) {
   token = t; username = u;
   localStorage.setItem('token', t);
   localStorage.setItem('username', u);
+  if (avatar !== undefined) {
+    if (avatar) localStorage.setItem('avatar', avatar);
+    else localStorage.removeItem('avatar');
+  }
 }
 function showAuthError(msg) { document.getElementById('auth-error').textContent = msg; }
 
@@ -125,13 +129,38 @@ async function enterApp() {
 }
 
 function setAvatarInitials(name) {
-  const initials = (name || '?').slice(0, 2).toUpperCase();
+  const avatar = localStorage.getItem('avatar');
+  const display = avatar || (name || '?').slice(0, 2).toUpperCase();
   const sa = document.getElementById('sidebar-avatar');
   const pb = document.getElementById('profile-avatar-big');
-  if (sa) sa.textContent = initials;
-  if (pb) pb.textContent = initials;
+  if (sa) { sa.textContent = display; sa.classList.toggle('emoji-avatar', !!avatar); }
+  if (pb) { pb.textContent = display; pb.classList.toggle('emoji-avatar', !!avatar); }
   const pd = document.getElementById('profile-name-display');
   if (pd) pd.textContent = name;
+}
+
+const AVATAR_EMOJIS = ['🦄','🐉','🧙‍♂️','🧚‍♀️','🧛‍♂️','🧞‍♂️','🦊','🐺','🦁','🐯','🐼','🐸','🦉','🐙','🦋','🤖','👽','🐲','🦅','🐬','🔥','⚡','🌙','⭐'];
+
+function buildAvatarPicker() {
+  const grid = document.getElementById('avatar-emoji-grid');
+  if (!grid || grid.childElementCount) return;
+  const current = localStorage.getItem('avatar');
+  AVATAR_EMOJIS.forEach(e => {
+    const cell = document.createElement('button');
+    cell.className = 'avatar-emoji-cell' + (current === e ? ' active' : '');
+    cell.textContent = e;
+    cell.onclick = () => setAvatarEmoji(e);
+    grid.appendChild(cell);
+  });
+}
+
+async function setAvatarEmoji(emoji) {
+  const res = await api('/profile', 'PUT', { avatar: emoji });
+  if (res.error) return alert(res.error);
+  saveSession(res.token, res.username, res.avatar);
+  setAvatarInitials(username);
+  document.querySelectorAll('.avatar-emoji-cell').forEach(c => c.classList.toggle('active', c.textContent === emoji));
+  document.getElementById('remove-avatar-btn').classList.toggle('hidden', !emoji);
 }
 
 function connectSocket() {
@@ -263,6 +292,8 @@ function openProfile() {
   document.getElementById('profile-error').textContent = '';
   document.getElementById('profile-success').textContent = '';
   setAvatarInitials(username);
+  buildAvatarPicker();
+  document.getElementById('remove-avatar-btn').classList.toggle('hidden', !localStorage.getItem('avatar'));
   loadMyRooms();
   loadLatestAppVersion();
   show('profile-modal');
@@ -823,6 +854,26 @@ async function sendRecording() {
   cancelReply();
 }
 
+// ─── Global audio coordination ───────────────────────────────────────────────
+// Only one piece of media plays at a time across the whole app.
+let currentMedia = null; // { el, stop } — el is an Audio/video element
+function claimPlayback(el, stopFn) {
+  if (currentMedia && currentMedia.el !== el) {
+    try { currentMedia.stop(); } catch {}
+  }
+  currentMedia = { el, stop: stopFn };
+}
+
+// Auto-play the next voice message in the chat after one finishes
+function playNextVoiceAfter(wrapperEl) {
+  let el = wrapperEl.nextElementSibling;
+  while (el) {
+    const btn = el.querySelector('.voice-play-btn');
+    if (btn) { btn.click(); return; }
+    el = el.nextElementSibling;
+  }
+}
+
 // ─── Render messages ──────────────────────────────────────────────────────────
 function buildMessageElement(msg) {
   const isMine = msg.username === username;
@@ -834,7 +885,8 @@ function buildMessageElement(msg) {
 
   if (!isMine) {
     const sender = document.createElement('div');
-    sender.className = 'msg-sender'; sender.textContent = msg.username;
+    sender.className = 'msg-sender';
+    sender.textContent = (msg.avatar ? msg.avatar + ' ' : '') + msg.username;
     if (!currentRoomIsDM) {
       sender.classList.add('clickable');
       sender.title = `Message ${msg.username}`;
@@ -881,6 +933,7 @@ function buildMessageElement(msg) {
     const video = document.createElement('video');
     video.src = msg.file_path; video.controls = true; video.className = 'msg-video';
     video.preload = 'metadata';
+    video.onplay = () => claimPlayback(video, () => video.pause());
     bubble.appendChild(video);
   } else if (msg.type === 'music') {
     const wrap = document.createElement('div');
@@ -889,6 +942,7 @@ function buildMessageElement(msg) {
     label.className = 'music-label'; label.textContent = '🎵 ' + (msg.file_name || 'Audio');
     const audio = document.createElement('audio');
     audio.src = msg.file_path; audio.controls = true; audio.className = 'music-audio';
+    audio.onplay = () => claimPlayback(audio, () => audio.pause());
     wrap.appendChild(label); wrap.appendChild(audio);
     bubble.appendChild(wrap);
   } else {
@@ -1122,17 +1176,26 @@ function buildVoicePlayer(msg) {
   }
 
   audio.onloadedmetadata = () => { durEl.textContent = fmtTime(audio.duration); };
+  function stopThis() {
+    audio.pause(); playing = false; playBtn.innerHTML = '▶';
+    cancelAnimationFrame(rafId);
+  }
+
   audio.onended = () => {
     playing = false; playBtn.innerHTML = '▶';
     cancelAnimationFrame(rafId);
     audio.currentTime = 0;
     updateBars();
     durEl.textContent = fmtTime(audio.duration);
+    // Auto-play the next voice message in the chat
+    const wrapper = player.closest('.msg-wrapper');
+    if (wrapper) playNextVoiceAfter(wrapper);
   };
 
   playBtn.onclick = () => {
-    if (playing) { audio.pause(); playBtn.innerHTML = '▶'; playing = false; cancelAnimationFrame(rafId); }
+    if (playing) { stopThis(); }
     else {
+      claimPlayback(audio, stopThis); // pause whatever else is playing
       if (audio.ended || audio.currentTime >= audio.duration) audio.currentTime = 0;
       audio.play(); playBtn.innerHTML = '⏸'; playing = true; startRAF();
     }

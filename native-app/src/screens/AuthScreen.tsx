@@ -29,6 +29,8 @@ export default function AuthScreen({ onLogin }: { onLogin: () => void }) {
       if (res.error) { Alert.alert('Error', res.error); return; }
       await AsyncStorage.setItem('token', res.token);
       await AsyncStorage.setItem('username', res.username);
+      if (res.avatar) await AsyncStorage.setItem('avatar', res.avatar);
+      else await AsyncStorage.removeItem('avatar');
       onLogin();
     } catch {
       Alert.alert('Error', 'Could not connect to server.');

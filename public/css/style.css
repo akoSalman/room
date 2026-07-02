@@ -516,3 +516,21 @@ html {
 @media (max-height: 500px) and (max-width: 900px) {
   .msg-bubble audio { max-width: 160px; }
 }
+
+/* ── Emoji avatar picker ─────────────────────────── */
+#avatar-emoji-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.avatar-emoji-cell {
+  width: 42px; height: 42px; border-radius: 10px;
+  background: var(--input-bg); border: 2px solid transparent;
+  font-size: 1.35rem; cursor: pointer; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  transition: border-color .15s, background .15s;
+}
+.avatar-emoji-cell:hover { background: rgba(59,125,216,0.1); }
+.avatar-emoji-cell.active { border-color: var(--accent); background: rgba(59,125,216,0.12); }
+.remove-avatar {
+  display: block; margin: 12px auto 0; background: none; border: none;
+  color: var(--danger); font-size: 0.82rem; font-weight: 600; cursor: pointer;
+}
+.emoji-avatar { font-size: 1.3rem !important; }
+.profile-avatar-big.emoji-avatar { font-size: 2.6rem !important; }

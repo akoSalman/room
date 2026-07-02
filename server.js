@@ -50,13 +50,13 @@ app.post('/auth/signin', async (req, res) => {
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) return res.status(401).json({ error: 'Wrong password' });
     const token = jwt.sign({ id: user.id, username }, JWT_SECRET);
-    return res.json({ token, username, isNew: false });
+    return res.json({ token, username, avatar: user.avatar || null, isNew: false });
   }
   try {
     const hash = await bcrypt.hash(password, 10);
     const result = db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(username, hash);
     const token = jwt.sign({ id: result.lastInsertRowid, username }, JWT_SECRET);
-    res.json({ token, username, isNew: true });
+    res.json({ token, username, avatar: null, isNew: true });
   } catch {
     res.status(409).json({ error: 'Something went wrong, try again' });
   }
@@ -64,7 +64,7 @@ app.post('/auth/signin', async (req, res) => {
 
 // Profile update
 app.put('/profile', authMiddleware, async (req, res) => {
-  const { newUsername, currentPassword, newPassword } = req.body;
+  const { newUsername, currentPassword, newPassword, avatar } = req.body;
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
@@ -85,9 +85,15 @@ app.put('/profile', authMiddleware, async (req, res) => {
     db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, req.user.id);
   }
 
+  if (avatar !== undefined) {
+    // avatar is a single emoji (or null to remove) — no password required
+    db.prepare('UPDATE users SET avatar = ? WHERE id = ?')
+      .run(avatar ? String(avatar).slice(0, 8) : null, req.user.id);
+  }
+
   const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
   const token = jwt.sign({ id: updated.id, username: updated.username }, JWT_SECRET);
-  res.json({ token, username: updated.username });
+  res.json({ token, username: updated.username, avatar: updated.avatar || null });
 });
 
 // Rooms
@@ -111,7 +117,7 @@ app.post('/rooms', authMiddleware, (req, res) => {
 
 // Users list (for DMs)
 app.get('/users', authMiddleware, (req, res) => {
-  const users = db.prepare('SELECT id, username FROM users WHERE id != ? ORDER BY username').all(req.user.id);
+  const users = db.prepare('SELECT id, username, avatar FROM users WHERE id != ? ORDER BY username').all(req.user.id);
   res.json(users);
 });
 
@@ -169,7 +175,7 @@ app.get('/messages/:roomId', authMiddleware, (req, res) => {
   const before = parseInt(req.query.before);
   const messages = before
     ? db.prepare(`
-        SELECT m.*, u.username,
+        SELECT m.*, u.username, u.avatar,
           rm.content AS reply_content, rm.type AS reply_type, rm.file_name AS reply_file_name,
           ru.username AS reply_username
         FROM messages m
@@ -180,7 +186,7 @@ app.get('/messages/:roomId', authMiddleware, (req, res) => {
         ORDER BY m.created_at DESC LIMIT ?
       `).all(req.params.roomId, before, MESSAGES_PAGE_SIZE)
     : db.prepare(`
-        SELECT m.*, u.username,
+        SELECT m.*, u.username, u.avatar,
           rm.content AS reply_content, rm.type AS reply_type, rm.file_name AS reply_file_name,
           ru.username AS reply_username
         FROM messages m
@@ -263,7 +269,7 @@ io.on('connection', (socket) => {
     `).run(roomId, socket.user.id, type || 'text', content || null, filePath || null, fileName || null, replyToId || null);
 
     const msg = db.prepare(`
-      SELECT m.*, u.username,
+      SELECT m.*, u.username, u.avatar,
         rm.content AS reply_content, rm.type AS reply_type, rm.file_name AS reply_file_name,
         ru.username AS reply_username
       FROM messages m

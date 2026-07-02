@@ -6,7 +6,9 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import AuthScreen from './src/screens/AuthScreen';
 import RoomsScreen from './src/screens/RoomsScreen';
 import ChatScreen from './src/screens/ChatScreen';
+import MiniPlayer from './src/components/MiniPlayer';
 import { disconnectSocket } from './src/api';
+import { audioManager } from './src/audioManager';
 import { C } from './src/theme';
 
 // Let the OS mirror layout automatically on RTL locales (e.g. Persian, Arabic)
@@ -41,7 +43,8 @@ export default function App() {
   }, [screen]);
 
   async function logout() {
-    await AsyncStorage.multiRemove(['token', 'username']);
+    await AsyncStorage.multiRemove(['token', 'username', 'avatar']);
+    audioManager.stop();
     disconnectSocket();
     setScreen('auth');
     setRoom(null);
@@ -52,6 +55,9 @@ export default function App() {
       <SafeAreaProvider>
         <StatusBar barStyle="dark-content" backgroundColor={C.header} />
         <SafeAreaView style={{ flex: 1, backgroundColor: C.bg }} edges={['top']}>
+          {screen !== 'auth' && (
+            <MiniPlayer hideForRoomId={screen === 'chat' && room ? room.id : null} />
+          )}
           {screen === 'auth' && (
             <AuthScreen onLogin={() => setScreen('rooms')} />
           )}

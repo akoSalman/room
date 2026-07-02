@@ -1,7 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useReducer } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
-import { Audio } from 'expo-av';
 import { C } from '../theme';
+import { audioManager } from '../audioManager';
 
 const SPEEDS = [1, 1.5, 2];
 
@@ -20,60 +20,28 @@ function parsePeaks(raw: string, count = 40): number[] {
   });
 }
 
-export default function VoicePlayer({ url, peaks: rawPeaks, mine }: {
+export default function VoicePlayer({ url, peaks: rawPeaks, mine, msgId, roomId, label }: {
   url: string; peaks: string; mine: boolean;
+  msgId: number; roomId: number; label: string;
 }) {
-  const [playing, setPlaying] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const [speedIdx, setSpeedIdx] = useState(0);
-  const soundRef = useRef<Audio.Sound | null>(null);
+  const [, forceUpdate] = useReducer(x => x + 1, 0);
   const peaks = parsePeaks(rawPeaks);
 
-  useEffect(() => {
-    return () => { soundRef.current?.unloadAsync(); };
-  }, []);
+  useEffect(() => audioManager.subscribe(forceUpdate), []);
 
-  async function toggle() {
-    if (!soundRef.current) {
-      const { sound } = await Audio.Sound.createAsync(
-        { uri: url },
-        { shouldPlay: true, rate: SPEEDS[speedIdx], shouldCorrectPitch: true },
-        status => {
-          if (!status.isLoaded) return;
-          setProgress(status.positionMillis / (status.durationMillis || 1));
-          setDuration((status.durationMillis || 0) / 1000);
-          if (status.didJustFinish) {
-            setPlaying(false);
-            setProgress(0);
-            // stopAsync (not a seek) — seeking a finished player restarts
-            // playback on Android, which made clips replay in a loop
-            sound.stopAsync();
-          }
-        }
-      );
-      soundRef.current = sound;
-      setPlaying(true);
-    } else {
-      const status = await soundRef.current.getStatusAsync();
-      if (!status.isLoaded) return;
-      if (status.isPlaying) {
-        await soundRef.current.pauseAsync();
-        setPlaying(false);
-      } else {
-        if (status.didJustFinish || status.positionMillis >= (status.durationMillis || 0)) {
-          await soundRef.current.setPositionAsync(0);
-        }
-        await soundRef.current.playAsync();
-        setPlaying(true);
-      }
-    }
+  const isCurrent = audioManager.currentId === msgId;
+  const playing = isCurrent && audioManager.playing;
+  const progress = isCurrent ? audioManager.progress : 0;
+  const duration = isCurrent ? audioManager.duration : 0;
+  const speedIdx = Math.max(0, SPEEDS.indexOf(audioManager.rate));
+
+  function toggle() {
+    if (isCurrent) audioManager.toggle();
+    else audioManager.play(msgId, url, label, roomId);
   }
 
-  async function cycleSpeed() {
-    const next = (speedIdx + 1) % SPEEDS.length;
-    setSpeedIdx(next);
-    await soundRef.current?.setRateAsync(SPEEDS[next], true);
+  function cycleSpeed() {
+    audioManager.setRate(SPEEDS[(speedIdx + 1) % SPEEDS.length]);
   }
 
   const barColor = C.accent;

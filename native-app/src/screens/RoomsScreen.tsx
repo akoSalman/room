@@ -6,8 +6,10 @@ import {
 import * as FileSystem from 'expo-file-system';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { C, isRTL } from '../theme';
-import { apiFetch, getUsername, getUserId, getSocket, setAuth } from '../api';
+import { apiFetch, getUsername, getUserId, getSocket, setAuth, getAvatar } from '../api';
 import { BUILD_VERSION } from '../version';
+
+const AVATAR_EMOJIS = ['🦄','🐉','🧙‍♂️','🧚‍♀️','🧛‍♂️','🧞‍♂️','🦊','🐺','🦁','🐯','🐼','🐸','🦉','🐙','🦋','🤖','👽','🐲','🦅','🐬','🔥','⚡','🌙','⭐'];
 
 const LATEST_APK_URL = 'https://github.com/akoSalman/room-releases/releases/download/latest-apk/ChatRoom-latest.apk';
 const LATEST_RELEASE_API = 'https://api.github.com/repos/akoSalman/room-releases/releases/tags/latest-apk';
@@ -39,6 +41,7 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   const [latestVersion, setLatestVersion] = useState<number | null>(null);
   const [versionCheckFailed, setVersionCheckFailed] = useState(false);
   const [updateProgress, setUpdateProgress] = useState<number | null>(null); // 0..1 while downloading
+  const [myAvatar, setMyAvatar] = useState<string | null>(null);
   const updateDownloadRef = useRef<FileSystem.DownloadResumable | null>(null);
 
   const load = useCallback(async () => {
@@ -52,6 +55,7 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
     if (Array.isArray(d)) setDms(d);
     setMe(u || '');
     setMyId(id);
+    getAvatar().then(setMyAvatar);
     setLoading(false);
   }, []);
 
@@ -174,6 +178,13 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
     }
   }
 
+  async function setAvatarEmoji(emoji: string | null) {
+    const res = await apiFetch('/profile', 'PUT', { avatar: emoji });
+    if (res.error) { Alert.alert('Error', res.error); return; }
+    await setAuth(res.token, res.username, res.avatar);
+    setMyAvatar(res.avatar);
+  }
+
   async function saveProfile() {
     setProfileError('');
     setProfileSuccess('');
@@ -199,7 +210,11 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
       {/* Header */}
       <View style={s.header}>
         <TouchableOpacity onPress={() => { setShowProfile(true); checkLatestVersion(); }}>
-          <View style={s.avatar}><Text style={s.avatarText}>{initials(me)}</Text></View>
+          <View style={s.avatar}>
+            {myAvatar
+              ? <Text style={s.avatarEmoji}>{myAvatar}</Text>
+              : <Text style={s.avatarText}>{initials(me)}</Text>}
+          </View>
         </TouchableOpacity>
         <Text style={s.headerTitle}>{me}</Text>
         <TouchableOpacity onPress={onLogout}><Text style={s.logout}>⎋</Text></TouchableOpacity>
@@ -265,8 +280,33 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
             <ScrollView showsVerticalScrollIndicator={false}>
             {/* Avatar + name */}
             <View style={s.profileTop}>
-              <View style={s.bigAvatar}><Text style={s.bigAvatarText}>{initials(me)}</Text></View>
+              <View style={s.bigAvatar}>
+                {myAvatar
+                  ? <Text style={s.bigAvatarEmoji}>{myAvatar}</Text>
+                  : <Text style={s.bigAvatarText}>{initials(me)}</Text>}
+              </View>
               <Text style={s.profileName}>{me}</Text>
+            </View>
+
+            {/* Profile picture (emoji) picker */}
+            <View style={s.section}>
+              <Text style={s.sectionTitle}>PROFILE PICTURE</Text>
+              <View style={s.emojiGrid}>
+                {AVATAR_EMOJIS.map(e => (
+                  <TouchableOpacity
+                    key={e}
+                    style={[s.emojiCell, myAvatar === e && s.emojiCellActive]}
+                    onPress={() => setAvatarEmoji(e)}
+                  >
+                    <Text style={s.emojiCellText}>{e}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              {myAvatar && (
+                <TouchableOpacity style={s.removeAvatarBtn} onPress={() => setAvatarEmoji(null)}>
+                  <Text style={s.removeAvatarText}>Remove profile picture</Text>
+                </TouchableOpacity>
+              )}
             </View>
 
             {/* Edit profile */}
@@ -390,6 +430,7 @@ const s = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', padding: 14, borderBottomWidth: 1, borderBottomColor: C.border, gap: 10 },
   avatar: { width: 34, height: 34, borderRadius: 17, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
   avatarText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  avatarEmoji: { fontSize: 20 },
   headerTitle: { flex: 1, color: C.text, fontWeight: '600', fontSize: 15 },
   logout: { color: C.danger, fontSize: 20, padding: 4 },
   createRow: { flexDirection: 'row', padding: 10, gap: 8, borderBottomWidth: 1, borderBottomColor: C.border },
@@ -414,6 +455,13 @@ const s = StyleSheet.create({
   profileTop: { alignItems: 'center', paddingVertical: 20 },
   bigAvatar: { width: 72, height: 72, borderRadius: 36, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center', marginBottom: 10 },
   bigAvatarText: { color: '#fff', fontWeight: '700', fontSize: 26 },
+  bigAvatarEmoji: { fontSize: 42 },
+  emojiGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  emojiCell: { width: 44, height: 44, borderRadius: 10, backgroundColor: C.inputBg, borderWidth: 2, borderColor: 'transparent', alignItems: 'center', justifyContent: 'center' },
+  emojiCellActive: { borderColor: C.accent, backgroundColor: 'rgba(59,125,216,0.12)' },
+  emojiCellText: { fontSize: 24 },
+  removeAvatarBtn: { marginTop: 12, alignItems: 'center', padding: 8 },
+  removeAvatarText: { color: C.danger, fontSize: 13, fontWeight: '600' },
   profileName: { color: C.text, fontWeight: '600', fontSize: 17 },
   section: { paddingHorizontal: 20, paddingVertical: 14, borderTopWidth: 1, borderTopColor: C.border },
   sectionTitle: { color: C.muted, fontSize: 11, fontWeight: '700', letterSpacing: 0.5, marginBottom: 10 },

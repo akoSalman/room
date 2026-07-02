@@ -10,9 +10,17 @@ export async function getUsername() {
   return AsyncStorage.getItem('username');
 }
 
-export async function setAuth(token: string, username: string) {
+export async function setAuth(token: string, username: string, avatar?: string | null) {
   await AsyncStorage.setItem('token', token);
   await AsyncStorage.setItem('username', username);
+  if (avatar !== undefined) {
+    if (avatar) await AsyncStorage.setItem('avatar', avatar);
+    else await AsyncStorage.removeItem('avatar');
+  }
+}
+
+export async function getAvatar() {
+  return AsyncStorage.getItem('avatar');
 }
 
 export async function getUserId(): Promise<number | null> {

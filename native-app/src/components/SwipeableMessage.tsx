@@ -62,6 +62,7 @@ export default function SwipeableMessage({ children, onSwipeRight, onSwipeLeft }
         onHandlerStateChange={onHandlerStateChange}
         activeOffsetX={[-10, 10]}
         failOffsetY={[-8, 8]}
+        hitSlop={{ left: 80, right: 80, top: 6, bottom: 6 }}
       >
         <Animated.View style={{ transform: [{ translateX: clampedTranslate }] }}>
           {children}

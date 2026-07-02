@@ -14,7 +14,8 @@ import {
   PinchGestureHandler, PanGestureHandler, State as GHState,
 } from 'react-native-gesture-handler';
 import { C, isRTL } from '../theme';
-import { apiFetch, getSocket, getToken, getUsername, BASE_URL } from '../api';
+import { apiFetch, getSocket, getToken, getUsername, getAvatar, BASE_URL } from '../api';
+import { audioManager } from '../audioManager';
 import VoicePlayer from '../components/VoicePlayer';
 import VoiceRecorder from '../components/VoiceRecorder';
 import ZoomableImage from '../components/ZoomableImage';
@@ -29,7 +30,7 @@ Notifications.setNotificationHandler({
 });
 
 type Message = {
-  id: number; room_id: number; user_id: number; username: string;
+  id: number; room_id: number; user_id: number; username: string; avatar?: string | null;
   type: string; content: string | null; file_path: string | null;
   file_name: string | null; edited: number; created_at: string;
   reply_to_id?: number | null; reply_username?: string | null;
@@ -51,6 +52,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
   const [reactions, setReactions] = useState<Record<number, Reaction[]>>({});
   const [text, setText] = useState('');
   const [me, setMe] = useState('');
+  const [myAvatar, setMyAvatar] = useState<string | null>(null);
   const [online, setOnline] = useState<string[]>([]);
   const [typing, setTyping] = useState<string[]>([]);
   const [recordingUsers, setRecordingUsers] = useState<string[]>([]);
@@ -156,6 +158,25 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
   const fabVisible = showScrollFab || backStackSize > 0;
   const fabIsBack = backStackSize > 0;
 
+  // When a voice message finishes, auto-play the next voice message in this chat
+  useEffect(() => {
+    audioManager.setFinishHandler(finishedId => {
+      const msgs = messagesRef.current;
+      const idx = msgs.findIndex(m => m.id === finishedId);
+      if (idx === -1) return;
+      if (msgs[idx].type !== 'audio') return; // only chain voice messages
+      const next = msgs.slice(idx + 1).find(m => m.type === 'audio');
+      if (!next) return;
+      audioManager.play(
+        next.id,
+        `${BASE_URL}${next.file_path}`,
+        `🎙 ${next.username} · voice message`,
+        room.id
+      );
+    });
+    return () => audioManager.setFinishHandler(null);
+  }, [room.id]);
+
   useEffect(() => {
     // Request notification permission
     Notifications.requestPermissionsAsync().catch(() => {});
@@ -170,6 +191,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
       if (!mounted) return;
       setMe(u || '');
       meRef.current = u || '';
+      getAvatar().then(setMyAvatar);
       if (Array.isArray(msgs)) {
         setMessages(msgs);
         hasMoreOlderRef.current = msgs.length >= MESSAGES_PAGE_SIZE;
@@ -327,6 +349,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
   }
 
   function startRecordingUI() {
+    audioManager.stop(); // don't record over playing audio
     setRecording(true);
     socketRef.current?.emit('recording_start', { roomId: room.id });
   }
@@ -409,9 +432,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
             <Text style={s.sender}>{msg.username}</Text>
           ) : (
             <TouchableOpacity style={s.senderChip} onPress={() => openDM(msg.username)} activeOpacity={0.6}>
-              <View style={s.senderAvatar}>
-                <Text style={s.senderAvatarText}>{msg.username.slice(0, 2).toUpperCase()}</Text>
-              </View>
+              {msg.avatar ? (
+                <Text style={s.senderAvatarEmoji}>{msg.avatar}</Text>
+              ) : (
+                <View style={s.senderAvatar}>
+                  <Text style={s.senderAvatarText}>{msg.username.slice(0, 2).toUpperCase()}</Text>
+                </View>
+              )}
               <Text style={s.sender}>{msg.username}</Text>
             </TouchableOpacity>
           )
@@ -446,10 +473,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
             </TouchableOpacity>
           )}
           {msg.type === 'audio' && (
-            <VoicePlayer url={`${BASE_URL}${msg.file_path}`} peaks={msg.file_name || ''} mine={mine} />
+            <VoicePlayer url={`${BASE_URL}${msg.file_path}`} peaks={msg.file_name || ''} mine={mine} msgId={msg.id} roomId={room.id} label={`🎙 ${msg.username} · voice message`} />
           )}
           {msg.type === 'music' && (
-            <MusicPlayer url={`${BASE_URL}${msg.file_path}`} fileName={msg.file_name || 'Audio'} mine={mine} />
+            <MusicPlayer url={`${BASE_URL}${msg.file_path}`} fileName={msg.file_name || 'Audio'} mine={mine} msgId={msg.id} roomId={room.id} />
           )}
           {msg.type === 'video' && (
             <TouchableOpacity onPress={() => setVideoUrl(`${BASE_URL}${msg.file_path}`)}>
@@ -524,18 +551,29 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
     <KeyboardAvoidingView style={s.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       {/* Header */}
       <View style={s.header}>
-        <TouchableOpacity onPress={onBack} style={s.backBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+        <TouchableOpacity onPress={onBack} style={s.backBtn} activeOpacity={0.6}
+          hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}>
           <Text style={s.backText}>‹</Text>
+          <Text style={s.backLabel}>Chats</Text>
         </TouchableOpacity>
-        <Text style={s.headerTitle} numberOfLines={1}>{room.is_dm ? '💬 ' : '# '}{title}</Text>
-        {online.length > 0 && (
-          <TouchableOpacity style={s.onlineBadge} onPress={() => setShowOnline(true)} activeOpacity={0.6}>
-            <Text style={s.onlineText}>● {online.length} online</Text>
-            <Text style={s.onlineChevron}>›</Text>
-          </TouchableOpacity>
-        )}
-        <TouchableOpacity onPress={onOpenProfile} style={s.headerAvatar} activeOpacity={0.7}>
-          <Text style={s.headerAvatarText}>{(me || '?').slice(0, 2).toUpperCase()}</Text>
+        <View style={s.headerCenter}>
+          <View style={s.roomAvatar}>
+            <Text style={s.roomAvatarText}>{room.is_dm ? '💬' : '#'}</Text>
+          </View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={s.headerTitle} numberOfLines={1}>{title}</Text>
+            {online.length > 0 && (
+              <TouchableOpacity onPress={() => setShowOnline(true)} hitSlop={{ top: 6, bottom: 6 }}>
+                <Text style={s.headerSubtitle}>● {online.length} online · tap to view</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+        <TouchableOpacity onPress={onOpenProfile} style={s.headerAvatar} activeOpacity={0.7}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+          {myAvatar
+            ? <Text style={s.headerAvatarEmoji}>{myAvatar}</Text>
+            : <Text style={s.headerAvatarText}>{(me || '?').slice(0, 2).toUpperCase()}</Text>}
         </TouchableOpacity>
       </View>
 
@@ -733,11 +771,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: C.bg },
   header: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.header, padding: 12, paddingTop: 14, borderBottomWidth: 1, borderBottomColor: C.border, gap: 8 },
-  backBtn: { padding: 4 },
-  backText: { color: C.accent, fontSize: 28, lineHeight: 32 },
+  backBtn: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4, paddingRight: 6 },
+  backText: { color: C.accent, fontSize: 28, lineHeight: 30, marginTop: -2 },
+  backLabel: { color: C.accent, fontSize: 15, fontWeight: '600' },
+  headerCenter: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, minWidth: 0 },
+  roomAvatar: { width: 34, height: 34, borderRadius: 17, backgroundColor: C.inputBg, borderWidth: 1, borderColor: C.border, alignItems: 'center', justifyContent: 'center' },
+  roomAvatarText: { fontSize: 15, color: C.accent, fontWeight: '700' },
+  headerSubtitle: { color: C.online, fontSize: 11.5, marginTop: 1 },
   headerAvatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
   headerAvatarText: { color: '#fff', fontWeight: '700', fontSize: 12 },
-  headerTitle: { flex: 1, color: C.text, fontWeight: '600', fontSize: 16 },
+  headerAvatarEmoji: { fontSize: 18 },
+  headerTitle: { color: C.text, fontWeight: '600', fontSize: 16 },
   onlineBadge: { flexDirection: 'row', alignItems: 'center', gap: 2, backgroundColor: 'rgba(74,222,128,0.15)', borderWidth: 1, borderColor: C.online, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4 },
   onlineText: { color: C.online, fontSize: 12, fontWeight: '600' },
   onlineChevron: { color: C.online, fontSize: 14, fontWeight: '700', marginLeft: 1 },
@@ -750,6 +794,7 @@ const s = StyleSheet.create({
   senderChip: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 3, paddingHorizontal: 4, paddingVertical: 2 },
   senderAvatar: { width: 16, height: 16, borderRadius: 8, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
   senderAvatarText: { color: '#fff', fontSize: 8, fontWeight: '700' },
+  senderAvatarEmoji: { fontSize: 13 },
   bubble: { borderRadius: 12, padding: 10, maxWidth: '100%' },
   bubbleHighlight: { borderWidth: 2, borderColor: C.accent },
   mineBubble: { backgroundColor: C.mine, borderBottomRightRadius: 3 },

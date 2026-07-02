@@ -1,50 +1,27 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useReducer } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
-import { Audio } from 'expo-av';
 import { C } from '../theme';
+import { audioManager } from '../audioManager';
 
 function fmtTime(s: number) {
   if (!isFinite(s)) return '0:00';
   return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 }
 
-export default function MusicPlayer({ url, fileName, mine }: {
-  url: string; fileName: string; mine: boolean;
+export default function MusicPlayer({ url, fileName, mine, msgId, roomId }: {
+  url: string; fileName: string; mine: boolean; msgId: number; roomId: number;
 }) {
-  const [playing, setPlaying] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const soundRef = useRef<Audio.Sound | null>(null);
+  const [, forceUpdate] = useReducer(x => x + 1, 0);
+  useEffect(() => audioManager.subscribe(forceUpdate), []);
 
-  useEffect(() => {
-    return () => { soundRef.current?.unloadAsync(); };
-  }, []);
+  const isCurrent = audioManager.currentId === msgId;
+  const playing = isCurrent && audioManager.playing;
+  const progress = isCurrent ? audioManager.progress : 0;
+  const duration = isCurrent ? audioManager.duration : 0;
 
-  async function toggle() {
-    if (!soundRef.current) {
-      const { sound } = await Audio.Sound.createAsync(
-        { uri: url },
-        { shouldPlay: true },
-        status => {
-          if (!status.isLoaded) return;
-          setProgress(status.positionMillis / (status.durationMillis || 1));
-          setDuration((status.durationMillis || 0) / 1000);
-          if (status.didJustFinish) { setPlaying(false); setProgress(0); sound.stopAsync(); }
-        }
-      );
-      soundRef.current = sound;
-      setPlaying(true);
-    } else {
-      const status = await soundRef.current.getStatusAsync();
-      if (!status.isLoaded) return;
-      if (status.isPlaying) { await soundRef.current.pauseAsync(); setPlaying(false); }
-      else {
-        if (status.didJustFinish || status.positionMillis >= (status.durationMillis || 0)) {
-          await soundRef.current.setPositionAsync(0);
-        }
-        await soundRef.current.playAsync(); setPlaying(true);
-      }
-    }
+  function toggle() {
+    if (isCurrent) audioManager.toggle();
+    else audioManager.play(msgId, url, `🎵 ${fileName}`, roomId);
   }
 
   return (
