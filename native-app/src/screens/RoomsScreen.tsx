@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, TextInput,
-  StyleSheet, Alert, ActivityIndicator, Modal, ScrollView, Linking, Platform,
+  StyleSheet, Alert, ActivityIndicator, Modal, ScrollView, Linking, Platform, Pressable,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import * as IntentLauncher from 'expo-intent-launcher';
@@ -321,8 +321,9 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
 
       {/* Profile Modal */}
       <Modal visible={showProfile} transparent animationType="slide" onRequestClose={() => setShowProfile(false)}>
-        <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowProfile(false)}>
-          <TouchableOpacity activeOpacity={1} onPress={e => e.stopPropagation()} style={s.sheet}>
+        <View style={s.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowProfile(false)} />
+          <View style={s.sheet}>
             <View style={s.sheetHandle} />
             <View style={s.sheetHeader}>
               <Text style={s.sheetTitle}>Profile</Text>
@@ -331,7 +332,7 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
               </TouchableOpacity>
             </View>
 
-            <ScrollView showsVerticalScrollIndicator={false}>
+            <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled>
             {/* Avatar + name */}
             <View style={s.profileTop}>
               <View style={s.bigAvatar}>
@@ -394,7 +395,7 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
               {myRooms.length === 0 ? (
                 <Text style={s.emptyRooms}>No rooms created yet</Text>
               ) : (
-                <ScrollView style={{ maxHeight: 280 }} showsVerticalScrollIndicator={false}>
+                <ScrollView style={{ maxHeight: 280 }} showsVerticalScrollIndicator={false} nestedScrollEnabled>
                   {myRooms.map(r => (
                     <View key={r.id} style={s.myRoomRow}>
                       <Text style={s.myRoomName}># {r.name}</Text>
@@ -454,14 +455,15 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
               </TouchableOpacity>
             </View>
             </ScrollView>
-          </TouchableOpacity>
-        </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
 
       {/* All-emojis picker */}
       <Modal visible={showAllEmojis} transparent animationType="fade" onRequestClose={() => setShowAllEmojis(false)}>
-        <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowAllEmojis(false)}>
-          <TouchableOpacity activeOpacity={1} onPress={e => e.stopPropagation()} style={s.renameCard}>
+        <View style={s.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowAllEmojis(false)} />
+          <View style={s.renameCard}>
             <Text style={s.renameTitle}>Choose a profile picture</Text>
             <View style={s.emojiGrid}>
               {AVATAR_EMOJIS.map(e => (
@@ -477,14 +479,15 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
             <TouchableOpacity style={s.renameCancel} onPress={() => setShowAllEmojis(false)}>
               <Text style={s.renameCancelText}>Close</Text>
             </TouchableOpacity>
-          </TouchableOpacity>
-        </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
 
       {/* Create Room Modal */}
       <Modal visible={showCreate} transparent animationType="fade" onRequestClose={() => setShowCreate(false)}>
-        <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowCreate(false)}>
-          <TouchableOpacity activeOpacity={1} onPress={e => e.stopPropagation()} style={s.renameCard}>
+        <View style={s.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowCreate(false)} />
+          <View style={s.renameCard}>
             <Text style={s.renameTitle}>Create Room</Text>
             <TextInput
               style={s.renameInput} value={newRoom} onChangeText={setNewRoom}
@@ -508,14 +511,15 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
                 <Text style={s.renameSaveText}>Create</Text>
               </TouchableOpacity>
             </View>
-          </TouchableOpacity>
-        </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
 
       {/* Rename Modal */}
       <Modal visible={!!renamingRoom} transparent animationType="fade" onRequestClose={() => setRenamingRoom(null)}>
-        <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setRenamingRoom(null)}>
-          <TouchableOpacity activeOpacity={1} onPress={e => e.stopPropagation()} style={s.renameCard}>
+        <View style={s.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setRenamingRoom(null)} />
+          <View style={s.renameCard}>
             <Text style={s.renameTitle}>Rename Room</Text>
             <TextInput
               style={s.renameInput} value={renameText} onChangeText={setRenameText}
@@ -529,8 +533,8 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
                 <Text style={s.renameSaveText}>Save</Text>
               </TouchableOpacity>
             </View>
-          </TouchableOpacity>
-        </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
     </View>
   );

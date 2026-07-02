@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   View, Text, TextInput, FlatList, TouchableOpacity,
   StyleSheet, KeyboardAvoidingView, Platform, Alert,
-  ActivityIndicator, Modal, ScrollView, Image, Linking, Share,
+  ActivityIndicator, Modal, ScrollView, Image, Linking, Share, Pressable,
 } from 'react-native';
 import { Audio, Video, ResizeMode } from 'expo-av';
 import * as DocumentPicker from 'expo-document-picker';
@@ -670,8 +670,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
       {/* Online users modal */}
       <Modal visible={showOnline} transparent animationType="slide" onRequestClose={() => setShowOnline(false)}>
-        <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowOnline(false)}>
-          <TouchableOpacity activeOpacity={1} onPress={e => e.stopPropagation()} style={s.onlineSheet}>
+        <View style={s.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowOnline(false)} />
+          <View style={s.onlineSheet}>
             <View style={s.sheetHandle} />
             <View style={s.onlineSheetHeader}>
               <Text style={s.onlineSheetTitle}>Online Now</Text>
@@ -683,7 +684,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             {online.filter(u => u !== me).length === 0 ? (
               <Text style={s.onlineEmpty}>No one else is online right now</Text>
             ) : (
-              <ScrollView style={{ maxHeight: 360 }} showsVerticalScrollIndicator={false}>
+              <ScrollView style={{ maxHeight: 360 }} showsVerticalScrollIndicator={false} nestedScrollEnabled>
                 {online.filter(u => u !== me).map(u => (
                   <TouchableOpacity key={u} style={s.onlineUserRow} onPress={() => openDM(u)} activeOpacity={0.6}>
                     <View style={s.onlineAvatar}>
@@ -699,8 +700,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 ))}
               </ScrollView>
             )}
-          </TouchableOpacity>
-        </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
 
       {/* Image lightbox */}
@@ -805,8 +806,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
       {/* Attach menu */}
       <Modal visible={showAttachMenu} transparent animationType="slide" onRequestClose={() => setShowAttachMenu(false)}>
-        <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowAttachMenu(false)}>
-          <TouchableOpacity activeOpacity={1} onPress={e => e.stopPropagation()} style={s.attachSheet}>
+        <View style={s.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowAttachMenu(false)} />
+          <View style={s.attachSheet}>
             <View style={s.sheetHandle} />
             <TouchableOpacity style={s.attachOption} onPress={() => pickFromCamera('photo')}>
               <Text style={s.attachOptionIcon}>📷</Text>
@@ -827,17 +829,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             <TouchableOpacity style={s.attachCancel} onPress={() => setShowAttachMenu(false)}>
               <Text style={s.attachCancelText}>Cancel</Text>
             </TouchableOpacity>
-          </TouchableOpacity>
-        </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
 
       {/* Forward picker */}
       <Modal visible={!!forwardMsg} transparent animationType="slide" onRequestClose={() => setForwardMsg(null)}>
-        <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setForwardMsg(null)}>
-          <TouchableOpacity activeOpacity={1} onPress={e => e.stopPropagation()} style={s.attachSheet}>
+        <View style={s.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setForwardMsg(null)} />
+          <View style={s.attachSheet}>
             <View style={s.sheetHandle} />
             <Text style={s.forwardTitle}>Forward to…</Text>
-            <ScrollView style={{ maxHeight: 380 }}>
+            <ScrollView style={{ maxHeight: 380 }} nestedScrollEnabled>
               {forwardTargets.map(t => (
                 <TouchableOpacity key={`${t.is_dm ? 'd' : 'r'}${t.id}`} style={s.attachOption} onPress={() => doForward(t)}>
                   <Text style={s.attachOptionText}>{t._label}</Text>
@@ -847,17 +850,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             <TouchableOpacity style={s.attachCancel} onPress={() => setForwardMsg(null)}>
               <Text style={s.attachCancelText}>Cancel</Text>
             </TouchableOpacity>
-          </TouchableOpacity>
-        </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
 
       {/* Room dashboard */}
       <Modal visible={showRoomInfo} transparent animationType="slide" onRequestClose={() => setShowRoomInfo(false)}>
-        <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowRoomInfo(false)}>
-          <TouchableOpacity activeOpacity={1} onPress={e => e.stopPropagation()} style={[s.attachSheet, { maxHeight: '85%' }]}>
+        <View style={s.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowRoomInfo(false)} />
+          <View style={[s.attachSheet, { maxHeight: '85%' }]}>
             <View style={s.sheetHandle} />
             <Text style={s.forwardTitle}>{(roomInfo?.is_private ?? room.is_private) ? '🔒 ' : '# '}{room.name}</Text>
-            <ScrollView showsVerticalScrollIndicator={false}>
+            <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled>
               <View style={s.roomLinkBox}>
                 <View style={s.roomMetaRow}>
                   <Text style={s.roomMetaLabel}>TYPE</Text>
@@ -920,8 +924,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             <TouchableOpacity style={s.attachCancel} onPress={() => setShowRoomInfo(false)}>
               <Text style={s.attachCancelText}>Close</Text>
             </TouchableOpacity>
-          </TouchableOpacity>
-        </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
 
       {/* Voice recorder or input bar */}
