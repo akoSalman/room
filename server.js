@@ -160,12 +160,34 @@ app.get('/search', authMiddleware, (req, res) => {
 
 // Room info (for link joining + room profile)
 app.get('/room-info/:roomId', authMiddleware, (req, res) => {
-  const room = db.prepare('SELECT id, name, is_private, is_dm, created_by FROM rooms WHERE id = ?').get(req.params.roomId);
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
   if (!room || room.is_dm) return res.status(404).json({ error: 'Room not found' });
-  if (room.is_private && !canAccessRoom(req.user.id, db.prepare('SELECT * FROM rooms WHERE id = ?').get(room.id))) {
+  if (room.is_private && !canAccessRoom(req.user.id, room)) {
     return res.status(403).json({ error: 'This room is private' });
   }
-  res.json(room);
+  const owner = room.created_by
+    ? db.prepare('SELECT username, avatar FROM users WHERE id = ?').get(room.created_by)
+    : null;
+  // Private rooms have an explicit member list; public rooms are open to everyone
+  let members = [];
+  if (room.is_private) {
+    members = db.prepare(`
+      SELECT u.username, u.avatar FROM room_members rm
+      JOIN users u ON u.id = rm.user_id
+      WHERE rm.room_id = ? ORDER BY u.username
+    `).all(room.id);
+    if (owner && !members.some(m => m.username === owner.username)) {
+      members.unshift({ username: owner.username, avatar: owner.avatar });
+    }
+  }
+  res.json({
+    id: room.id, name: room.name, is_private: room.is_private, is_dm: room.is_dm,
+    created_by: room.created_by, created_at: room.created_at,
+    owner_username: owner ? owner.username : null,
+    owner_avatar: owner ? owner.avatar : null,
+    is_owner: room.created_by === req.user.id,
+    members,
+  });
 });
 
 // Users list (for DMs)

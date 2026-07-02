@@ -69,6 +69,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [forwardMsg, setForwardMsg] = useState<Message | null>(null);
   const [forwardTargets, setForwardTargets] = useState<any[]>([]);
   const [showRoomInfo, setShowRoomInfo] = useState(false);
+  const [roomInfo, setRoomInfo] = useState<any>(null);
   const [inviteName, setInviteName] = useState('');
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [showScrollFab, setShowScrollFab] = useState(false);
@@ -656,7 +657,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           <Text style={s.backLabel}>Chats</Text>
         </TouchableOpacity>
         <TouchableOpacity style={s.headerCenter} activeOpacity={0.7}
-          onPress={() => { if (!room.is_dm) setShowRoomInfo(true); }}>
+          onPress={async () => {
+            if (room.is_dm) return;
+            setShowRoomInfo(true);
+            const info = await apiFetch(`/room-info/${room.id}`);
+            if (!info.error) setRoomInfo(info);
+          }}>
           <View style={s.roomAvatar}>
             <Text style={s.roomAvatarText}>{room.is_dm ? '💬' : room.is_private ? '🔒' : '#'}</Text>
           </View>
@@ -864,37 +870,72 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         </TouchableOpacity>
       </Modal>
 
-      {/* Room info */}
+      {/* Room dashboard */}
       <Modal visible={showRoomInfo} transparent animationType="slide" onRequestClose={() => setShowRoomInfo(false)}>
         <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowRoomInfo(false)}>
-          <TouchableOpacity activeOpacity={1} onPress={e => e.stopPropagation()} style={s.attachSheet}>
+          <TouchableOpacity activeOpacity={1} onPress={e => e.stopPropagation()} style={[s.attachSheet, { maxHeight: '85%' }]}>
             <View style={s.sheetHandle} />
-            <Text style={s.forwardTitle}>{room.is_private ? '🔒 ' : '# '}{room.name}</Text>
-            {!room.is_private && (
+            <Text style={s.forwardTitle}>{(roomInfo?.is_private ?? room.is_private) ? '🔒 ' : '# '}{room.name}</Text>
+            <ScrollView showsVerticalScrollIndicator={false}>
               <View style={s.roomLinkBox}>
-                <Text style={s.roomLinkLabel}>ROOM LINK · SHARE TO INVITE</Text>
-                <Text style={s.roomLinkText} selectable>{roomLink}</Text>
-                <TouchableOpacity style={s.shareBtn} onPress={() => Share.share({ message: roomLink })}>
-                  <Text style={s.shareBtnText}>Share link</Text>
-                </TouchableOpacity>
+                <View style={s.roomMetaRow}>
+                  <Text style={s.roomMetaLabel}>TYPE</Text>
+                  <Text style={s.roomMetaValue}>{(roomInfo?.is_private ?? room.is_private) ? 'Private room' : 'Public room'}</Text>
+                </View>
+                <View style={s.roomMetaRow}>
+                  <Text style={s.roomMetaLabel}>OWNER</Text>
+                  <Text style={s.roomMetaValue}>
+                    {roomInfo ? `${roomInfo.owner_avatar ? roomInfo.owner_avatar + ' ' : ''}${roomInfo.owner_username || 'unknown'}` : '…'}
+                  </Text>
+                </View>
+                <View style={s.roomMetaRow}>
+                  <Text style={s.roomMetaLabel}>CREATED</Text>
+                  <Text style={s.roomMetaValue}>
+                    {roomInfo?.created_at
+                      ? new Date(roomInfo.created_at.includes('T') ? roomInfo.created_at : roomInfo.created_at.replace(' ', 'T') + 'Z')
+                          .toLocaleDateString([], { year: 'numeric', month: 'long', day: 'numeric' })
+                      : '…'}
+                  </Text>
+                </View>
               </View>
-            )}
-            {!!room.is_private && (
-              <View style={s.roomLinkBox}>
-                <Text style={s.roomLinkLabel}>
-                  {room.created_by ? 'ADD MEMBER (OWNER ONLY)' : 'PRIVATE ROOM'}
-                </Text>
-                <TextInput
-                  style={s.inviteInput} placeholder="Username to invite" placeholderTextColor={C.muted}
-                  value={inviteName} onChangeText={setInviteName} autoCapitalize="none"
-                  onSubmitEditing={sendInvite}
-                />
-                <TouchableOpacity style={s.shareBtn} onPress={sendInvite}>
-                  <Text style={s.shareBtnText}>Send invitation</Text>
-                </TouchableOpacity>
-                <Text style={s.inviteHint}>The user gets an invitation in their DMs and joins once they accept.</Text>
-              </View>
-            )}
+
+              {!(roomInfo?.is_private ?? room.is_private) && (
+                <View style={s.roomLinkBox}>
+                  <Text style={s.roomLinkLabel}>ROOM LINK · SHARE TO INVITE</Text>
+                  <Text style={s.roomLinkText} selectable>{roomLink}</Text>
+                  <TouchableOpacity style={s.shareBtn} onPress={() => Share.share({ message: roomLink })}>
+                    <Text style={s.shareBtnText}>Share link</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {!!roomInfo?.is_private && Array.isArray(roomInfo.members) && (
+                <View style={s.roomLinkBox}>
+                  <Text style={s.roomLinkLabel}>MEMBERS ({roomInfo.members.length})</Text>
+                  {roomInfo.members.map((m: any) => (
+                    <View key={m.username} style={s.memberRow}>
+                      <Text style={s.memberName}>{m.avatar ? m.avatar + ' ' : ''}{m.username}</Text>
+                      {m.username === roomInfo.owner_username && <Text style={s.memberOwnerTag}>owner</Text>}
+                    </View>
+                  ))}
+                </View>
+              )}
+
+              {!!roomInfo?.is_private && !!roomInfo?.is_owner && (
+                <View style={s.roomLinkBox}>
+                  <Text style={s.roomLinkLabel}>ADD MEMBER</Text>
+                  <TextInput
+                    style={s.inviteInput} placeholder="Username to invite" placeholderTextColor={C.muted}
+                    value={inviteName} onChangeText={setInviteName} autoCapitalize="none"
+                    onSubmitEditing={sendInvite}
+                  />
+                  <TouchableOpacity style={s.shareBtn} onPress={sendInvite}>
+                    <Text style={s.shareBtnText}>Send invitation</Text>
+                  </TouchableOpacity>
+                  <Text style={s.inviteHint}>The user gets an invitation in their DMs and joins once they accept.</Text>
+                </View>
+              )}
+            </ScrollView>
             <TouchableOpacity style={s.attachCancel} onPress={() => setShowRoomInfo(false)}>
               <Text style={s.attachCancelText}>Close</Text>
             </TouchableOpacity>
@@ -1028,6 +1069,12 @@ const s = StyleSheet.create({
   shareBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
   inviteInput: { backgroundColor: C.inputBg, borderRadius: 8, padding: 10, color: C.text, fontSize: 14, borderWidth: 1, borderColor: C.border },
   inviteHint: { color: C.muted, fontSize: 11.5 },
+  roomMetaRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.border },
+  roomMetaLabel: { color: C.muted, fontSize: 10.5, fontWeight: '700', letterSpacing: 0.5 },
+  roomMetaValue: { color: C.text, fontSize: 13.5, fontWeight: '600' },
+  memberRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.border },
+  memberName: { color: C.text, fontSize: 14 },
+  memberOwnerTag: { color: C.accent, fontSize: 11, fontWeight: '700', backgroundColor: 'rgba(59,125,216,0.1)', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8 },
   lightboxClose: { position: 'absolute', top: 50, end: 20, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
   lightboxSave: { position: 'absolute', top: 50, end: 68, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
   lightboxCloseText: { color: '#fff', fontSize: 18 },

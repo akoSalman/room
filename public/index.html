@@ -61,7 +61,7 @@
     <header id="chat-header">
       <button id="menu-btn" class="icon-btn" onclick="openSidebar()">☰</button>
       <span id="room-title">Select a room</span>
-      <button id="room-link-btn" class="icon-btn hidden" title="Copy room link" onclick="copyRoomLink()">🔗</button>
+      <button id="room-link-btn" class="icon-btn hidden" title="Room info" onclick="openRoomInfo()">ℹ️</button>
       <button id="online-indicator" class="online-badge hidden" onclick="toggleOnlinePanel()"></button>
     </header>
 
@@ -179,6 +179,41 @@
   <button class="lightbox-close" onclick="closeLightbox()">✕</button>
   <button class="lightbox-download" onclick="event.stopPropagation(); downloadLightboxImage()">⬇</button>
   <img id="lightbox-img" src="" onclick="event.stopPropagation()" />
+</div>
+
+<!-- ── Room dashboard ─────────────────────────────── -->
+<div id="room-info-modal" class="modal-overlay hidden" onclick="closeRoomInfo()">
+  <div class="modal-card" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h2 id="room-info-name">Room</h2>
+      <button class="icon-btn" onclick="closeRoomInfo()">✕</button>
+    </div>
+    <div class="modal-section">
+      <div class="room-meta-row"><span class="room-meta-label">Type</span><span id="room-info-type"></span></div>
+      <div class="room-meta-row"><span class="room-meta-label">Owner</span><span id="room-info-owner"></span></div>
+      <div class="room-meta-row"><span class="room-meta-label">Created</span><span id="room-info-created"></span></div>
+    </div>
+    <div class="modal-section" id="room-info-link-section">
+      <div class="my-rooms-header">Room Link · Share to invite</div>
+      <div class="room-link-row">
+        <code id="room-info-link"></code>
+        <button class="icon-btn" title="Copy" onclick="copyRoomLink()">📋</button>
+      </div>
+    </div>
+    <div class="modal-section" id="room-info-members-section">
+      <div class="my-rooms-header">Members <span id="room-info-members-count"></span></div>
+      <ul id="room-info-members" class="room-members-list"></ul>
+    </div>
+    <div class="modal-section hidden" id="room-info-invite-section">
+      <div class="my-rooms-header">Add Member</div>
+      <div class="room-invite-row">
+        <input id="room-invite-input" type="text" placeholder="Username to invite"
+          onkeydown="if(event.key==='Enter')sendRoomInvite()" />
+        <button class="btn-primary invite-send-btn" onclick="sendRoomInvite()">Invite</button>
+      </div>
+      <p class="update-hint">The user gets an invitation in their DMs and joins once they accept.</p>
+    </div>
+  </div>
 </div>
 
 <!-- ── Forward modal ──────────────────────────────── -->

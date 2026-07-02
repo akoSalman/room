@@ -331,6 +331,66 @@ function copyRoomLink() {
   );
 }
 
+// ─── Room dashboard ───────────────────────────────────────────────────────────
+async function openRoomInfo() {
+  if (!currentRoomId || currentRoomIsDM) return;
+  const info = await api('/room-info/' + currentRoomId);
+  if (info.error) return alert(info.error);
+
+  document.getElementById('room-info-name').textContent = (info.is_private ? '🔒 ' : '# ') + info.name;
+  document.getElementById('room-info-owner').textContent =
+    (info.owner_avatar ? info.owner_avatar + ' ' : '') + (info.owner_username || 'unknown');
+  const created = info.created_at
+    ? new Date(info.created_at.includes('T') ? info.created_at : info.created_at.replace(' ', 'T') + 'Z')
+        .toLocaleDateString([], { year: 'numeric', month: 'long', day: 'numeric' })
+    : '—';
+  document.getElementById('room-info-created').textContent = created;
+  document.getElementById('room-info-type').textContent = info.is_private ? 'Private room' : 'Public room';
+
+  // Link (public rooms only)
+  const linkSection = document.getElementById('room-info-link-section');
+  if (info.is_private) linkSection.classList.add('hidden');
+  else {
+    linkSection.classList.remove('hidden');
+    document.getElementById('room-info-link').textContent = location.origin + '/join/' + info.id;
+  }
+
+  // Members (private rooms only)
+  const membersSection = document.getElementById('room-info-members-section');
+  const list = document.getElementById('room-info-members');
+  list.innerHTML = '';
+  if (info.is_private && Array.isArray(info.members)) {
+    membersSection.classList.remove('hidden');
+    document.getElementById('room-info-members-count').textContent = `(${info.members.length})`;
+    info.members.forEach(m => {
+      const li = document.createElement('li');
+      li.textContent = (m.avatar ? m.avatar + ' ' : '') + m.username
+        + (m.username === info.owner_username ? '  ·  owner' : '');
+      list.appendChild(li);
+    });
+  } else {
+    membersSection.classList.add('hidden');
+  }
+
+  // Invite (private room owner only)
+  const inviteSection = document.getElementById('room-info-invite-section');
+  inviteSection.classList.toggle('hidden', !(info.is_private && info.is_owner));
+  document.getElementById('room-invite-input').value = '';
+
+  show('room-info-modal');
+}
+function closeRoomInfo() { hide('room-info-modal'); }
+
+function sendRoomInvite() {
+  const name = document.getElementById('room-invite-input').value.trim();
+  if (!name || !currentRoomId) return;
+  socket.emit('invite_to_room', { roomId: currentRoomId, username: name }, (res) => {
+    if (res?.error) return alert(res.error);
+    alert(`Invitation sent — ${name} received an invite in their DMs.`);
+    document.getElementById('room-invite-input').value = '';
+  });
+}
+
 // ─── Sidebar search ───────────────────────────────────────────────────────────
 let sidebarSearchTimer = null;
 function onSidebarSearch() {
@@ -1128,6 +1188,13 @@ function buildMessageElement(msg) {
   replyBtn.className = 'msg-action-btn'; replyBtn.title = 'Reply'; replyBtn.textContent = '↩';
   replyBtn.onclick = (e) => { e.stopPropagation(); setReply(msg); };
   footer.appendChild(replyBtn);
+
+  if (msg.type !== 'invite') {
+    const fwdBtn = document.createElement('button');
+    fwdBtn.className = 'msg-action-btn'; fwdBtn.title = 'Forward'; fwdBtn.textContent = '↪';
+    fwdBtn.onclick = (e) => { e.stopPropagation(); openForwardModal(msg.id); };
+    footer.appendChild(fwdBtn);
+  }
 
   const reactBtn = document.createElement('button');
   reactBtn.className = 'react-btn'; reactBtn.textContent = '😊'; reactBtn.title = 'React';
