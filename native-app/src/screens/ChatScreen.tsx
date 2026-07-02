@@ -41,10 +41,11 @@ type ReplyTo = { id: number; username: string; content: string | null; type: str
 const EMOJIS = ['👍','❤️','😂','😮','😢','🔥','👏','🎉','🤔','😍','👎','😡'];
 const MESSAGES_PAGE_SIZE = 15;
 
-export default function ChatScreen({ room, onBack, onOpenDM }: {
+export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile }: {
   room: { id: number; name: string; is_dm: number; other_username?: string };
   onBack: () => void;
   onOpenDM: (room: { id: number; name: string; is_dm: number; other_username?: string }) => void;
+  onOpenProfile: () => void;
 }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [reactions, setReactions] = useState<Record<number, Reaction[]>>({});
@@ -526,7 +527,7 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
     <KeyboardAvoidingView style={s.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       {/* Header */}
       <View style={s.header}>
-        <TouchableOpacity onPress={onBack} style={s.backBtn}>
+        <TouchableOpacity onPress={onBack} style={s.backBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
           <Text style={s.backText}>‹</Text>
         </TouchableOpacity>
         <Text style={s.headerTitle} numberOfLines={1}>{room.is_dm ? '💬 ' : '# '}{title}</Text>
@@ -536,6 +537,9 @@ export default function ChatScreen({ room, onBack, onOpenDM }: {
             <Text style={s.onlineChevron}>›</Text>
           </TouchableOpacity>
         )}
+        <TouchableOpacity onPress={onOpenProfile} style={s.headerAvatar} activeOpacity={0.7}>
+          <Text style={s.headerAvatarText}>{(me || '?').slice(0, 2).toUpperCase()}</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Online users modal */}
@@ -735,6 +739,8 @@ const s = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.header, padding: 12, paddingTop: 14, borderBottomWidth: 1, borderBottomColor: C.border, gap: 8 },
   backBtn: { padding: 4 },
   backText: { color: C.accent, fontSize: 28, lineHeight: 32 },
+  headerAvatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
+  headerAvatarText: { color: '#fff', fontWeight: '700', fontSize: 12 },
   headerTitle: { flex: 1, color: C.text, fontWeight: '600', fontSize: 16 },
   onlineBadge: { flexDirection: 'row', alignItems: 'center', gap: 2, backgroundColor: 'rgba(74,222,128,0.15)', borderWidth: 1, borderColor: C.online, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4 },
   onlineText: { color: C.online, fontSize: 12, fontWeight: '600' },

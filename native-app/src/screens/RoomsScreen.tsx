@@ -14,9 +14,11 @@ const LATEST_RELEASE_API = 'https://api.github.com/repos/akoSalman/room-releases
 
 type Room = { id: number; name: string; is_dm: number; other_username?: string; created_by?: number };
 
-export default function RoomsScreen({ onSelectRoom, onLogout }: {
+export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount, onProfileOpened }: {
   onSelectRoom: (room: Room) => void;
   onLogout: () => void;
+  openProfileOnMount?: boolean;
+  onProfileOpened?: () => void;
 }) {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [dms, setDms] = useState<Room[]>([]);
@@ -54,6 +56,14 @@ export default function RoomsScreen({ onSelectRoom, onLogout }: {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (openProfileOnMount) {
+      setShowProfile(true);
+      checkLatestVersion();
+      onProfileOpened?.();
+    }
+  }, [openProfileOnMount]);
 
   useEffect(() => {
     let sock: any;
@@ -247,11 +257,12 @@ export default function RoomsScreen({ onSelectRoom, onLogout }: {
             <View style={s.sheetHandle} />
             <View style={s.sheetHeader}>
               <Text style={s.sheetTitle}>Profile</Text>
-              <TouchableOpacity onPress={() => setShowProfile(false)}>
+              <TouchableOpacity onPress={() => setShowProfile(false)} style={s.closeBtnTouch}>
                 <Text style={s.closeBtn}>✕</Text>
               </TouchableOpacity>
             </View>
 
+            <ScrollView showsVerticalScrollIndicator={false}>
             {/* Avatar + name */}
             <View style={s.profileTop}>
               <View style={s.bigAvatar}><Text style={s.bigAvatarText}>{initials(me)}</Text></View>
@@ -345,6 +356,7 @@ export default function RoomsScreen({ onSelectRoom, onLogout }: {
                 <Text style={s.logoutBtnText}>Sign out</Text>
               </TouchableOpacity>
             </View>
+            </ScrollView>
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
@@ -393,11 +405,12 @@ const s = StyleSheet.create({
 
   // Profile modal
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
-  sheet: { backgroundColor: C.sidebar, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingBottom: 32 },
+  sheet: { backgroundColor: C.sidebar, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingBottom: 20, maxHeight: '88%' },
   sheetHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: C.border, alignSelf: 'center', marginTop: 10, marginBottom: 6 },
   sheetHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: C.border },
   sheetTitle: { color: C.text, fontWeight: '700', fontSize: 16 },
-  closeBtn: { color: C.muted, fontSize: 18, padding: 4 },
+  closeBtn: { color: C.muted, fontSize: 18 },
+  closeBtnTouch: { padding: 8, margin: -4 },
   profileTop: { alignItems: 'center', paddingVertical: 20 },
   bigAvatar: { width: 72, height: 72, borderRadius: 36, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center', marginBottom: 10 },
   bigAvatarText: { color: '#fff', fontWeight: '700', fontSize: 26 },

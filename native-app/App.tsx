@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { StatusBar, View, I18nManager } from 'react-native';
+import { StatusBar, View, I18nManager, BackHandler } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -18,12 +18,27 @@ type Screen = 'auth' | 'rooms' | 'chat';
 export default function App() {
   const [screen, setScreen] = useState<Screen>('auth');
   const [room, setRoom] = useState<Room | null>(null);
+  const [openProfileOnRooms, setOpenProfileOnRooms] = useState(false);
 
   useEffect(() => {
     AsyncStorage.getItem('token').then(t => {
       if (t) setScreen('rooms');
     });
   }, []);
+
+  // Hardware back: step back through screens instead of closing the app.
+  // (Modals handle their own back via onRequestClose.)
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (screen === 'chat') {
+        setScreen('rooms');
+        setRoom(null);
+        return true;
+      }
+      return false; // rooms/auth: default behavior (exit)
+    });
+    return () => sub.remove();
+  }, [screen]);
 
   async function logout() {
     await AsyncStorage.multiRemove(['token', 'username']);
@@ -44,6 +59,8 @@ export default function App() {
             <RoomsScreen
               onSelectRoom={r => { setRoom(r); setScreen('chat'); }}
               onLogout={logout}
+              openProfileOnMount={openProfileOnRooms}
+              onProfileOpened={() => setOpenProfileOnRooms(false)}
             />
           )}
           {screen === 'chat' && room && (
@@ -52,6 +69,7 @@ export default function App() {
               room={room}
               onBack={() => setScreen('rooms')}
               onOpenDM={r => setRoom(r)}
+              onOpenProfile={() => { setOpenProfileOnRooms(true); setScreen('rooms'); }}
             />
           )}
         </SafeAreaView>
