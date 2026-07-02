@@ -63,6 +63,16 @@ function showNotif(msg) {
 
 window.addEventListener('DOMContentLoaded', () => {
   buildEmojiPicker();
+
+  // Show the latest Android build number on the login banner
+  fetch('https://api.github.com/repos/akoSalman/room-releases/releases/tags/latest-apk')
+    .then(r => r.json())
+    .then(res => {
+      const match = /version:(\d+)/.exec(res.body || '') || /v(\d+)/.exec(res.name || '');
+      const sub = document.getElementById('apk-banner-sub');
+      if (match && sub) sub.textContent = `Latest build: version ${match[1]} (APK)`;
+    })
+    .catch(() => {});
   document.addEventListener('click', handleGlobalClick);
   document.addEventListener('contextmenu', e => e.preventDefault());
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
