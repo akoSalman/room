@@ -3,16 +3,32 @@ import { StatusBar, View, I18nManager, BackHandler } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import * as Notifications from 'expo-notifications';
 import AuthScreen from './src/screens/AuthScreen';
 import RoomsScreen from './src/screens/RoomsScreen';
 import ChatScreen from './src/screens/ChatScreen';
 import MiniPlayer from './src/components/MiniPlayer';
-import { disconnectSocket } from './src/api';
+import { disconnectSocket, getSocket, getUsername } from './src/api';
 import { audioManager } from './src/audioManager';
 import { C } from './src/theme';
 
-// Let the OS mirror layout automatically on RTL locales (e.g. Persian, Arabic)
-I18nManager.allowRTL(true);
+// Keep the app layout LTR even on RTL locales (Persian/Arabic): mirroring the
+// whole UI made screens look broken; message text itself still renders RTL.
+I18nManager.allowRTL(false);
+I18nManager.forceRTL(false);
+
+// Android needs a notification channel or notifications never show at all
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true, shouldPlaySound: true, shouldSetBadge: false,
+  }),
+});
+Notifications.setNotificationChannelAsync('messages', {
+  name: 'Messages',
+  importance: Notifications.AndroidImportance.MAX,
+  sound: 'default',
+  vibrationPattern: [0, 250, 250, 250],
+}).catch(() => {});
 
 type Room = { id: number; name: string; is_dm: number; other_username?: string };
 type Screen = 'auth' | 'rooms' | 'chat';
@@ -27,7 +43,36 @@ export default function App() {
     AsyncStorage.getItem('token').then(t => {
       if (t) setScreen('rooms');
     });
+    Notifications.requestPermissionsAsync().catch(() => {});
   }, []);
+
+  // Global notifications: any message from someone else, in any room except
+  // the one currently open, raises a local notification.
+  useEffect(() => {
+    if (screen === 'auth') return;
+    let sock: any = null;
+    let handler: any = null;
+    (async () => {
+      const uname = await getUsername();
+      sock = await getSocket();
+      handler = (msg: any) => {
+        if (msg.username === uname) return;
+        if (screen === 'chat' && room && msg.room_id === room.id) return;
+        const body = msg.type === 'text' ? (msg.content || '')
+          : msg.type === 'audio' ? '🎙 Voice message'
+          : msg.type === 'image' ? '🖼 Image'
+          : msg.type === 'video' ? '🎥 Video'
+          : msg.type === 'music' ? '🎵 Audio file'
+          : msg.type === 'invite' ? '🔒 Room invitation' : '📄 File';
+        Notifications.scheduleNotificationAsync({
+          content: { title: msg.username, body, sound: 'default' },
+          trigger: null,
+        }).catch(() => {});
+      };
+      sock.on('message_received', handler);
+    })();
+    return () => { if (sock && handler) sock.off('message_received', handler); };
+  }, [screen, room?.id]);
 
   // Hardware back: step back through screens instead of closing the app.
   // (Modals handle their own back via onRequestClose.)

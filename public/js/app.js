@@ -205,8 +205,10 @@ function connectSocket() {
     socket.on('message_received', (msg) => {
       showNotif(msg);
       if (String(msg.room_id) !== String(currentRoomId)) {
-        unreadCounts[msg.room_id] = (unreadCounts[msg.room_id] || 0) + 1;
-        updateUnreadBadge(msg.room_id);
+        if (msg.username !== username) { // own messages are never "unread"
+          unreadCounts[msg.room_id] = (unreadCounts[msg.room_id] || 0) + 1;
+          updateUnreadBadge(msg.room_id);
+        }
       } else {
         appendMessage(msg);
       }

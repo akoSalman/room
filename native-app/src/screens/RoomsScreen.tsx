@@ -77,8 +77,10 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   useEffect(() => {
     let sock: any;
     (async () => {
+      const uname = await getUsername();
       sock = await getSocket();
       sock.on('message_received', (msg: any) => {
+        if (msg.username === uname) return; // own messages are never "unread"
         setUnread(prev => ({ ...prev, [msg.room_id]: (prev[msg.room_id] || 0) + 1 }));
       });
       sock.on('dm_activity', () => load());

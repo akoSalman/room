@@ -168,7 +168,7 @@ app.get('/room-info/:roomId', authMiddleware, (req, res) => {
   const owner = room.created_by
     ? db.prepare('SELECT username, avatar FROM users WHERE id = ?').get(room.created_by)
     : null;
-  // Private rooms have an explicit member list; public rooms are open to everyone
+  // Private rooms: explicit member list. Public rooms: everyone who has posted.
   let members = [];
   if (room.is_private) {
     members = db.prepare(`
@@ -176,9 +176,15 @@ app.get('/room-info/:roomId', authMiddleware, (req, res) => {
       JOIN users u ON u.id = rm.user_id
       WHERE rm.room_id = ? ORDER BY u.username
     `).all(room.id);
-    if (owner && !members.some(m => m.username === owner.username)) {
-      members.unshift({ username: owner.username, avatar: owner.avatar });
-    }
+  } else {
+    members = db.prepare(`
+      SELECT DISTINCT u.username, u.avatar FROM messages m
+      JOIN users u ON u.id = m.user_id
+      WHERE m.room_id = ? ORDER BY u.username
+    `).all(room.id);
+  }
+  if (owner && !members.some(m => m.username === owner.username)) {
+    members.unshift({ username: owner.username, avatar: owner.avatar });
   }
   res.json({
     id: room.id, name: room.name, is_private: room.is_private, is_dm: room.is_dm,
@@ -439,7 +445,7 @@ io.on('connection', (socket) => {
         AND r.name LIKE '%\_\_' || ? || '\_\_%' ESCAPE '\'
         AND m.content LIKE ?
       LIMIT 1
-    `).get(socket.user.id, '%"roomId":' + room.id + '%');
+    `).get(String(socket.user.id), '%"roomId":' + room.id + '%');
     if (room.is_private && !invite) return typeof ack === 'function' && ack({ error: 'No invitation found' });
     db.prepare('INSERT OR IGNORE INTO room_members (room_id, user_id) VALUES (?, ?)').run(room.id, socket.user.id);
     io.to('user:' + socket.user.id).emit('room_created', room); // adds it to their sidebar

@@ -4,7 +4,6 @@ import {
   StyleSheet, KeyboardAvoidingView, Platform, Alert,
   ActivityIndicator, Modal, ScrollView, Image, Linking, Share,
 } from 'react-native';
-import * as Notifications from 'expo-notifications';
 import { Audio, Video, ResizeMode } from 'expo-av';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
@@ -21,13 +20,6 @@ import VoiceRecorder from '../components/VoiceRecorder';
 import ZoomableImage from '../components/ZoomableImage';
 import SwipeableMessage from '../components/SwipeableMessage';
 import MusicPlayer from '../components/MusicPlayer';
-
-// Show notifications even when app is foregrounded
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true, shouldPlaySound: true, shouldSetBadge: false,
-  }),
-});
 
 type Message = {
   id: number; room_id: number; user_id: number; username: string; avatar?: string | null;
@@ -186,9 +178,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }, [room.id]);
 
   useEffect(() => {
-    // Request notification permission
-    Notifications.requestPermissionsAsync().catch(() => {});
-
     let mounted = true;
     (async () => {
       const [msgs, u, sock] = await Promise.all([
@@ -215,14 +204,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         if (msg.room_id !== room.id) return;
         setMessages(prev => [...prev, msg]);
         if (isNearBottomRef.current) scrollBottom();
-        // Show notification if message is from someone else
-        if (msg.username !== meRef.current) {
-          const body = msg.type === 'text' ? (msg.content || '') : msg.type === 'audio' ? '🎙 Voice message' : msg.type === 'image' ? '🖼 Image' : msg.type === 'video' ? '🎥 Video' : msg.type === 'music' ? '🎵 Audio file' : '📄 File';
-          Notifications.scheduleNotificationAsync({
-            content: { title: msg.username, body, sound: true },
-            trigger: null,
-          }).catch(() => {});
-        }
       });
       sock.on('message_edited', ({ messageId, content }: any) => {
         setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content, edited: 1 } : m));
@@ -909,7 +890,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 </View>
               )}
 
-              {!!roomInfo?.is_private && Array.isArray(roomInfo.members) && (
+              {Array.isArray(roomInfo?.members) && roomInfo.members.length > 0 && (
                 <View style={s.roomLinkBox}>
                   <Text style={s.roomLinkLabel}>MEMBERS ({roomInfo.members.length})</Text>
                   {roomInfo.members.map((m: any) => (
