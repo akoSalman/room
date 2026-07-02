@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "182328351533",
+    "project_id": "room-f621b",
+    "storage_bucket": "room-f621b.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:182328351533:android:2f4c5113790da251efd1a4",
+        "android_client_info": {
+          "package_name": "com.akosalman.chatroom"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDPR58xHrlHOWqShmfFeLVCB7iC2Km7Vq0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
