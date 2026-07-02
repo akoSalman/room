@@ -248,6 +248,16 @@ app.get('/unread-counts', authMiddleware, (req, res) => {
   res.json(counts);
 });
 
+// Read positions of every member of a room, so the client can render
+// seen/delivered checkmarks immediately on opening a room.
+app.get('/read-receipts/:roomId', authMiddleware, (req, res) => {
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
+  if (!room || !canAccessRoom(req.user.id, room)) return res.status(404).json({ error: 'Room not found' });
+  const rows = db.prepare('SELECT user_id, last_read_msg_id FROM room_reads WHERE room_id = ? AND user_id != ?')
+    .all(room.id, req.user.id);
+  res.json(rows.reduce((acc, r) => { acc[r.user_id] = r.last_read_msg_id; return acc; }, {}));
+});
+
 function canAccessRoom(userId, room) {
   if (!room) return false;
   if (room.is_dm) {
@@ -497,7 +507,7 @@ io.on('connection', (socket) => {
     const roomLabel = room && !room.is_dm ? ` · ${room.name}` : '';
     sendPushToUsers(
       memberIds.filter(id => id !== socket.user.id),
-      msg.username + roomLabel,
+      (msg.avatar ? msg.avatar + ' ' : '') + msg.username + roomLabel,
       messagePreview(msg),
       { roomId: String(roomId), msgId: String(msg.id) }
     );
@@ -523,6 +533,11 @@ io.on('connection', (socket) => {
       ON CONFLICT(user_id, room_id) DO UPDATE SET
         last_read_msg_id = MAX(last_read_msg_id, excluded.last_read_msg_id)
     `).run(socket.user.id, roomId, lastMsgId);
+    const row = db.prepare('SELECT last_read_msg_id FROM room_reads WHERE user_id = ? AND room_id = ?')
+      .get(socket.user.id, roomId);
+    socket.to(String(roomId)).emit('messages_read', {
+      roomId: String(roomId), userId: socket.user.id, lastReadMsgId: row.last_read_msg_id,
+    });
   });
 
   socket.on('recording_start', ({ roomId }) => {
@@ -619,7 +634,7 @@ io.on('connection', (socket) => {
     dstMembers.forEach(id => io.to('user:' + id).emit('message_received', msg));
     sendPushToUsers(
       dstMembers.filter(id => id !== socket.user.id),
-      msg.username + (dstRoom.is_dm ? '' : ` · ${dstRoom.name}`),
+      (msg.avatar ? msg.avatar + ' ' : '') + msg.username + (dstRoom.is_dm ? '' : ` · ${dstRoom.name}`),
       messagePreview(msg),
       { roomId: String(dstRoom.id), msgId: String(msg.id) }
     );

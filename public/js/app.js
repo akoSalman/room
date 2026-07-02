@@ -2,6 +2,7 @@ let token = localStorage.getItem('token');
 let username = localStorage.getItem('username');
 let currentRoomId = null;
 let currentRoomIsDM = false;
+let maxOtherReadMsgId = 0; // highest message id any other room member has read (for seen checkmarks)
 let oldestLoadedMsgId = null;
 let hasMoreOlderMsgs = true;
 let loadingOlderMsgs = false;
@@ -244,6 +245,10 @@ function connectSocket() {
     socket.on('user_recording', ({ username: u }) => showRecordingUser(u));
     socket.on('user_stopped_recording', ({ username: u }) => hideRecordingUser(u));
     socket.on('dm_activity', ({ room }) => ensureDMInSidebar(room));
+    socket.on('messages_read', ({ roomId, lastReadMsgId }) => {
+      if (String(roomId) !== String(currentRoomId)) return;
+      if (lastReadMsgId > maxOtherReadMsgId) { maxOtherReadMsgId = lastReadMsgId; updateSeenCheckmarks(); }
+    });
   });
 }
 
@@ -690,8 +695,15 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   oldestLoadedMsgId = null;
   hasMoreOlderMsgs = true;
   loadingOlderMsgs = false;
+  maxOtherReadMsgId = 0;
   socket.emit('join_room', roomId);
-  const msgs = await api('/messages/' + roomId);
+  const [msgs, receipts] = await Promise.all([
+    api('/messages/' + roomId),
+    api('/read-receipts/' + roomId),
+  ]);
+  if (receipts && typeof receipts === 'object' && !receipts.error) {
+    maxOtherReadMsgId = Math.max(0, ...Object.values(receipts));
+  }
   if (Array.isArray(msgs)) {
     msgs.forEach(appendMessage);
     if (msgs.length) {
@@ -700,6 +712,7 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
     }
     hasMoreOlderMsgs = msgs.length >= MESSAGES_PAGE_SIZE;
   }
+  updateSeenCheckmarks();
   scrollBottom();
 }
 
@@ -1096,6 +1109,17 @@ function playNextVoiceAfter(wrapperEl) {
 }
 
 // ─── Render messages ──────────────────────────────────────────────────────────
+const SENT_TICKS = '<svg viewBox="0 0 16 10" class="ticks"><path d="M1 5.5L4.5 9L10 1.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const SEEN_TICKS = '<svg viewBox="0 0 16 10" class="ticks"><path d="M1 5.5L4.5 9L10 1.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M6 5.5L9.5 9L15 1.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+function updateSeenCheckmarks() {
+  document.querySelectorAll('.msg-status').forEach(el => {
+    const seen = Number(el.dataset.msgId) <= maxOtherReadMsgId;
+    el.innerHTML = seen ? SEEN_TICKS : SENT_TICKS;
+    el.classList.toggle('seen', seen);
+  });
+}
+
 function buildMessageElement(msg) {
   const isMine = msg.username === username;
 
@@ -1107,7 +1131,13 @@ function buildMessageElement(msg) {
   if (!isMine) {
     const sender = document.createElement('div');
     sender.className = 'msg-sender';
-    sender.textContent = (msg.avatar ? msg.avatar + ' ' : '') + msg.username;
+    const senderAvatar = document.createElement('span');
+    senderAvatar.className = 'msg-sender-avatar';
+    senderAvatar.textContent = msg.avatar || '🙂';
+    const senderName = document.createElement('span');
+    senderName.textContent = msg.username;
+    sender.appendChild(senderAvatar);
+    sender.appendChild(senderName);
     if (!currentRoomIsDM) {
       sender.classList.add('clickable');
       sender.title = `Message ${msg.username}`;
@@ -1207,6 +1237,15 @@ function buildMessageElement(msg) {
   const created = msg.created_at.includes('T') ? msg.created_at : msg.created_at.replace(' ', 'T') + 'Z';
   time.textContent = new Date(created).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   footer.appendChild(time);
+
+  if (isMine) {
+    const status = document.createElement('span');
+    status.className = 'msg-status';
+    status.dataset.msgId = msg.id;
+    status.innerHTML = msg.id <= maxOtherReadMsgId ? SEEN_TICKS : SENT_TICKS;
+    if (msg.id <= maxOtherReadMsgId) status.classList.add('seen');
+    footer.appendChild(status);
+  }
 
   const replyBtn = document.createElement('button');
   replyBtn.className = 'msg-action-btn'; replyBtn.title = 'Reply'; replyBtn.textContent = '↩';

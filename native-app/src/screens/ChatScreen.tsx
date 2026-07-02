@@ -58,6 +58,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [showOnline, setShowOnline] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [maxOtherReadMsgId, setMaxOtherReadMsgId] = useState(0);
   const [forwardMsg, setForwardMsg] = useState<Message | null>(null);
   const [forwardTargets, setForwardTargets] = useState<any[]>([]);
   const [showRoomInfo, setShowRoomInfo] = useState(false);
@@ -180,15 +181,20 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   useEffect(() => {
     let mounted = true;
     (async () => {
-      const [msgs, u, sock] = await Promise.all([
+      const [msgs, u, sock, receipts] = await Promise.all([
         apiFetch(`/messages/${room.id}`),
         getUsername(),
         getSocket(),
+        apiFetch(`/read-receipts/${room.id}`),
       ]);
       if (!mounted) return;
       setMe(u || '');
       meRef.current = u || '';
       getAvatar().then(setMyAvatar);
+      if (receipts && typeof receipts === 'object' && !Array.isArray(receipts) && !receipts.error) {
+        const vals = Object.values(receipts) as number[];
+        setMaxOtherReadMsgId(vals.length ? Math.max(0, ...vals) : 0);
+      }
       if (Array.isArray(msgs)) {
         setMessages(msgs);
         messagesRef.current = msgs;
@@ -229,6 +235,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       sock.on('user_stopped_recording', ({ username: u }: any) => {
         setRecordingUsers(prev => prev.filter(x => x !== u));
       });
+      sock.on('messages_read', ({ roomId, lastReadMsgId }: any) => {
+        if (roomId != room.id) return;
+        setMaxOtherReadMsgId(prev => lastReadMsgId > prev ? lastReadMsgId : prev);
+      });
     })();
     return () => {
       mounted = false;
@@ -241,6 +251,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       socketRef.current?.off('user_stopped_typing');
       socketRef.current?.off('user_recording');
       socketRef.current?.off('user_stopped_recording');
+      socketRef.current?.off('messages_read');
     };
   }, [room.id]);
 
@@ -489,7 +500,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       >
         {!mine && (
           room.is_dm ? (
-            <Text style={s.sender}>{msg.username}</Text>
+            <View style={s.senderChip}>
+              {msg.avatar ? (
+                <Text style={s.senderAvatarEmoji}>{msg.avatar}</Text>
+              ) : (
+                <View style={s.senderAvatar}>
+                  <Text style={s.senderAvatarText}>{msg.username.slice(0, 2).toUpperCase()}</Text>
+                </View>
+              )}
+              <Text style={s.sender}>{msg.username}</Text>
+            </View>
           ) : (
             <TouchableOpacity style={s.senderChip} onPress={() => openDM(msg.username)} activeOpacity={0.6}>
               {msg.avatar ? (
@@ -583,6 +603,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
         <View style={s.footer}>
           <Text style={s.time}>{fmtTime(msg.created_at)}</Text>
+          {mine && (
+            <Text style={[s.ticks, msg.id <= maxOtherReadMsgId && s.ticksSeen]}>
+              {msg.id <= maxOtherReadMsgId ? '✓✓' : '✓'}
+            </Text>
+          )}
           <TouchableOpacity
             style={s.footerBtnTouch}
             onPress={() => setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type })}
@@ -980,11 +1005,18 @@ const s = StyleSheet.create({
   msgWrapper: { maxWidth: '80%', marginVertical: 2 },
   mine: { alignSelf: 'flex-end', alignItems: 'flex-end' },
   theirs: { alignSelf: 'flex-start', alignItems: 'flex-start' },
-  sender: { fontSize: 11.5, color: C.accent, fontWeight: '700' },
-  senderChip: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 3, paddingHorizontal: 4, paddingVertical: 2 },
-  senderAvatar: { width: 16, height: 16, borderRadius: 8, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
-  senderAvatarText: { color: '#fff', fontSize: 8, fontWeight: '700' },
-  senderAvatarEmoji: { fontSize: 13 },
+  sender: { fontSize: 12, color: C.accent, fontWeight: '700' },
+  senderChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4,
+    paddingHorizontal: 8, paddingVertical: 3, borderRadius: 20,
+    backgroundColor: 'rgba(59,125,216,0.1)',
+  },
+  senderAvatar: { width: 20, height: 20, borderRadius: 10, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
+  senderAvatarText: { color: '#fff', fontSize: 9, fontWeight: '700' },
+  senderAvatarEmoji: {
+    fontSize: 14, width: 20, height: 20, textAlign: 'center', lineHeight: 20,
+    borderRadius: 10, backgroundColor: 'rgba(59,125,216,0.16)', overflow: 'hidden',
+  },
   bubble: { borderRadius: 12, padding: 10, maxWidth: '100%' },
   bubbleHighlight: { borderWidth: 2, borderColor: C.accent },
   mineBubble: { backgroundColor: C.mine, borderBottomRightRadius: 3 },
@@ -998,6 +1030,8 @@ const s = StyleSheet.create({
   videoFullscreen: { width: '100%', height: '70%' },
   footer: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3, paddingHorizontal: 4 },
   time: { color: C.muted, fontSize: 11 },
+  ticks: { color: C.muted, fontSize: 12, letterSpacing: -2, marginRight: -2 },
+  ticksSeen: { color: '#4fc3f7' },
   footerBtn: { fontSize: 14, opacity: 0.6 },
   footerBtnTouch: { paddingVertical: 2, paddingHorizontal: 4 },
   replyFooterBtn: { fontSize: 12, color: C.accent, fontWeight: '600' },
