@@ -17,7 +17,7 @@ BRANCH="${BRANCH:-main}"
 APP_DIR="${APP_DIR:-/opt/chatroom-$DOMAIN}"
 SERVICE_NAME="${SERVICE_NAME:-chatroom-$(echo "$DOMAIN" | tr '.' '-')}"
 PORT="${PORT:-3000}"
-APP_USER="${APP_USER:-$SUDO_USER}"
+APP_USER="${APP_USER:-${SUDO_USER:-}}"
 [ -z "$APP_USER" ] && APP_USER=$(whoami)
 
 echo "== Installing Node.js (skipped if already present) =="
