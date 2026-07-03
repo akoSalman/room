@@ -1,0 +1,56 @@
+name: Deploy to Servers
+
+on:
+  push:
+    branches: [main, master, 'claude/**']
+    paths:
+      - 'server.js'
+      - 'db.js'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'public/**'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: akosalman
+            host_secret: DEPLOY_HOST_AKOSALMAN
+            app_dir_secret: DEPLOY_DIR_AKOSALMAN
+            service_secret: DEPLOY_SERVICE_AKOSALMAN
+          - name: bistbarg
+            host_secret: DEPLOY_HOST_BISTBARG
+            app_dir_secret: DEPLOY_DIR_BISTBARG
+            service_secret: DEPLOY_SERVICE_BISTBARG
+
+    steps:
+      - name: Deploy to ${{ matrix.name }}
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets[matrix.host_secret] }}
+          APP_DIR: ${{ secrets[matrix.app_dir_secret] }}
+          SERVICE: ${{ secrets[matrix.service_secret] }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          if [ -z "$HOST" ] || [ -z "$APP_DIR" ] || [ -z "$SERVICE" ] || [ -z "$SSH_KEY" ]; then
+            echo "Deploy secrets for ${{ matrix.name }} are not configured — skipping."
+            exit 0
+          fi
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "root@$HOST" bash -s <<EOF
+          set -e
+          cd "$APP_DIR"
+          git fetch origin "$BRANCH"
+          git checkout "$BRANCH"
+          git pull origin "$BRANCH"
+          npm install --omit=dev
+          systemctl restart "$SERVICE"
+          systemctl is-active "$SERVICE"
+          EOF
+          echo "Deployed to ${{ matrix.name }} and service is active."

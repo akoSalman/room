@@ -2,6 +2,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { io, Socket } from 'socket.io-client';
 
 export const BASE_URL = 'https://chat.akosalman.com';
+// Stamped per-brand by CI (build-native-apk.yml) from native-app/brands/<brand>.json
+export const RELEASE_TAG = 'latest-apk';
+export const RELEASE_FILE = 'ChatRoom-latest.apk';
 
 export async function getToken() {
   return AsyncStorage.getItem('token');

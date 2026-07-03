@@ -3,6 +3,13 @@ let username = localStorage.getItem('username');
 let currentRoomId = null;
 let currentRoomIsDM = false;
 let maxOtherReadMsgId = 0; // highest message id any other room member has read (for seen checkmarks)
+
+// Per-brand APK release info, picked by the domain serving this page.
+const IS_BISTBARG = location.hostname.includes('bistbarg');
+const APK_RELEASE_TAG = IS_BISTBARG ? 'latest-apk-bistbarg' : 'latest-apk';
+const APK_FILE_NAME = IS_BISTBARG ? 'BistbargChat-latest.apk' : 'ChatRoom-latest.apk';
+const APK_DOWNLOAD_URL = `https://github.com/akoSalman/room-releases/releases/download/${APK_RELEASE_TAG}/${APK_FILE_NAME}`;
+const APK_RELEASE_API = `https://api.github.com/repos/akoSalman/room-releases/releases/tags/${APK_RELEASE_TAG}`;
 const pendingUploads = {}; // clientId -> { wrapper, previewUrl, file, type, fileName, roomId, replyToId }
 let oldestLoadedMsgId = null;
 let hasMoreOlderMsgs = true;
@@ -66,8 +73,11 @@ function showNotif(msg) {
 window.addEventListener('DOMContentLoaded', () => {
   buildEmojiPicker();
 
+  // Point the APK download links at this domain's own branded build
+  document.querySelectorAll('#apk-banner, #update-download-btn').forEach(a => { a.href = APK_DOWNLOAD_URL; });
+
   // Show the latest Android build number on the login banner
-  fetch('https://api.github.com/repos/akoSalman/room-releases/releases/tags/latest-apk')
+  fetch(APK_RELEASE_API)
     .then(r => r.json())
     .then(res => {
       const match = /version:(\d+)/.exec(res.body || '') || /v(\d+)/.exec(res.name || '');
@@ -485,7 +495,7 @@ async function submitCreateRoom() {
 async function loadLatestAppVersion() {
   const hint = document.getElementById('update-hint');
   try {
-    const res = await fetch('https://api.github.com/repos/akoSalman/room-releases/releases/tags/latest-apk').then(r => r.json());
+    const res = await fetch(APK_RELEASE_API).then(r => r.json());
     const match = /version:(\d+)/.exec(res.body || '') || /v(\d+)/.exec(res.name || '');
     if (match) hint.textContent = `Latest Android build: version ${match[1]} (mobile only).`;
   } catch { /* keep default hint */ }

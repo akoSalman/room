@@ -6,13 +6,13 @@ import {
 import * as FileSystem from 'expo-file-system';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { C, isRTL } from '../theme';
-import { apiFetch, getUsername, getUserId, getSocket, setAuth, getAvatar } from '../api';
+import { apiFetch, getUsername, getUserId, getSocket, setAuth, getAvatar, RELEASE_TAG, RELEASE_FILE } from '../api';
 import { BUILD_VERSION } from '../version';
 
 const AVATAR_EMOJIS = ['🦄','🐉','🧙‍♂️','🧚‍♀️','🧛‍♂️','🧞‍♂️','🦊','🐺','🦁','🐯','🐼','🐸','🦉','🐙','🦋','🤖','👽','🐲','🦅','🐬','🔥','⚡','🌙','⭐'];
 
-const LATEST_APK_URL = 'https://github.com/akoSalman/room-releases/releases/download/latest-apk/ChatRoom-latest.apk';
-const LATEST_RELEASE_API = 'https://api.github.com/repos/akoSalman/room-releases/releases/tags/latest-apk';
+const LATEST_APK_URL = `https://github.com/akoSalman/room-releases/releases/download/${RELEASE_TAG}/${RELEASE_FILE}`;
+const LATEST_RELEASE_API = `https://api.github.com/repos/akoSalman/room-releases/releases/tags/${RELEASE_TAG}`;
 
 type Room = { id: number; name: string; is_dm: number; other_username?: string; created_by?: number };
 

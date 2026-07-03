@@ -42,12 +42,16 @@ jobs:
           echo "RELEASE_TAG=$(node -p "require('./${BRAND_FILE}').releaseTag")" >> "$GITHUB_ENV"
           echo "RELEASE_TITLE=$(node -p "require('./${BRAND_FILE}').releaseTitle")" >> "$GITHUB_ENV"
 
-          # Point the app at this brand's API server (same trick used for BUILD_VERSION below).
+          # Point the app at this brand's API server and its own release feed
+          # (same stamping trick used for BUILD_VERSION below).
           node -e "
             const fs = require('fs');
+            const brand = require('./${BRAND_FILE}');
             const path = 'src/api.ts';
             let src = fs.readFileSync(path, 'utf8');
-            src = src.replace(/export const BASE_URL = '.*';/, \"export const BASE_URL = '${BASE_URL}';\");
+            src = src.replace(/export const BASE_URL = '.*';/, \"export const BASE_URL = '\" + brand.baseUrl + \"';\");
+            src = src.replace(/export const RELEASE_TAG = '.*';/, \"export const RELEASE_TAG = '\" + brand.releaseTag + \"';\");
+            src = src.replace(/export const RELEASE_FILE = '.*';/, \"export const RELEASE_FILE = '\" + brand.releaseTitle + \"-latest.apk';\");
             fs.writeFileSync(path, src);
           "
 
