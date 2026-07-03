@@ -354,6 +354,31 @@ html {
   transition: background .15s;
 }
 .voice-play-btn:hover { background: var(--accent-hover); }
+.voice-play-btn.loading::after {
+  content: ''; width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Upload / download progress ───────────────────── */
+.msg-uploading .msg-bubble { opacity: 0.75; }
+.upload-overlay {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 4px;
+  background: rgba(255,255,255,0.25); border-radius: 0 0 var(--radius) var(--radius); overflow: hidden;
+}
+.upload-progress-bar { height: 100%; background: var(--accent); transition: width .15s linear; }
+.download-spinner {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: 26px; height: 26px; border-radius: 50%;
+  border: 3px solid rgba(255,255,255,0.35); border-top-color: #fff;
+  animation: spin 0.7s linear infinite; pointer-events: none;
+}
+.msg-upload-failed .msg-bubble { opacity: 0.85; }
+.upload-retry {
+  margin-top: 6px; font-size: 0.78rem; color: #f87171; cursor: pointer;
+  text-decoration: underline; text-underline-offset: 2px;
+}
 
 .voice-waveform {
   flex: 1; position: relative; height: 32px;
@@ -413,7 +438,7 @@ html {
 }
 .msg-sender.clickable:hover { background: rgba(59,125,216,0.2); }
 .msg-sender.clickable:active { transform: scale(0.96); background: rgba(59,125,216,0.28); }
-.msg-bubble { padding: 8px 12px; border-radius: var(--radius); font-size: 0.92rem; line-height: 1.45; word-break: break-word; overflow-wrap: break-word; max-width: 100%; }
+.msg-bubble { position: relative; padding: 8px 12px; border-radius: var(--radius); font-size: 0.92rem; line-height: 1.45; word-break: break-word; overflow-wrap: break-word; max-width: 100%; }
 .mine .msg-bubble { background: var(--mine-bg); border-bottom-right-radius: 4px; }
 .theirs .msg-bubble { background: var(--msg-bg); border-bottom-left-radius: 4px; }
 .msg-bubble img { max-width: 200px; max-height: 180px; border-radius: 8px; display: block; cursor: pointer; }

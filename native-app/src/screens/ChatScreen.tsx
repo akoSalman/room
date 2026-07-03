@@ -22,14 +22,31 @@ import SwipeableMessage from '../components/SwipeableMessage';
 import MusicPlayer from '../components/MusicPlayer';
 
 type Message = {
-  id: number; room_id: number; user_id: number; username: string; avatar?: string | null;
+  id: number | string; room_id: number; user_id: number; username: string; avatar?: string | null;
   type: string; content: string | null; file_path: string | null;
   file_name: string | null; edited: number; created_at: string; forwarded_from?: string | null;
   reply_to_id?: number | null; reply_username?: string | null;
   reply_content?: string | null; reply_type?: string | null;
+  client_id?: string;
+  _uploading?: boolean; _uploadFailed?: boolean;
 };
+// Shows a spinner over the image until it finishes loading (download progress proxy).
+function ImageWithSpinner({ uri, style, resizeMode }: { uri: string; style: any; resizeMode: 'cover' | 'contain' }) {
+  const [loaded, setLoaded] = useState(false);
+  return (
+    <View>
+      <Image source={{ uri }} style={style} resizeMode={resizeMode} onLoadEnd={() => setLoaded(true)} />
+      {!loaded && (
+        <View style={[style, { position: 'absolute', top: 0, left: 0, alignItems: 'center', justifyContent: 'center' }]}>
+          <ActivityIndicator size="small" color="#fff" />
+        </View>
+      )}
+    </View>
+  );
+}
+
 type Reaction = { emoji: string; username: string; user_id: number };
-type ReplyTo = { id: number; username: string; content: string | null; type: string };
+type ReplyTo = { id: number | string; username: string; content: string | null; type: string };
 
 const EMOJIS = ['👍','❤️','😂','😮','😢','🔥','👏','🎉','🤔','😍','👎','😡'];
 const MESSAGES_PAGE_SIZE = 20;
@@ -50,8 +67,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [typing, setTyping] = useState<string[]>([]);
   const [recordingUsers, setRecordingUsers] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
-  const [editingId, setEditingId] = useState<number | null>(null);
-  const [showEmojiFor, setShowEmojiFor] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<number | string | null>(null);
+  const [showEmojiFor, setShowEmojiFor] = useState<number | string | null>(null);
   const [recording, setRecording] = useState(false);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<ReplyTo | null>(null);
@@ -59,12 +76,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [maxOtherReadMsgId, setMaxOtherReadMsgId] = useState(0);
+  const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
   const [forwardMsg, setForwardMsg] = useState<Message | null>(null);
   const [forwardTargets, setForwardTargets] = useState<any[]>([]);
   const [showRoomInfo, setShowRoomInfo] = useState(false);
   const [roomInfo, setRoomInfo] = useState<any>(null);
   const [inviteName, setInviteName] = useState('');
-  const [highlightId, setHighlightId] = useState<number | null>(null);
+  const [highlightId, setHighlightId] = useState<number | string | null>(null);
   const [showScrollFab, setShowScrollFab] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const hasMoreOlderRef = useRef(true);
@@ -181,20 +199,22 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   useEffect(() => {
     let mounted = true;
     (async () => {
-      const [msgs, u, sock, receipts] = await Promise.all([
+      const [msgs, u, sock] = await Promise.all([
         apiFetch(`/messages/${room.id}`),
         getUsername(),
         getSocket(),
-        apiFetch(`/read-receipts/${room.id}`),
       ]);
       if (!mounted) return;
       setMe(u || '');
       meRef.current = u || '';
       getAvatar().then(setMyAvatar);
-      if (receipts && typeof receipts === 'object' && !Array.isArray(receipts) && !receipts.error) {
-        const vals = Object.values(receipts) as number[];
-        setMaxOtherReadMsgId(vals.length ? Math.max(0, ...vals) : 0);
-      }
+      apiFetch(`/read-receipts/${room.id}`).then(receipts => {
+        if (!mounted) return;
+        if (receipts && typeof receipts === 'object' && !Array.isArray(receipts) && !receipts.error) {
+          const vals = Object.values(receipts) as number[];
+          setMaxOtherReadMsgId(vals.length ? Math.max(0, ...vals) : 0);
+        }
+      }).catch(() => {});
       if (Array.isArray(msgs)) {
         setMessages(msgs);
         messagesRef.current = msgs;
@@ -209,7 +229,21 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
       sock.on('message_received', (msg: Message) => {
         if (msg.room_id !== room.id) return;
-        setMessages(prev => [...prev, msg]);
+        if (msg.client_id) {
+          setUploadProgress(prev => {
+            const { [msg.client_id!]: _drop, ...rest } = prev;
+            return rest;
+          });
+          setMessages(prev => {
+            const idx = prev.findIndex(m => m.id === msg.client_id);
+            if (idx === -1) return [...prev, msg];
+            const next = prev.slice();
+            next[idx] = msg;
+            return next;
+          });
+        } else {
+          setMessages(prev => [...prev, msg]);
+        }
         if (isNearBottomRef.current) scrollBottom();
         sock.emit('mark_read', { roomId: room.id, lastMsgId: msg.id });
       });
@@ -316,40 +350,96 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     else uploadFile(asset.uri, 'video.mp4', 'video/mp4');
   }
 
-  async function uploadFile(uri: string, name: string, mime: string) {
+  // FileSystem.createUploadTask (unlike fetch) reports real progress events.
+  async function uploadWithProgress(uri: string, name: string, mime: string, onProgress: (pct: number) => void) {
     const token = await getToken();
-    const form = new FormData();
-    form.append('file', { uri, name, type: mime } as any);
-    const res = await fetch(`${BASE_URL}/upload`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      body: form,
-    }).then(r => r.json());
-    if (res.error) { Alert.alert('Error', res.error); return; }
+    const task = FileSystem.createUploadTask(
+      `${BASE_URL}/upload`,
+      uri,
+      {
+        httpMethod: 'POST',
+        uploadType: FileSystem.FileSystemUploadType.MULTIPART,
+        fieldName: 'file',
+        mimeType: mime,
+        parameters: {},
+        headers: { Authorization: `Bearer ${token}` },
+      },
+      (data) => {
+        if (data.totalBytesExpectedToSend > 0) {
+          onProgress(Math.round((data.totalBytesSent / data.totalBytesExpectedToSend) * 100));
+        }
+      }
+    );
+    const result = await task.uploadAsync();
+    if (!result || !result.body) throw new Error('Upload failed');
+    return JSON.parse(result.body);
+  }
+
+  function addOptimisticMessage(clientId: string, type: string, localUri: string, fileName: string | null, replyToId: number | null) {
+    const optimistic: Message = {
+      id: clientId, room_id: room.id, user_id: 0, username: me, avatar: myAvatar,
+      type, content: null, file_path: localUri, file_name: fileName,
+      edited: 0, created_at: new Date().toISOString(),
+      reply_to_id: replyToId, reply_username: replyTo?.username ?? null,
+      reply_content: replyTo?.content ?? null, reply_type: replyTo?.type ?? null,
+      _uploading: true,
+    };
+    setMessages(prev => [...prev, optimistic]);
+    setUploadProgress(prev => ({ ...prev, [clientId]: 0 }));
+    if (isNearBottomRef.current) setTimeout(scrollBottom, 50);
+  }
+
+  function markUploadFailed(clientId: string) {
+    setUploadProgress(prev => { const { [clientId]: _d, ...rest } = prev; return rest; });
+    setMessages(prev => prev.map(m => m.id === clientId ? { ...m, _uploading: false, _uploadFailed: true } : m));
+  }
+
+  async function uploadFile(uri: string, name: string, mime: string) {
     const type = mime.startsWith('image/') ? 'image'
       : mime.startsWith('video/') ? 'video'
       : mime.startsWith('audio/') ? 'music' : 'file';
-    socketRef.current?.emit('send_message', {
-      roomId: room.id, type, filePath: res.url, fileName: name, replyToId: replyTo?.id ?? null,
-    });
+    const clientId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const replyToId = replyTo?.id ?? null;
+    addOptimisticMessage(clientId, type, uri, name, replyToId);
     setReplyTo(null);
+    try {
+      const res = await uploadWithProgress(uri, name, mime, pct => setUploadProgress(prev => ({ ...prev, [clientId]: pct })));
+      if (res.error) throw new Error(res.error);
+      socketRef.current?.emit('send_message', {
+        roomId: room.id, type, filePath: res.url, fileName: name, replyToId, clientId,
+      });
+    } catch {
+      markUploadFailed(clientId);
+    }
   }
 
   async function sendVoice(uri: string, peaks: number[]) {
-    const token = await getToken();
-    const form = new FormData();
-    form.append('file', { uri, name: `voice-${Date.now()}.m4a`, type: 'audio/m4a' } as any);
-    const res = await fetch(`${BASE_URL}/upload`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      body: form,
-    }).then(r => r.json());
-    if (res.error) { Alert.alert('Error', res.error); return; }
     const peakStr = peaks.map(v => Math.round(v * 100)).join(',');
-    socketRef.current?.emit('send_message', {
-      roomId: room.id, type: 'audio', filePath: res.url, fileName: peakStr, replyToId: replyTo?.id ?? null,
-    });
+    const clientId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const replyToId = replyTo?.id ?? null;
+    addOptimisticMessage(clientId, 'audio', uri, peakStr, replyToId);
     setReplyTo(null);
+    try {
+      const res = await uploadWithProgress(uri, `voice-${Date.now()}.m4a`, 'audio/m4a', pct => setUploadProgress(prev => ({ ...prev, [clientId]: pct })));
+      if (res.error) throw new Error(res.error);
+      socketRef.current?.emit('send_message', {
+        roomId: room.id, type: 'audio', filePath: res.url, fileName: peakStr, replyToId, clientId,
+      });
+    } catch {
+      markUploadFailed(clientId);
+    }
+  }
+
+  function retryUpload(msg: Message) {
+    if (!msg.client_id && typeof msg.id !== 'string') return;
+    const clientId = String(msg.id);
+    setMessages(prev => prev.filter(m => m.id !== clientId));
+    if (msg.type === 'audio') {
+      const peaks = (msg.file_name || '').split(',').map(n => Number(n) / 100);
+      sendVoice(msg.file_path!, peaks);
+    } else {
+      uploadFile(msg.file_path!, msg.file_name || 'file', msg.type === 'image' ? 'image/jpeg' : msg.type === 'video' ? 'video/mp4' : 'application/octet-stream');
+    }
   }
 
   function startRecordingUI() {
@@ -363,12 +453,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     socketRef.current?.emit('recording_stop', { roomId: room.id });
   }
 
-  function toggleReact(messageId: number, emoji: string) {
+  function toggleReact(messageId: number | string, emoji: string) {
     socketRef.current?.emit('toggle_reaction', { messageId, emoji });
     setShowEmojiFor(null);
   }
 
-  function deleteMsg(id: number) {
+  function deleteMsg(id: number | string) {
     Alert.alert('Delete message?', '', [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: () => socketRef.current?.emit('delete_message', { messageId: id }) },
@@ -561,30 +651,49 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               </View>
             );
           })()}
-          {msg.type === 'image' && (
-            <TouchableOpacity onPress={() => setLightboxUrl(`${BASE_URL}${msg.file_path}`)}>
-              <Image
-                source={{ uri: `${BASE_URL}${msg.file_path}` }}
-                style={s.msgImage}
-                resizeMode="cover"
-              />
-            </TouchableOpacity>
-          )}
-          {msg.type === 'audio' && (
+          {msg.type === 'image' && (() => {
+            const uri = msg._uploading ? msg.file_path! : `${BASE_URL}${msg.file_path}`;
+            return (
+              <TouchableOpacity onPress={() => !msg._uploading && setLightboxUrl(uri)} disabled={msg._uploading}>
+                {msg._uploading
+                  ? <Image source={{ uri }} style={s.msgImage} resizeMode="cover" />
+                  : <ImageWithSpinner uri={uri} style={s.msgImage} resizeMode="cover" />}
+              </TouchableOpacity>
+            );
+          })()}
+          {msg.type === 'audio' && !msg._uploading && (
             <VoicePlayer url={`${BASE_URL}${msg.file_path}`} peaks={msg.file_name || ''} mine={mine} msgId={msg.id} roomId={room.id} roomMeta={room} label={`🎙 ${msg.username} · voice message`} />
           )}
-          {msg.type === 'music' && (
+          {msg.type === 'audio' && msg._uploading && (
+            <View style={s.uploadingVoicePlaceholder}>
+              <Text style={s.uploadingVoiceText}>🎙 Voice message</Text>
+            </View>
+          )}
+          {msg.type === 'music' && !msg._uploading && (
             <MusicPlayer url={`${BASE_URL}${msg.file_path}`} fileName={msg.file_name || 'Audio'} mine={mine} msgId={msg.id} roomId={room.id} roomMeta={room} />
           )}
-          {msg.type === 'video' && (
-            <TouchableOpacity onPress={() => setVideoUrl(`${BASE_URL}${msg.file_path}`)}>
-              <View style={s.videoThumb}>
-                <Text style={s.videoPlayIcon}>▶</Text>
-              </View>
-            </TouchableOpacity>
-          )}
-          {msg.type === 'file' && (
+          {msg.type === 'video' && (() => {
+            const uri = msg._uploading ? msg.file_path! : `${BASE_URL}${msg.file_path}`;
+            return (
+              <TouchableOpacity onPress={() => !msg._uploading && setVideoUrl(uri)} disabled={msg._uploading}>
+                <View style={s.videoThumb}>
+                  <Text style={s.videoPlayIcon}>▶</Text>
+                </View>
+              </TouchableOpacity>
+            );
+          })()}
+          {(msg.type === 'file' || (msg.type === 'music' && msg._uploading)) && (
             <Text style={s.fileLink}>📄 {msg.file_name || 'File'}</Text>
+          )}
+          {msg._uploading && (
+            <View style={s.uploadOverlay}>
+              <View style={[s.uploadProgressBar, { width: `${uploadProgress[String(msg.id)] ?? 0}%` }]} />
+            </View>
+          )}
+          {msg._uploadFailed && (
+            <TouchableOpacity onPress={() => retryUpload(msg)}>
+              <Text style={s.uploadRetryText}>⚠️ Failed to send — tap to retry</Text>
+            </TouchableOpacity>
           )}
         </TouchableOpacity>
         </SwipeableMessage>
@@ -603,37 +712,41 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
         <View style={s.footer}>
           <Text style={s.time}>{fmtTime(msg.created_at)}</Text>
-          {mine && (
+          {mine && !msg._uploading && !msg._uploadFailed && (
             <Text style={[s.ticks, msg.id <= maxOtherReadMsgId && s.ticksSeen]}>
               {msg.id <= maxOtherReadMsgId ? '✓✓' : '✓'}
             </Text>
           )}
-          <TouchableOpacity
-            style={s.footerBtnTouch}
-            onPress={() => setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type })}
-          >
-            <Text style={s.replyFooterBtn}>↩ Reply</Text>
-          </TouchableOpacity>
-          {msg.type !== 'invite' && (
-            <TouchableOpacity style={s.footerBtnTouch} onPress={() => openForwardPicker(msg)}>
-              <Text style={s.replyFooterBtn}>↪ Fwd</Text>
-            </TouchableOpacity>
-          )}
-          {mine && (
+          {!msg._uploading && !msg._uploadFailed && (
             <>
-              {msg.type === 'text' && (
-                <TouchableOpacity onPress={() => { setText(msg.content || ''); setEditingId(msg.id); }}>
-                  <Text style={s.footerBtn}>✏️</Text>
+              <TouchableOpacity
+                style={s.footerBtnTouch}
+                onPress={() => setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type })}
+              >
+                <Text style={s.replyFooterBtn}>↩ Reply</Text>
+              </TouchableOpacity>
+              {msg.type !== 'invite' && (
+                <TouchableOpacity style={s.footerBtnTouch} onPress={() => openForwardPicker(msg)}>
+                  <Text style={s.replyFooterBtn}>↪ Fwd</Text>
                 </TouchableOpacity>
               )}
-              <TouchableOpacity onPress={() => deleteMsg(msg.id)}>
-                <Text style={s.footerBtn}>🗑</Text>
+              {mine && (
+                <>
+                  {msg.type === 'text' && (
+                    <TouchableOpacity onPress={() => { setText(msg.content || ''); setEditingId(msg.id); }}>
+                      <Text style={s.footerBtn}>✏️</Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity onPress={() => deleteMsg(msg.id)}>
+                    <Text style={s.footerBtn}>🗑</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+              <TouchableOpacity onPress={() => setShowEmojiFor(msg.id)}>
+                <Text style={s.footerBtn}>😊</Text>
               </TouchableOpacity>
             </>
           )}
-          <TouchableOpacity onPress={() => setShowEmojiFor(msg.id)}>
-            <Text style={s.footerBtn}>😊</Text>
-          </TouchableOpacity>
         </View>
 
         {/* Emoji picker */}
@@ -1017,7 +1130,12 @@ const s = StyleSheet.create({
     fontSize: 14, width: 20, height: 20, textAlign: 'center', lineHeight: 20,
     borderRadius: 10, backgroundColor: 'rgba(59,125,216,0.16)', overflow: 'hidden',
   },
-  bubble: { borderRadius: 12, padding: 10, maxWidth: '100%' },
+  bubble: { borderRadius: 12, padding: 10, maxWidth: '100%', overflow: 'hidden' },
+  uploadOverlay: { height: 3, backgroundColor: 'rgba(255,255,255,0.25)', marginTop: 6, borderRadius: 2, overflow: 'hidden' },
+  uploadProgressBar: { height: '100%', backgroundColor: C.accent },
+  uploadRetryText: { color: '#f87171', fontSize: 12, marginTop: 6, textDecorationLine: 'underline' },
+  uploadingVoicePlaceholder: { paddingVertical: 4 },
+  uploadingVoiceText: { color: C.text, fontSize: 14, opacity: 0.7 },
   bubbleHighlight: { borderWidth: 2, borderColor: C.accent },
   mineBubble: { backgroundColor: C.mine, borderBottomRightRadius: 3 },
   theirsBubble: { backgroundColor: C.msgBg, borderBottomLeftRadius: 3 },

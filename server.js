@@ -482,7 +482,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('send_message', (data) => {
-    const { roomId, type, content, filePath, fileName, replyToId } = data;
+    const { roomId, type, content, filePath, fileName, replyToId, clientId } = data;
     const result = db.prepare(`
       INSERT INTO messages (room_id, user_id, type, content, file_path, file_name, reply_to_id)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -498,6 +498,7 @@ io.on('connection', (socket) => {
       LEFT JOIN users ru ON rm.user_id = ru.id
       WHERE m.id = ?
     `).get(result.lastInsertRowid);
+    if (clientId) msg.client_id = clientId; // lets the sender reconcile its optimistic local bubble
 
     const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
     const memberIds = room ? getRoomMemberIds(room) : [];

@@ -1,18 +1,19 @@
 import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av';
 
 type Listener = () => void;
-type FinishHandler = (finishedId: number) => void;
+type FinishHandler = (finishedId: number | string) => void;
 
 // Global playback owner: only one sound plays at a time (in the app AND on the
 // device — audio focus is requested with DoNotMix), and playback survives
 // screen changes so a mini player can control it from anywhere.
 class AudioManager {
   sound: Audio.Sound | null = null;
-  currentId: number | null = null;
+  currentId: number | string | null = null;
   roomId: number | null = null;
   roomMeta: any = null; // full room object, for navigating back to the chat
   label = '';
   playing = false;
+  loading = false; // true from play() request until the sound finishes buffering enough to report status
   progress = 0; // 0..1
   duration = 0; // seconds
   rate = 1;
@@ -33,7 +34,7 @@ class AudioManager {
 
   setFinishHandler(cb: FinishHandler | null) { this.finishHandler = cb; }
 
-  async play(id: number, uri: string, label: string, roomId: number | null = null, roomMeta: any = null) {
+  async play(id: number | string, uri: string, label: string, roomId: number | null = null, roomMeta: any = null) {
     // Claim this play request immediately so any call already in flight
     // (e.g. from a prior tap) knows it's been superseded once it resolves.
     const token = ++this.playToken;
@@ -61,6 +62,7 @@ class AudioManager {
     this.roomMeta = roomMeta;
     this.label = label;
     this.playing = true;
+    this.loading = true;
     this.progress = 0;
     this.duration = 0;
     this.emit();
@@ -72,6 +74,7 @@ class AudioManager {
         status => {
           if (token !== this.playToken) return; // stale sound's status updates — ignore
           if (!status.isLoaded) return;
+          this.loading = false;
           this.progress = status.positionMillis / (status.durationMillis || 1);
           this.duration = (status.durationMillis || 0) / 1000;
           if (status.didJustFinish) {
@@ -99,6 +102,7 @@ class AudioManager {
       if (token !== this.playToken) return;
       this.currentId = null;
       this.playing = false;
+      this.loading = false;
       this.emit();
     }
   }
@@ -130,6 +134,7 @@ class AudioManager {
     this.roomId = null;
     this.roomMeta = null;
     this.playing = false;
+    this.loading = false;
     this.progress = 0;
     this.emit();
   }

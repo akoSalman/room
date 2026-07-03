@@ -1,5 +1,5 @@
 import React, { useEffect, useReducer } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import { C } from '../theme';
 import { audioManager } from '../audioManager';
 
@@ -22,7 +22,7 @@ function parsePeaks(raw: string, count = 40): number[] {
 
 export default function VoicePlayer({ url, peaks: rawPeaks, mine, msgId, roomId, label, roomMeta }: {
   url: string; peaks: string; mine: boolean;
-  msgId: number; roomId: number; label: string; roomMeta?: any;
+  msgId: number | string; roomId: number; label: string; roomMeta?: any;
 }) {
   const [, forceUpdate] = useReducer(x => x + 1, 0);
   const peaks = parsePeaks(rawPeaks);
@@ -31,6 +31,7 @@ export default function VoicePlayer({ url, peaks: rawPeaks, mine, msgId, roomId,
 
   const isCurrent = audioManager.currentId === msgId;
   const playing = isCurrent && audioManager.playing;
+  const loading = isCurrent && audioManager.loading;
   const progress = isCurrent ? audioManager.progress : 0;
   const duration = isCurrent ? audioManager.duration : 0;
   const speedIdx = Math.max(0, SPEEDS.indexOf(audioManager.rate));
@@ -49,8 +50,8 @@ export default function VoicePlayer({ url, peaks: rawPeaks, mine, msgId, roomId,
 
   return (
     <View style={s.container}>
-      <TouchableOpacity style={s.playBtn} onPress={toggle}>
-        <Text style={s.playIcon}>{playing ? '⏸' : '▶'}</Text>
+      <TouchableOpacity style={s.playBtn} onPress={toggle} disabled={loading}>
+        {loading ? <ActivityIndicator size="small" color="#fff" /> : <Text style={s.playIcon}>{playing ? '⏸' : '▶'}</Text>}
       </TouchableOpacity>
 
       <View style={s.waveform}>

@@ -1,5 +1,5 @@
 import React, { useEffect, useReducer } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import { C } from '../theme';
 import { audioManager } from '../audioManager';
 
@@ -9,13 +9,14 @@ function fmtTime(s: number) {
 }
 
 export default function MusicPlayer({ url, fileName, mine, msgId, roomId, roomMeta }: {
-  url: string; fileName: string; mine: boolean; msgId: number; roomId: number; roomMeta?: any;
+  url: string; fileName: string; mine: boolean; msgId: number | string; roomId: number; roomMeta?: any;
 }) {
   const [, forceUpdate] = useReducer(x => x + 1, 0);
   useEffect(() => audioManager.subscribe(forceUpdate), []);
 
   const isCurrent = audioManager.currentId === msgId;
   const playing = isCurrent && audioManager.playing;
+  const loading = isCurrent && audioManager.loading;
   const progress = isCurrent ? audioManager.progress : 0;
   const duration = isCurrent ? audioManager.duration : 0;
 
@@ -26,8 +27,8 @@ export default function MusicPlayer({ url, fileName, mine, msgId, roomId, roomMe
 
   return (
     <View style={s.container}>
-      <TouchableOpacity style={s.playBtn} onPress={toggle}>
-        <Text style={s.playIcon}>{playing ? '⏸' : '▶'}</Text>
+      <TouchableOpacity style={s.playBtn} onPress={toggle} disabled={loading}>
+        {loading ? <ActivityIndicator size="small" color="#fff" /> : <Text style={s.playIcon}>{playing ? '⏸' : '▶'}</Text>}
       </TouchableOpacity>
       <View style={s.info}>
         <Text style={s.fileName} numberOfLines={1}>🎵 {fileName}</Text>

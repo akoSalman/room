@@ -3,6 +3,7 @@ let username = localStorage.getItem('username');
 let currentRoomId = null;
 let currentRoomIsDM = false;
 let maxOtherReadMsgId = 0; // highest message id any other room member has read (for seen checkmarks)
+const pendingUploads = {}; // clientId -> { wrapper, previewUrl, file, type, fileName, roomId, replyToId }
 let oldestLoadedMsgId = null;
 let hasMoreOlderMsgs = true;
 let loadingOlderMsgs = false;
@@ -222,6 +223,14 @@ function connectSocket() {
     });
 
     socket.on('message_received', (msg) => {
+      if (msg.client_id && pendingUploads[msg.client_id]) {
+        const pending = pendingUploads[msg.client_id];
+        if (pending.previewUrl) URL.revokeObjectURL(pending.previewUrl);
+        pending.wrapper.replaceWith(buildMessageElement(msg));
+        delete pendingUploads[msg.client_id];
+        socket.emit('mark_read', { roomId: msg.room_id, lastMsgId: msg.id });
+        return;
+      }
       showNotif(msg);
       if (String(msg.room_id) !== String(currentRoomId)) {
         if (msg.username !== username) { // own messages are never "unread"
@@ -697,13 +706,13 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   loadingOlderMsgs = false;
   maxOtherReadMsgId = 0;
   socket.emit('join_room', roomId);
-  const [msgs, receipts] = await Promise.all([
-    api('/messages/' + roomId),
-    api('/read-receipts/' + roomId),
-  ]);
-  if (receipts && typeof receipts === 'object' && !receipts.error) {
-    maxOtherReadMsgId = Math.max(0, ...Object.values(receipts));
-  }
+  const msgs = await api('/messages/' + roomId);
+  try {
+    const receipts = await api('/read-receipts/' + roomId);
+    if (receipts && typeof receipts === 'object' && !receipts.error) {
+      maxOtherReadMsgId = Math.max(0, ...Object.values(receipts));
+    }
+  } catch {}
   if (Array.isArray(msgs)) {
     msgs.forEach(appendMessage);
     if (msgs.length) {
@@ -840,17 +849,84 @@ function confirmDelete(messageId) {
 }
 
 // ─── File / Audio ─────────────────────────────────────────────────────────────
-async function sendFile() {
+
+// Upload with real progress events (fetch has none for uploads).
+function xhrUpload(file, filename, onProgress) {
+  return new Promise((resolve, reject) => {
+    const form = new FormData();
+    form.append('file', file, filename || undefined);
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/upload');
+    xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100)); };
+    xhr.onload = () => {
+      try { resolve(JSON.parse(xhr.responseText)); }
+      catch { reject(new Error('Upload failed')); }
+    };
+    xhr.onerror = () => reject(new Error('Upload failed — check your connection'));
+    xhr.send(form);
+  });
+}
+
+function updateUploadProgress(wrapper, pct) {
+  const bar = wrapper.querySelector('.upload-progress-bar');
+  if (bar) bar.style.width = pct + '%';
+}
+
+function markUploadFailed(wrapper, clientId, retryFn) {
+  delete pendingUploads[clientId];
+  wrapper.classList.remove('msg-uploading');
+  wrapper.classList.add('msg-upload-failed');
+  const overlay = wrapper.querySelector('.upload-overlay');
+  if (overlay) overlay.remove();
+  const bubble = wrapper.querySelector('.msg-bubble');
+  const retry = document.createElement('div');
+  retry.className = 'upload-retry';
+  retry.textContent = '⚠️ Failed to send — tap to retry';
+  retry.onclick = (e) => { e.stopPropagation(); wrapper.remove(); retryFn(); };
+  bubble.appendChild(retry);
+}
+
+// uploadFilename: name given to the multipart upload (needs a real extension).
+// messageFileName: what's stored/shown as the message's fileName (voice notes
+// stash their waveform peaks here instead of a real filename).
+async function uploadAndSendMedia(file, type, uploadFilename, messageFileName, roomId, replyToId) {
+  const clientId = 'tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+  const previewUrl = (type === 'image' || type === 'video' || type === 'audio') ? URL.createObjectURL(file) : null;
+  const tempMsg = {
+    id: clientId, username, avatar: localStorage.getItem('avatar') || '',
+    type, content: null, file_path: previewUrl, file_name: messageFileName,
+    created_at: new Date().toISOString(),
+    reply_to_id: replyTo?.id || null, reply_username: replyTo?.username || null,
+    _uploading: true, _progress: 0,
+  };
+  const wrapper = buildMessageElement(tempMsg);
+  document.getElementById('messages').appendChild(wrapper);
+  scrollBottom();
+  pendingUploads[clientId] = { wrapper, previewUrl };
+
+  try {
+    const res = await xhrUpload(file, uploadFilename, pct => updateUploadProgress(wrapper, pct));
+    if (res.error) throw new Error(res.error);
+    if (!pendingUploads[clientId]) return; // user already dismissed/retried
+    socket.emit('send_message', {
+      roomId, type, content: null, filePath: res.url,
+      fileName: messageFileName, replyToId, clientId,
+    });
+  } catch (err) {
+    if (pendingUploads[clientId]) {
+      markUploadFailed(wrapper, clientId, () => uploadAndSendMedia(file, type, uploadFilename, messageFileName, roomId, replyToId));
+    }
+  }
+}
+
+function sendFile() {
   const file = document.getElementById('file-input').files[0];
   if (!file || !currentRoomId) return;
-  const form = new FormData();
-  form.append('file', file);
-  const res = await fetch('/upload', { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: form }).then(r => r.json());
-  if (res.error) return alert(res.error);
   const type = file.type.startsWith('image/') ? 'image'
     : file.type.startsWith('video/') ? 'video'
     : file.type.startsWith('audio/') ? 'music' : 'file';
-  socket.emit('send_message', { roomId: currentRoomId, type, content: null, filePath: res.url, fileName: res.name || file.name, replyToId: replyTo?.id || null });
+  uploadAndSendMedia(file, type, file.name, file.name, currentRoomId, replyTo?.id || null);
   cancelReply();
   document.getElementById('file-input').value = '';
 }
@@ -1039,13 +1115,10 @@ async function sendRecording() {
   if (!recordedBlob || recordedBlob.size < 500) return;
   if (previewAudio) { previewAudio.pause(); previewAudio = null; }
   const ext = recordedMime.includes('mp4') ? 'mp4' : recordedMime.includes('ogg') ? 'ogg' : 'webm';
-  const form = new FormData();
-  // Store normalized peaks in content field for waveform rendering
+  // Store normalized peaks in the filename slot for waveform rendering
   const peaks = normalizePeaks(previewWaveformPeaks, 50).map(v => Math.round(v * 100)).join(',');
-  form.append('file', recordedBlob, `voice-${Date.now()}.${ext}`);
-  const res = await fetch('/upload', { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: form }).then(r => r.json());
-  if (res.error) { alert(res.error); return; }
-  socket.emit('send_message', { roomId: currentRoomId, type: 'audio', filePath: res.url, fileName: peaks, replyToId: replyTo?.id || null });
+  const roomId = currentRoomId, replyToId = replyTo?.id || null;
+  uploadAndSendMedia(recordedBlob, 'audio', `voice-${Date.now()}.${ext}`, peaks, roomId, replyToId);
   resetRecordingUI();
   cancelReply();
 }
@@ -1108,6 +1181,25 @@ function playNextVoiceAfter(wrapperEl) {
   }
 }
 
+// Shows a spinner over an image/video bubble until the media finishes loading.
+function attachDownloadSpinner(bubble, type) {
+  const el = type === 'image' ? bubble.querySelector('img') : type === 'video' ? bubble.querySelector('video') : null;
+  if (!el) return;
+  const spinner = document.createElement('div');
+  spinner.className = 'download-spinner';
+  bubble.appendChild(spinner);
+  const done = () => spinner.remove();
+  if (type === 'image') {
+    if (el.complete) return done();
+    el.addEventListener('load', done, { once: true });
+    el.addEventListener('error', done, { once: true });
+  } else {
+    if (el.readyState >= 2) return done();
+    el.addEventListener('loadeddata', done, { once: true });
+    el.addEventListener('error', done, { once: true });
+  }
+}
+
 // ─── Render messages ──────────────────────────────────────────────────────────
 const SENT_TICKS = '<svg viewBox="0 0 16 10" class="ticks"><path d="M1 5.5L4.5 9L10 1.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const SEEN_TICKS = '<svg viewBox="0 0 16 10" class="ticks"><path d="M1 5.5L4.5 9L10 1.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M6 5.5L9.5 9L15 1.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -1126,7 +1218,7 @@ function buildMessageElement(msg) {
   const wrapper = document.createElement('div');
   wrapper.className = 'msg-wrapper ' + (isMine ? 'mine' : 'theirs');
   wrapper.dataset.msgId = msg.id;
-  addLongPress(wrapper, () => openCtxMenu(msg.id, msg.type, isMine, wrapper, msg));
+  if (!msg._uploading) addLongPress(wrapper, () => openCtxMenu(msg.id, msg.type, isMine, wrapper, msg));
 
   if (!isMine) {
     const sender = document.createElement('div');
@@ -1223,10 +1315,26 @@ function buildMessageElement(msg) {
     bubble.appendChild(wrap);
   } else {
     const a = document.createElement('a');
-    a.className = 'file-link'; a.href = msg.file_path;
-    a.download = msg.file_name || 'file'; a.target = '_blank';
+    a.className = 'file-link';
+    if (msg.file_path) { a.href = msg.file_path; a.target = '_blank'; }
+    else a.onclick = (e) => e.preventDefault();
+    a.download = msg.file_name || 'file';
     a.innerHTML = '📄 ' + (msg.file_name || 'Download file');
     bubble.appendChild(a);
+  }
+
+  if (msg._uploading) {
+    wrapper.classList.add('msg-uploading');
+    const overlay = document.createElement('div');
+    overlay.className = 'upload-overlay';
+    const bar = document.createElement('div');
+    bar.className = 'upload-progress-bar';
+    bar.style.width = (msg._progress || 0) + '%';
+    overlay.appendChild(bar);
+    bubble.appendChild(overlay);
+  }
+  if (['image', 'video', 'audio', 'music'].includes(msg.type) && !msg._uploading) {
+    attachDownloadSpinner(bubble, msg.type);
   }
   wrapper.appendChild(bubble);
 
@@ -1238,7 +1346,7 @@ function buildMessageElement(msg) {
   time.textContent = new Date(created).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   footer.appendChild(time);
 
-  if (isMine) {
+  if (isMine && !msg._uploading) {
     const status = document.createElement('span');
     status.className = 'msg-status';
     status.dataset.msgId = msg.id;
@@ -1247,34 +1355,36 @@ function buildMessageElement(msg) {
     footer.appendChild(status);
   }
 
-  const replyBtn = document.createElement('button');
-  replyBtn.className = 'msg-action-btn'; replyBtn.title = 'Reply'; replyBtn.textContent = '↩';
-  replyBtn.onclick = (e) => { e.stopPropagation(); setReply(msg); };
-  footer.appendChild(replyBtn);
+  if (!msg._uploading) {
+    const replyBtn = document.createElement('button');
+    replyBtn.className = 'msg-action-btn'; replyBtn.title = 'Reply'; replyBtn.textContent = '↩';
+    replyBtn.onclick = (e) => { e.stopPropagation(); setReply(msg); };
+    footer.appendChild(replyBtn);
 
-  if (msg.type !== 'invite') {
-    const fwdBtn = document.createElement('button');
-    fwdBtn.className = 'msg-action-btn'; fwdBtn.title = 'Forward'; fwdBtn.textContent = '↪';
-    fwdBtn.onclick = (e) => { e.stopPropagation(); openForwardModal(msg.id); };
-    footer.appendChild(fwdBtn);
-  }
-
-  const reactBtn = document.createElement('button');
-  reactBtn.className = 'react-btn'; reactBtn.textContent = '😊'; reactBtn.title = 'React';
-  reactBtn.onclick = (e) => { e.stopPropagation(); showEmojiPicker(msg.id, reactBtn, wrapper); };
-  footer.appendChild(reactBtn);
-
-  if (isMine) {
-    if (msg.type === 'text') {
-      const editBtn = document.createElement('button');
-      editBtn.className = 'msg-action-btn'; editBtn.title = 'Edit'; editBtn.textContent = '✏️';
-      editBtn.onclick = (e) => { e.stopPropagation(); startEdit(msg.id); };
-      footer.appendChild(editBtn);
+    if (msg.type !== 'invite') {
+      const fwdBtn = document.createElement('button');
+      fwdBtn.className = 'msg-action-btn'; fwdBtn.title = 'Forward'; fwdBtn.textContent = '↪';
+      fwdBtn.onclick = (e) => { e.stopPropagation(); openForwardModal(msg.id); };
+      footer.appendChild(fwdBtn);
     }
-    const delBtn = document.createElement('button');
-    delBtn.className = 'msg-action-btn delete'; delBtn.title = 'Delete'; delBtn.textContent = '🗑';
-    delBtn.onclick = (e) => { e.stopPropagation(); confirmDelete(msg.id); };
-    footer.appendChild(delBtn);
+
+    const reactBtn = document.createElement('button');
+    reactBtn.className = 'react-btn'; reactBtn.textContent = '😊'; reactBtn.title = 'React';
+    reactBtn.onclick = (e) => { e.stopPropagation(); showEmojiPicker(msg.id, reactBtn, wrapper); };
+    footer.appendChild(reactBtn);
+
+    if (isMine) {
+      if (msg.type === 'text') {
+        const editBtn = document.createElement('button');
+        editBtn.className = 'msg-action-btn'; editBtn.title = 'Edit'; editBtn.textContent = '✏️';
+        editBtn.onclick = (e) => { e.stopPropagation(); startEdit(msg.id); };
+        footer.appendChild(editBtn);
+      }
+      const delBtn = document.createElement('button');
+      delBtn.className = 'msg-action-btn delete'; delBtn.title = 'Delete'; delBtn.textContent = '🗑';
+      delBtn.onclick = (e) => { e.stopPropagation(); confirmDelete(msg.id); };
+      footer.appendChild(delBtn);
+    }
   }
 
   wrapper.appendChild(footer);
@@ -1517,12 +1627,21 @@ function buildVoicePlayer(msg) {
     if (wrapper) playNextVoiceAfter(wrapper);
   };
 
+  function reallyPlay() {
+    claimPlayback(audio, stopThis); // pause whatever else is playing
+    if (audio.ended || audio.currentTime >= audio.duration) audio.currentTime = 0;
+    audio.play(); playBtn.innerHTML = '⏸'; playBtn.classList.remove('loading'); playing = true; startRAF();
+  }
+
   playBtn.onclick = () => {
-    if (playing) { stopThis(); }
-    else {
-      claimPlayback(audio, stopThis); // pause whatever else is playing
-      if (audio.ended || audio.currentTime >= audio.duration) audio.currentTime = 0;
-      audio.play(); playBtn.innerHTML = '⏸'; playing = true; startRAF();
+    if (playing) { stopThis(); return; }
+    if (audio.readyState < 3) {
+      // Still downloading — show a loading state and start as soon as enough is buffered.
+      playBtn.innerHTML = ''; playBtn.classList.add('loading');
+      const onReady = () => { audio.removeEventListener('canplay', onReady); if (!playing) reallyPlay(); };
+      audio.addEventListener('canplay', onReady);
+    } else {
+      reallyPlay();
     }
   };
 
