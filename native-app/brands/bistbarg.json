@@ -1,0 +1,8 @@
+{
+  "name": "BistbargChat",
+  "slug": "bistbarg-chat-native",
+  "package": "com.bistbarg.chatroom",
+  "baseUrl": "https://chat.bistbarg.com",
+  "releaseTag": "latest-apk-bistbarg",
+  "releaseTitle": "BistbargChat"
+}

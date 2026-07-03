@@ -1,0 +1,8 @@
+{
+  "name": "ChatRoom",
+  "slug": "chatroom-native",
+  "package": "com.akosalman.chatroom",
+  "baseUrl": "https://chat.akosalman.com",
+  "releaseTag": "latest-apk",
+  "releaseTitle": "ChatRoom"
+}

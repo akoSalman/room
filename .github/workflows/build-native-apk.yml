@@ -9,6 +9,10 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        brand: [akosalman, bistbarg]
     defaults:
       run:
         working-directory: native-app
@@ -30,12 +34,41 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Apply brand config (name, package, API server)
+        run: |
+          BRAND_FILE="brands/${{ matrix.brand }}.json"
+          BASE_URL=$(node -p "require('./${BRAND_FILE}').baseUrl")
+          echo "BASE_URL=$BASE_URL" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=$(node -p "require('./${BRAND_FILE}').releaseTag")" >> "$GITHUB_ENV"
+          echo "RELEASE_TITLE=$(node -p "require('./${BRAND_FILE}').releaseTitle")" >> "$GITHUB_ENV"
+
+          # Point the app at this brand's API server (same trick used for BUILD_VERSION below).
+          node -e "
+            const fs = require('fs');
+            const path = 'src/api.ts';
+            let src = fs.readFileSync(path, 'utf8');
+            src = src.replace(/export const BASE_URL = '.*';/, \"export const BASE_URL = '${BASE_URL}';\");
+            fs.writeFileSync(path, src);
+          "
+
+          # Apply this brand's app name / slug / Android package.
+          node -e "
+            const fs = require('fs');
+            const brand = require('./${BRAND_FILE}');
+            const cfg = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+            cfg.expo.name = brand.name;
+            cfg.expo.slug = brand.slug;
+            cfg.expo.android.package = brand.package;
+            fs.writeFileSync('app.json', JSON.stringify(cfg, null, 2));
+          "
+
       - name: Stamp build version
         run: |
           echo "// Stamped by CI (build-native-apk.yml) with the GitHub Actions run number." > src/version.ts
           echo "export const BUILD_VERSION = ${{ github.run_number }};" >> src/version.ts
-          # Enable Firebase push when google-services.json is committed
-          if [ -f google-services.json ]; then
+          # Enable Firebase push when this brand has a google-services.json committed
+          if [ -f "brands/${{ matrix.brand }}/google-services.json" ]; then
+            cp "brands/${{ matrix.brand }}/google-services.json" google-services.json
             node -e "
               const fs = require('fs');
               const cfg = JSON.parse(fs.readFileSync('app.json', 'utf8'));
@@ -64,6 +97,8 @@ jobs:
       # Use the persistent keystore committed to the repo so every build has the
       # SAME signature — Android refuses to update an app when signatures differ,
       # which previously forced users to uninstall before installing a new build.
+      # Safe to share across brands: Android app identity is (package name +
+      # signature), and each brand has its own package name.
       - name: Copy persistent signing keystore
         run: cp signing/chatroom.keystore android/app/chatroom.keystore
 
@@ -89,7 +124,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ChatRoom-${{ github.run_number }}
+          name: ${{ env.RELEASE_TITLE }}-${{ github.run_number }}
           path: native-app/android/app/build/outputs/apk/release/app-release.apk
           retention-days: 30
 
@@ -97,9 +132,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
         run: |
-          cp android/app/build/outputs/apk/release/app-release.apk ../ChatRoom-latest.apk
-          gh release delete latest-apk --yes --cleanup-tag --repo akoSalman/room-releases || true
-          gh release create latest-apk ../ChatRoom-latest.apk \
-            --title "ChatRoom v${{ github.run_number }}" \
+          cp android/app/build/outputs/apk/release/app-release.apk ../${{ env.RELEASE_TITLE }}-latest.apk
+          gh release delete "${{ env.RELEASE_TAG }}" --yes --cleanup-tag --repo akoSalman/room-releases || true
+          gh release create "${{ env.RELEASE_TAG }}" ../${{ env.RELEASE_TITLE }}-latest.apk \
+            --title "${{ env.RELEASE_TITLE }} v${{ github.run_number }}" \
             --notes "version:${{ github.run_number }} — automated build from commit ${{ github.sha }}. Always points to the most recent successful build." \
             --repo akoSalman/room-releases
