@@ -77,6 +77,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [maxOtherReadMsgId, setMaxOtherReadMsgId] = useState(0);
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
+  // clientId -> uploaded file URL, so the server's echo can be matched back to
+  // its optimistic bubble even when the server doesn't echo client_id.
+  const pendingUploadPaths = useRef<Record<string, string>>({});
   const [forwardMsg, setForwardMsg] = useState<Message | null>(null);
   const [forwardTargets, setForwardTargets] = useState<any[]>([]);
   const [showRoomInfo, setShowRoomInfo] = useState(false);
@@ -229,13 +232,21 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
       sock.on('message_received', (msg: Message) => {
         if (msg.room_id !== room.id) return;
-        if (msg.client_id) {
+        // Reconcile our optimistic upload bubble with the server's echo.
+        // Prefer the echoed client_id; fall back to matching the uploaded
+        // file path (covers servers that don't echo client_id back).
+        const pendingId = (msg.client_id && String(msg.client_id))
+          || (msg.file_path
+              && Object.keys(pendingUploadPaths.current).find(id => pendingUploadPaths.current[id] === msg.file_path))
+          || null;
+        if (pendingId) {
+          delete pendingUploadPaths.current[pendingId];
           setUploadProgress(prev => {
-            const { [msg.client_id!]: _drop, ...rest } = prev;
+            const { [pendingId]: _drop, ...rest } = prev;
             return rest;
           });
           setMessages(prev => {
-            const idx = prev.findIndex(m => m.id === msg.client_id);
+            const idx = prev.findIndex(m => String(m.id) === pendingId);
             if (idx === -1) return [...prev, msg];
             const next = prev.slice();
             next[idx] = msg;
@@ -405,6 +416,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     try {
       const res = await uploadWithProgress(uri, name, mime, pct => setUploadProgress(prev => ({ ...prev, [clientId]: pct })));
       if (res.error) throw new Error(res.error);
+      pendingUploadPaths.current[clientId] = res.url;
       socketRef.current?.emit('send_message', {
         roomId: room.id, type, filePath: res.url, fileName: name, replyToId, clientId,
       });
@@ -422,6 +434,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     try {
       const res = await uploadWithProgress(uri, `voice-${Date.now()}.m4a`, 'audio/m4a', pct => setUploadProgress(prev => ({ ...prev, [clientId]: pct })));
       if (res.error) throw new Error(res.error);
+      pendingUploadPaths.current[clientId] = res.url;
       socketRef.current?.emit('send_message', {
         roomId: room.id, type: 'audio', filePath: res.url, fileName: peakStr, replyToId, clientId,
       });
@@ -887,6 +900,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           inverted
           keyExtractor={m => String(m.id)}
           renderItem={renderMessage}
+          extraData={[maxOtherReadMsgId, uploadProgress, reactions, showEmojiFor, highlightId, online]}
           contentContainerStyle={s.messagesList}
           onScroll={onMessagesScroll}
           scrollEventThrottle={100}
