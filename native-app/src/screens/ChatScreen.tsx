@@ -9,6 +9,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
 import * as FileSystem from 'expo-file-system';
+import * as Clipboard from 'expo-clipboard';
 import {
   PinchGestureHandler, PanGestureHandler, State as GHState,
 } from 'react-native-gesture-handler';
@@ -28,6 +29,7 @@ type Message = {
   reply_to_id?: number | null; reply_username?: string | null;
   reply_content?: string | null; reply_type?: string | null;
   client_id?: string;
+  one_time_seconds?: number | null; viewed_at?: number | null;
   _uploading?: boolean; _uploadFailed?: boolean;
 };
 // Shows a spinner over the image until it finishes loading (download progress proxy).
@@ -80,6 +82,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // clientId -> uploaded file URL, so the server's echo can be matched back to
   // its optimistic bubble even when the server doesn't echo client_id.
   const pendingUploadPaths = useRef<Record<string, string>>({});
+  const [oneTimeSecs, setOneTimeSecs] = useState<number | null>(null); // 🔥 applies to next message
+  const [revealedOneTime, setRevealedOneTime] = useState<Set<number | string>>(new Set());
   const [forwardMsg, setForwardMsg] = useState<Message | null>(null);
   const [forwardTargets, setForwardTargets] = useState<any[]>([]);
   const [showRoomInfo, setShowRoomInfo] = useState(false);
@@ -307,11 +311,41 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       socketRef.current.emit('edit_message', { messageId: editingId, content: t });
       setEditingId(null);
     } else {
-      socketRef.current.emit('send_message', { roomId: room.id, type: 'text', content: t, replyToId: replyTo?.id ?? null });
+      socketRef.current.emit('send_message', {
+        roomId: room.id, type: 'text', content: t, replyToId: replyTo?.id ?? null,
+        oneTimeSeconds: oneTimeSecs ?? undefined,
+      });
+      setOneTimeSecs(null);
     }
     setText('');
     setReplyTo(null);
     emitStopTyping();
+  }
+
+  function pickOneTime() {
+    if (oneTimeSecs) { setOneTimeSecs(null); return; }
+    Alert.alert('One-time message', 'Disappears this many seconds after being opened:', [
+      { text: '5s', onPress: () => setOneTimeSecs(5) },
+      { text: '30s', onPress: () => setOneTimeSecs(30) },
+      { text: '60s', onPress: () => setOneTimeSecs(60) },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  }
+
+  function revealOneTime(msg: Message) {
+    setRevealedOneTime(prev => new Set(prev).add(msg.id));
+    socketRef.current?.emit('view_one_time', { messageId: msg.id });
+  }
+
+  function copyMessage(msg: Message) {
+    const textToCopy = msg.type === 'text' ? (msg.content || '') : msg.file_path ? `${BASE_URL}${msg.file_path}` : '';
+    if (textToCopy) Clipboard.setStringAsync(textToCopy);
+  }
+
+  // Links, card numbers, and phone numbers get one-tap copy chips under the text.
+  function extractCopyables(content: string): string[] {
+    const re = /(https?:\/\/[^\s]+|(?:\d{4}[ -]?){3}\d{4}|\+?\d[\d ()-]{8,14}\d)/g;
+    return content.match(re) || [];
   }
 
   function emitTyping() {
@@ -411,6 +445,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       : mime.startsWith('audio/') ? 'music' : 'file';
     const clientId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const replyToId = replyTo?.id ?? null;
+    const oneTime = oneTimeSecs ?? undefined;
+    setOneTimeSecs(null);
     addOptimisticMessage(clientId, type, uri, name, replyToId);
     setReplyTo(null);
     try {
@@ -418,7 +454,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       if (res.error) throw new Error(res.error);
       pendingUploadPaths.current[clientId] = res.url;
       socketRef.current?.emit('send_message', {
-        roomId: room.id, type, filePath: res.url, fileName: name, replyToId, clientId,
+        roomId: room.id, type, filePath: res.url, fileName: name, replyToId, clientId, oneTimeSeconds: oneTime,
       });
     } catch {
       markUploadFailed(clientId);
@@ -429,6 +465,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     const peakStr = peaks.map(v => Math.round(v * 100)).join(',');
     const clientId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const replyToId = replyTo?.id ?? null;
+    const oneTime = oneTimeSecs ?? undefined;
+    setOneTimeSecs(null);
     addOptimisticMessage(clientId, 'audio', uri, peakStr, replyToId);
     setReplyTo(null);
     try {
@@ -436,7 +474,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       if (res.error) throw new Error(res.error);
       pendingUploadPaths.current[clientId] = res.url;
       socketRef.current?.emit('send_message', {
-        roomId: room.id, type: 'audio', filePath: res.url, fileName: peakStr, replyToId, clientId,
+        roomId: room.id, type: 'audio', filePath: res.url, fileName: peakStr, replyToId, clientId, oneTimeSeconds: oneTime,
       });
     } catch {
       markUploadFailed(clientId);
@@ -589,6 +627,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
   function renderMessage({ item: msg }: { item: Message }) {
     const mine = msg.username === me;
+    const hiddenOneTime = !!msg.one_time_seconds && !mine && !revealedOneTime.has(msg.id) && !msg._uploading;
     const rxns = reactions[msg.id] || [];
     const grouped: Record<string, { count: number; mine: boolean }> = {};
     rxns.forEach(r => {
@@ -646,8 +685,24 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           {msg.forwarded_from ? (
             <Text style={s.forwardedLabel}>↪ Forwarded from {msg.forwarded_from}</Text>
           ) : null}
-          {msg.type === 'text' && (
-            <Text style={s.msgText}>{renderTextWithLinks(msg.content || '')}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}</Text>
+          {hiddenOneTime && (
+            <TouchableOpacity onPress={() => revealOneTime(msg)}>
+              <Text style={s.oneTimeReveal}>🔥 One-time message — tap to view ({msg.one_time_seconds}s)</Text>
+            </TouchableOpacity>
+          )}
+          {!hiddenOneTime && msg.type === 'text' && (
+            <>
+              <Text style={s.msgText}>{renderTextWithLinks(msg.content || '')}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}{msg.one_time_seconds ? <Text style={s.oneTimeTag}> 🔥{msg.one_time_seconds}s</Text> : null}</Text>
+              {extractCopyables(msg.content || '').length > 0 && (
+                <View style={s.copyRow}>
+                  {extractCopyables(msg.content || '').map((tok, i) => (
+                    <TouchableOpacity key={i} style={s.copyChip} onPress={() => Clipboard.setStringAsync(tok)}>
+                      <Text style={s.copyChipText} numberOfLines={1}>📋 {tok}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+            </>
           )}
           {msg.type === 'invite' && (() => {
             let inv: any = null;
@@ -664,7 +719,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               </View>
             );
           })()}
-          {msg.type === 'image' && (() => {
+          {!hiddenOneTime && msg.type === 'image' && (() => {
             const uri = msg._uploading ? msg.file_path! : `${BASE_URL}${msg.file_path}`;
             return (
               <TouchableOpacity onPress={() => !msg._uploading && setLightboxUrl(uri)} disabled={msg._uploading}>
@@ -674,7 +729,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               </TouchableOpacity>
             );
           })()}
-          {msg.type === 'audio' && !msg._uploading && (
+          {!hiddenOneTime && msg.type === 'audio' && !msg._uploading && (
             <VoicePlayer url={`${BASE_URL}${msg.file_path}`} peaks={msg.file_name || ''} mine={mine} msgId={msg.id} roomId={room.id} roomMeta={room} label={`🎙 ${msg.username} · voice message`} />
           )}
           {msg.type === 'audio' && msg._uploading && (
@@ -682,10 +737,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               <Text style={s.uploadingVoiceText}>🎙 Voice message</Text>
             </View>
           )}
-          {msg.type === 'music' && !msg._uploading && (
+          {!hiddenOneTime && msg.type === 'music' && !msg._uploading && (
             <MusicPlayer url={`${BASE_URL}${msg.file_path}`} fileName={msg.file_name || 'Audio'} mine={mine} msgId={msg.id} roomId={room.id} roomMeta={room} />
           )}
-          {msg.type === 'video' && (() => {
+          {!hiddenOneTime && msg.type === 'video' && (() => {
             const uri = msg._uploading ? msg.file_path! : `${BASE_URL}${msg.file_path}`;
             return (
               <TouchableOpacity onPress={() => !msg._uploading && setVideoUrl(uri)} disabled={msg._uploading}>
@@ -695,7 +750,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               </TouchableOpacity>
             );
           })()}
-          {(msg.type === 'file' || (msg.type === 'music' && msg._uploading)) && (
+          {!hiddenOneTime && (msg.type === 'file' || (msg.type === 'music' && msg._uploading)) && (
             <Text style={s.fileLink}>📄 {msg.file_name || 'File'}</Text>
           )}
           {msg._uploading && (
@@ -738,7 +793,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               >
                 <Text style={s.replyFooterBtn}>↩ Reply</Text>
               </TouchableOpacity>
-              {msg.type !== 'invite' && (
+              {(msg.type === 'text' || msg.file_path) && !hiddenOneTime && (
+                <TouchableOpacity style={s.footerBtnTouch} onPress={() => copyMessage(msg)}>
+                  <Text style={s.replyFooterBtn}>📋</Text>
+                </TouchableOpacity>
+              )}
+              {msg.type !== 'invite' && !msg.one_time_seconds && (
                 <TouchableOpacity style={s.footerBtnTouch} onPress={() => openForwardPicker(msg)}>
                   <Text style={s.replyFooterBtn}>↪ Fwd</Text>
                 </TouchableOpacity>
@@ -900,7 +960,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           inverted
           keyExtractor={m => String(m.id)}
           renderItem={renderMessage}
-          extraData={[maxOtherReadMsgId, uploadProgress, reactions, showEmojiFor, highlightId, online]}
+          extraData={[maxOtherReadMsgId, uploadProgress, reactions, showEmojiFor, highlightId, online, revealedOneTime]}
           contentContainerStyle={s.messagesList}
           onScroll={onMessagesScroll}
           scrollEventThrottle={100}
@@ -1096,6 +1156,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           <TouchableOpacity onPress={() => startRecordingUI()} style={s.iconBtn}>
             <Text style={s.iconBtnText}>🎙</Text>
           </TouchableOpacity>
+          <TouchableOpacity onPress={pickOneTime} style={[s.iconBtn, oneTimeSecs ? s.oneTimeActive : null]}>
+            <Text style={s.iconBtnText}>🔥</Text>
+          </TouchableOpacity>
           <TextInput
             style={s.input} placeholder="Message..." placeholderTextColor={C.muted}
             value={text} onChangeText={t => { setText(t); emitTyping(); }}
@@ -1150,6 +1213,15 @@ const s = StyleSheet.create({
   uploadRetryText: { color: '#f87171', fontSize: 12, marginTop: 6, textDecorationLine: 'underline' },
   uploadingVoicePlaceholder: { paddingVertical: 4 },
   uploadingVoiceText: { color: C.text, fontSize: 14, opacity: 0.7 },
+  oneTimeReveal: { color: '#f87171', fontSize: 14, fontWeight: '600', paddingVertical: 4 },
+  oneTimeTag: { color: '#f87171', fontSize: 11 },
+  oneTimeActive: { backgroundColor: 'rgba(248,113,113,0.25)', borderRadius: 8 },
+  copyRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 6 },
+  copyChip: {
+    backgroundColor: 'rgba(59,125,216,0.12)', borderRadius: 12,
+    paddingHorizontal: 8, paddingVertical: 3, maxWidth: 220,
+  },
+  copyChipText: { color: C.accent, fontSize: 12, fontWeight: '600' },
   bubbleHighlight: { borderWidth: 2, borderColor: C.accent },
   mineBubble: { backgroundColor: C.mine, borderBottomRightRadius: 3 },
   theirsBubble: { backgroundColor: C.msgBg, borderBottomLeftRadius: 3 },

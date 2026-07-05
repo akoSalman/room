@@ -211,6 +211,32 @@ async function sendPushToUsers(userIds, title, body, data = {}) {
   }
 }
 
+// Permanently remove a message (used by user deletes and one-time expiry).
+// One-time media also has its uploaded file removed from disk.
+function destroyMessage(msg) {
+  db.prepare('DELETE FROM reactions WHERE message_id = ?').run(msg.id);
+  db.prepare('DELETE FROM messages WHERE id = ?').run(msg.id);
+  if (msg.one_time_seconds && msg.file_path && msg.file_path.startsWith('/uploads/')) {
+    const shared = db.prepare('SELECT 1 FROM messages WHERE file_path = ? LIMIT 1').get(msg.file_path);
+    if (!shared) fs.unlink(path.join(__dirname, msg.file_path), () => {});
+  }
+  io.to(String(msg.room_id)).emit('message_deleted', { messageId: msg.id });
+}
+
+// Sweep for one-time messages whose timer elapsed while the server was down
+// (setTimeout timers don't survive restarts).
+setInterval(() => {
+  try {
+    const now = Date.now();
+    db.prepare('SELECT * FROM messages WHERE one_time_seconds IS NOT NULL AND viewed_at IS NOT NULL')
+      .all()
+      .filter(m => now >= m.viewed_at + m.one_time_seconds * 1000)
+      .forEach(destroyMessage);
+  } catch (err) {
+    console.error('[one-time] sweep error:', err.message);
+  }
+}, 30 * 1000);
+
 function messagePreview(msg) {
   return msg.type === 'text' ? (msg.content || '').slice(0, 100)
     : msg.type === 'audio' ? '🎙 Voice message'
@@ -482,11 +508,13 @@ io.on('connection', (socket) => {
   });
 
   socket.on('send_message', (data) => {
-    const { roomId, type, content, filePath, fileName, replyToId, clientId } = data;
+    const { roomId, type, content, filePath, fileName, replyToId, clientId, oneTimeSeconds } = data;
+    const oneTime = Number.isInteger(oneTimeSeconds) && oneTimeSeconds >= 1 && oneTimeSeconds <= 3600
+      ? oneTimeSeconds : null;
     const result = db.prepare(`
-      INSERT INTO messages (room_id, user_id, type, content, file_path, file_name, reply_to_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(roomId, socket.user.id, type || 'text', content || null, filePath || null, fileName || null, replyToId || null);
+      INSERT INTO messages (room_id, user_id, type, content, file_path, file_name, reply_to_id, one_time_seconds)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(roomId, socket.user.id, type || 'text', content || null, filePath || null, fileName || null, replyToId || null, oneTime);
 
     const msg = db.prepare(`
       SELECT m.*, u.username, u.avatar,
@@ -615,6 +643,7 @@ io.on('connection', (socket) => {
       return typeof ack === 'function' && ack({ error: 'Messages from a private room cannot be forwarded' });
     }
     if (src.type === 'invite') return typeof ack === 'function' && ack({ error: 'Invitations cannot be forwarded' });
+    if (src.one_time_seconds) return typeof ack === 'function' && ack({ error: 'One-time messages cannot be forwarded' });
     const origSender = db.prepare('SELECT username FROM users WHERE id = ?').get(src.user_id);
     const result = db.prepare(`
       INSERT INTO messages (room_id, user_id, type, content, file_path, file_name, forwarded_from)
@@ -656,9 +685,29 @@ io.on('connection', (socket) => {
     const msg = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
     if (!msg) return;
     if (msg.user_id !== socket.user.id) return; // ownership check
-    db.prepare('DELETE FROM reactions WHERE message_id = ?').run(messageId);
-    db.prepare('DELETE FROM messages WHERE id = ?').run(messageId);
-    io.to(String(msg.room_id)).emit('message_deleted', { messageId });
+    destroyMessage(msg);
+  });
+
+  // A recipient opened a one-time message: start its self-destruct timer.
+  socket.on('view_one_time', ({ messageId }) => {
+    const msg = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
+    if (!msg || !msg.one_time_seconds) return;
+    if (msg.user_id === socket.user.id) return; // sender's own view doesn't start the clock
+    const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(msg.room_id);
+    if (!canAccessRoom(socket.user.id, room)) return;
+    if (!msg.viewed_at) {
+      const now = Date.now();
+      db.prepare('UPDATE messages SET viewed_at = ? WHERE id = ?').run(now, msg.id);
+      msg.viewed_at = now;
+      // Let everyone (including the sender) see the countdown has started
+      io.to(String(msg.room_id)).emit('one_time_viewed', {
+        messageId: msg.id, viewedAt: now, seconds: msg.one_time_seconds,
+      });
+      setTimeout(() => {
+        const still = db.prepare('SELECT * FROM messages WHERE id = ?').get(msg.id);
+        if (still) destroyMessage(still);
+      }, msg.one_time_seconds * 1000);
+    }
   });
 
   socket.on('toggle_reaction', ({ messageId, emoji }) => {

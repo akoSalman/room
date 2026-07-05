@@ -53,6 +53,10 @@ try { db.exec('ALTER TABLE messages ADD COLUMN reply_to_id INTEGER'); } catch {}
 try { db.exec('ALTER TABLE users ADD COLUMN avatar TEXT'); } catch {}
 try { db.exec('ALTER TABLE rooms ADD COLUMN is_private INTEGER DEFAULT 0'); } catch {}
 try { db.exec('ALTER TABLE messages ADD COLUMN forwarded_from TEXT'); } catch {}
+// One-time (self-destructing) messages: seconds the message stays visible
+// after first view, and when it was first viewed (ms since epoch).
+try { db.exec('ALTER TABLE messages ADD COLUMN one_time_seconds INTEGER'); } catch {}
+try { db.exec('ALTER TABLE messages ADD COLUMN viewed_at INTEGER'); } catch {}
 db.exec(`
   CREATE TABLE IF NOT EXISTS room_members (
     room_id INTEGER NOT NULL,

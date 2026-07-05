@@ -104,6 +104,7 @@
         <input type="file" id="file-input" style="display:none" onchange="sendFile()" />
       </label>
       <button id="record-btn" class="icon-btn" title="Record voice message" onclick="startRecording()">🎙</button>
+      <button id="one-time-btn" class="icon-btn" title="One-time message" onclick="toggleOneTime()">🔥</button>
       <input id="msg-input" type="text" placeholder="Message..."
         onkeydown="handleInputKey(event)" oninput="onTypingInput()" />
       <button onclick="sendOrSave()" class="send-btn">➤</button>
@@ -257,6 +258,7 @@
 <!-- ── Context menu ───────────────────────────────── -->
 <div id="ctx-menu" class="hidden">
   <button onclick="ctxReply()">↩ &nbsp;Reply</button>
+  <button onclick="ctxCopy()">📋 &nbsp;Copy</button>
   <button onclick="ctxForward()">↪ &nbsp;Forward</button>
   <button onclick="ctxReact()">😊 &nbsp;React</button>
   <button id="ctx-edit-btn" onclick="ctxEdit()">✏️ &nbsp;Edit</button>

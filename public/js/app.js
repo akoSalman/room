@@ -11,6 +11,8 @@ const APK_FILE_NAME = IS_BISTBARG ? 'BistbargChat-latest.apk' : 'ChatRoom-latest
 const APK_DOWNLOAD_URL = `https://github.com/akoSalman/room-releases/releases/download/${APK_RELEASE_TAG}/${APK_FILE_NAME}`;
 const APK_RELEASE_API = `https://api.github.com/repos/akoSalman/room-releases/releases/tags/${APK_RELEASE_TAG}`;
 const pendingUploads = {}; // clientId -> { wrapper, previewUrl, file, type, fileName, roomId, replyToId }
+const revealedOneTime = new Set(); // one-time message ids this client has revealed
+let pendingOneTimeSeconds = null; // set via the 🔥 composer button, applies to the next message sent
 let oldestLoadedMsgId = null;
 let hasMoreOlderMsgs = true;
 let loadingOlderMsgs = false;
@@ -803,9 +805,33 @@ function sendText() {
   const content = input.value.trim();
   if (!content || !currentRoomId || !socketReady) return;
   stopTypingSignal();
-  socket.emit('send_message', { roomId: currentRoomId, type: 'text', content, replyToId: replyTo?.id || null });
+  socket.emit('send_message', {
+    roomId: currentRoomId, type: 'text', content, replyToId: replyTo?.id || null,
+    oneTimeSeconds: pendingOneTimeSeconds || undefined,
+  });
+  clearOneTime();
   input.value = '';
   cancelReply();
+}
+
+// ── One-time (self-destructing) messages ──────────────────────────────────────
+function toggleOneTime() {
+  if (pendingOneTimeSeconds) return clearOneTime();
+  const raw = prompt('One-time message: seconds visible after being opened (1–3600)?', '10');
+  if (raw === null) return;
+  const secs = parseInt(raw, 10);
+  if (!Number.isInteger(secs) || secs < 1 || secs > 3600) return alert('Enter a number of seconds between 1 and 3600.');
+  pendingOneTimeSeconds = secs;
+  const btn = document.getElementById('one-time-btn');
+  btn.classList.add('active');
+  btn.title = `One-time: disappears ${secs}s after viewing (click to cancel)`;
+}
+
+function clearOneTime() {
+  pendingOneTimeSeconds = null;
+  const btn = document.getElementById('one-time-btn');
+  btn.classList.remove('active');
+  btn.title = 'One-time message';
 }
 
 function stopTypingSignal() {
@@ -901,6 +927,8 @@ function markUploadFailed(wrapper, clientId, retryFn) {
 // messageFileName: what's stored/shown as the message's fileName (voice notes
 // stash their waveform peaks here instead of a real filename).
 async function uploadAndSendMedia(file, type, uploadFilename, messageFileName, roomId, replyToId) {
+  const oneTimeSeconds = pendingOneTimeSeconds || undefined;
+  clearOneTime();
   const clientId = 'tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2);
   const previewUrl = (type === 'image' || type === 'video' || type === 'audio') ? URL.createObjectURL(file) : null;
   const tempMsg = {
@@ -921,7 +949,7 @@ async function uploadAndSendMedia(file, type, uploadFilename, messageFileName, r
     if (!pendingUploads[clientId]) return; // user already dismissed/retried
     socket.emit('send_message', {
       roomId, type, content: null, filePath: res.url,
-      fileName: messageFileName, replyToId, clientId,
+      fileName: messageFileName, replyToId, clientId, oneTimeSeconds,
     });
   } catch (err) {
     if (pendingUploads[clientId]) {
@@ -1134,11 +1162,42 @@ async function sendRecording() {
 }
 
 // ─── Links in messages ────────────────────────────────────────────────────────
+// URLs, card numbers, and phone numbers each get a small copy icon.
+const COPYABLE_RE = /(https?:\/\/[^\s]+|(?:\d{4}[ -]?){3}\d{4}|\+?\d[\d ()-]{8,14}\d)/g;
+
+function copyToClipboard(text, iconEl) {
+  const done = () => {
+    if (!iconEl) return;
+    const orig = iconEl.textContent;
+    iconEl.textContent = '✅';
+    setTimeout(() => { iconEl.textContent = orig; }, 1200);
+  };
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(done, done);
+  } else {
+    const ta = document.createElement('textarea');
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } catch {}
+    ta.remove(); done();
+  }
+}
+
+function makeCopyBtn(text) {
+  const btn = document.createElement('button');
+  btn.className = 'copy-chip-btn';
+  btn.title = 'Copy';
+  btn.textContent = '📋';
+  btn.onclick = (e) => { e.stopPropagation(); e.preventDefault(); copyToClipboard(text.trim(), btn); };
+  return btn;
+}
+
 function appendLinkifiedText(container, content) {
-  const URL_RE = /(https?:\/\/[^\s]+)/g;
-  const parts = content.split(URL_RE);
+  const parts = content.split(COPYABLE_RE);
+  let hasCopyable = false;
   parts.forEach(part => {
+    if (!part) return;
     if (/^https?:\/\//.test(part)) {
+      hasCopyable = true;
       const a = document.createElement('a');
       a.href = part; a.textContent = part; a.className = 'msg-link';
       const joinMatch = /\/join\/(\d+)/.exec(part);
@@ -1148,10 +1207,20 @@ function appendLinkifiedText(container, content) {
         a.target = '_blank'; a.rel = 'noopener';
       }
       container.appendChild(a);
-    } else if (part) {
+      container.appendChild(makeCopyBtn(part));
+    } else if (COPYABLE_RE.test(part) && /\d/.test(part)) {
+      hasCopyable = true;
+      const span = document.createElement('span');
+      span.className = 'copyable-number';
+      span.textContent = part;
+      container.appendChild(span);
+      container.appendChild(makeCopyBtn(part));
+    } else {
       container.appendChild(document.createTextNode(part));
     }
+    COPYABLE_RE.lastIndex = 0; // reset global-regex state between .test() calls
   });
+  return hasCopyable;
 }
 
 async function joinRoomById(roomId) {
@@ -1277,12 +1346,26 @@ function buildMessageElement(msg) {
     bubble.appendChild(fwd);
   }
 
-  if (msg.type === 'text') {
+  const oneTimeHidden = msg.one_time_seconds && !isMine && !revealedOneTime.has(msg.id);
+  if (oneTimeHidden) {
+    bubble.classList.add('one-time-bubble');
+    const btn = document.createElement('button');
+    btn.className = 'one-time-reveal';
+    btn.textContent = `🔥 One-time message — tap to view (${msg.one_time_seconds}s)`;
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      revealedOneTime.add(msg.id);
+      socket.emit('view_one_time', { messageId: msg.id });
+      wrapper.replaceWith(buildMessageElement(msg));
+    };
+    bubble.appendChild(btn);
+  } else if (msg.type === 'text') {
     bubble.dataset.text = msg.content;
     const textSpan = document.createElement('span');
-    appendLinkifiedText(textSpan, msg.content || '');
+    if (appendLinkifiedText(textSpan, msg.content || '')) bubble.classList.add('has-copyable');
     bubble.appendChild(textSpan);
     if (msg.edited) { const tag = document.createElement('span'); tag.className = 'edited-tag'; tag.textContent = '(edited)'; bubble.appendChild(tag); }
+    if (msg.one_time_seconds) { const ot = document.createElement('span'); ot.className = 'one-time-tag'; ot.textContent = ` 🔥${msg.one_time_seconds}s`; bubble.appendChild(ot); }
   } else if (msg.type === 'invite') {
     let inv = null;
     try { inv = JSON.parse(msg.content || ''); } catch {}
@@ -1371,7 +1454,7 @@ function buildMessageElement(msg) {
     replyBtn.onclick = (e) => { e.stopPropagation(); setReply(msg); };
     footer.appendChild(replyBtn);
 
-    if (msg.type !== 'invite') {
+    if (msg.type !== 'invite' && !msg.one_time_seconds) {
       const fwdBtn = document.createElement('button');
       fwdBtn.className = 'msg-action-btn'; fwdBtn.title = 'Forward'; fwdBtn.textContent = '↪';
       fwdBtn.onclick = (e) => { e.stopPropagation(); openForwardModal(msg.id); };
@@ -1425,7 +1508,7 @@ function prependMessages(msgs) {
 
 // ─── Context menu ─────────────────────────────────────────────────────────────
 function openCtxMenu(messageId, type, isMine, wrapperEl, msg) {
-  ctxTarget = { messageId, type, isMine, username: msg?.username, content: msg?.content };
+  ctxTarget = { messageId, type, isMine, username: msg?.username, content: msg?.content, filePath: msg?.file_path, fileName: msg?.file_name };
   const menu = document.getElementById('ctx-menu');
   document.getElementById('ctx-edit-btn').style.display = (isMine && type === 'text') ? '' : 'none';
   menu.querySelector('button.danger').style.display = isMine ? '' : 'none';
@@ -1445,6 +1528,14 @@ function ctxReply() {
   const t = ctxTarget;
   closeCtxMenu();
   setReply({ id: t.messageId, username: t.username, content: t.content, type: t.type });
+}
+
+function ctxCopy() {
+  if (!ctxTarget) return;
+  const t = ctxTarget;
+  closeCtxMenu();
+  const text = t.type === 'text' ? (t.content || '') : t.filePath ? location.origin + t.filePath : '';
+  if (text) copyToClipboard(text, null);
 }
 
 function ctxForward() {
