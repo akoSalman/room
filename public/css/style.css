@@ -411,6 +411,22 @@ html {
   padding: 6px 12px; border-radius: 16px;
 }
 #composer-strip button:hover { background: rgba(59,125,216,0.2); }
+#composer-strip button.one-time-armed { background: rgba(248,113,113,0.25); color: #f87171; }
+#strip-toggle {
+  text-align: center; font-size: 0.8rem; color: var(--muted); cursor: pointer;
+  padding: 1px 0 3px; line-height: 1; flex-shrink: 0; user-select: none;
+}
+#strip-toggle:hover { color: var(--accent); }
+#media-preview-bar {
+  display: flex; align-items: center; gap: 10px; padding: 6px 14px; flex-shrink: 0;
+  background: rgba(59,125,216,0.08); border-top: 1px solid var(--accent);
+}
+#media-preview-thumb { width: 38px; height: 38px; object-fit: cover; border-radius: 6px; }
+#media-preview-name {
+  flex: 1; font-size: 0.82rem; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#media-preview-bar button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 1rem; }
 .msg-caption { margin-top: 6px; font-size: 0.9rem; }
 
 /* ── One-time messages ─────────────────────────────── */

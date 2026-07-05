@@ -319,20 +319,22 @@ function onTypingInput() {
   typingTimer = setTimeout(() => { isTyping = false; socket.emit('typing_stop', { roomId: currentRoomId }); }, 1500);
 }
 
-// The options strip above the input bar hides while typing; the ＋ button
-// re-expands it (e.g. to attach media as a caption of the typed text).
+// The options strip above the input bar collapses to a slim arrow while
+// typing; tapping the arrow expands it again (e.g. to attach media that will
+// carry the typed text as its caption).
 let stripExpanded = false;
 function updateComposerButtons() {
   const hasText = document.getElementById('msg-input').value.trim().length > 0;
-  document.getElementById('composer-strip').classList.toggle('hidden', hasText && !stripExpanded);
   if (!hasText) stripExpanded = false;
+  const collapsed = hasText && !stripExpanded;
+  document.getElementById('composer-strip').classList.toggle('hidden', collapsed);
+  const toggle = document.getElementById('strip-toggle');
+  toggle.classList.toggle('hidden', !hasText);
+  toggle.textContent = collapsed ? '⌃' : '⌄';
 }
 function toggleComposerStrip() {
   stripExpanded = !stripExpanded;
   updateComposerButtons();
-  const strip = document.getElementById('composer-strip');
-  strip.classList.toggle('hidden', false);
-  if (!stripExpanded && document.getElementById('msg-input').value.trim()) strip.classList.add('hidden');
 }
 
 function showTyping(user) { typingUsers.add(user); renderTypingBar(); }
@@ -817,7 +819,11 @@ function renderOnlinePanel() {
 
 // ─── Messaging ────────────────────────────────────────────────────────────────
 function handleInputKey(e) { if (e.key === 'Enter') sendOrSave(); }
-function sendOrSave() { editingMsgId ? saveEdit() : sendText(); }
+function sendOrSave() {
+  if (editingMsgId) return saveEdit();
+  if (pendingFile) return sendPendingFile();
+  sendText();
+}
 
 // ─── Reply ────────────────────────────────────────────────────────────────────
 function setReply(msg) {
@@ -1010,15 +1016,43 @@ async function uploadAndSendMedia(file, type, uploadFilename, messageFileName, r
   }
 }
 
-function sendFile() {
+// Selecting media only STAGES it; it's sent when the user hits send (with
+// any typed text as the caption).
+let pendingFile = null;
+function stageFile() {
   const file = document.getElementById('file-input').files[0];
   if (!file || !currentRoomId) return;
+  pendingFile = file;
+  const bar = document.getElementById('media-preview-bar');
+  const thumb = document.getElementById('media-preview-thumb');
+  if (file.type.startsWith('image/')) {
+    thumb.src = URL.createObjectURL(file);
+    thumb.classList.remove('hidden');
+  } else {
+    thumb.classList.add('hidden');
+  }
+  document.getElementById('media-preview-name').textContent = file.name;
+  bar.classList.remove('hidden');
+  document.getElementById('file-input').value = '';
+  document.getElementById('msg-input').focus();
+}
+
+function clearPendingFile() {
+  pendingFile = null;
+  const thumb = document.getElementById('media-preview-thumb');
+  if (thumb.src) { URL.revokeObjectURL(thumb.src); thumb.removeAttribute('src'); }
+  document.getElementById('media-preview-bar').classList.add('hidden');
+}
+
+function sendPendingFile() {
+  if (!pendingFile || !currentRoomId) return;
+  const file = pendingFile;
   const type = file.type.startsWith('image/') ? 'image'
     : file.type.startsWith('video/') ? 'video'
     : file.type.startsWith('audio/') ? 'music' : 'file';
+  clearPendingFile();
   uploadAndSendMedia(file, type, file.name, file.name, currentRoomId, replyTo?.id || null);
   cancelReply();
-  document.getElementById('file-input').value = '';
 }
 
 // ─── Recording ────────────────────────────────────────────────────────────────

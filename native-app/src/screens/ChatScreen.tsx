@@ -90,7 +90,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [revealedOneTime, setRevealedOneTime] = useState<Set<number | string>>(new Set());
   const [showOneTimeMenu, setShowOneTimeMenu] = useState(false);
   const [stripExpanded, setStripExpanded] = useState(false); // options strip while typing
-  const [showActionsFor, setShowActionsFor] = useState<number | string | null>(null); // tap menu beside a message
+  const [actionsMsg, setActionsMsg] = useState<Message | null>(null); // tap menu for a message
+  const [pendingMedia, setPendingMedia] = useState<{ uri: string; name: string; mime: string } | null>(null);
   const [forwardMsg, setForwardMsg] = useState<Message | null>(null);
   const [forwardTargets, setForwardTargets] = useState<any[]>([]);
   const [showRoomInfo, setShowRoomInfo] = useState(false);
@@ -312,6 +313,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }, [room.id]);
 
   function sendText() {
+    if (pendingMedia && !editingId) {
+      const m = pendingMedia;
+      setPendingMedia(null);
+      uploadFile(m.uri, m.name, m.mime); // typed text becomes the caption
+      return;
+    }
     const t = text.trim();
     if (!t || !socketRef.current) return;
     if (editingId) {
@@ -363,7 +370,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     setShowAttachMenu(false);
     const res = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
     if (res.canceled) return;
-    uploadFile(res.assets[0].uri, res.assets[0].name, res.assets[0].mimeType || 'application/octet-stream');
+    setPendingMedia({ uri: res.assets[0].uri, name: res.assets[0].name, mime: res.assets[0].mimeType || 'application/octet-stream' });
   }
 
   async function pickFromGallery() {
@@ -377,7 +384,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     if (res.canceled) return;
     const asset = res.assets[0];
     const isVideo = asset.type === 'video';
-    uploadFile(asset.uri, isVideo ? 'video.mp4' : 'photo.jpg', isVideo ? 'video/mp4' : 'image/jpeg');
+    setPendingMedia({ uri: asset.uri, name: isVideo ? 'video.mp4' : 'photo.jpg', mime: isVideo ? 'video/mp4' : 'image/jpeg' });
   }
 
   async function pickFromCamera(mode: 'photo' | 'video') {
@@ -392,8 +399,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       : await ImagePicker.launchCameraAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Videos, videoMaxDuration: 60 });
     if (res.canceled) return;
     const asset = res.assets[0];
-    if (mode === 'photo') uploadFile(asset.uri, 'photo.jpg', 'image/jpeg');
-    else uploadFile(asset.uri, 'video.mp4', 'video/mp4');
+    if (mode === 'photo') setPendingMedia({ uri: asset.uri, name: 'photo.jpg', mime: 'image/jpeg' });
+    else setPendingMedia({ uri: asset.uri, name: 'video.mp4', mime: 'video/mp4' });
   }
 
   // FileSystem.createUploadTask (unlike fetch) reports real progress events.
@@ -709,7 +716,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         >
         <TouchableOpacity
           style={[s.bubble, mine ? s.mineBubble : s.theirsBubble, highlightId === msg.id && s.bubbleHighlight]}
-          onPress={() => setShowActionsFor(prev => (prev === msg.id ? null : msg.id))}
+          onPress={() => !msg._uploading && setActionsMsg(msg)}
           onLongPress={() => setShowEmojiFor(msg.id)}
           activeOpacity={0.85}
         >
@@ -832,50 +839,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             </TouchableOpacity>
           )}
         </View>
-
-        {/* Tap menu: all message actions, beside the bubble */}
-        {showActionsFor === msg.id && !msg._uploading && (
-          <View style={[s.actionsMenu, mine ? { alignSelf: 'flex-end' } : {}]}>
-            <TouchableOpacity style={s.actionItem} onPress={() => {
-              setShowActionsFor(null);
-              setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type });
-            }}>
-              <Text style={s.actionText}>↩ Reply</Text>
-            </TouchableOpacity>
-            {(msg.type === 'text' || msg.file_path) && !hiddenOneTime && (
-              <TouchableOpacity style={s.actionItem} onPress={() => {
-                const t = msg.type === 'text' ? (msg.content || '') : `${BASE_URL}${msg.file_path}`;
-                if (t) Clipboard.setStringAsync(t);
-                setShowActionsFor(null);
-              }}>
-                <Text style={s.actionText}>📋 Copy</Text>
-              </TouchableOpacity>
-            )}
-            {msg.type !== 'invite' && !msg.one_time_seconds && (
-              <TouchableOpacity style={s.actionItem} onPress={() => { setShowActionsFor(null); openForwardPicker(msg); }}>
-                <Text style={s.actionText}>↪ Forward</Text>
-              </TouchableOpacity>
-            )}
-            {msg.file_path && !hiddenOneTime && (
-              <TouchableOpacity style={s.actionItem} onPress={() => { setShowActionsFor(null); downloadMedia(msg); }}>
-                <Text style={s.actionText}>⬇ Download</Text>
-              </TouchableOpacity>
-            )}
-            {mine && msg.type === 'text' && (
-              <TouchableOpacity style={s.actionItem} onPress={() => {
-                setShowActionsFor(null);
-                setText(msg.content || ''); setEditingId(msg.id);
-              }}>
-                <Text style={s.actionText}>✏️ Edit</Text>
-              </TouchableOpacity>
-            )}
-            {mine && (
-              <TouchableOpacity style={s.actionItem} onPress={() => { setShowActionsFor(null); deleteMsg(msg.id); }}>
-                <Text style={[s.actionText, { color: '#f87171' }]}>🗑 Delete</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        )}
 
         {/* Emoji picker */}
         {showEmojiFor === msg.id && (
@@ -1015,7 +978,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           inverted
           keyExtractor={m => String(m.id)}
           renderItem={renderMessage}
-          extraData={[maxOtherReadMsgId, uploadProgress, reactions, showEmojiFor, showActionsFor, highlightId, online, revealedOneTime]}
+          extraData={[maxOtherReadMsgId, uploadProgress, reactions, showEmojiFor, highlightId, online, revealedOneTime]}
           contentContainerStyle={s.messagesList}
           onScroll={onMessagesScroll}
           scrollEventThrottle={100}
@@ -1099,6 +1062,64 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               <Text style={s.attachCancelText}>Cancel</Text>
             </TouchableOpacity>
           </View>
+        </View>
+      </Modal>
+
+      {/* Message actions sheet (tap a message to open; backdrop closes) */}
+      <Modal visible={!!actionsMsg} transparent animationType="fade" onRequestClose={() => setActionsMsg(null)}>
+        <View style={s.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setActionsMsg(null)} />
+          {actionsMsg && (() => {
+            const m = actionsMsg;
+            const mineMsg = m.username === me;
+            const hidden = !!m.one_time_seconds && !mineMsg && !revealedOneTime.has(m.id);
+            return (
+              <View style={s.attachSheet}>
+                <View style={s.sheetHandle} />
+                <TouchableOpacity style={s.attachOption} onPress={() => {
+                  setActionsMsg(null);
+                  setReplyTo({ id: m.id, username: m.username, content: m.content, type: m.type });
+                }}>
+                  <Text style={s.attachOptionText}>↩  Reply</Text>
+                </TouchableOpacity>
+                {(m.type === 'text' || m.file_path) && !hidden && (
+                  <TouchableOpacity style={s.attachOption} onPress={() => {
+                    const t = m.type === 'text' ? (m.content || '') : `${BASE_URL}${m.file_path}`;
+                    if (t) Clipboard.setStringAsync(t);
+                    setActionsMsg(null);
+                  }}>
+                    <Text style={s.attachOptionText}>📋  Copy</Text>
+                  </TouchableOpacity>
+                )}
+                {m.type !== 'invite' && !m.one_time_seconds && (
+                  <TouchableOpacity style={s.attachOption} onPress={() => { setActionsMsg(null); openForwardPicker(m); }}>
+                    <Text style={s.attachOptionText}>↪  Forward</Text>
+                  </TouchableOpacity>
+                )}
+                {m.file_path && !hidden && (
+                  <TouchableOpacity style={s.attachOption} onPress={() => { setActionsMsg(null); downloadMedia(m); }}>
+                    <Text style={s.attachOptionText}>⬇  Download</Text>
+                  </TouchableOpacity>
+                )}
+                {mineMsg && m.type === 'text' && (
+                  <TouchableOpacity style={s.attachOption} onPress={() => {
+                    setActionsMsg(null);
+                    setText(m.content || ''); setEditingId(m.id);
+                  }}>
+                    <Text style={s.attachOptionText}>✏️  Edit</Text>
+                  </TouchableOpacity>
+                )}
+                {mineMsg && (
+                  <TouchableOpacity style={s.attachOption} onPress={() => { setActionsMsg(null); deleteMsg(m.id); }}>
+                    <Text style={[s.attachOptionText, { color: '#f87171' }]}>🗑  Delete</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity style={s.attachCancel} onPress={() => setActionsMsg(null)}>
+                  <Text style={s.attachCancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            );
+          })()}
         </View>
       </Modal>
 
@@ -1230,9 +1251,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         />
       ) : (
         <View>
-          {/* Options strip: pinned above the input bar, auto-hides while
-              typing, and can be re-expanded with the ＋ button. Media picked
-              while text is present is sent as ONE message with that caption. */}
+          {/* Options strip: pinned above the input bar. While typing it
+              collapses to a slim arrow; tapping the arrow expands it again.
+              Media picked while text is present is ONE message (caption). */}
           {(!text.trim() || stripExpanded) && (
             <View style={s.optionsStrip}>
               <TouchableOpacity style={s.stripBtn} onPress={() => setShowAttachMenu(true)}>
@@ -1246,12 +1267,27 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               </TouchableOpacity>
             </View>
           )}
-          <View style={s.inputBar}>
-            <TouchableOpacity onPress={() => setStripExpanded(v => !v)} style={[s.iconBtn, oneTimeSecs ? s.oneTimeActive : null]}>
-              <Text style={s.plusBtnText}>{oneTimeSecs ? '🔥' : (stripExpanded && text.trim() ? '－' : '＋')}</Text>
+          {text.trim() ? (
+            <TouchableOpacity style={s.stripToggle} onPress={() => setStripExpanded(v => !v)}>
+              <Text style={s.stripToggleText}>{stripExpanded ? '⌄' : '⌃'}</Text>
             </TouchableOpacity>
+          ) : null}
+          {pendingMedia && (
+            <View style={s.pendingMediaBar}>
+              {pendingMedia.mime.startsWith('image/') ? (
+                <Image source={{ uri: pendingMedia.uri }} style={s.pendingMediaThumb} />
+              ) : (
+                <Text style={s.pendingMediaIcon}>📄</Text>
+              )}
+              <Text style={s.pendingMediaName} numberOfLines={1}>{pendingMedia.name}</Text>
+              <TouchableOpacity onPress={() => setPendingMedia(null)}>
+                <Text style={s.pendingMediaClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+          <View style={s.inputBar}>
             <TextInput
-              style={s.input} placeholder="Message..." placeholderTextColor={C.muted}
+              style={s.input} placeholder={pendingMedia ? 'Add a caption…' : 'Message...'} placeholderTextColor={C.muted}
               value={text} onChangeText={t => { setText(t); emitTyping(); }}
               onSubmitEditing={sendText} blurOnSubmit={false} multiline
             />
@@ -1320,13 +1356,17 @@ const s = StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 6,
   },
   stripBtnText: { color: C.accent, fontSize: 13, fontWeight: '600' },
-  actionsMenu: {
-    backgroundColor: C.msgBg, borderRadius: 12, marginTop: 4, paddingVertical: 4,
-    minWidth: 150, elevation: 4, shadowColor: '#000', shadowOpacity: 0.15,
-    shadowRadius: 8, shadowOffset: { width: 0, height: 2 },
+  stripToggle: { alignItems: 'center', paddingVertical: 2, backgroundColor: C.bg },
+  stripToggleText: { color: C.muted, fontSize: 13, lineHeight: 14 },
+  pendingMediaBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 12, paddingVertical: 6,
+    backgroundColor: 'rgba(59,125,216,0.08)', borderTopWidth: 1, borderTopColor: C.accent,
   },
-  actionItem: { paddingHorizontal: 14, paddingVertical: 9 },
-  actionText: { color: C.text, fontSize: 14, fontWeight: '600' },
+  pendingMediaThumb: { width: 38, height: 38, borderRadius: 6 },
+  pendingMediaIcon: { fontSize: 24 },
+  pendingMediaName: { flex: 1, color: C.text, fontSize: 13 },
+  pendingMediaClose: { color: C.muted, fontSize: 16, padding: 4 },
   copyableNumber: { color: C.accent, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
   inlineCopy: { fontSize: 13 },
   bubbleHighlight: { borderWidth: 2, borderColor: C.accent },
