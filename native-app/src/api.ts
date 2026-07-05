@@ -53,7 +53,10 @@ let socket: Socket | null = null;
 export async function getSocket(): Promise<Socket> {
   if (socket?.connected) return socket;
   const token = await getToken();
-  socket = io(BASE_URL, { auth: { token }, transports: ['websocket'] });
+  // Default transports: start on HTTP long-polling, upgrade to WebSocket when
+  // the proxy supports it. Forcing websocket-only made the app silently dead
+  // (no sends, no realtime) behind proxies without WebSocket upgrade support.
+  socket = io(BASE_URL, { auth: { token } });
   return socket;
 }
 
