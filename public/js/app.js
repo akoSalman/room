@@ -1298,15 +1298,17 @@ function armOneTimeClock(msg, wrapperEl) {
     socket.emit('view_one_time', { messageId: msg.id });
   };
   if (msg.type === 'image') {
+    // Only a successful, complete load starts the clock — a failed download
+    // must not consume the viewing window.
     const img = wrapperEl.querySelector('img');
-    if (!img || img.complete) return start();
+    if (!img) return;
+    if (img.complete && img.naturalWidth > 0) return start();
     img.addEventListener('load', start, { once: true });
-    img.addEventListener('error', start, { once: true });
   } else if (msg.type === 'video') {
     const video = wrapperEl.querySelector('video');
-    if (!video || video.readyState >= 2) return start();
+    if (!video) return;
+    if (video.readyState >= 2) return start();
     video.addEventListener('loadeddata', start, { once: true });
-    video.addEventListener('error', start, { once: true });
   } else if (msg.type === 'audio') {
     const playBtn = wrapperEl.querySelector('.voice-play-btn');
     if (!playBtn) return start();

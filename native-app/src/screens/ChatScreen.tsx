@@ -37,7 +37,11 @@ function ImageWithSpinner({ uri, style, resizeMode, onLoaded }: { uri: string; s
   const [loaded, setLoaded] = useState(false);
   return (
     <View>
-      <Image source={{ uri }} style={style} resizeMode={resizeMode} onLoadEnd={() => { setLoaded(true); onLoaded?.(); }} />
+      <Image
+        source={{ uri }} style={style} resizeMode={resizeMode}
+        onLoad={() => { setLoaded(true); onLoaded?.(); }}
+        onError={() => setLoaded(true)}
+      />
       {!loaded && (
         <View style={[style, { position: 'absolute', top: 0, left: 0, alignItems: 'center', justifyContent: 'center' }]}>
           <ActivityIndicator size="small" color="#fff" />
