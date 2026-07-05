@@ -43,6 +43,13 @@ jobs:
           mkdir -p ~/.ssh
           echo "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
+          # Print the key's fingerprint (not secret) so a mismatch with the
+          # server's authorized_keys can be diagnosed from the run log.
+          if ! ssh-keygen -y -f ~/.ssh/deploy_key > ~/.ssh/deploy_key.pub 2>/tmp/keyerr; then
+            echo "::error::DEPLOY_SSH_KEY secret is not a valid private key: $(cat /tmp/keyerr)"
+            exit 1
+          fi
+          echo "Deploy key fingerprint: $(ssh-keygen -lf ~/.ssh/deploy_key.pub)"
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "root@$HOST" bash -s <<EOF
           set -e
           cd "$APP_DIR"
