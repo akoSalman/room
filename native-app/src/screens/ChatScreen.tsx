@@ -33,11 +33,11 @@ type Message = {
   _uploading?: boolean; _uploadFailed?: boolean;
 };
 // Shows a spinner over the image until it finishes loading (download progress proxy).
-function ImageWithSpinner({ uri, style, resizeMode }: { uri: string; style: any; resizeMode: 'cover' | 'contain' }) {
+function ImageWithSpinner({ uri, style, resizeMode, onLoaded }: { uri: string; style: any; resizeMode: 'cover' | 'contain'; onLoaded?: () => void }) {
   const [loaded, setLoaded] = useState(false);
   return (
     <View>
-      <Image source={{ uri }} style={style} resizeMode={resizeMode} onLoadEnd={() => setLoaded(true)} />
+      <Image source={{ uri }} style={style} resizeMode={resizeMode} onLoadEnd={() => { setLoaded(true); onLoaded?.(); }} />
       {!loaded && (
         <View style={[style, { position: 'absolute', top: 0, left: 0, alignItems: 'center', justifyContent: 'center' }]}>
           <ActivityIndicator size="small" color="#fff" />
@@ -84,6 +84,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const pendingUploadPaths = useRef<Record<string, string>>({});
   const [oneTimeSecs, setOneTimeSecs] = useState<number | null>(null); // 🔥 applies to next message
   const [revealedOneTime, setRevealedOneTime] = useState<Set<number | string>>(new Set());
+  const [showOneTimeMenu, setShowOneTimeMenu] = useState(false);
   const [forwardMsg, setForwardMsg] = useState<Message | null>(null);
   const [forwardTargets, setForwardTargets] = useState<any[]>([]);
   const [showRoomInfo, setShowRoomInfo] = useState(false);
@@ -322,30 +323,24 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     emitStopTyping();
   }
 
-  function pickOneTime() {
-    if (oneTimeSecs) { setOneTimeSecs(null); return; }
-    Alert.alert('One-time message', 'Disappears this many seconds after being opened:', [
-      { text: '5s', onPress: () => setOneTimeSecs(5) },
-      { text: '30s', onPress: () => setOneTimeSecs(30) },
-      { text: '60s', onPress: () => setOneTimeSecs(60) },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
+  function chooseOneTime(secs: number | null) {
+    setOneTimeSecs(secs);
+    setShowOneTimeMenu(false);
+  }
+
+  // The destruction clock starts when the content is actually available to
+  // the viewer: immediately for text/files, on load for images, on first
+  // play for voice/music/video.
+  const oneTimeClockStarted = useRef<Set<number | string>>(new Set());
+  function startOneTimeClock(msg: Message) {
+    if (oneTimeClockStarted.current.has(msg.id)) return;
+    oneTimeClockStarted.current.add(msg.id);
+    socketRef.current?.emit('view_one_time', { messageId: msg.id });
   }
 
   function revealOneTime(msg: Message) {
     setRevealedOneTime(prev => new Set(prev).add(msg.id));
-    socketRef.current?.emit('view_one_time', { messageId: msg.id });
-  }
-
-  function copyMessage(msg: Message) {
-    const textToCopy = msg.type === 'text' ? (msg.content || '') : msg.file_path ? `${BASE_URL}${msg.file_path}` : '';
-    if (textToCopy) Clipboard.setStringAsync(textToCopy);
-  }
-
-  // Links, card numbers, and phone numbers get one-tap copy chips under the text.
-  function extractCopyables(content: string): string[] {
-    const re = /(https?:\/\/[^\s]+|(?:\d{4}[ -]?){3}\d{4}|\+?\d[\d ()-]{8,14}\d)/g;
-    return content.match(re) || [];
+    if (msg.type === 'text' || msg.type === 'file') startOneTimeClock(msg);
   }
 
   function emitTyping() {
@@ -552,20 +547,34 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     }
   }
 
-  const URL_RE = /(https?:\/\/[^\s]+)/g;
+  // URLs (with or without protocol), card numbers, and phone numbers.
+  const COPYABLE_RE = /(https?:\/\/[^\s]+|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:\/[^\s]*)?|(?:\d{4}[ -]?){3}\d{4}|\+?\d[\d ()-]{8,14}\d)/g;
+  const isUrlToken = (t: string) => /^https?:\/\//.test(t) || /^(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}/.test(t);
 
+  // Each copyable token (link / phone / card number) gets a small inline 📋
+  // right after it — no duplicated text below the message.
   function renderTextWithLinks(content: string) {
-    const parts = content.split(URL_RE);
-    return parts.map((part, i) =>
-      URL_RE.test(part) && part.startsWith('http') ? (
-        <Text key={i} style={s.link} onPress={() => handleLinkPress(part)}>{part}</Text>
-      ) : (
-        <Text key={i}>{part}</Text>
-      )
-    );
+    const parts = content.split(COPYABLE_RE);
+    return parts.map((part, i) => {
+      if (!part) return null;
+      COPYABLE_RE.lastIndex = 0;
+      if (!COPYABLE_RE.test(part)) return <Text key={i}>{part}</Text>;
+      COPYABLE_RE.lastIndex = 0;
+      const url = isUrlToken(part);
+      return (
+        <Text key={i}>
+          <Text
+            style={url ? s.link : s.copyableNumber}
+            onPress={url ? () => handleLinkPress(part) : undefined}
+          >{part}</Text>
+          <Text style={s.inlineCopy} onPress={() => Clipboard.setStringAsync(part.trim())}> 📋</Text>
+        </Text>
+      );
+    });
   }
 
   async function handleLinkPress(url: string) {
+    if (!/^https?:\/\//.test(url)) url = 'https://' + url;
     // In-app room links join directly
     const m = /\/join\/(\d+)/.exec(url);
     if (m) {
@@ -691,18 +700,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             </TouchableOpacity>
           )}
           {!hiddenOneTime && msg.type === 'text' && (
-            <>
-              <Text style={s.msgText}>{renderTextWithLinks(msg.content || '')}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}{msg.one_time_seconds ? <Text style={s.oneTimeTag}> 🔥{msg.one_time_seconds}s</Text> : null}</Text>
-              {extractCopyables(msg.content || '').length > 0 && (
-                <View style={s.copyRow}>
-                  {extractCopyables(msg.content || '').map((tok, i) => (
-                    <TouchableOpacity key={i} style={s.copyChip} onPress={() => Clipboard.setStringAsync(tok)}>
-                      <Text style={s.copyChipText} numberOfLines={1}>📋 {tok}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              )}
-            </>
+            <Text style={s.msgText}>{renderTextWithLinks(msg.content || '')}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}{msg.one_time_seconds ? <Text style={s.oneTimeTag}> 🔥{msg.one_time_seconds}s</Text> : null}</Text>
           )}
           {msg.type === 'invite' && (() => {
             let inv: any = null;
@@ -721,16 +719,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           })()}
           {!hiddenOneTime && msg.type === 'image' && (() => {
             const uri = msg._uploading ? msg.file_path! : `${BASE_URL}${msg.file_path}`;
+            const onLoaded = msg.one_time_seconds && !mine ? () => startOneTimeClock(msg) : undefined;
             return (
               <TouchableOpacity onPress={() => !msg._uploading && setLightboxUrl(uri)} disabled={msg._uploading}>
                 {msg._uploading
                   ? <Image source={{ uri }} style={s.msgImage} resizeMode="cover" />
-                  : <ImageWithSpinner uri={uri} style={s.msgImage} resizeMode="cover" />}
+                  : <ImageWithSpinner uri={uri} style={s.msgImage} resizeMode="cover" onLoaded={onLoaded} />}
               </TouchableOpacity>
             );
           })()}
           {!hiddenOneTime && msg.type === 'audio' && !msg._uploading && (
-            <VoicePlayer url={`${BASE_URL}${msg.file_path}`} peaks={msg.file_name || ''} mine={mine} msgId={msg.id} roomId={room.id} roomMeta={room} label={`🎙 ${msg.username} · voice message`} />
+            <VoicePlayer url={`${BASE_URL}${msg.file_path}`} peaks={msg.file_name || ''} mine={mine} msgId={msg.id} roomId={room.id} roomMeta={room} label={`🎙 ${msg.username} · voice message`}
+              onPlayStart={msg.one_time_seconds && !mine ? () => startOneTimeClock(msg) : undefined} />
           )}
           {msg.type === 'audio' && msg._uploading && (
             <View style={s.uploadingVoicePlaceholder}>
@@ -738,12 +738,20 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             </View>
           )}
           {!hiddenOneTime && msg.type === 'music' && !msg._uploading && (
-            <MusicPlayer url={`${BASE_URL}${msg.file_path}`} fileName={msg.file_name || 'Audio'} mine={mine} msgId={msg.id} roomId={room.id} roomMeta={room} />
+            <MusicPlayer url={`${BASE_URL}${msg.file_path}`} fileName={msg.file_name || 'Audio'} mine={mine} msgId={msg.id} roomId={room.id} roomMeta={room}
+              onPlayStart={msg.one_time_seconds && !mine ? () => startOneTimeClock(msg) : undefined} />
           )}
           {!hiddenOneTime && msg.type === 'video' && (() => {
             const uri = msg._uploading ? msg.file_path! : `${BASE_URL}${msg.file_path}`;
             return (
-              <TouchableOpacity onPress={() => !msg._uploading && setVideoUrl(uri)} disabled={msg._uploading}>
+              <TouchableOpacity
+                onPress={() => {
+                  if (msg._uploading) return;
+                  setVideoUrl(uri);
+                  if (msg.one_time_seconds && !mine) startOneTimeClock(msg);
+                }}
+                disabled={msg._uploading}
+              >
                 <View style={s.videoThumb}>
                   <Text style={s.videoPlayIcon}>▶</Text>
                 </View>
@@ -787,22 +795,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           )}
           {!msg._uploading && !msg._uploadFailed && (
             <>
-              <TouchableOpacity
-                style={s.footerBtnTouch}
-                onPress={() => setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type })}
-              >
-                <Text style={s.replyFooterBtn}>↩ Reply</Text>
-              </TouchableOpacity>
-              {(msg.type === 'text' || msg.file_path) && !hiddenOneTime && (
-                <TouchableOpacity style={s.footerBtnTouch} onPress={() => copyMessage(msg)}>
-                  <Text style={s.replyFooterBtn}>📋</Text>
-                </TouchableOpacity>
-              )}
-              {msg.type !== 'invite' && !msg.one_time_seconds && (
-                <TouchableOpacity style={s.footerBtnTouch} onPress={() => openForwardPicker(msg)}>
-                  <Text style={s.replyFooterBtn}>↪ Fwd</Text>
-                </TouchableOpacity>
-              )}
               {mine && (
                 <>
                   {msg.type === 'text' && (
@@ -826,6 +818,35 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         {showEmojiFor === msg.id && (
           <View style={[s.emojiPicker, mine ? { alignSelf: 'flex-end' } : {}]}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              <TouchableOpacity
+                onPress={() => {
+                  setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type });
+                  setShowEmojiFor(null);
+                }}
+                style={s.emojiBtn}
+              >
+                <Text style={s.emoji}>↩</Text>
+              </TouchableOpacity>
+              {msg.type !== 'invite' && !msg.one_time_seconds && (
+                <TouchableOpacity
+                  onPress={() => { setShowEmojiFor(null); openForwardPicker(msg); }}
+                  style={s.emojiBtn}
+                >
+                  <Text style={s.emoji}>↪</Text>
+                </TouchableOpacity>
+              )}
+              {(msg.type === 'text' || msg.file_path) && !hiddenOneTime && (
+                <TouchableOpacity
+                  onPress={() => {
+                    const t = msg.type === 'text' ? (msg.content || '') : `${BASE_URL}${msg.file_path}`;
+                    if (t) Clipboard.setStringAsync(t);
+                    setShowEmojiFor(null);
+                  }}
+                  style={s.emojiBtn}
+                >
+                  <Text style={s.emoji}>📋</Text>
+                </TouchableOpacity>
+              )}
               {EMOJIS.map(e => (
                 <TouchableOpacity key={e} onPress={() => toggleReact(msg.id, e)} style={s.emojiBtn}>
                   <Text style={s.emoji}>{e}</Text>
@@ -1040,7 +1061,40 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               <Text style={s.attachOptionIcon}>📄</Text>
               <Text style={s.attachOptionText}>Choose File</Text>
             </TouchableOpacity>
+            <TouchableOpacity style={s.attachOption} onPress={() => { setShowAttachMenu(false); startRecordingUI(); }}>
+              <Text style={s.attachOptionIcon}>🎙</Text>
+              <Text style={s.attachOptionText}>Voice Message</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={s.attachOption} onPress={() => { setShowAttachMenu(false); setShowOneTimeMenu(true); }}>
+              <Text style={s.attachOptionIcon}>🔥</Text>
+              <Text style={s.attachOptionText}>One-time Message{oneTimeSecs ? ` (${oneTimeSecs}s on)` : ''}</Text>
+            </TouchableOpacity>
             <TouchableOpacity style={s.attachCancel} onPress={() => setShowAttachMenu(false)}>
+              <Text style={s.attachCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* One-time message duration picker */}
+      <Modal visible={showOneTimeMenu} transparent animationType="slide" onRequestClose={() => setShowOneTimeMenu(false)}>
+        <View style={s.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowOneTimeMenu(false)} />
+          <View style={s.attachSheet}>
+            <View style={s.sheetHandle} />
+            <Text style={s.forwardTitle}>🔥 One-time message</Text>
+            <Text style={s.oneTimeHint}>The next message disappears this many seconds after being opened:</Text>
+            {[5, 30, 60].map(secs => (
+              <TouchableOpacity key={secs} style={s.attachOption} onPress={() => chooseOneTime(secs)}>
+                <Text style={s.attachOptionText}>{secs} seconds{oneTimeSecs === secs ? '  ✓' : ''}</Text>
+              </TouchableOpacity>
+            ))}
+            {oneTimeSecs ? (
+              <TouchableOpacity style={s.attachOption} onPress={() => chooseOneTime(null)}>
+                <Text style={[s.attachOptionText, { color: '#f87171' }]}>Turn off</Text>
+              </TouchableOpacity>
+            ) : null}
+            <TouchableOpacity style={s.attachCancel} onPress={() => setShowOneTimeMenu(false)}>
               <Text style={s.attachCancelText}>Cancel</Text>
             </TouchableOpacity>
           </View>
@@ -1150,14 +1204,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         />
       ) : (
         <View style={s.inputBar}>
-          <TouchableOpacity onPress={() => setShowAttachMenu(true)} style={s.iconBtn}>
-            <Text style={s.iconBtnText}>📎</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => startRecordingUI()} style={s.iconBtn}>
-            <Text style={s.iconBtnText}>🎙</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={pickOneTime} style={[s.iconBtn, oneTimeSecs ? s.oneTimeActive : null]}>
-            <Text style={s.iconBtnText}>🔥</Text>
+          <TouchableOpacity onPress={() => setShowAttachMenu(true)} style={[s.iconBtn, oneTimeSecs ? s.oneTimeActive : null]}>
+            <Text style={s.plusBtnText}>{oneTimeSecs ? '🔥' : '＋'}</Text>
           </TouchableOpacity>
           <TextInput
             style={s.input} placeholder="Message..." placeholderTextColor={C.muted}
@@ -1216,12 +1264,10 @@ const s = StyleSheet.create({
   oneTimeReveal: { color: '#f87171', fontSize: 14, fontWeight: '600', paddingVertical: 4 },
   oneTimeTag: { color: '#f87171', fontSize: 11 },
   oneTimeActive: { backgroundColor: 'rgba(248,113,113,0.25)', borderRadius: 8 },
-  copyRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 6 },
-  copyChip: {
-    backgroundColor: 'rgba(59,125,216,0.12)', borderRadius: 12,
-    paddingHorizontal: 8, paddingVertical: 3, maxWidth: 220,
-  },
-  copyChipText: { color: C.accent, fontSize: 12, fontWeight: '600' },
+  oneTimeHint: { color: C.muted, fontSize: 13, paddingHorizontal: 16, paddingBottom: 8 },
+  plusBtnText: { fontSize: 22, color: C.accent, fontWeight: '600' },
+  copyableNumber: { color: C.accent, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  inlineCopy: { fontSize: 13 },
   bubbleHighlight: { borderWidth: 2, borderColor: C.accent },
   mineBubble: { backgroundColor: C.mine, borderBottomRightRadius: 3 },
   theirsBubble: { backgroundColor: C.msgBg, borderBottomLeftRadius: 3 },

@@ -20,9 +20,10 @@ function parsePeaks(raw: string, count = 40): number[] {
   });
 }
 
-export default function VoicePlayer({ url, peaks: rawPeaks, mine, msgId, roomId, label, roomMeta }: {
+export default function VoicePlayer({ url, peaks: rawPeaks, mine, msgId, roomId, label, roomMeta, onPlayStart }: {
   url: string; peaks: string; mine: boolean;
   msgId: number | string; roomId: number; label: string; roomMeta?: any;
+  onPlayStart?: () => void;
 }) {
   const [, forceUpdate] = useReducer(x => x + 1, 0);
   const peaks = parsePeaks(rawPeaks);
@@ -38,7 +39,10 @@ export default function VoicePlayer({ url, peaks: rawPeaks, mine, msgId, roomId,
 
   function toggle() {
     if (isCurrent) audioManager.toggle();
-    else audioManager.play(msgId, url, label, roomId, roomMeta);
+    else {
+      onPlayStart?.();
+      audioManager.play(msgId, url, label, roomId, roomMeta);
+    }
   }
 
   function cycleSpeed() {

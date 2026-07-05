@@ -814,6 +814,26 @@ function sendText() {
   cancelReply();
 }
 
+// ── Composer ＋ menu ──────────────────────────────────────────────────────────
+function toggleComposerMenu() {
+  document.getElementById('composer-menu').classList.toggle('hidden');
+}
+function closeComposerMenu() {
+  document.getElementById('composer-menu').classList.add('hidden');
+}
+function composerAttach() {
+  closeComposerMenu();
+  document.getElementById('file-input').click();
+}
+function composerRecord() {
+  closeComposerMenu();
+  startRecording();
+}
+function composerOneTime() {
+  closeComposerMenu();
+  toggleOneTime();
+}
+
 // ── One-time (self-destructing) messages ──────────────────────────────────────
 function toggleOneTime() {
   if (pendingOneTimeSeconds) return clearOneTime();
@@ -822,16 +842,20 @@ function toggleOneTime() {
   const secs = parseInt(raw, 10);
   if (!Number.isInteger(secs) || secs < 1 || secs > 3600) return alert('Enter a number of seconds between 1 and 3600.');
   pendingOneTimeSeconds = secs;
-  const btn = document.getElementById('one-time-btn');
-  btn.classList.add('active');
-  btn.title = `One-time: disappears ${secs}s after viewing (click to cancel)`;
+  const btn = document.getElementById('composer-plus-btn');
+  btn.classList.add('one-time-armed');
+  btn.textContent = '🔥';
+  btn.title = `One-time: disappears ${secs}s after viewing`;
+  document.getElementById('composer-one-time').textContent = `🔥  One-time: ${secs}s (turn off)`;
 }
 
 function clearOneTime() {
   pendingOneTimeSeconds = null;
-  const btn = document.getElementById('one-time-btn');
-  btn.classList.remove('active');
-  btn.title = 'One-time message';
+  const btn = document.getElementById('composer-plus-btn');
+  btn.classList.remove('one-time-armed');
+  btn.textContent = '＋';
+  btn.title = 'More';
+  document.getElementById('composer-one-time').textContent = '🔥  One-time message';
 }
 
 function stopTypingSignal() {
@@ -1162,8 +1186,10 @@ async function sendRecording() {
 }
 
 // ─── Links in messages ────────────────────────────────────────────────────────
-// URLs, card numbers, and phone numbers each get a small copy icon.
-const COPYABLE_RE = /(https?:\/\/[^\s]+|(?:\d{4}[ -]?){3}\d{4}|\+?\d[\d ()-]{8,14}\d)/g;
+// URLs (with or without protocol), card numbers, and phone numbers each get a
+// small copy icon.
+const COPYABLE_RE = /(https?:\/\/[^\s]+|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:\/[^\s]*)?|(?:\d{4}[ -]?){3}\d{4}|\+?\d[\d ()-]{8,14}\d)/g;
+const URLISH_RE = /^(https?:\/\/|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,})/;
 
 function copyToClipboard(text, iconEl) {
   const done = () => {
@@ -1196,12 +1222,13 @@ function appendLinkifiedText(container, content) {
   let hasCopyable = false;
   parts.forEach(part => {
     if (!part) return;
-    if (/^https?:\/\//.test(part)) {
+    if (URLISH_RE.test(part)) {
       hasCopyable = true;
+      const href = /^https?:\/\//.test(part) ? part : 'https://' + part;
       const a = document.createElement('a');
-      a.href = part; a.textContent = part; a.className = 'msg-link';
-      const joinMatch = /\/join\/(\d+)/.exec(part);
-      if (joinMatch && part.startsWith(location.origin)) {
+      a.href = href; a.textContent = part; a.className = 'msg-link';
+      const joinMatch = /\/join\/(\d+)/.exec(href);
+      if (joinMatch && href.startsWith(location.origin)) {
         a.onclick = (e) => { e.preventDefault(); joinRoomById(joinMatch[1]); };
       } else {
         a.target = '_blank'; a.rel = 'noopener';
@@ -1257,6 +1284,39 @@ function playNextVoiceAfter(wrapperEl) {
     const btn = el.querySelector('.voice-play-btn');
     if (btn) { btn.click(); return; }
     el = el.nextElementSibling;
+  }
+}
+
+// Starts a one-time message's destruction clock only once its content is
+// actually available to the viewer: immediately for text/files, when loaded
+// for images/videos, on first play for voice/music.
+const oneTimeClockStarted = new Set();
+function armOneTimeClock(msg, wrapperEl) {
+  const start = () => {
+    if (oneTimeClockStarted.has(msg.id)) return;
+    oneTimeClockStarted.add(msg.id);
+    socket.emit('view_one_time', { messageId: msg.id });
+  };
+  if (msg.type === 'image') {
+    const img = wrapperEl.querySelector('img');
+    if (!img || img.complete) return start();
+    img.addEventListener('load', start, { once: true });
+    img.addEventListener('error', start, { once: true });
+  } else if (msg.type === 'video') {
+    const video = wrapperEl.querySelector('video');
+    if (!video || video.readyState >= 2) return start();
+    video.addEventListener('loadeddata', start, { once: true });
+    video.addEventListener('error', start, { once: true });
+  } else if (msg.type === 'audio') {
+    const playBtn = wrapperEl.querySelector('.voice-play-btn');
+    if (!playBtn) return start();
+    playBtn.addEventListener('click', start, { once: true });
+  } else if (msg.type === 'music') {
+    const audio = wrapperEl.querySelector('audio');
+    if (!audio) return start();
+    audio.addEventListener('play', start, { once: true });
+  } else {
+    start();
   }
 }
 
@@ -1355,8 +1415,9 @@ function buildMessageElement(msg) {
     btn.onclick = (e) => {
       e.stopPropagation();
       revealedOneTime.add(msg.id);
-      socket.emit('view_one_time', { messageId: msg.id });
-      wrapper.replaceWith(buildMessageElement(msg));
+      const revealed = buildMessageElement(msg);
+      wrapper.replaceWith(revealed);
+      armOneTimeClock(msg, revealed);
     };
     bubble.appendChild(btn);
   } else if (msg.type === 'text') {
@@ -1928,6 +1989,10 @@ function handleGlobalClick(e) {
     closeCtxMenu();
   if (!panel.classList.contains('hidden') && !panel.contains(e.target) && e.target !== badge)
     closeOnlinePanel();
+  const composerMenu = document.getElementById('composer-menu');
+  if (!composerMenu.classList.contains('hidden') && !composerMenu.contains(e.target)
+      && e.target.id !== 'composer-plus-btn')
+    closeComposerMenu();
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

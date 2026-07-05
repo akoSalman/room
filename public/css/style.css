@@ -392,8 +392,23 @@ html {
 }
 .copy-chip-btn:hover { opacity: 1; transform: scale(1.1); }
 
+/* ── Composer ＋ menu ──────────────────────────────── */
+#input-bar { position: relative; }
+#composer-plus-btn { font-size: 1.3rem; font-weight: 600; }
+#composer-plus-btn.one-time-armed { background: rgba(248,113,113,0.25); border-radius: 8px; }
+#composer-menu {
+  position: absolute; bottom: calc(100% + 6px); left: 8px; z-index: 30;
+  display: flex; flex-direction: column; min-width: 190px;
+  background: var(--panel, #1f2937); border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 12px; padding: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+}
+#composer-menu button {
+  background: none; border: none; color: var(--text); cursor: pointer;
+  text-align: left; font-size: 0.9rem; padding: 10px 12px; border-radius: 8px;
+}
+#composer-menu button:hover { background: rgba(59,125,216,0.15); }
+
 /* ── One-time messages ─────────────────────────────── */
-#one-time-btn.active { background: rgba(248,113,113,0.25); border-radius: 8px; }
 .one-time-bubble { border: 1px dashed #f87171; }
 .one-time-reveal {
   background: none; border: none; color: #f87171; cursor: pointer;

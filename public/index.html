@@ -99,15 +99,16 @@
 
     <!-- Normal input bar -->
     <div id="input-bar">
-      <label class="icon-btn" title="Attach file">
-        📎
-        <input type="file" id="file-input" style="display:none" onchange="sendFile()" />
-      </label>
-      <button id="record-btn" class="icon-btn" title="Record voice message" onclick="startRecording()">🎙</button>
-      <button id="one-time-btn" class="icon-btn" title="One-time message" onclick="toggleOneTime()">🔥</button>
+      <button id="composer-plus-btn" class="icon-btn" title="More" onclick="toggleComposerMenu()">＋</button>
+      <input type="file" id="file-input" style="display:none" onchange="sendFile()" />
       <input id="msg-input" type="text" placeholder="Message..."
         onkeydown="handleInputKey(event)" oninput="onTypingInput()" />
       <button onclick="sendOrSave()" class="send-btn">➤</button>
+      <div id="composer-menu" class="hidden">
+        <button onclick="composerAttach()">📎 &nbsp;Attach file</button>
+        <button onclick="composerRecord()">🎙 &nbsp;Voice message</button>
+        <button id="composer-one-time" onclick="composerOneTime()">🔥 &nbsp;One-time message</button>
+      </div>
     </div>
 
     <!-- Recording in-progress bar -->
