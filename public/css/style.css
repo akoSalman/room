@@ -30,6 +30,11 @@ html, body {
   overflow: hidden;
   overscroll-behavior: none;
 }
+/* Track the visual viewport so the input bar stays above the on-screen
+   keyboard on mobile browsers. */
+@supports (height: 100dvh) {
+  html, body { height: 100dvh; }
+}
 html {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background: var(--bg);
@@ -392,21 +397,21 @@ html {
 }
 .copy-chip-btn:hover { opacity: 1; transform: scale(1.1); }
 
-/* ── Composer ＋ menu ──────────────────────────────── */
+/* ── Composer options strip ────────────────────────── */
 #input-bar { position: relative; }
 #composer-plus-btn { font-size: 1.3rem; font-weight: 600; }
 #composer-plus-btn.one-time-armed { background: rgba(248,113,113,0.25); border-radius: 8px; }
-#composer-menu {
-  position: absolute; bottom: calc(100% + 6px); left: 8px; z-index: 30;
-  display: flex; flex-direction: column; min-width: 190px;
-  background: var(--panel, #1f2937); border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 12px; padding: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+#composer-strip {
+  display: flex; gap: 8px; padding: 6px 12px; flex-shrink: 0;
+  border-top: 1px solid rgba(128,128,128,0.2);
 }
-#composer-menu button {
-  background: none; border: none; color: var(--text); cursor: pointer;
-  text-align: left; font-size: 0.9rem; padding: 10px 12px; border-radius: 8px;
+#composer-strip button {
+  background: rgba(59,125,216,0.10); border: none; color: var(--accent);
+  cursor: pointer; font-size: 0.82rem; font-weight: 600;
+  padding: 6px 12px; border-radius: 16px;
 }
-#composer-menu button:hover { background: rgba(59,125,216,0.15); }
+#composer-strip button:hover { background: rgba(59,125,216,0.2); }
+.msg-caption { margin-top: 6px; font-size: 0.9rem; }
 
 /* ── One-time messages ─────────────────────────────── */
 .one-time-bubble { border: 1px dashed #f87171; }

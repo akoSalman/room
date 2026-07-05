@@ -75,6 +75,19 @@ function showNotif(msg) {
 window.addEventListener('DOMContentLoaded', () => {
   buildEmojiPicker();
 
+  // Keep the layout inside the visual viewport so the composer isn't hidden
+  // behind the on-screen keyboard (iOS Safari doesn't resize the layout
+  // viewport when the keyboard opens).
+  if (window.visualViewport) {
+    const syncViewport = () => {
+      document.documentElement.style.height = window.visualViewport.height + 'px';
+      document.body.style.height = window.visualViewport.height + 'px';
+      window.scrollTo(0, 0);
+    };
+    window.visualViewport.addEventListener('resize', syncViewport);
+    window.visualViewport.addEventListener('scroll', syncViewport);
+  }
+
   // Point the APK download links at this domain's own branded build
   document.querySelectorAll('#apk-banner, #update-download-btn').forEach(a => { a.href = APK_DOWNLOAD_URL; });
 
@@ -306,13 +319,20 @@ function onTypingInput() {
   typingTimer = setTimeout(() => { isTyping = false; socket.emit('typing_stop', { roomId: currentRoomId }); }, 1500);
 }
 
-// Attach/record live right of the text box while it's empty; typing swaps
-// them for the send button.
+// The options strip above the input bar hides while typing; the ＋ button
+// re-expands it (e.g. to attach media as a caption of the typed text).
+let stripExpanded = false;
 function updateComposerButtons() {
   const hasText = document.getElementById('msg-input').value.trim().length > 0;
-  document.getElementById('send-btn').classList.toggle('hidden', !hasText);
-  document.getElementById('attach-btn').classList.toggle('hidden', hasText);
-  document.getElementById('record-btn').classList.toggle('hidden', hasText);
+  document.getElementById('composer-strip').classList.toggle('hidden', hasText && !stripExpanded);
+  if (!hasText) stripExpanded = false;
+}
+function toggleComposerStrip() {
+  stripExpanded = !stripExpanded;
+  updateComposerButtons();
+  const strip = document.getElementById('composer-strip');
+  strip.classList.toggle('hidden', false);
+  if (!stripExpanded && document.getElementById('msg-input').value.trim()) strip.classList.add('hidden');
 }
 
 function showTyping(user) { typingUsers.add(user); renderTypingBar(); }
@@ -826,22 +846,13 @@ function sendText() {
 }
 
 // ── Composer ＋ menu ──────────────────────────────────────────────────────────
-function toggleComposerMenu() {
-  document.getElementById('composer-menu').classList.toggle('hidden');
-}
-function closeComposerMenu() {
-  document.getElementById('composer-menu').classList.add('hidden');
-}
 function composerAttach() {
-  closeComposerMenu();
   document.getElementById('file-input').click();
 }
 function composerRecord() {
-  closeComposerMenu();
   startRecording();
 }
 function composerOneTime() {
-  closeComposerMenu();
   toggleOneTime();
 }
 
@@ -966,11 +977,15 @@ function markUploadFailed(wrapper, clientId, retryFn) {
 async function uploadAndSendMedia(file, type, uploadFilename, messageFileName, roomId, replyToId) {
   const oneTimeSeconds = pendingOneTimeSeconds || undefined;
   clearOneTime();
+  // Any typed text becomes this media message's caption (one message).
+  const inputEl = document.getElementById('msg-input');
+  const caption = inputEl.value.trim() || null;
+  if (caption) { inputEl.value = ''; updateComposerButtons(); stopTypingSignal(); }
   const clientId = 'tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2);
   const previewUrl = (type === 'image' || type === 'video' || type === 'audio') ? URL.createObjectURL(file) : null;
   const tempMsg = {
     id: clientId, username, avatar: localStorage.getItem('avatar') || '',
-    type, content: null, file_path: previewUrl, file_name: messageFileName,
+    type, content: caption, file_path: previewUrl, file_name: messageFileName,
     created_at: new Date().toISOString(),
     reply_to_id: replyTo?.id || null, reply_username: replyTo?.username || null,
     _uploading: true, _progress: 0,
@@ -985,7 +1000,7 @@ async function uploadAndSendMedia(file, type, uploadFilename, messageFileName, r
     if (res.error) throw new Error(res.error);
     if (!pendingUploads[clientId]) return; // user already dismissed/retried
     socket.emit('send_message', {
-      roomId, type, content: null, filePath: res.url,
+      roomId, type, content: caption, filePath: res.url,
       fileName: messageFileName, replyToId, clientId, oneTimeSeconds,
     });
   } catch (err) {
@@ -1492,6 +1507,13 @@ function buildMessageElement(msg) {
     bubble.appendChild(a);
   }
 
+  if (!oneTimeHidden && msg.type !== 'text' && msg.type !== 'invite' && msg.content) {
+    const cap = document.createElement('div');
+    cap.className = 'msg-caption';
+    appendLinkifiedText(cap, msg.content);
+    bubble.appendChild(cap);
+  }
+
   if (msg._uploading) {
     wrapper.classList.add('msg-uploading');
     const overlay = document.createElement('div');
@@ -1525,35 +1547,18 @@ function buildMessageElement(msg) {
   }
 
   if (!msg._uploading) {
-    const replyBtn = document.createElement('button');
-    replyBtn.className = 'msg-action-btn'; replyBtn.title = 'Reply'; replyBtn.textContent = '↩';
-    replyBtn.onclick = (e) => { e.stopPropagation(); setReply(msg); };
-    footer.appendChild(replyBtn);
-
-    if (msg.type !== 'invite' && !msg.one_time_seconds) {
-      const fwdBtn = document.createElement('button');
-      fwdBtn.className = 'msg-action-btn'; fwdBtn.title = 'Forward'; fwdBtn.textContent = '↪';
-      fwdBtn.onclick = (e) => { e.stopPropagation(); openForwardModal(msg.id); };
-      footer.appendChild(fwdBtn);
-    }
-
     const reactBtn = document.createElement('button');
     reactBtn.className = 'react-btn'; reactBtn.textContent = '😊'; reactBtn.title = 'React';
     reactBtn.onclick = (e) => { e.stopPropagation(); showEmojiPicker(msg.id, reactBtn, wrapper); };
     footer.appendChild(reactBtn);
 
-    if (isMine) {
-      if (msg.type === 'text') {
-        const editBtn = document.createElement('button');
-        editBtn.className = 'msg-action-btn'; editBtn.title = 'Edit'; editBtn.textContent = '✏️';
-        editBtn.onclick = (e) => { e.stopPropagation(); startEdit(msg.id); };
-        footer.appendChild(editBtn);
-      }
-      const delBtn = document.createElement('button');
-      delBtn.className = 'msg-action-btn delete'; delBtn.title = 'Delete'; delBtn.textContent = '🗑';
-      delBtn.onclick = (e) => { e.stopPropagation(); confirmDelete(msg.id); };
-      footer.appendChild(delBtn);
-    }
+    // Tapping the bubble (or the whitespace beside it) opens the actions menu
+    const openMenu = (e) => {
+      if (e.target.closest('a, button, video, audio, img, input')) return;
+      e.stopPropagation();
+      openCtxMenu(msg.id, msg.type, isMine, wrapper, msg);
+    };
+    wrapper.addEventListener('click', openMenu);
   }
 
   wrapper.appendChild(footer);
@@ -1587,6 +1592,8 @@ function openCtxMenu(messageId, type, isMine, wrapperEl, msg) {
   ctxTarget = { messageId, type, isMine, username: msg?.username, content: msg?.content, filePath: msg?.file_path, fileName: msg?.file_name };
   const menu = document.getElementById('ctx-menu');
   document.getElementById('ctx-edit-btn').style.display = (isMine && type === 'text') ? '' : 'none';
+  document.getElementById('ctx-forward-btn').style.display = (type !== 'invite' && !msg?.one_time_seconds) ? '' : 'none';
+  document.getElementById('ctx-download-btn').style.display = (msg?.file_path && !msg?.one_time_seconds) ? '' : 'none';
   menu.querySelector('button.danger').style.display = isMine ? '' : 'none';
   menu.querySelector('hr').style.display = isMine ? '' : 'none';
   menu.classList.remove('hidden');
@@ -1604,6 +1611,17 @@ function ctxReply() {
   const t = ctxTarget;
   closeCtxMenu();
   setReply({ id: t.messageId, username: t.username, content: t.content, type: t.type });
+}
+
+function ctxDownload() {
+  if (!ctxTarget?.filePath) return;
+  const a = document.createElement('a');
+  a.href = ctxTarget.filePath;
+  a.download = ctxTarget.fileName && !ctxTarget.fileName.includes(',') ? ctxTarget.fileName : '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  closeCtxMenu();
 }
 
 function ctxCopy() {
@@ -2004,10 +2022,7 @@ function handleGlobalClick(e) {
     closeCtxMenu();
   if (!panel.classList.contains('hidden') && !panel.contains(e.target) && e.target !== badge)
     closeOnlinePanel();
-  const composerMenu = document.getElementById('composer-menu');
-  if (!composerMenu.classList.contains('hidden') && !composerMenu.contains(e.target)
-      && e.target.id !== 'composer-plus-btn')
-    closeComposerMenu();
+
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

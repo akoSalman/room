@@ -97,18 +97,20 @@
       <button onclick="cancelReply()">✕</button>
     </div>
 
+    <!-- Options strip: sits on top of the input bar, hides while typing -->
+    <div id="composer-strip">
+      <button onclick="composerAttach()">📎 Media</button>
+      <button onclick="composerRecord()">🎙 Voice</button>
+      <button id="composer-one-time" onclick="composerOneTime()">🔥 One-time</button>
+    </div>
+
     <!-- Normal input bar -->
     <div id="input-bar">
-      <button id="composer-plus-btn" class="icon-btn" title="More" onclick="toggleComposerMenu()">＋</button>
+      <button id="composer-plus-btn" class="icon-btn" title="More options" onclick="toggleComposerStrip()">＋</button>
       <input type="file" id="file-input" style="display:none" onchange="sendFile()" />
       <input id="msg-input" type="text" placeholder="Message..."
         onkeydown="handleInputKey(event)" oninput="onTypingInput()" />
-      <button id="attach-btn" class="icon-btn" title="Attach file" onclick="composerAttach()">📎</button>
-      <button id="record-btn" class="icon-btn" title="Voice message" onclick="composerRecord()">🎙</button>
-      <button id="send-btn" onclick="sendOrSave()" class="send-btn hidden">➤</button>
-      <div id="composer-menu" class="hidden">
-        <button id="composer-one-time" onclick="composerOneTime()">🔥 &nbsp;One-time message</button>
-      </div>
+      <button id="send-btn" onclick="sendOrSave()" class="send-btn">➤</button>
     </div>
 
     <!-- Recording in-progress bar -->
@@ -260,7 +262,8 @@
 <div id="ctx-menu" class="hidden">
   <button onclick="ctxReply()">↩ &nbsp;Reply</button>
   <button onclick="ctxCopy()">📋 &nbsp;Copy</button>
-  <button onclick="ctxForward()">↪ &nbsp;Forward</button>
+  <button id="ctx-forward-btn" onclick="ctxForward()">↪ &nbsp;Forward</button>
+  <button id="ctx-download-btn" onclick="ctxDownload()">⬇ &nbsp;Download</button>
   <button onclick="ctxReact()">😊 &nbsp;React</button>
   <button id="ctx-edit-btn" onclick="ctxEdit()">✏️ &nbsp;Edit</button>
   <hr/>
