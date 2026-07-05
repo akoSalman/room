@@ -103,10 +103,10 @@
       <input type="file" id="file-input" style="display:none" onchange="sendFile()" />
       <input id="msg-input" type="text" placeholder="Message..."
         onkeydown="handleInputKey(event)" oninput="onTypingInput()" />
-      <button onclick="sendOrSave()" class="send-btn">➤</button>
+      <button id="attach-btn" class="icon-btn" title="Attach file" onclick="composerAttach()">📎</button>
+      <button id="record-btn" class="icon-btn" title="Voice message" onclick="composerRecord()">🎙</button>
+      <button id="send-btn" onclick="sendOrSave()" class="send-btn hidden">➤</button>
       <div id="composer-menu" class="hidden">
-        <button onclick="composerAttach()">📎 &nbsp;Attach file</button>
-        <button onclick="composerRecord()">🎙 &nbsp;Voice message</button>
         <button id="composer-one-time" onclick="composerOneTime()">🔥 &nbsp;One-time message</button>
       </div>
     </div>

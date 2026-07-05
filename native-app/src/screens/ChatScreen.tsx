@@ -1065,14 +1065,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               <Text style={s.attachOptionIcon}>📄</Text>
               <Text style={s.attachOptionText}>Choose File</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={s.attachOption} onPress={() => { setShowAttachMenu(false); startRecordingUI(); }}>
-              <Text style={s.attachOptionIcon}>🎙</Text>
-              <Text style={s.attachOptionText}>Voice Message</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={s.attachOption} onPress={() => { setShowAttachMenu(false); setShowOneTimeMenu(true); }}>
-              <Text style={s.attachOptionIcon}>🔥</Text>
-              <Text style={s.attachOptionText}>One-time Message{oneTimeSecs ? ` (${oneTimeSecs}s on)` : ''}</Text>
-            </TouchableOpacity>
             <TouchableOpacity style={s.attachCancel} onPress={() => setShowAttachMenu(false)}>
               <Text style={s.attachCancelText}>Cancel</Text>
             </TouchableOpacity>
@@ -1208,7 +1200,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         />
       ) : (
         <View style={s.inputBar}>
-          <TouchableOpacity onPress={() => setShowAttachMenu(true)} style={[s.iconBtn, oneTimeSecs ? s.oneTimeActive : null]}>
+          <TouchableOpacity onPress={() => setShowOneTimeMenu(true)} style={[s.iconBtn, oneTimeSecs ? s.oneTimeActive : null]}>
             <Text style={s.plusBtnText}>{oneTimeSecs ? '🔥' : '＋'}</Text>
           </TouchableOpacity>
           <TextInput
@@ -1216,9 +1208,20 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             value={text} onChangeText={t => { setText(t); emitTyping(); }}
             onSubmitEditing={sendText} blurOnSubmit={false} multiline
           />
-          <TouchableOpacity style={s.sendBtn} onPress={sendText}>
-            <Text style={s.sendBtnText}>➤</Text>
-          </TouchableOpacity>
+          {text.trim() ? (
+            <TouchableOpacity style={s.sendBtn} onPress={sendText}>
+              <Text style={s.sendBtnText}>➤</Text>
+            </TouchableOpacity>
+          ) : (
+            <>
+              <TouchableOpacity onPress={() => setShowAttachMenu(true)} style={s.iconBtn}>
+                <Text style={s.iconBtnText}>📎</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => startRecordingUI()} style={s.iconBtn}>
+                <Text style={s.iconBtnText}>🎙</Text>
+              </TouchableOpacity>
+            </>
+          )}
         </View>
       )}
     </KeyboardAvoidingView>

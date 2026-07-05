@@ -299,10 +299,20 @@ function clearUnread(roomId) {
 
 // ─── Typing ───────────────────────────────────────────────────────────────────
 function onTypingInput() {
+  updateComposerButtons();
   if (!currentRoomId || !socketReady) return;
   if (!isTyping) { isTyping = true; socket.emit('typing_start', { roomId: currentRoomId }); }
   clearTimeout(typingTimer);
   typingTimer = setTimeout(() => { isTyping = false; socket.emit('typing_stop', { roomId: currentRoomId }); }, 1500);
+}
+
+// Attach/record live right of the text box while it's empty; typing swaps
+// them for the send button.
+function updateComposerButtons() {
+  const hasText = document.getElementById('msg-input').value.trim().length > 0;
+  document.getElementById('send-btn').classList.toggle('hidden', !hasText);
+  document.getElementById('attach-btn').classList.toggle('hidden', hasText);
+  document.getElementById('record-btn').classList.toggle('hidden', hasText);
 }
 
 function showTyping(user) { typingUsers.add(user); renderTypingBar(); }
@@ -811,6 +821,7 @@ function sendText() {
   });
   clearOneTime();
   input.value = '';
+  updateComposerButtons();
   cancelReply();
 }
 
@@ -872,6 +883,7 @@ function startEdit(messageId) {
   editingMsgId = messageId;
   const input = document.getElementById('msg-input');
   input.value = bubble.dataset.text || bubble.textContent.replace('(edited)', '').trim();
+  updateComposerButtons();
   input.focus(); show('edit-banner');
 }
 function saveEdit() {
@@ -883,6 +895,7 @@ function saveEdit() {
 function cancelEdit() {
   editingMsgId = null;
   document.getElementById('msg-input').value = '';
+  updateComposerButtons();
   hide('edit-banner');
 }
 function applyEdit(messageId, content) {
