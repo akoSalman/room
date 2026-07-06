@@ -412,21 +412,30 @@ html {
 }
 #composer-strip button:hover { background: rgba(59,125,216,0.2); }
 #composer-strip button.one-time-armed { background: rgba(248,113,113,0.25); color: #f87171; }
-#strip-toggle {
-  text-align: center; font-size: 0.8rem; color: var(--muted); cursor: pointer;
-  padding: 1px 0 3px; line-height: 1; flex-shrink: 0; user-select: none;
-}
-#strip-toggle:hover { color: var(--accent); }
 #media-preview-bar {
-  display: flex; align-items: center; gap: 10px; padding: 6px 14px; flex-shrink: 0;
+  display: flex; align-items: center; gap: 10px; padding: 8px 14px; flex-shrink: 0;
   background: rgba(59,125,216,0.08); border-top: 1px solid var(--accent);
+  overflow-x: auto;
 }
-#media-preview-thumb { width: 38px; height: 38px; object-fit: cover; border-radius: 6px; }
-#media-preview-name {
-  flex: 1; font-size: 0.82rem; color: var(--text);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+.pending-item { position: relative; flex-shrink: 0; }
+.pending-item img {
+  width: 54px; height: 54px; object-fit: cover; border-radius: 8px;
+  cursor: pointer; display: block;
 }
-#media-preview-bar button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 1rem; }
+.pending-file-box {
+  width: 54px; height: 54px; border-radius: 8px; font-size: 1.3rem;
+  background: rgba(59,125,216,0.12); display: flex; align-items: center; justify-content: center;
+}
+.pending-remove {
+  position: absolute; top: -5px; right: -5px; width: 18px; height: 18px;
+  border-radius: 50%; background: #f87171; color: #fff; border: none;
+  font-size: 0.6rem; line-height: 1; cursor: pointer; padding: 0;
+}
+.pending-add {
+  width: 54px; height: 54px; border-radius: 8px; flex-shrink: 0;
+  background: rgba(59,125,216,0.12); border: 1px dashed var(--accent);
+  color: var(--accent); font-size: 1.3rem; cursor: pointer;
+}
 .msg-caption { margin-top: 6px; font-size: 0.9rem; }
 
 /* ── One-time messages ─────────────────────────────── */

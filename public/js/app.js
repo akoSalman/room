@@ -319,23 +319,8 @@ function onTypingInput() {
   typingTimer = setTimeout(() => { isTyping = false; socket.emit('typing_stop', { roomId: currentRoomId }); }, 1500);
 }
 
-// The options strip above the input bar collapses to a slim arrow while
-// typing; tapping the arrow expands it again (e.g. to attach media that will
-// carry the typed text as its caption).
-let stripExpanded = false;
-function updateComposerButtons() {
-  const hasText = document.getElementById('msg-input').value.trim().length > 0;
-  if (!hasText) stripExpanded = false;
-  const collapsed = hasText && !stripExpanded;
-  document.getElementById('composer-strip').classList.toggle('hidden', collapsed);
-  const toggle = document.getElementById('strip-toggle');
-  toggle.classList.toggle('hidden', !hasText);
-  toggle.textContent = collapsed ? '⌃' : '⌄';
-}
-function toggleComposerStrip() {
-  stripExpanded = !stripExpanded;
-  updateComposerButtons();
-}
+// The options strip stays pinned above the input bar at all times.
+function updateComposerButtons() {}
 
 function showTyping(user) { typingUsers.add(user); renderTypingBar(); }
 function hideTyping(user) { typingUsers.delete(user); renderTypingBar(); }
@@ -821,7 +806,7 @@ function renderOnlinePanel() {
 function handleInputKey(e) { if (e.key === 'Enter') sendOrSave(); }
 function sendOrSave() {
   if (editingMsgId) return saveEdit();
-  if (pendingFile) return sendPendingFile();
+  if (pendingFiles.length) return sendPendingFiles();
   sendText();
 }
 
@@ -1016,42 +1001,69 @@ async function uploadAndSendMedia(file, type, uploadFilename, messageFileName, r
   }
 }
 
-// Selecting media only STAGES it; it's sent when the user hits send (with
-// any typed text as the caption).
-let pendingFile = null;
+// Selecting media only STAGES it; everything staged is sent when the user
+// hits send (with any typed text as the first item's caption). Multiple
+// selection supported; staged images can be previewed and removed.
+let pendingFiles = [];
 function stageFile() {
-  const file = document.getElementById('file-input').files[0];
-  if (!file || !currentRoomId) return;
-  pendingFile = file;
-  const bar = document.getElementById('media-preview-bar');
-  const thumb = document.getElementById('media-preview-thumb');
-  if (file.type.startsWith('image/')) {
-    thumb.src = URL.createObjectURL(file);
-    thumb.classList.remove('hidden');
-  } else {
-    thumb.classList.add('hidden');
-  }
-  document.getElementById('media-preview-name').textContent = file.name;
-  bar.classList.remove('hidden');
+  const files = [...document.getElementById('file-input').files];
+  if (!files.length || !currentRoomId) return;
+  files.forEach(f => pendingFiles.push({ file: f, url: URL.createObjectURL(f) }));
   document.getElementById('file-input').value = '';
+  renderPendingFiles();
   document.getElementById('msg-input').focus();
 }
 
-function clearPendingFile() {
-  pendingFile = null;
-  const thumb = document.getElementById('media-preview-thumb');
-  if (thumb.src) { URL.revokeObjectURL(thumb.src); thumb.removeAttribute('src'); }
-  document.getElementById('media-preview-bar').classList.add('hidden');
+function renderPendingFiles() {
+  const bar = document.getElementById('media-preview-bar');
+  bar.innerHTML = '';
+  if (!pendingFiles.length) { bar.classList.add('hidden'); return; }
+  bar.classList.remove('hidden');
+  pendingFiles.forEach((p, i) => {
+    const item = document.createElement('div');
+    item.className = 'pending-item';
+    if (p.file.type.startsWith('image/')) {
+      const img = document.createElement('img');
+      img.src = p.url;
+      img.onclick = () => openLightbox(p.url); // preview before sending
+      item.appendChild(img);
+    } else {
+      const box = document.createElement('div');
+      box.className = 'pending-file-box';
+      box.textContent = p.file.type.startsWith('video/') ? '🎥' : '📄';
+      box.title = p.file.name;
+      item.appendChild(box);
+    }
+    const x = document.createElement('button');
+    x.className = 'pending-remove';
+    x.textContent = '✕';
+    x.onclick = () => { URL.revokeObjectURL(p.url); pendingFiles.splice(i, 1); renderPendingFiles(); };
+    item.appendChild(x);
+    bar.appendChild(item);
+  });
+  const add = document.createElement('button');
+  add.className = 'pending-add';
+  add.textContent = '＋';
+  add.title = 'Add more';
+  add.onclick = () => document.getElementById('file-input').click();
+  bar.appendChild(add);
 }
 
-function sendPendingFile() {
-  if (!pendingFile || !currentRoomId) return;
-  const file = pendingFile;
-  const type = file.type.startsWith('image/') ? 'image'
-    : file.type.startsWith('video/') ? 'video'
-    : file.type.startsWith('audio/') ? 'music' : 'file';
-  clearPendingFile();
-  uploadAndSendMedia(file, type, file.name, file.name, currentRoomId, replyTo?.id || null);
+function sendPendingFiles() {
+  if (!pendingFiles.length || !currentRoomId) return;
+  const items = pendingFiles;
+  pendingFiles = [];
+  renderPendingFiles();
+  items.forEach(p => {
+    URL.revokeObjectURL(p.url);
+    const file = p.file;
+    const type = file.type.startsWith('image/') ? 'image'
+      : file.type.startsWith('video/') ? 'video'
+      : file.type.startsWith('audio/') ? 'music' : 'file';
+    // uploadAndSendMedia consumes the typed caption on the first call and
+    // finds the input empty for the rest.
+    uploadAndSendMedia(file, type, file.name, file.name, currentRoomId, replyTo?.id || null);
+  });
   cancelReply();
 }
 

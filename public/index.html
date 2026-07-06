@@ -103,18 +103,12 @@
       <button onclick="composerRecord()">🎙 Voice</button>
       <button id="composer-one-time" onclick="composerOneTime()">🔥 One-time</button>
     </div>
-    <div id="strip-toggle" class="hidden" onclick="toggleComposerStrip()">⌃</div>
-
     <!-- Staged media preview (media is sent only when the user hits send) -->
-    <div id="media-preview-bar" class="hidden">
-      <img id="media-preview-thumb" class="hidden" alt="" />
-      <span id="media-preview-name"></span>
-      <button onclick="clearPendingFile()" title="Remove">✕</button>
-    </div>
+    <div id="media-preview-bar" class="hidden"></div>
 
     <!-- Normal input bar -->
     <div id="input-bar">
-      <input type="file" id="file-input" style="display:none" onchange="stageFile()" />
+      <input type="file" id="file-input" style="display:none" multiple onchange="stageFile()" />
       <input id="msg-input" type="text" placeholder="Message..."
         onkeydown="handleInputKey(event)" oninput="onTypingInput()" />
       <button id="send-btn" onclick="sendOrSave()" class="send-btn">➤</button>
