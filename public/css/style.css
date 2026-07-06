@@ -437,6 +437,11 @@ html {
   color: var(--accent); font-size: 1.3rem; cursor: pointer;
 }
 .msg-caption { margin-top: 6px; font-size: 0.9rem; }
+.gallery-grid { display: flex; flex-wrap: wrap; gap: 4px; max-width: 252px; }
+.gallery-grid img {
+  width: 122px; height: 122px; object-fit: cover;
+  border-radius: 8px; cursor: pointer; display: block;
+}
 
 /* ── One-time messages ─────────────────────────────── */
 .one-time-bubble { border: 1px dashed #f87171; }

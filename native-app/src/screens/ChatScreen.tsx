@@ -315,9 +315,19 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     if (pendingMedia.length && !editingId) {
       const items = pendingMedia;
       const caption = text.trim() || null;
+      const oneTime = oneTimeSecs ?? undefined;
       setPendingMedia([]);
+      setOneTimeSecs(null);
       if (caption) { setText(''); emitStopTyping(); }
-      items.forEach((m, i) => uploadFile(m.uri, m.name, m.mime, i === 0 ? caption : null));
+      const images = items.filter(m => m.mime.startsWith('image/'));
+      const others = items.filter(m => !m.mime.startsWith('image/'));
+      if (images.length > 1) {
+        // Multiple images travel as ONE gallery message with the caption below.
+        sendGallery(images, caption, oneTime);
+        others.forEach(m => uploadFile(m.uri, m.name, m.mime, null, oneTime));
+      } else {
+        items.forEach((m, i) => uploadFile(m.uri, m.name, m.mime, i === 0 ? caption : null, oneTime));
+      }
       return;
     }
     const t = text.trim();
@@ -453,13 +463,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     setMessages(prev => prev.map(m => m.id === clientId ? { ...m, _uploading: false, _uploadFailed: true } : m));
   }
 
-  async function uploadFile(uri: string, name: string, mime: string, caption: string | null = null) {
+  async function uploadFile(uri: string, name: string, mime: string, caption: string | null = null, oneTimeOverride?: number) {
     const type = mime.startsWith('image/') ? 'image'
       : mime.startsWith('video/') ? 'video'
       : mime.startsWith('audio/') ? 'music' : 'file';
     const clientId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const replyToId = replyTo?.id ?? null;
-    const oneTime = oneTimeSecs ?? undefined;
+    const oneTime = oneTimeOverride ?? (oneTimeSecs ?? undefined);
     setOneTimeSecs(null);
     addOptimisticMessage(clientId, type, uri, name, replyToId, caption);
     setReplyTo(null);
@@ -469,6 +479,35 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       pendingUploadPaths.current[clientId] = res.url;
       socketRef.current?.emit('send_message', {
         roomId: room.id, type, content: caption, filePath: res.url, fileName: name, replyToId, clientId, oneTimeSeconds: oneTime,
+      });
+    } catch {
+      markUploadFailed(clientId);
+    }
+  }
+
+  // Uploads several images and sends them as ONE gallery message.
+  async function sendGallery(images: { uri: string; name: string; mime: string }[], caption: string | null, oneTime?: number) {
+    const clientId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const replyToId = replyTo?.id ?? null;
+    addOptimisticMessage(clientId, 'gallery', JSON.stringify(images.map(m => m.uri)), JSON.stringify(images.map(m => m.name)), replyToId, caption);
+    setReplyTo(null);
+    try {
+      const progress = images.map(() => 0);
+      const urls: string[] = [];
+      for (let i = 0; i < images.length; i++) {
+        const res = await uploadWithProgress(images[i].uri, images[i].name, images[i].mime, pct => {
+          progress[i] = pct;
+          const avg = Math.round(progress.reduce((a, b) => a + b, 0) / images.length);
+          setUploadProgress(prev => ({ ...prev, [clientId]: avg }));
+        });
+        if (res.error) throw new Error(res.error);
+        urls.push(res.url);
+      }
+      const filePath = JSON.stringify(urls);
+      pendingUploadPaths.current[clientId] = filePath;
+      socketRef.current?.emit('send_message', {
+        roomId: room.id, type: 'gallery', content: caption, filePath, fileName: null,
+        replyToId, clientId, oneTimeSeconds: oneTime,
       });
     } catch {
       markUploadFailed(clientId);
@@ -497,6 +536,23 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
   async function downloadMedia(msg: Message) {
     if (!msg.file_path) return;
+    if (msg.type === 'gallery') {
+      try {
+        let urls: string[] = [];
+        try { urls = JSON.parse(msg.file_path); } catch {}
+        const { status } = await MediaLibrary.requestPermissionsAsync();
+        if (status !== 'granted') { Alert.alert('Permission required', 'Allow media access to save downloads.'); return; }
+        for (const u of urls) {
+          const local = FileSystem.cacheDirectory + (u.split('/').pop() || `img-${Date.now()}.jpg`);
+          const { uri } = await FileSystem.downloadAsync(`${BASE_URL}${u}`, local);
+          await MediaLibrary.saveToLibraryAsync(uri);
+        }
+        Alert.alert('Saved', `${urls.length} photos saved to your gallery.`);
+      } catch {
+        Alert.alert('Error', 'Download failed.');
+      }
+      return;
+    }
     try {
       const url = `${BASE_URL}${msg.file_path}`;
       const name = (msg.file_name && !msg.file_name.includes(',')) ? msg.file_name : msg.file_path.split('/').pop() || `file-${Date.now()}`;
@@ -667,6 +723,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   function replyPreview(msg: Message): string {
     if (msg.reply_type === 'audio') return '🎙 Voice message';
     if (msg.reply_type === 'image') return '🖼 Image';
+    if (msg.reply_type === 'gallery') return '🖼 Photos';
     if (msg.reply_type === 'video') return '🎥 Video';
     if (msg.reply_type === 'music') return '🎵 Audio file';
     if (msg.reply_type === 'file') return '📄 File';
@@ -685,6 +742,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     });
 
     return (
+      <Pressable
+        style={s.msgRow}
+        onPress={(e) => !msg._uploading && setActionsMsg({ msg, x: e.nativeEvent.pageX, y: e.nativeEvent.pageY })}
+      >
       <View
         style={[s.msgWrapper, mine ? s.mine : s.theirs]}
       >
@@ -768,6 +829,25 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               </TouchableOpacity>
             );
           })()}
+          {!hiddenOneTime && msg.type === 'gallery' && (() => {
+            let urls: string[] = [];
+            try { urls = JSON.parse(msg.file_path || '[]'); } catch {}
+            return (
+              <View style={s.galleryGrid}>
+                {urls.map((u, i) => {
+                  const uri = msg._uploading ? u : `${BASE_URL}${u}`;
+                  const onLoaded = i === 0 && msg.one_time_seconds && !mine ? () => startOneTimeClock(msg) : undefined;
+                  return (
+                    <TouchableOpacity key={i} onPress={() => !msg._uploading && setLightboxUrl(uri)} disabled={msg._uploading}>
+                      {msg._uploading
+                        ? <Image source={{ uri }} style={s.galleryImg} resizeMode="cover" />
+                        : <ImageWithSpinner uri={uri} style={s.galleryImg} resizeMode="cover" onLoaded={onLoaded} />}
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            );
+          })()}
           {!hiddenOneTime && msg.type === 'audio' && !msg._uploading && (
             <VoicePlayer url={`${BASE_URL}${msg.file_path}`} peaks={msg.file_name || ''} mine={mine} msgId={msg.id} roomId={room.id} roomMeta={room} label={`🎙 ${msg.username} · voice message`}
               onPlayStart={msg.one_time_seconds && !mine ? () => startOneTimeClock(msg) : undefined} />
@@ -831,6 +911,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
         <View style={s.footer}>
           <Text style={s.time}>{fmtTime(msg.created_at)}</Text>
+          {msg.one_time_seconds ? <Text style={s.oneTimeTag}>🔥{msg.one_time_seconds}s</Text> : null}
           {mine && !msg._uploading && !msg._uploadFailed && (
             <Text style={[s.ticks, msg.id <= maxOtherReadMsgId && s.ticksSeen]}>
               {msg.id <= maxOtherReadMsgId ? '✓✓' : '✓'}
@@ -859,6 +940,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           </View>
         )}
       </View>
+      </Pressable>
     );
   }
 
@@ -1096,7 +1178,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 </TouchableOpacity>
                 {(m.type === 'text' || m.file_path) && !hidden && (
                   <TouchableOpacity style={s.actionItem} onPress={() => {
-                    const t = m.type === 'text' ? (m.content || '') : `${BASE_URL}${m.file_path}`;
+                    let fp = m.file_path || '';
+                    if (m.type === 'gallery') { try { fp = JSON.parse(fp)[0] || ''; } catch {} }
+                    const t = m.type === 'text' ? (m.content || '') : `${BASE_URL}${fp}`;
                     if (t) Clipboard.setStringAsync(t);
                     setActionsMsg(null);
                   }}>
@@ -1333,6 +1417,7 @@ const s = StyleSheet.create({
   onlineChevron: { color: C.online, fontSize: 14, fontWeight: '700', marginLeft: 1 },
   loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   messagesList: { padding: 12, gap: 6 },
+  msgRow: { width: '100%' },
   msgWrapper: { maxWidth: '80%', marginVertical: 2 },
   mine: { alignSelf: 'flex-end', alignItems: 'flex-end' },
   theirs: { alignSelf: 'flex-start', alignItems: 'flex-start' },
@@ -1399,6 +1484,8 @@ const s = StyleSheet.create({
   edited: { color: C.muted, fontSize: 11 },
   fileLink: { color: '#93c5fd', fontSize: 14 },
   msgImage: { width: 200, height: 180, borderRadius: 10 },
+  galleryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, maxWidth: 248 },
+  galleryImg: { width: 120, height: 120, borderRadius: 8 },
   videoThumb: { width: 200, height: 140, borderRadius: 10, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center' },
   videoPlayIcon: { color: '#fff', fontSize: 30 },
   videoFullscreen: { width: '100%', height: '70%' },

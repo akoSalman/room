@@ -216,9 +216,18 @@ async function sendPushToUsers(userIds, title, body, data = {}) {
 function destroyMessage(msg) {
   db.prepare('DELETE FROM reactions WHERE message_id = ?').run(msg.id);
   db.prepare('DELETE FROM messages WHERE id = ?').run(msg.id);
-  if (msg.one_time_seconds && msg.file_path && msg.file_path.startsWith('/uploads/')) {
-    const shared = db.prepare('SELECT 1 FROM messages WHERE file_path = ? LIMIT 1').get(msg.file_path);
-    if (!shared) fs.unlink(path.join(__dirname, msg.file_path), () => {});
+  if (msg.one_time_seconds && msg.file_path) {
+    // Gallery messages store a JSON array of upload paths
+    let paths = [];
+    if (msg.file_path.startsWith('[')) {
+      try { paths = JSON.parse(msg.file_path); } catch {}
+    } else {
+      paths = [msg.file_path];
+    }
+    paths.filter(p => typeof p === 'string' && p.startsWith('/uploads/')).forEach(p => {
+      const shared = db.prepare("SELECT 1 FROM messages WHERE file_path LIKE '%' || ? || '%' LIMIT 1").get(p);
+      if (!shared) fs.unlink(path.join(__dirname, p), () => {});
+    });
   }
   io.to(String(msg.room_id)).emit('message_deleted', { messageId: msg.id });
 }
@@ -241,6 +250,7 @@ function messagePreview(msg) {
   return msg.type === 'text' ? (msg.content || '').slice(0, 100)
     : msg.type === 'audio' ? '🎙 Voice message'
     : msg.type === 'image' ? '🖼 Image'
+    : msg.type === 'gallery' ? '🖼 Photos'
     : msg.type === 'video' ? '🎥 Video'
     : msg.type === 'music' ? '🎵 Audio file'
     : msg.type === 'invite' ? '🔒 Room invitation' : '📄 File';

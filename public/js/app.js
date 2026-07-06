@@ -101,6 +101,19 @@ window.addEventListener('DOMContentLoaded', () => {
     })
     .catch(() => {});
   document.addEventListener('click', handleGlobalClick);
+  // Clicking the empty space beside a message opens its actions menu
+  document.getElementById('messages').addEventListener('click', (e) => {
+    if (e.target !== e.currentTarget) return; // only direct whitespace clicks
+    const rows = [...e.currentTarget.querySelectorAll('.msg-wrapper')];
+    const hit = rows.find(w => {
+      const r = w.getBoundingClientRect();
+      return e.clientY >= r.top && e.clientY <= r.bottom;
+    });
+    if (hit && hit._msg) {
+      e.stopPropagation();
+      openCtxMenu(hit._msg.id, hit._msg.type, hit._isMine, hit, hit._msg);
+    }
+  });
   document.addEventListener('contextmenu', e => e.preventDefault());
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
   // Prevent document-level scroll from touch gestures on mobile
@@ -814,7 +827,7 @@ function sendOrSave() {
 function setReply(msg) {
   replyTo = { id: msg.id, username: msg.username, content: msg.content, type: msg.type };
   document.getElementById('reply-bar-user').textContent = msg.username;
-  const preview = msg.type === 'text' ? (msg.content || '').slice(0, 60) : msg.type === 'audio' ? '🎙 Voice message' : msg.type === 'image' ? '🖼 Image' : msg.type === 'video' ? '🎥 Video' : msg.type === 'music' ? '🎵 Audio file' : '📄 File';
+  const preview = msg.type === 'text' ? (msg.content || '').slice(0, 60) : msg.type === 'audio' ? '🎙 Voice message' : msg.type === 'image' ? '🖼 Image' : msg.type === 'gallery' ? '🖼 Photos' : msg.type === 'video' ? '🎥 Video' : msg.type === 'music' ? '🎵 Audio file' : '📄 File';
   document.getElementById('reply-bar-text').textContent = preview;
   show('reply-bar');
   document.getElementById('msg-input').focus();
@@ -965,13 +978,7 @@ function markUploadFailed(wrapper, clientId, retryFn) {
 // uploadFilename: name given to the multipart upload (needs a real extension).
 // messageFileName: what's stored/shown as the message's fileName (voice notes
 // stash their waveform peaks here instead of a real filename).
-async function uploadAndSendMedia(file, type, uploadFilename, messageFileName, roomId, replyToId) {
-  const oneTimeSeconds = pendingOneTimeSeconds || undefined;
-  clearOneTime();
-  // Any typed text becomes this media message's caption (one message).
-  const inputEl = document.getElementById('msg-input');
-  const caption = inputEl.value.trim() || null;
-  if (caption) { inputEl.value = ''; updateComposerButtons(); stopTypingSignal(); }
+async function uploadAndSendMedia(file, type, uploadFilename, messageFileName, roomId, replyToId, caption = null, oneTimeSeconds = undefined) {
   const clientId = 'tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2);
   const previewUrl = (type === 'image' || type === 'video' || type === 'audio') ? URL.createObjectURL(file) : null;
   const tempMsg = {
@@ -996,7 +1003,7 @@ async function uploadAndSendMedia(file, type, uploadFilename, messageFileName, r
     });
   } catch (err) {
     if (pendingUploads[clientId]) {
-      markUploadFailed(wrapper, clientId, () => uploadAndSendMedia(file, type, uploadFilename, messageFileName, roomId, replyToId));
+      markUploadFailed(wrapper, clientId, () => uploadAndSendMedia(file, type, uploadFilename, messageFileName, roomId, replyToId, caption, oneTimeSeconds));
     }
   }
 }
@@ -1054,17 +1061,72 @@ function sendPendingFiles() {
   const items = pendingFiles;
   pendingFiles = [];
   renderPendingFiles();
-  items.forEach(p => {
-    URL.revokeObjectURL(p.url);
-    const file = p.file;
-    const type = file.type.startsWith('image/') ? 'image'
-      : file.type.startsWith('video/') ? 'video'
-      : file.type.startsWith('audio/') ? 'music' : 'file';
-    // uploadAndSendMedia consumes the typed caption on the first call and
-    // finds the input empty for the rest.
-    uploadAndSendMedia(file, type, file.name, file.name, currentRoomId, replyTo?.id || null);
-  });
+  const oneTimeSeconds = pendingOneTimeSeconds || undefined;
+  clearOneTime();
+  const inputEl = document.getElementById('msg-input');
+  const caption = inputEl.value.trim() || null;
+  if (caption) { inputEl.value = ''; updateComposerButtons(); stopTypingSignal(); }
+  const roomId = currentRoomId, replyToId = replyTo?.id || null;
+
+  const images = items.filter(p => p.file.type.startsWith('image/'));
+  const others = items.filter(p => !p.file.type.startsWith('image/'));
+  if (images.length > 1) {
+    // Multiple images travel as ONE gallery message with the caption below.
+    sendGallery(images, caption, oneTimeSeconds, roomId, replyToId);
+    others.forEach(p => stagedSendOne(p, null, oneTimeSeconds, roomId, replyToId));
+  } else {
+    items.forEach((p, i) => stagedSendOne(p, i === 0 ? caption : null, oneTimeSeconds, roomId, replyToId));
+  }
   cancelReply();
+}
+
+function stagedSendOne(p, caption, oneTimeSeconds, roomId, replyToId) {
+  URL.revokeObjectURL(p.url);
+  const file = p.file;
+  const type = file.type.startsWith('image/') ? 'image'
+    : file.type.startsWith('video/') ? 'video'
+    : file.type.startsWith('audio/') ? 'music' : 'file';
+  uploadAndSendMedia(file, type, file.name, file.name, roomId, replyToId, caption, oneTimeSeconds);
+}
+
+// Uploads several images and sends them as ONE gallery message.
+async function sendGallery(images, caption, oneTimeSeconds, roomId, replyToId) {
+  const clientId = 'tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+  const tempMsg = {
+    id: clientId, username, avatar: localStorage.getItem('avatar') || '',
+    type: 'gallery', content: caption,
+    file_path: JSON.stringify(images.map(p => p.url)), file_name: null,
+    created_at: new Date().toISOString(),
+    reply_to_id: replyTo?.id || null, reply_username: replyTo?.username || null,
+    _uploading: true, _progress: 0,
+  };
+  const wrapper = buildMessageElement(tempMsg);
+  document.getElementById('messages').appendChild(wrapper);
+  scrollBottom();
+  pendingUploads[clientId] = { wrapper, previewUrl: null };
+
+  try {
+    const progress = images.map(() => 0);
+    const urls = [];
+    for (let i = 0; i < images.length; i++) {
+      const res = await xhrUpload(images[i].file, images[i].file.name, pct => {
+        progress[i] = pct;
+        updateUploadProgress(wrapper, Math.round(progress.reduce((a, b) => a + b, 0) / images.length));
+      });
+      if (res.error) throw new Error(res.error);
+      urls.push(res.url);
+    }
+    if (!pendingUploads[clientId]) return;
+    images.forEach(p => URL.revokeObjectURL(p.url));
+    socket.emit('send_message', {
+      roomId, type: 'gallery', content: caption, filePath: JSON.stringify(urls),
+      fileName: null, replyToId, clientId, oneTimeSeconds,
+    });
+  } catch {
+    if (pendingUploads[clientId]) {
+      markUploadFailed(wrapper, clientId, () => sendGallery(images, caption, oneTimeSeconds, roomId, replyToId));
+    }
+  }
 }
 
 // ─── Recording ────────────────────────────────────────────────────────────────
@@ -1254,7 +1316,9 @@ async function sendRecording() {
   // Store normalized peaks in the filename slot for waveform rendering
   const peaks = normalizePeaks(previewWaveformPeaks, 50).map(v => Math.round(v * 100)).join(',');
   const roomId = currentRoomId, replyToId = replyTo?.id || null;
-  uploadAndSendMedia(recordedBlob, 'audio', `voice-${Date.now()}.${ext}`, peaks, roomId, replyToId);
+  const oneTimeSeconds = pendingOneTimeSeconds || undefined;
+  clearOneTime();
+  uploadAndSendMedia(recordedBlob, 'audio', `voice-${Date.now()}.${ext}`, peaks, roomId, replyToId, null, oneTimeSeconds);
   resetRecordingUI();
   cancelReply();
 }
@@ -1371,7 +1435,7 @@ function armOneTimeClock(msg, wrapperEl) {
     oneTimeClockStarted.add(msg.id);
     socket.emit('view_one_time', { messageId: msg.id });
   };
-  if (msg.type === 'image') {
+  if (msg.type === 'image' || msg.type === 'gallery') {
     // Only a successful, complete load starts the clock — a failed download
     // must not consume the viewing window.
     const img = wrapperEl.querySelector('img');
@@ -1469,7 +1533,8 @@ function buildMessageElement(msg) {
       : msg.reply_type === 'audio' ? '🎙 Voice message'
       : msg.reply_type === 'image' ? '🖼 Image'
       : msg.reply_type === 'video' ? '🎥 Video'
-      : msg.reply_type === 'music' ? '🎵 Audio file' : '📄 File';
+      : msg.reply_type === 'music' ? '🎵 Audio file'
+      : msg.reply_type === 'gallery' ? '🖼 Photos' : '📄 File';
     quote.appendChild(quoteUser);
     quote.appendChild(quoteText);
     bubble.appendChild(quote);
@@ -1525,6 +1590,19 @@ function buildMessageElement(msg) {
     const img = document.createElement('img');
     img.src = msg.file_path; img.onclick = () => openLightbox(msg.file_path);
     bubble.appendChild(img);
+  } else if (msg.type === 'gallery') {
+    let urls = [];
+    try { urls = JSON.parse(msg.file_path || '[]'); } catch {}
+    const grid = document.createElement('div');
+    grid.className = 'gallery-grid';
+    urls.forEach(u => {
+      const src = msg._uploading ? u : u; // object URLs while uploading, server paths after
+      const img = document.createElement('img');
+      img.src = src;
+      img.onclick = () => openLightbox(src);
+      grid.appendChild(img);
+    });
+    bubble.appendChild(grid);
   } else if (msg.type === 'audio') {
     bubble.appendChild(buildVoicePlayer(msg));
   } else if (msg.type === 'video') {
@@ -1599,6 +1677,8 @@ function buildMessageElement(msg) {
     footer.appendChild(reactBtn);
 
     // Tapping the bubble (or the whitespace beside it) opens the actions menu
+    wrapper._msg = msg;
+    wrapper._isMine = isMine;
     const openMenu = (e) => {
       if (e.target.closest('a, button, video, audio, img, input')) return;
       e.stopPropagation();
@@ -1661,12 +1741,20 @@ function ctxReply() {
 
 function ctxDownload() {
   if (!ctxTarget?.filePath) return;
-  const a = document.createElement('a');
-  a.href = ctxTarget.filePath;
-  a.download = ctxTarget.fileName && !ctxTarget.fileName.includes(',') ? ctxTarget.fileName : '';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  let paths = [ctxTarget.filePath];
+  if (ctxTarget.type === 'gallery') {
+    try { paths = JSON.parse(ctxTarget.filePath); } catch {}
+  }
+  paths.forEach((pth, i) => {
+    setTimeout(() => {
+      const a = document.createElement('a');
+      a.href = pth;
+      a.download = (ctxTarget?.fileName && !ctxTarget.fileName.includes(',')) ? ctxTarget.fileName : '';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }, i * 300);
+  });
   closeCtxMenu();
 }
 
