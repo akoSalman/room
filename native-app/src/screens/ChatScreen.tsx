@@ -91,6 +91,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [showOneTimeMenu, setShowOneTimeMenu] = useState(false);
   const [actionsMsg, setActionsMsg] = useState<{ msg: Message; x: number; y: number } | null>(null); // tap menu for a message
   const [pendingMedia, setPendingMedia] = useState<{ uri: string; name: string; mime: string }[]>([]);
+  const [pendingVoice, setPendingVoice] = useState<{ uri: string; peaks: number[] } | null>(null);
   const [forwardMsg, setForwardMsg] = useState<Message | null>(null);
   const [forwardTargets, setForwardTargets] = useState<any[]>([]);
   const [showRoomInfo, setShowRoomInfo] = useState(false);
@@ -312,22 +313,28 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }, [room.id]);
 
   function sendText() {
-    if (pendingMedia.length && !editingId) {
+    if ((pendingMedia.length || pendingVoice) && !editingId) {
       const items = pendingMedia;
+      const voice = pendingVoice;
       const caption = text.trim() || null;
       const oneTime = oneTimeSecs ?? undefined;
       setPendingMedia([]);
+      setPendingVoice(null);
       setOneTimeSecs(null);
       if (caption) { setText(''); emitStopTyping(); }
       const images = items.filter(m => m.mime.startsWith('image/'));
       const others = items.filter(m => !m.mime.startsWith('image/'));
+      let captionUsed = false;
       if (images.length > 1) {
         // Multiple images travel as ONE gallery message with the caption below.
         sendGallery(images, caption, oneTime);
+        captionUsed = !!caption;
         others.forEach(m => uploadFile(m.uri, m.name, m.mime, null, oneTime));
-      } else {
+      } else if (items.length) {
         items.forEach((m, i) => uploadFile(m.uri, m.name, m.mime, i === 0 ? caption : null, oneTime));
+        captionUsed = !!caption;
       }
+      if (voice) sendVoice(voice.uri, voice.peaks, captionUsed ? null : caption, oneTime);
       return;
     }
     const t = text.trim();
@@ -514,20 +521,20 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     }
   }
 
-  async function sendVoice(uri: string, peaks: number[]) {
+  async function sendVoice(uri: string, peaks: number[], caption: string | null = null, oneTimeOverride?: number) {
     const peakStr = peaks.map(v => Math.round(v * 100)).join(',');
     const clientId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const replyToId = replyTo?.id ?? null;
-    const oneTime = oneTimeSecs ?? undefined;
+    const oneTime = oneTimeOverride ?? (oneTimeSecs ?? undefined);
     setOneTimeSecs(null);
-    addOptimisticMessage(clientId, 'audio', uri, peakStr, replyToId);
+    addOptimisticMessage(clientId, 'audio', uri, peakStr, replyToId, caption);
     setReplyTo(null);
     try {
       const res = await uploadWithProgress(uri, `voice-${Date.now()}.m4a`, 'audio/m4a', pct => setUploadProgress(prev => ({ ...prev, [clientId]: pct })));
       if (res.error) throw new Error(res.error);
       pendingUploadPaths.current[clientId] = res.url;
       socketRef.current?.emit('send_message', {
-        roomId: room.id, type: 'audio', filePath: res.url, fileName: peakStr, replyToId, clientId, oneTimeSeconds: oneTime,
+        roomId: room.id, type: 'audio', content: caption, filePath: res.url, fileName: peakStr, replyToId, clientId, oneTimeSeconds: oneTime,
       });
     } catch {
       markUploadFailed(clientId);
@@ -1340,7 +1347,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       {recording ? (
         <VoiceRecorder
           onCancel={() => stopRecordingUI()}
-          onSend={(uri, peaks) => { stopRecordingUI(); sendVoice(uri, peaks); }}
+          onSend={(uri, peaks) => { stopRecordingUI(); setPendingVoice({ uri, peaks }); }}
         />
       ) : (
         <View>
@@ -1357,6 +1364,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               <Text style={s.stripBtnText}>🔥 One-time{oneTimeSecs ? ` ${oneTimeSecs}s` : ''}</Text>
             </TouchableOpacity>
           </View>
+          {pendingVoice && (
+            <View style={s.pendingMediaBar}>
+              <View style={[s.pendingMediaThumb, s.pendingMediaFile]}>
+                <Text style={s.pendingMediaIcon}>🎙</Text>
+              </View>
+              <Text style={s.pendingVoiceLabel}>Voice message — add a caption or send</Text>
+              <TouchableOpacity onPress={() => setPendingVoice(null)}>
+                <Text style={s.pendingVoiceClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+          )}
           {pendingMedia.length > 0 && (
             <View style={s.pendingMediaBar}>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, alignItems: 'center' }}>
@@ -1384,7 +1402,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           )}
           <View style={s.inputBar}>
             <TextInput
-              style={s.input} placeholder={pendingMedia.length ? 'Add a caption…' : 'Message...'} placeholderTextColor={C.muted}
+              style={s.input} placeholder={(pendingMedia.length || pendingVoice) ? 'Add a caption…' : 'Message...'} placeholderTextColor={C.muted}
               value={text} onChangeText={t => { setText(t); emitTyping(); }}
               onSubmitEditing={sendText} blurOnSubmit={false} multiline
             />
@@ -1475,6 +1493,8 @@ const s = StyleSheet.create({
     backgroundColor: '#f87171', alignItems: 'center', justifyContent: 'center',
   },
   pendingMediaRemoveText: { color: '#fff', fontSize: 10, fontWeight: '700', lineHeight: 12 },
+  pendingVoiceLabel: { flex: 1, color: C.text, fontSize: 13 },
+  pendingVoiceClose: { color: C.muted, fontSize: 16, padding: 6 },
   copyableNumber: { color: C.accent, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
   inlineCopy: { fontSize: 13 },
   bubbleHighlight: { borderWidth: 2, borderColor: C.accent },
