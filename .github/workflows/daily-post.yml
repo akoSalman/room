@@ -1,0 +1,47 @@
+name: Daily product post
+
+on:
+  schedule:
+    # 06:30 UTC = 10:00 Tehran time. Adjust to taste.
+    - cron: "30 6 * * *"
+  workflow_dispatch: {}  # allows manual "Run workflow" button for testing
+
+permissions:
+  contents: write  # to commit the rotation state back
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run the agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SHEET_CSV_URL: ${{ secrets.SHEET_CSV_URL }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          TELEGRAM_DRAFT_CHAT_ID: ${{ secrets.TELEGRAM_DRAFT_CHAT_ID }}
+          CAPTION_LANGUAGE: ${{ vars.CAPTION_LANGUAGE }}
+          CLIP_SECONDS: ${{ vars.CLIP_SECONDS }}
+        run: python -m agent.main
+
+      - name: Save rotation state
+        run: |
+          git config user.name "product-agent"
+          git config user.email "actions@users.noreply.github.com"
+          git add state/posted.json
+          git diff --cached --quiet || git commit -m "Update posted-product state"
+          git push
