@@ -426,7 +426,19 @@ html {
 }
 #quick-emoji-list button:hover { background: rgba(59,125,216,0.2); }
 #quick-emoji-close { font-size: 0.85rem; color: var(--muted); }
-.msg-menu-btn { font-size: 0.95rem; font-weight: 700; }
+/* ⋮ actions button sits beside the bubble (inside edge of the row) */
+.bubble-row { display: flex; align-items: center; gap: 4px; max-width: 100%; min-width: 0; }
+.msg-wrapper.mine .bubble-row { flex-direction: row-reverse; }
+.msg-menu-btn {
+  flex-shrink: 0; background: none; border: none; cursor: pointer;
+  color: var(--muted); font-size: 1.05rem; font-weight: 700; line-height: 1;
+  width: 26px; height: 26px; border-radius: 13px;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0.4; transition: opacity .15s, background .15s;
+}
+.msg-wrapper:hover .msg-menu-btn { opacity: 1; }
+.msg-menu-btn:hover { background: rgba(128,128,128,0.18); }
+@media (pointer: coarse) { .msg-menu-btn { opacity: 0.6; } }
 #media-preview-bar {
   display: flex; align-items: center; gap: 10px; padding: 8px 14px; flex-shrink: 0;
   background: rgba(59,125,216,0.08); border-top: 1px solid var(--accent);
@@ -606,8 +618,8 @@ html {
 .reaction-chip .count { font-size: 0.75rem; color: var(--muted); }
 
 /* ── Context menu ─────────────────────────────────── */
-#ctx-menu { position: fixed; background: var(--sidebar-bg); border: 1px solid var(--border); border-radius: 10px; z-index: 200; box-shadow: 0 6px 20px rgba(0,0,0,.5); min-width: 160px; overflow: hidden; }
-#ctx-menu button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 13px 16px; background: none; border: none; color: var(--text); font-size: 0.9rem; cursor: pointer; text-align: left; transition: background .12s; }
+#ctx-menu { position: fixed; background: var(--sidebar-bg); border: 1px solid var(--border); border-radius: 14px; z-index: 200; box-shadow: 0 12px 32px rgba(0,0,0,.55); min-width: 180px; overflow: hidden; padding: 4px; backdrop-filter: blur(8px); }
+#ctx-menu button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 14px; background: none; border: none; border-radius: 9px; color: var(--text); font-size: 0.92rem; cursor: pointer; text-align: left; transition: background .12s; }
 #ctx-menu button:hover { background: var(--input-bg); }
 #ctx-menu button.danger { color: var(--danger); }
 #ctx-menu hr { border: none; border-top: 1px solid var(--border); margin: 0; }

@@ -118,10 +118,23 @@ export async function e2eDMPeerKey(roomId: number): Promise<Uint8Array | null> {
   return peerKeys[cacheKey];
 }
 
+// The Diffie-Hellman scalar multiplication in nacl.box is by far the most
+// expensive step (hundreds of ms per call in pure JS on slow phones). Do it
+// ONCE per peer with box.before and reuse the shared key for every message —
+// otherwise a DM with history freezes the whole app while it decrypts.
+let sharedCache: { pk: string; sk: Uint8Array; key: Uint8Array } | null = null;
+function sharedKey(peerPk: Uint8Array): Uint8Array {
+  const tag = b64enc(peerPk);
+  if (!sharedCache || sharedCache.pk !== tag || sharedCache.sk !== myKeys!.secretKey) {
+    sharedCache = { pk: tag, sk: myKeys!.secretKey, key: nacl.box.before(peerPk, myKeys!.secretKey) };
+  }
+  return sharedCache.key;
+}
+
 export function e2eEncrypt(text: string, peerPk: Uint8Array | null): string | null {
   if (!myKeys || !peerPk) return null;
   const nonce = nacl.randomBytes(24);
-  const ct = nacl.box(te.encode(text), nonce, peerPk, myKeys.secretKey);
+  const ct = nacl.box.after(te.encode(text), nonce, sharedKey(peerPk));
   const packed = new Uint8Array(24 + ct.length);
   packed.set(nonce, 0); packed.set(ct, 24);
   return 'e2e:' + b64enc(packed);
@@ -132,7 +145,7 @@ export function e2eDecrypt(content: string | null, peerPk: Uint8Array | null): s
   if (!myKeys || !peerPk) return null;
   try {
     const packed = b64dec(content.slice(4));
-    const opened = nacl.box.open(packed.subarray(24), packed.subarray(0, 24), peerPk, myKeys.secretKey);
+    const opened = nacl.box.open.after(packed.subarray(24), packed.subarray(0, 24), sharedKey(peerPk));
     return opened ? td.decode(new Uint8Array(opened)) : null;
   } catch { return null; }
 }
@@ -142,5 +155,6 @@ export const e2eIsEncrypted = (content: string | null | undefined) =>
 
 export async function e2eClear() {
   myKeys = null;
+  sharedCache = null;
   await AsyncStorage.multiRemove(['e2e_pk', 'e2e_sk']);
 }

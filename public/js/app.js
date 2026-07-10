@@ -989,20 +989,16 @@ function toggleOneTime() {
   const secs = parseInt(raw, 10);
   if (!Number.isInteger(secs) || secs < 1 || secs > 3600) return alert('Enter a number of seconds between 1 and 3600.');
   pendingOneTimeSeconds = secs;
-  const btn = document.getElementById('composer-plus-btn');
-  btn.classList.add('one-time-armed');
-  btn.textContent = '🔥';
-  btn.title = `One-time: disappears ${secs}s after viewing`;
-  document.getElementById('composer-one-time').textContent = `🔥  One-time: ${secs}s (turn off)`;
+  const otBtn = document.getElementById('composer-one-time');
+  otBtn.textContent = `🔥 One-time: ${secs}s (turn off)`;
+  otBtn.classList.add('one-time-armed');
 }
 
 function clearOneTime() {
   pendingOneTimeSeconds = null;
-  const btn = document.getElementById('composer-plus-btn');
-  btn.classList.remove('one-time-armed');
-  btn.textContent = '＋';
-  btn.title = 'More';
-  document.getElementById('composer-one-time').textContent = '🔥  One-time message';
+  const otBtn = document.getElementById('composer-one-time');
+  otBtn.textContent = '🔥 One-time';
+  otBtn.classList.remove('one-time-armed');
 }
 
 function stopTypingSignal() {
@@ -1801,7 +1797,22 @@ function buildMessageElement(msg) {
   if (['image', 'video', 'audio', 'music'].includes(msg.type) && !msg._uploading) {
     attachDownloadSpinner(bubble, msg.type);
   }
-  wrapper.appendChild(bubble);
+  // Bubble sits in a row with the ⋮ actions button BESIDE it, not under it
+  const bubbleRow = document.createElement('div');
+  bubbleRow.className = 'bubble-row';
+  bubbleRow.appendChild(bubble);
+  if (!msg._uploading) {
+    const menuBtn = document.createElement('button');
+    menuBtn.className = 'msg-menu-btn'; menuBtn.textContent = '⋮'; menuBtn.title = 'Message actions';
+    menuBtn.onclick = (e) => {
+      e.stopPropagation();
+      const menuEl = document.getElementById('ctx-menu');
+      if (!menuEl.classList.contains('hidden')) { closeCtxMenu(); return; }
+      openCtxMenu(msg.id, msg.type, isMine, menuBtn, msg);
+    };
+    bubbleRow.appendChild(menuBtn);
+  }
+  wrapper.appendChild(bubbleRow);
 
   const footer = document.createElement('div');
   footer.className = 'msg-footer';
@@ -1835,18 +1846,6 @@ function buildMessageElement(msg) {
     reactBtn.className = 'react-btn'; reactBtn.textContent = '😊'; reactBtn.title = 'React';
     reactBtn.onclick = (e) => { e.stopPropagation(); showEmojiPicker(msg.id, reactBtn, wrapper); };
     footer.appendChild(reactBtn);
-
-    // Message actions live behind an explicit ⋯ button so ordinary taps on
-    // the bubble (emoji, reply-quote jumps, links) never open the menu.
-    const menuBtn = document.createElement('button');
-    menuBtn.className = 'react-btn msg-menu-btn'; menuBtn.textContent = '⋯'; menuBtn.title = 'Message actions';
-    menuBtn.onclick = (e) => {
-      e.stopPropagation();
-      const menuEl = document.getElementById('ctx-menu');
-      if (!menuEl.classList.contains('hidden')) { closeCtxMenu(); return; }
-      openCtxMenu(msg.id, msg.type, isMine, wrapper, msg);
-    };
-    footer.appendChild(menuBtn);
   }
 
   wrapper.appendChild(footer);
@@ -2255,9 +2254,10 @@ let lightboxSwipedAt = 0; // suppresses the tap-to-close click a swipe generates
 (() => {
   let sx = null, sy = null;
   const lb = () => document.getElementById('lightbox');
+  // Capture phase: no child handler (image pan/zoom) can swallow the swipe
   document.addEventListener('touchstart', (e) => {
     if (!lb().classList.contains('hidden')) { sx = e.touches[0].clientX; sy = e.touches[0].clientY; }
-  }, { passive: true });
+  }, { passive: true, capture: true });
   document.addEventListener('touchend', (e) => {
     if (sx === null || lb().classList.contains('hidden')) { sx = null; return; }
     const dx = e.changedTouches[0].clientX - sx;
@@ -2267,7 +2267,7 @@ let lightboxSwipedAt = 0; // suppresses the tap-to-close click a swipe generates
       lightboxSwipedAt = Date.now();
       lightboxNav(dx < 0 ? 1 : -1);
     }
-  }, { passive: true });
+  }, { passive: true, capture: true });
 })();
 
 function showLightboxAt(idx) {

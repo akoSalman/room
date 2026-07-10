@@ -12,7 +12,7 @@ import * as MediaLibrary from 'expo-media-library';
 import * as FileSystem from 'expo-file-system';
 import * as Clipboard from 'expo-clipboard';
 import {
-  PinchGestureHandler, PanGestureHandler, State as GHState,
+  PinchGestureHandler, PanGestureHandler, State as GHState, GestureHandlerRootView,
 } from 'react-native-gesture-handler';
 import { C, isRTL } from '../theme';
 import { apiFetch, getSocket, getToken, getUsername, getAvatar, BASE_URL } from '../api';
@@ -921,6 +921,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             </TouchableOpacity>
           )
         )}
+        <View style={[s.bubbleRow, mine && s.bubbleRowMine]}>
         <SwipeableMessage
           onSwipeRight={() => setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type })}
           onSwipeLeft={mine ? () => deleteMsg(msg.id) : undefined}
@@ -1047,6 +1048,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           )}
         </TouchableOpacity>
         </SwipeableMessage>
+        {!msg._uploading && !msg._uploadFailed && (
+          <TouchableOpacity
+            style={s.msgMenuBtn}
+            onPress={(e) => setActionsMsg({ msg, x: e.nativeEvent.pageX, y: e.nativeEvent.pageY })}
+            hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}>
+            <Text style={s.msgMenuBtnText}>⋮</Text>
+          </TouchableOpacity>
+        )}
+        </View>
 
         {/* Reactions */}
         {Object.keys(grouped).length > 0 && (
@@ -1077,13 +1087,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           {!msg._uploading && !msg._uploadFailed && (
             <TouchableOpacity onPress={() => setShowEmojiFor(msg.id)} hitSlop={{ top: 6, bottom: 6 }}>
               <Text style={s.footerBtn}>😊</Text>
-            </TouchableOpacity>
-          )}
-          {!msg._uploading && !msg._uploadFailed && (
-            <TouchableOpacity
-              onPress={(e) => setActionsMsg({ msg, x: e.nativeEvent.pageX, y: e.nativeEvent.pageY })}
-              hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}>
-              <Text style={s.footerBtn}>⋯</Text>
             </TouchableOpacity>
           )}
         </View>
@@ -1213,6 +1216,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
       {/* Image lightbox */}
       <Modal visible={!!lightboxUrl} transparent animationType="fade" onRequestClose={() => setLightboxUrl(null)}>
+        {/* Gesture handlers are dead inside an RN Modal unless the modal has
+            its own GestureHandlerRootView — without it pinch/pan/swipe never fire. */}
+        <GestureHandlerRootView style={{ flex: 1 }}>
         <View style={s.lightboxOverlay}>
           <TouchableOpacity onPress={() => setLightboxUrl(null)} style={s.lightboxClose}>
             <Text style={s.lightboxCloseText}>✕</Text>
@@ -1250,6 +1256,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             );
           })()}
         </View>
+        </GestureHandlerRootView>
       </Modal>
 
       {/* Video player */}
@@ -1824,12 +1831,24 @@ const s = StyleSheet.create({
   quickEmojiCloseText: { color: C.muted, fontSize: 13, fontWeight: '700' },
   unreadDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: C.online, marginLeft: 4, marginTop: -8 },
   actionsMenu: {
-    backgroundColor: C.msgBg, borderRadius: 12, paddingVertical: 4,
-    elevation: 6, shadowColor: '#000', shadowOpacity: 0.2,
-    shadowRadius: 10, shadowOffset: { width: 0, height: 3 },
+    backgroundColor: C.msgBg, borderRadius: 16, paddingVertical: 6, paddingHorizontal: 5,
+    borderWidth: 1, borderColor: C.border,
+    elevation: 12, shadowColor: '#000', shadowOpacity: 0.35,
+    shadowRadius: 18, shadowOffset: { width: 0, height: 6 },
   },
-  actionItem: { paddingHorizontal: 14, paddingVertical: 10 },
-  actionText: { color: C.text, fontSize: 14, fontWeight: '600' },
+  actionItem: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 12, paddingVertical: 11, borderRadius: 10,
+  },
+  actionText: { color: C.text, fontSize: 14.5, fontWeight: '600' },
+  bubbleRow: { flexDirection: 'row', alignItems: 'center', maxWidth: '100%' },
+  bubbleRowMine: { flexDirection: 'row-reverse' },
+  msgMenuBtn: {
+    width: 26, height: 26, borderRadius: 13, marginHorizontal: 3,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(128,128,128,0.12)',
+  },
+  msgMenuBtnText: { color: C.muted, fontSize: 15, fontWeight: '700', lineHeight: 18 },
   pendingMediaBar: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     paddingHorizontal: 12, paddingVertical: 6,

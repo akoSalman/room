@@ -92,10 +92,22 @@ const E2E = (() => {
     return peerKeys[userId];
   }
 
+  // The Diffie-Hellman step in nacl.box dominates the cost of every call.
+  // Compute it once per peer (box.before) and reuse the shared key so
+  // encrypting/decrypting a long DM history doesn't freeze the page.
+  let sharedCache = null;
+  function sharedKey(peerPk) {
+    const tag = b64.enc(peerPk);
+    if (!sharedCache || sharedCache.pk !== tag || sharedCache.sk !== myKeys.secretKey) {
+      sharedCache = { pk: tag, sk: myKeys.secretKey, key: nacl.box.before(peerPk, myKeys.secretKey) };
+    }
+    return sharedCache.key;
+  }
+
   function encrypt(text, peerPk) {
     if (!myKeys || !peerPk) return null;
     const nonce = nacl.randomBytes(24);
-    const ct = nacl.box(new TextEncoder().encode(text), nonce, peerPk, myKeys.secretKey);
+    const ct = nacl.box.after(new TextEncoder().encode(text), nonce, sharedKey(peerPk));
     const packed = new Uint8Array(24 + ct.length);
     packed.set(nonce, 0); packed.set(ct, 24);
     return 'e2e:' + b64.enc(packed);
@@ -106,13 +118,13 @@ const E2E = (() => {
     if (!myKeys || !peerPk) return null;
     try {
       const packed = b64.dec(content.slice(4));
-      const opened = nacl.box.open(packed.subarray(24), packed.subarray(0, 24), peerPk, myKeys.secretKey);
+      const opened = nacl.box.open.after(packed.subarray(24), packed.subarray(0, 24), sharedKey(peerPk));
       return opened ? new TextDecoder().decode(opened) : null;
     } catch { return null; }
   }
 
   const isEncrypted = (content) => !!content && String(content).startsWith('e2e:');
-  const clear = () => { myKeys = null; localStorage.removeItem('e2e_pk'); localStorage.removeItem('e2e_sk'); };
+  const clear = () => { myKeys = null; sharedCache = null; localStorage.removeItem('e2e_pk'); localStorage.removeItem('e2e_sk'); };
   const ready = () => !!myKeys || loadLocal();
 
   return { setup, rewrap, getPeerKey, encrypt, decrypt, isEncrypted, clear, ready, decodeKey: b64.dec };
