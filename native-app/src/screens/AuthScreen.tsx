@@ -7,6 +7,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { C } from '../theme';
 import { BASE_URL } from '../api';
+import { e2eSetup } from '../e2e';
 
 export default function AuthScreen({ onLogin }: { onLogin: () => void }) {
   const [username, setUsername] = useState('');
@@ -43,6 +44,7 @@ export default function AuthScreen({ onLogin }: { onLogin: () => void }) {
       await AsyncStorage.setItem('username', res.username);
       if (res.avatar) await AsyncStorage.setItem('avatar', res.avatar);
       else await AsyncStorage.removeItem('avatar');
+      e2eSetup(password).catch(() => {});
       onLogin();
     } catch {
       Alert.alert('Error', 'Could not connect to server.');

@@ -3,6 +3,7 @@ let username = localStorage.getItem('username');
 let currentRoomId = null;
 let currentRoomIsDM = false;
 let maxOtherReadMsgId = 0; // highest message id any other room member has read (for seen checkmarks)
+let currentDMPeerPk = null; // the DM partner's public key (E2E) or null
 
 // Per-brand APK release info, picked by the domain serving this page.
 const IS_BISTBARG = location.hostname.includes('bistbarg');
@@ -68,7 +69,8 @@ function requestNotifPermission() {
 function showNotif(msg) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   if (document.visibilityState === 'visible' && String(msg.room_id) === String(currentRoomId)) return;
-  const body = msg.type === 'text' ? (msg.content || '') : msg.type === 'audio' ? '🎙 Voice message' : msg.type === 'image' ? '🖼 Image' : msg.type === 'video' ? '🎥 Video' : msg.type === 'music' ? '🎵 Audio file' : '📄 File';
+  const body = E2E.isEncrypted(msg.content) ? '🔒 Message'
+    : msg.type === 'text' ? (msg.content || '') : msg.type === 'audio' ? '🎙 Voice message' : msg.type === 'image' ? '🖼 Image' : msg.type === 'video' ? '🎥 Video' : msg.type === 'music' ? '🎵 Audio file' : '📄 File';
   new Notification(msg.username, { body, icon: '/icons/icon-192.png', tag: 'chatroom-' + msg.room_id, silent: false });
 }
 
@@ -156,6 +158,7 @@ async function signin() {
     }
     if (res.error) return showAuthError(res.error);
     saveSession(res.token, res.username, res.avatar);
+    E2E.setup(pass, api).catch(() => {});
     enterApp();
   } catch { showAuthError('Connection error — is the server running?'); }
   finally { btn.disabled = false; btn.textContent = 'Continue →'; }
@@ -282,7 +285,13 @@ function connectSocket() {
         socket.emit('mark_read', { roomId: msg.room_id, lastMsgId: msg.id });
       }
     });
-    socket.on('message_edited', ({ messageId, content }) => applyEdit(messageId, content));
+    socket.on('message_edited', ({ messageId, content }) => {
+      if (E2E.isEncrypted(content)) {
+        const dec = E2E.decrypt(content, currentDMPeerPk);
+        content = dec !== null ? dec : '🔒 Encrypted message';
+      }
+      applyEdit(messageId, content);
+    });
     socket.on('message_deleted', ({ messageId }) => applyDelete(messageId));
     socket.on('reactions_updated', ({ messageId, reactions }) => renderReactions(messageId, reactions));
     socket.on('room_online', ({ users }) => updateOnlineUsers(users));
@@ -583,6 +592,7 @@ async function saveProfile() {
   if (!currentPassword)
     return document.getElementById('profile-error').textContent = 'Current password is required';
   const res = await api('/profile', 'PUT', { newUsername: newUsername || undefined, currentPassword, newPassword: newPassword || undefined });
+  if (!res.error && newPassword) E2E.rewrap(newPassword, api).catch(() => {});
   if (res.error) { document.getElementById('profile-error').textContent = res.error; return; }
   saveSession(res.token, res.username);
   username = res.username;
@@ -749,6 +759,14 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   hasMoreOlderMsgs = true;
   loadingOlderMsgs = false;
   maxOtherReadMsgId = 0;
+  currentDMPeerPk = null;
+  if (isDM && E2E.ready()) {
+    try {
+      const pk = await api('/dm-peer-key/' + roomId);
+      currentDMPeerPk = pk?.publicKey ? E2E.decodeKey(pk.publicKey) : null;
+      if (currentDMPeerPk) document.getElementById('room-title').textContent = '🔒 ' + roomName;
+    } catch {}
+  }
   socket.emit('join_room', roomId);
   const msgs = await api('/messages/' + roomId);
   try {
@@ -838,9 +856,12 @@ function cancelReply() { replyTo = null; hide('reply-bar'); }
 
 function sendText() {
   const input = document.getElementById('msg-input');
-  const content = input.value.trim();
+  let content = input.value.trim();
   if (!content || !currentRoomId || !socketReady) return;
   stopTypingSignal();
+  if (currentRoomIsDM && currentDMPeerPk) {
+    content = E2E.encrypt(content, currentDMPeerPk) || content;
+  }
   socket.emit('send_message', {
     roomId: currentRoomId, type: 'text', content, replyToId: replyTo?.id || null,
     oneTimeSeconds: pendingOneTimeSeconds || undefined,
@@ -904,8 +925,11 @@ function startEdit(messageId) {
   input.focus(); show('edit-banner');
 }
 function saveEdit() {
-  const content = document.getElementById('msg-input').value.trim();
+  let content = document.getElementById('msg-input').value.trim();
   if (!content || !editingMsgId) return;
+  if (currentRoomIsDM && currentDMPeerPk) {
+    content = E2E.encrypt(content, currentDMPeerPk) || content;
+  }
   socket.emit('edit_message', { messageId: editingMsgId, content });
   cancelEdit();
 }
@@ -1066,8 +1090,11 @@ function sendPendingFiles() {
   const oneTimeSeconds = pendingOneTimeSeconds || undefined;
   clearOneTime();
   const inputEl = document.getElementById('msg-input');
-  const caption = inputEl.value.trim() || null;
+  let caption = inputEl.value.trim() || null;
   if (caption) { inputEl.value = ''; updateComposerButtons(); stopTypingSignal(); }
+  if (caption && currentRoomIsDM && currentDMPeerPk) {
+    caption = E2E.encrypt(caption, currentDMPeerPk) || caption;
+  }
   const roomId = currentRoomId, replyToId = replyTo?.id || null;
 
   const images = items.filter(p => p.file.type.startsWith('image/'));
@@ -1494,6 +1521,17 @@ function updateSeenCheckmarks() {
 }
 
 function buildMessageElement(msg) {
+  if (E2E.isEncrypted(msg.content) || E2E.isEncrypted(msg.reply_content)) {
+    msg = { ...msg };
+    if (E2E.isEncrypted(msg.content)) {
+      const dec = E2E.decrypt(msg.content, currentDMPeerPk);
+      msg.content = dec !== null ? dec : '🔒 Encrypted message (cannot decrypt on this device)';
+    }
+    if (E2E.isEncrypted(msg.reply_content)) {
+      const decR = E2E.decrypt(msg.reply_content, currentDMPeerPk);
+      msg.reply_content = decR !== null ? decR : '🔒 Encrypted';
+    }
+  }
   const isMine = msg.username === username;
 
   const wrapper = document.createElement('div');

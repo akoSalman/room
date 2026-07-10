@@ -57,6 +57,11 @@ try { db.exec('ALTER TABLE messages ADD COLUMN forwarded_from TEXT'); } catch {}
 // after first view, and when it was first viewed (ms since epoch).
 try { db.exec('ALTER TABLE messages ADD COLUMN one_time_seconds INTEGER'); } catch {}
 try { db.exec('ALTER TABLE messages ADD COLUMN viewed_at INTEGER'); } catch {}
+// End-to-end encryption: the user's X25519 public key, plus their private key
+// encrypted client-side with a password-derived key (the server can never
+// read it) so the same identity works across web and mobile.
+try { db.exec('ALTER TABLE users ADD COLUMN public_key TEXT'); } catch {}
+try { db.exec('ALTER TABLE users ADD COLUMN enc_priv TEXT'); } catch {}
 db.exec(`
   CREATE TABLE IF NOT EXISTS room_members (
     room_id INTEGER NOT NULL,

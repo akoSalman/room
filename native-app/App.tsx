@@ -79,7 +79,8 @@ export default function App() {
         if (pushRegisteredRef.current) return; // FCM push covers notifications
         if (msg.username === uname) return;
         if (screen === 'chat' && room && msg.room_id === room.id) return;
-        const body = msg.type === 'text' ? (msg.content || '')
+        const body = (msg.content && String(msg.content).startsWith('e2e:')) ? '🔒 Message'
+          : msg.type === 'text' ? (msg.content || '')
           : msg.type === 'audio' ? '🎙 Voice message'
           : msg.type === 'image' ? '🖼 Image'
           : msg.type === 'video' ? '🎥 Video'

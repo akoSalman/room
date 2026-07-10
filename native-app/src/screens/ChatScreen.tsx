@@ -15,6 +15,7 @@ import {
 } from 'react-native-gesture-handler';
 import { C, isRTL } from '../theme';
 import { apiFetch, getSocket, getToken, getUsername, getAvatar, BASE_URL } from '../api';
+import { e2eReady, e2eDMPeerKey, e2eEncrypt, e2eDecrypt, e2eIsEncrypted } from '../e2e';
 import { audioManager } from '../audioManager';
 import VoicePlayer from '../components/VoicePlayer';
 import VoiceRecorder from '../components/VoiceRecorder';
@@ -91,6 +92,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [showOneTimeMenu, setShowOneTimeMenu] = useState(false);
   const [actionsMsg, setActionsMsg] = useState<{ msg: Message; x: number; y: number } | null>(null); // tap menu for a message
   const [pendingMedia, setPendingMedia] = useState<{ uri: string; name: string; mime: string }[]>([]);
+  const dmPeerPk = useRef<Uint8Array | null>(null); // DM partner's public key (E2E)
+  const [e2eActive, setE2eActive] = useState(false);
   const [forwardMsg, setForwardMsg] = useState<Message | null>(null);
   const [forwardTargets, setForwardTargets] = useState<any[]>([]);
   const [showRoomInfo, setShowRoomInfo] = useState(false);
@@ -211,6 +214,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }, [room.id]);
 
   useEffect(() => {
+    if (!room.is_dm) return;
+    (async () => {
+      if (await e2eReady()) {
+        dmPeerPk.current = await e2eDMPeerKey(room.id);
+        setE2eActive(!!dmPeerPk.current);
+      }
+    })();
+  }, [room.id]);
+
+  useEffect(() => {
     let mounted = true;
     (async () => {
       const [msgs, u, sock] = await Promise.all([
@@ -314,7 +327,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   function sendText() {
     if (pendingMedia.length && !editingId) {
       const items = pendingMedia;
-      const caption = text.trim() || null;
+      let caption: string | null = text.trim() || null;
+      if (caption && room.is_dm && dmPeerPk.current) {
+        caption = e2eEncrypt(caption, dmPeerPk.current) || caption;
+      }
       const oneTime = oneTimeSecs ?? undefined;
       setPendingMedia([]);
       setOneTimeSecs(null);
@@ -332,12 +348,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     }
     const t = text.trim();
     if (!t || !socketRef.current) return;
+    const wire = (room.is_dm && dmPeerPk.current) ? (e2eEncrypt(t, dmPeerPk.current) || t) : t;
     if (editingId) {
-      socketRef.current.emit('edit_message', { messageId: editingId, content: t });
+      socketRef.current.emit('edit_message', { messageId: editingId, content: wire });
       setEditingId(null);
     } else {
       socketRef.current.emit('send_message', {
-        roomId: room.id, type: 'text', content: t, replyToId: replyTo?.id ?? null,
+        roomId: room.id, type: 'text', content: wire, replyToId: replyTo?.id ?? null,
         oneTimeSeconds: oneTimeSecs ?? undefined,
       });
       setOneTimeSecs(null);
@@ -731,6 +748,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   function renderMessage({ item: msg }: { item: Message }) {
+    if (e2eIsEncrypted(msg.content) || e2eIsEncrypted(msg.reply_content)) {
+      msg = { ...msg };
+      if (e2eIsEncrypted(msg.content)) {
+        const dec = e2eDecrypt(msg.content, dmPeerPk.current);
+        msg.content = dec !== null ? dec : '🔒 Encrypted message (cannot decrypt on this device)';
+      }
+      if (e2eIsEncrypted(msg.reply_content)) {
+        const decR = e2eDecrypt(msg.reply_content ?? null, dmPeerPk.current);
+        msg.reply_content = decR !== null ? decR : '🔒 Encrypted';
+      }
+    }
     const mine = msg.username === me;
     const hiddenOneTime = !!msg.one_time_seconds && !mine && !revealedOneTime.has(msg.id) && !msg._uploading;
     const rxns = reactions[msg.id] || [];
@@ -1063,7 +1091,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           inverted
           keyExtractor={m => String(m.id)}
           renderItem={renderMessage}
-          extraData={[maxOtherReadMsgId, uploadProgress, reactions, showEmojiFor, highlightId, online, revealedOneTime]}
+          extraData={[maxOtherReadMsgId, uploadProgress, reactions, showEmojiFor, highlightId, online, revealedOneTime, e2eActive]}
           contentContainerStyle={s.messagesList}
           onScroll={onMessagesScroll}
           scrollEventThrottle={100}

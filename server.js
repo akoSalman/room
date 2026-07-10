@@ -247,6 +247,7 @@ setInterval(() => {
 }, 30 * 1000);
 
 function messagePreview(msg) {
+  if (msg.content && String(msg.content).startsWith('e2e:')) return '🔒 Message';
   return msg.type === 'text' ? (msg.content || '').slice(0, 100)
     : msg.type === 'audio' ? '🎙 Voice message'
     : msg.type === 'image' ? '🖼 Image'
@@ -282,6 +283,35 @@ app.get('/unread-counts', authMiddleware, (req, res) => {
   const counts = {};
   rows.forEach(r => { counts[r.room_id] = r.cnt; });
   res.json(counts);
+});
+
+// ── End-to-end encryption key storage ────────────────────────────────────────
+// The private key blob is encrypted client-side with a password-derived key;
+// the server only ever stores/relays opaque strings.
+app.post('/keys', authMiddleware, (req, res) => {
+  const { publicKey, encPriv } = req.body;
+  if (!publicKey || !encPriv) return res.status(400).json({ error: 'publicKey and encPriv required' });
+  db.prepare('UPDATE users SET public_key = ?, enc_priv = ? WHERE id = ?')
+    .run(String(publicKey), JSON.stringify(encPriv), req.user.id);
+  res.json({ ok: true });
+});
+app.get('/keys/me', authMiddleware, (req, res) => {
+  const u = db.prepare('SELECT public_key, enc_priv FROM users WHERE id = ?').get(req.user.id);
+  res.json({ publicKey: u?.public_key || null, encPriv: u?.enc_priv ? JSON.parse(u.enc_priv) : null });
+});
+// Public key of the OTHER participant of a DM room (for E2E encryption)
+app.get('/dm-peer-key/:roomId', authMiddleware, (req, res) => {
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
+  if (!room || !room.is_dm || !canAccessRoom(req.user.id, room)) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  const otherId = getRoomMemberIds(room).find(id => id !== req.user.id);
+  const u = otherId ? db.prepare('SELECT public_key FROM users WHERE id = ?').get(otherId) : null;
+  res.json({ userId: otherId || null, publicKey: u?.public_key || null });
+});
+app.get('/keys/:userId', authMiddleware, (req, res) => {
+  const u = db.prepare('SELECT public_key FROM users WHERE id = ?').get(req.params.userId);
+  res.json({ publicKey: u?.public_key || null });
 });
 
 // Read positions of every member of a room, so the client can render
@@ -654,6 +684,9 @@ io.on('connection', (socket) => {
     }
     if (src.type === 'invite') return typeof ack === 'function' && ack({ error: 'Invitations cannot be forwarded' });
     if (src.one_time_seconds) return typeof ack === 'function' && ack({ error: 'One-time messages cannot be forwarded' });
+    if (src.content && String(src.content).startsWith('e2e:')) {
+      return typeof ack === 'function' && ack({ error: 'Encrypted messages cannot be forwarded' });
+    }
     const origSender = db.prepare('SELECT username FROM users WHERE id = ?').get(src.user_id);
     const result = db.prepare(`
       INSERT INTO messages (room_id, user_id, type, content, file_path, file_name, forwarded_from)
