@@ -20,6 +20,7 @@ class CallManager {
 
   private sock: any = null;
   private pcs = new Map<number, RTCPeerConnection>();
+  private pendingIce = new Map<number, any[]>(); // candidates that arrived before the pc was ready
   private iceServers: any[] = [{ urls: ['stun:stun.l.google.com:19302'] }];
   private roomVoiceId: number | null = null;
   private listeners = new Set<Listener>();
@@ -44,11 +45,20 @@ class CallManager {
     s.on('call_answer', async ({ fromUserId, sdp }: any) => {
       const pc = this.pcs.get(fromUserId);
       if (pc) await pc.setRemoteDescription(sdp).catch(() => {});
+      this.flushIce(fromUserId);
       this.status = 'Connected';
       this.emit();
     });
     s.on('call_ice', ({ fromUserId, candidate }: any) => {
-      this.pcs.get(fromUserId)?.addIceCandidate(candidate).catch(() => {});
+      const pc = this.pcs.get(fromUserId);
+      // Candidates often arrive before the callee accepts (no pc yet) or
+      // before setRemoteDescription — buffer them or the call dies mid-setup.
+      if (!pc || !(pc as any).remoteDescription) {
+        if (!this.pendingIce.has(fromUserId)) this.pendingIce.set(fromUserId, []);
+        this.pendingIce.get(fromUserId)!.push(candidate);
+        return;
+      }
+      pc.addIceCandidate(candidate).catch(() => {});
     });
     s.on('call_end', ({ fromUserId }: any) => {
       this.dropPeer(fromUserId);
@@ -110,9 +120,17 @@ class CallManager {
     });
   }
 
+  private flushIce(userId: number) {
+    const pc = this.pcs.get(userId);
+    const queued = this.pendingIce.get(userId) || [];
+    this.pendingIce.delete(userId);
+    if (pc) queued.forEach(c => pc.addIceCandidate(c).catch(() => {}));
+  }
+
   private dropPeer(userId: number) {
     this.pcs.get(userId)?.close();
     this.pcs.delete(userId);
+    this.pendingIce.delete(userId);
     if (this.mode === 'room-voice' && !this.pcs.size) {
       this.status = 'Voice chat · waiting for others…';
     }
@@ -122,6 +140,7 @@ class CallManager {
   private teardown() {
     this.pcs.forEach(pc => pc.close());
     this.pcs.clear();
+    this.pendingIce.clear();
     this.localStream?.getTracks().forEach(t => t.stop());
     if (this.mode === 'room-voice' && this.roomVoiceId != null) {
       this.sock?.emit('voice_leave', { roomId: this.roomVoiceId });
@@ -141,6 +160,7 @@ class CallManager {
       if (this.mode === 'room-voice' && String(offer.roomId) === String(this.roomVoiceId)) {
         const pc = this.newPc(offer.fromUserId);
         await pc.setRemoteDescription(offer.sdp);
+        this.flushIce(offer.fromUserId);
         const ans = await pc.createAnswer();
         await pc.setLocalDescription(ans);
         this.sock.emit('call_answer', { toUserId: offer.fromUserId, sdp: (pc as any).localDescription });
@@ -182,6 +202,7 @@ class CallManager {
     this.emit();
     const pc = this.newPc(offer.fromUserId);
     await pc.setRemoteDescription(offer.sdp);
+    this.flushIce(offer.fromUserId);
     const ans = await pc.createAnswer();
     await pc.setLocalDescription(ans);
     this.sock.emit('call_answer', { toUserId: offer.fromUserId, sdp: (pc as any).localDescription });

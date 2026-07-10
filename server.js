@@ -194,7 +194,7 @@ async function sendPushToUsers(userIds, title, body, data = {}) {
             token: t,
             notification: { title, body },
             data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])),
-            android: { priority: 'high', notification: { channel_id: 'messages' } },
+            android: { priority: 'high', notification: { channel_id: 'messages-v2', sound: 'notify' } },
           },
         }),
       }).then(async r => {
@@ -246,11 +246,11 @@ setInterval(() => {
   }
 }, 30 * 1000);
 
+// Notifications never preview message content — only the kind of message.
 function messagePreview(msg) {
-  if (msg.content && String(msg.content).startsWith('e2e:')) return '🔒 Message';
-  return msg.type === 'text' ? (msg.content || '').slice(0, 100)
+  return msg.type === 'text' ? '💬 New message'
     : msg.type === 'audio' ? '🎙 Voice message'
-    : msg.type === 'image' ? '🖼 Image'
+    : msg.type === 'image' ? '🖼 Photo'
     : msg.type === 'gallery' ? '🖼 Photos'
     : msg.type === 'video' ? '🎥 Video'
     : msg.type === 'music' ? '🎵 Audio file'

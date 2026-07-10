@@ -6,6 +6,7 @@ const Calls = (() => {
   let sock = null;
   let iceServers = [{ urls: ['stun:stun.l.google.com:19302'] }];
   const pcs = new Map(); // userId -> RTCPeerConnection
+  const pendingIce = new Map(); // userId -> candidates that arrived before the pc was ready
   let localStream = null;
   let mode = null; // 'dm-voice' | 'dm-video' | 'room-voice'
   let dmPeer = null; // { userId, username }
@@ -29,10 +30,19 @@ const Calls = (() => {
     s.on('call_answer', async ({ fromUserId, sdp }) => {
       const pc = pcs.get(fromUserId);
       if (pc) await pc.setRemoteDescription(sdp).catch(() => {});
+      flushIce(fromUserId);
       setStatus('Connected');
     });
     s.on('call_ice', ({ fromUserId, candidate }) => {
-      pcs.get(fromUserId)?.addIceCandidate(candidate).catch(() => {});
+      const pc = pcs.get(fromUserId);
+      // Candidates often arrive before the callee accepts (no pc yet) or
+      // before setRemoteDescription — buffer them or the call dies mid-setup.
+      if (!pc || !pc.remoteDescription) {
+        if (!pendingIce.has(fromUserId)) pendingIce.set(fromUserId, []);
+        pendingIce.get(fromUserId).push(candidate);
+        return;
+      }
+      pc.addIceCandidate(candidate).catch(() => {});
     });
     s.on('call_end', ({ fromUserId }) => {
       dropPeer(fromUserId);
@@ -109,9 +119,17 @@ const Calls = (() => {
     }
   }
 
+  function flushIce(userId) {
+    const pc = pcs.get(userId);
+    const queued = pendingIce.get(userId) || [];
+    pendingIce.delete(userId);
+    if (pc) queued.forEach(c => pc.addIceCandidate(c).catch(() => {}));
+  }
+
   function dropPeer(userId) {
     pcs.get(userId)?.close();
     pcs.delete(userId);
+    pendingIce.delete(userId);
     $('call-audio-' + userId)?.remove();
     if (mode === 'room-voice' && !pcs.size) setStatus('Voice chat · waiting for others…');
   }
@@ -164,6 +182,7 @@ const Calls = (() => {
       if (mode === 'room-voice' && String(offer.roomId) === String(roomVoiceId)) {
         const pc = newPc(offer.fromUserId);
         await pc.setRemoteDescription(offer.sdp);
+        flushIce(offer.fromUserId);
         const ans = await pc.createAnswer();
         await pc.setLocalDescription(ans);
         sock.emit('call_answer', { toUserId: offer.fromUserId, sdp: pc.localDescription });
@@ -191,6 +210,7 @@ const Calls = (() => {
     if (offer.kind === 'video') { $('call-local-video').srcObject = localStream; $('call-local-video').muted = true; }
     const pc = newPc(offer.fromUserId);
     await pc.setRemoteDescription(offer.sdp);
+    flushIce(offer.fromUserId);
     const ans = await pc.createAnswer();
     await pc.setLocalDescription(ans);
     sock.emit('call_answer', { toUserId: offer.fromUserId, sdp: pc.localDescription });

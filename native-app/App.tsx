@@ -25,10 +25,12 @@ Notifications.setNotificationHandler({
     shouldShowAlert: true, shouldPlaySound: true, shouldSetBadge: false,
   }),
 });
-Notifications.setNotificationChannelAsync('messages', {
+// 'messages-v2': Android caches channel settings forever, so shipping the new
+// custom sound requires a fresh channel id.
+Notifications.setNotificationChannelAsync('messages-v2', {
   name: 'Messages',
   importance: Notifications.AndroidImportance.MAX,
-  sound: 'default',
+  sound: 'notify.wav',
   vibrationPattern: [0, 250, 250, 250],
 }).catch(() => {});
 
@@ -81,15 +83,16 @@ export default function App() {
         if (pushRegisteredRef.current) return; // FCM push covers notifications
         if (msg.username === uname) return;
         if (screen === 'chat' && room && msg.room_id === room.id) return;
-        const body = (msg.content && String(msg.content).startsWith('e2e:')) ? '🔒 Message'
-          : msg.type === 'text' ? (msg.content || '')
+        // Never preview content — only the kind of message received
+        const body = msg.type === 'text' ? '💬 New message'
           : msg.type === 'audio' ? '🎙 Voice message'
-          : msg.type === 'image' ? '🖼 Image'
+          : msg.type === 'image' ? '🖼 Photo'
+          : msg.type === 'gallery' ? '🖼 Photos'
           : msg.type === 'video' ? '🎥 Video'
           : msg.type === 'music' ? '🎵 Audio file'
           : msg.type === 'invite' ? '🔒 Room invitation' : '📄 File';
         Notifications.scheduleNotificationAsync({
-          content: { title: msg.username, body, sound: 'default' },
+          content: { title: msg.username, body, sound: 'notify.wav' },
           trigger: null,
         }).catch(() => {});
       };

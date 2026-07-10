@@ -69,9 +69,15 @@ function requestNotifPermission() {
 function showNotif(msg) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   if (document.visibilityState === 'visible' && String(msg.room_id) === String(currentRoomId)) return;
-  const body = E2E.isEncrypted(msg.content) ? '🔒 Message'
-    : msg.type === 'text' ? (msg.content || '') : msg.type === 'audio' ? '🎙 Voice message' : msg.type === 'image' ? '🖼 Image' : msg.type === 'video' ? '🎥 Video' : msg.type === 'music' ? '🎵 Audio file' : '📄 File';
-  new Notification(msg.username, { body, icon: '/icons/icon-192.png', tag: 'chatroom-' + msg.room_id, silent: false });
+  // Never preview content — only the kind of message received
+  const body = msg.type === 'text' ? '💬 New message'
+    : msg.type === 'audio' ? '🎙 Voice message'
+    : msg.type === 'image' ? '🖼 Photo'
+    : msg.type === 'gallery' ? '🖼 Photos'
+    : msg.type === 'video' ? '🎥 Video'
+    : msg.type === 'music' ? '🎵 Audio file' : '📄 File';
+  new Notification(msg.username, { body, icon: '/icons/icon-192.png', tag: 'chatroom-' + msg.room_id, silent: true });
+  try { new Audio('/notify.wav').play().catch(() => {}); } catch {}
 }
 
 window.addEventListener('DOMContentLoaded', () => {
