@@ -329,6 +329,36 @@ app.get('/keys/:userId', authMiddleware, (req, res) => {
   res.json({ publicKey: u?.public_key || null });
 });
 
+// Shared media of a room, categorized for the media browser tabs.
+app.get('/room-media/:roomId', authMiddleware, (req, res) => {
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
+  if (!room || !canAccessRoom(req.user.id, room)) return res.status(404).json({ error: 'Not found' });
+  const rows = db.prepare(`
+    SELECT id, type, content, file_path, file_name, created_at FROM messages
+    WHERE room_id = ? AND one_time_seconds IS NULL
+    ORDER BY id DESC LIMIT 500
+  `).all(room.id);
+  const media = { images: [], files: [], music: [], links: [] };
+  const LINK_RE = /(https?:\/\/[^\s]+|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:\/[^\s]*)?)/g;
+  rows.forEach(m => {
+    if (m.type === 'image' && m.file_path) media.images.push(m.file_path);
+    else if (m.type === 'gallery' && m.file_path) {
+      try { JSON.parse(m.file_path).forEach(u => media.images.push(u)); } catch {}
+    } else if (m.type === 'video' && m.file_path) media.files.push({ url: m.file_path, name: m.file_name || 'Video' });
+    else if (m.type === 'file' && m.file_path) media.files.push({ url: m.file_path, name: m.file_name || 'File' });
+    else if (m.type === 'music' && m.file_path) media.music.push({ url: m.file_path, name: m.file_name || 'Audio' });
+    if (m.type === 'text' && m.content && !m.content.startsWith('e2e:')) {
+      (m.content.match(LINK_RE) || []).forEach(l => {
+        if (media.links.length < 200 && !media.links.includes(l)) media.links.push(l);
+      });
+    }
+  });
+  media.images = media.images.slice(0, 200);
+  media.files = media.files.slice(0, 200);
+  media.music = media.music.slice(0, 200);
+  res.json(media);
+});
+
 // Read positions of every member of a room, so the client can render
 // seen/delivered checkmarks immediately on opening a room.
 app.get('/read-receipts/:roomId', authMiddleware, (req, res) => {

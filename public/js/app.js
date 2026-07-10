@@ -4,6 +4,20 @@ let currentRoomId = null;
 let currentRoomIsDM = false;
 let maxOtherReadMsgId = 0; // highest message id any other room member has read (for seen checkmarks)
 let currentDMPeerPk = null; // the DM partner's public key (E2E) or null
+let e2eUnlockAsked = false;
+
+// Sessions started before E2E existed never ran key setup at login — unlock
+// (or create) the identity with the password when a DM is first opened.
+async function ensureE2EUnlocked() {
+  if (E2E.ready()) return true;
+  if (e2eUnlockAsked) return false;
+  e2eUnlockAsked = true;
+  const pw = prompt('🔒 Enter your account password to unlock end-to-end encryption on this device:');
+  if (!pw) return false;
+  const ok = await E2E.setup(pw, api);
+  if (!ok) alert('Could not unlock encryption with that password.');
+  return ok;
+}
 
 // Per-brand APK release info, picked by the domain serving this page.
 const IS_BISTBARG = location.hostname.includes('bistbarg');
@@ -13,6 +27,14 @@ const APK_DOWNLOAD_URL = `https://github.com/akoSalman/room-releases/releases/do
 const APK_RELEASE_API = `https://api.github.com/repos/akoSalman/room-releases/releases/tags/${APK_RELEASE_TAG}`;
 const pendingUploads = {}; // clientId -> { wrapper, previewUrl, file, type, fileName, roomId, replyToId }
 const revealedOneTime = new Set(); // one-time message ids this client has revealed
+const oneTimeExpiry = {}; // messageId -> ms timestamp when it will self-destruct
+setInterval(() => {
+  document.querySelectorAll('.one-time-countdown').forEach(el => {
+    const exp = Number(el.dataset.expire || 0);
+    if (!exp) return;
+    el.textContent = ` 🔥${Math.max(0, Math.ceil((exp - Date.now()) / 1000))}s`;
+  });
+}, 1000);
 let pendingOneTimeSeconds = null; // set via the 🔥 composer button, applies to the next message sent
 let oldestLoadedMsgId = null;
 let hasMoreOlderMsgs = true;
@@ -310,6 +332,11 @@ function connectSocket() {
     socket.on('user_recording', ({ username: u }) => showRecordingUser(u));
     socket.on('user_stopped_recording', ({ username: u }) => hideRecordingUser(u));
     socket.on('dm_activity', ({ room }) => ensureDMInSidebar(room));
+    socket.on('one_time_viewed', ({ messageId, seconds }) => {
+      oneTimeExpiry[messageId] = Date.now() + seconds * 1000;
+      const tag = document.querySelector(`.one-time-countdown[data-msg-id="${messageId}"]`);
+      if (tag) tag.dataset.expire = oneTimeExpiry[messageId];
+    });
     socket.on('messages_read', ({ roomId, lastReadMsgId }) => {
       if (String(roomId) !== String(currentRoomId)) return;
       if (lastReadMsgId > maxOtherReadMsgId) { maxOtherReadMsgId = lastReadMsgId; updateSeenCheckmarks(); }
@@ -774,6 +801,7 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   Calls.setDMPeer(null, null);
   if (isDM) {
     try {
+      await ensureE2EUnlocked();
       const pk = await api('/dm-peer-key/' + roomId);
       Calls.setDMPeer(pk?.userId || null, roomName);
       if (E2E.ready() && pk?.publicKey) {
@@ -1602,7 +1630,7 @@ function buildMessageElement(msg) {
     bubble.appendChild(fwd);
   }
 
-  const oneTimeHidden = msg.one_time_seconds && !isMine && !revealedOneTime.has(msg.id);
+  const oneTimeHidden = msg.one_time_seconds && !revealedOneTime.has(msg.id);
   if (oneTimeHidden) {
     bubble.classList.add('one-time-bubble');
     const btn = document.createElement('button');
@@ -1613,7 +1641,7 @@ function buildMessageElement(msg) {
       revealedOneTime.add(msg.id);
       const revealed = buildMessageElement(msg);
       wrapper.replaceWith(revealed);
-      armOneTimeClock(msg, revealed);
+      if (!isMine) armOneTimeClock(msg, revealed); // own views never start the clock
     };
     bubble.appendChild(btn);
   } else if (msg.type === 'text') {
@@ -1693,6 +1721,18 @@ function buildMessageElement(msg) {
     bubble.appendChild(cap);
   }
 
+  if (msg.one_time_seconds && !oneTimeHidden) {
+    const hideBtn = document.createElement('button');
+    hideBtn.className = 'one-time-hide';
+    hideBtn.textContent = '🙈 Hide';
+    hideBtn.onclick = (e) => {
+      e.stopPropagation();
+      revealedOneTime.delete(msg.id);
+      wrapper.replaceWith(buildMessageElement(msg));
+    };
+    bubble.appendChild(hideBtn);
+  }
+
   if (msg._uploading) {
     wrapper.classList.add('msg-uploading');
     const overlay = document.createElement('div');
@@ -1715,6 +1755,16 @@ function buildMessageElement(msg) {
   const created = msg.created_at.includes('T') ? msg.created_at : msg.created_at.replace(' ', 'T') + 'Z';
   time.textContent = new Date(created).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   footer.appendChild(time);
+
+  if (msg.one_time_seconds) {
+    const ot = document.createElement('span');
+    ot.className = 'one-time-tag one-time-countdown';
+    ot.dataset.msgId = msg.id;
+    const exp = oneTimeExpiry[msg.id] || (msg.viewed_at ? msg.viewed_at + msg.one_time_seconds * 1000 : 0);
+    if (exp) { ot.dataset.expire = exp; ot.textContent = ` 🔥${Math.max(0, Math.ceil((exp - Date.now()) / 1000))}s`; }
+    else ot.textContent = ` 🔥${msg.one_time_seconds}s`;
+    footer.appendChild(ot);
+  }
 
   if (isMine && !msg._uploading) {
     const status = document.createElement('span');
@@ -2126,15 +2176,38 @@ function updateScrollFab() {
 let lightboxScale = 1, lightboxX = 0, lightboxY = 0;
 let lightboxSrc = '';
 
+let lightboxList = [];
+let lightboxIdx = 0;
+
 function openLightbox(src) {
-  lightboxSrc = src;
-  lightboxScale = 1; lightboxX = 0; lightboxY = 0;
-  const img = document.getElementById('lightbox-img');
-  img.src = src;
-  applyLightboxTransform();
+  // Every image currently in the chat becomes a browsable gallery
+  lightboxList = [...document.querySelectorAll('#messages .msg-bubble img')].map(i => i.src);
+  lightboxIdx = Math.max(0, lightboxList.indexOf(src));
+  if (!lightboxList.length) lightboxList = [src];
+  showLightboxAt(lightboxIdx);
   show('lightbox');
 }
+
+function showLightboxAt(idx) {
+  lightboxIdx = Math.max(0, Math.min(idx, lightboxList.length - 1));
+  lightboxSrc = lightboxList[lightboxIdx];
+  lightboxScale = 1; lightboxX = 0; lightboxY = 0;
+  document.getElementById('lightbox-img').src = lightboxSrc;
+  applyLightboxTransform();
+  document.getElementById('lightbox-counter').textContent =
+    lightboxList.length > 1 ? `${lightboxIdx + 1} / ${lightboxList.length}` : '';
+  document.getElementById('lightbox-prev').classList.toggle('hidden', lightboxIdx === 0);
+  document.getElementById('lightbox-next').classList.toggle('hidden', lightboxIdx >= lightboxList.length - 1);
+}
+
+function lightboxNav(dir) { showLightboxAt(lightboxIdx + dir); }
+
 function closeLightbox() { hide('lightbox'); }
+document.addEventListener('keydown', (e) => {
+  if (document.getElementById('lightbox').classList.contains('hidden')) return;
+  if (e.key === 'ArrowLeft') lightboxNav(-1);
+  if (e.key === 'ArrowRight') lightboxNav(1);
+});
 
 function applyLightboxTransform() {
   const img = document.getElementById('lightbox-img');

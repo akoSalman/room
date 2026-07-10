@@ -15,7 +15,7 @@ import {
 } from 'react-native-gesture-handler';
 import { C, isRTL } from '../theme';
 import { apiFetch, getSocket, getToken, getUsername, getAvatar, BASE_URL } from '../api';
-import { e2eReady, e2eDMPeerKey, e2eEncrypt, e2eDecrypt, e2eIsEncrypted } from '../e2e';
+import { e2eReady, e2eDMPeerKey, e2eEncrypt, e2eDecrypt, e2eIsEncrypted, e2eSetup } from '../e2e';
 import { callManager } from '../callManager';
 import { audioManager } from '../audioManager';
 import VoicePlayer from '../components/VoicePlayer';
@@ -96,6 +96,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const dmPeerPk = useRef<Uint8Array | null>(null); // DM partner's public key (E2E)
   const dmPeerId = useRef<number | null>(null); // DM partner's user id (calls)
   const [e2eActive, setE2eActive] = useState(false);
+  const [showE2EUnlock, setShowE2EUnlock] = useState(false);
+  const [e2ePass, setE2ePass] = useState('');
+  const [oneTimeExpiry, setOneTimeExpiry] = useState<Record<number, number>>({});
+  const [, setOtTick] = useState(0); // 1s ticker while one-time countdowns run
+  const [showMedia, setShowMedia] = useState(false);
+  const [mediaTab, setMediaTab] = useState<'images' | 'files' | 'music' | 'links'>('images');
+  const [mediaData, setMediaData] = useState<any>(null);
   const [forwardMsg, setForwardMsg] = useState<Message | null>(null);
   const [forwardTargets, setForwardTargets] = useState<any[]>([]);
   const [showRoomInfo, setShowRoomInfo] = useState(false);
@@ -225,9 +232,28 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       if (await e2eReady()) {
         dmPeerPk.current = await e2eDMPeerKey(room.id);
         setE2eActive(!!dmPeerPk.current);
+      } else {
+        // Session predates E2E: the identity was never unlocked on this device
+        setShowE2EUnlock(true);
       }
     })();
   }, [room.id]);
+
+  async function unlockE2E() {
+    const ok = await e2eSetup(e2ePass);
+    setE2ePass('');
+    if (!ok) { Alert.alert('Wrong password', 'Could not unlock encryption with that password.'); return; }
+    setShowE2EUnlock(false);
+    dmPeerPk.current = await e2eDMPeerKey(room.id);
+    setE2eActive(!!dmPeerPk.current);
+  }
+
+  // ── (9) one-time countdown ticker ──
+  useEffect(() => {
+    if (!Object.keys(oneTimeExpiry).length) return;
+    const iv = setInterval(() => setOtTick(t => t + 1), 1000);
+    return () => clearInterval(iv);
+  }, [Object.keys(oneTimeExpiry).length > 0]);
 
   useEffect(() => {
     let mounted = true;
@@ -249,6 +275,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         }
       }).catch(() => {});
       if (Array.isArray(msgs)) {
+        const exp: Record<number, number> = {};
+        msgs.forEach((m: any) => {
+          if (m.one_time_seconds && m.viewed_at) exp[m.id] = m.viewed_at + m.one_time_seconds * 1000;
+        });
+        if (Object.keys(exp).length) setOneTimeExpiry(prev => ({ ...prev, ...exp }));
         setMessages(msgs);
         messagesRef.current = msgs;
         hasMoreOlderRef.current = msgs.length >= MESSAGES_PAGE_SIZE;
@@ -310,6 +341,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       sock.on('user_stopped_recording', ({ username: u }: any) => {
         setRecordingUsers(prev => prev.filter(x => x !== u));
       });
+      sock.on('one_time_viewed', ({ messageId, seconds }: any) => {
+        setOneTimeExpiry(prev => ({ ...prev, [messageId]: Date.now() + seconds * 1000 }));
+      });
       sock.on('messages_read', ({ roomId, lastReadMsgId }: any) => {
         if (roomId != room.id) return;
         setMaxOtherReadMsgId(prev => lastReadMsgId > prev ? lastReadMsgId : prev);
@@ -327,6 +361,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       socketRef.current?.off('user_recording');
       socketRef.current?.off('user_stopped_recording');
       socketRef.current?.off('messages_read');
+      socketRef.current?.off('one_time_viewed');
     };
   }, [room.id]);
 
@@ -385,9 +420,31 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     socketRef.current?.emit('view_one_time', { messageId: msg.id });
   }
 
+  // Every image in the chat, in order — the lightbox browses through these.
+  function chatImageUrls(): string[] {
+    const urls: string[] = [];
+    messagesRef.current.forEach((m: any) => {
+      if (m.one_time_seconds && !revealedOneTime.has(m.id)) return;
+      if (m.type === 'image' && m.file_path && !m._uploading) urls.push(`${BASE_URL}${m.file_path}`);
+      if (m.type === 'gallery' && m.file_path && !m._uploading) {
+        try { JSON.parse(m.file_path).forEach((u: string) => urls.push(`${BASE_URL}${u}`)); } catch {}
+      }
+    });
+    return urls;
+  }
+
   function revealOneTime(msg: Message) {
     setRevealedOneTime(prev => new Set(prev).add(msg.id));
-    if (msg.type === 'text' || msg.type === 'file') startOneTimeClock(msg);
+    const mine = msg.username === me;
+    if (!mine && (msg.type === 'text' || msg.type === 'file')) startOneTimeClock(msg);
+  }
+
+  function hideOneTime(msg: Message) {
+    setRevealedOneTime(prev => {
+      const next = new Set(prev);
+      next.delete(msg.id);
+      return next;
+    });
   }
 
   function emitTyping() {
@@ -766,7 +823,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       }
     }
     const mine = msg.username === me;
-    const hiddenOneTime = !!msg.one_time_seconds && !mine && !revealedOneTime.has(msg.id) && !msg._uploading;
+    const hiddenOneTime = !!msg.one_time_seconds && !revealedOneTime.has(msg.id) && !msg._uploading;
     const rxns = reactions[msg.id] || [];
     const grouped: Record<string, { count: number; mine: boolean }> = {};
     rxns.forEach(r => {
@@ -918,6 +975,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           {!hiddenOneTime && msg.type !== 'text' && msg.type !== 'invite' && msg.content ? (
             <Text style={[s.msgText, s.caption]}>{renderTextWithLinks(msg.content)}</Text>
           ) : null}
+          {msg.one_time_seconds && !hiddenOneTime && !msg._uploading ? (
+            <TouchableOpacity onPress={() => hideOneTime(msg)}>
+              <Text style={s.oneTimeHideBtn}>🙈 Hide</Text>
+            </TouchableOpacity>
+          ) : null}
           {msg._uploading && (
             <View style={s.uploadOverlay}>
               <View style={[s.uploadProgressBar, { width: `${uploadProgress[String(msg.id)] ?? 0}%` }]} />
@@ -945,7 +1007,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
         <View style={s.footer}>
           <Text style={s.time}>{fmtTime(msg.created_at)}</Text>
-          {msg.one_time_seconds ? <Text style={s.oneTimeTag}>🔥{msg.one_time_seconds}s</Text> : null}
+          {msg.one_time_seconds ? (
+            <Text style={s.oneTimeTag}>
+              🔥{oneTimeExpiry[msg.id as number]
+                ? Math.max(0, Math.ceil((oneTimeExpiry[msg.id as number] - Date.now()) / 1000))
+                : msg.one_time_seconds}s
+            </Text>
+          ) : null}
           {mine && !msg._uploading && !msg._uploadFailed && (
             <Text style={[s.ticks, msg.id <= maxOtherReadMsgId && s.ticksSeen]}>
               {msg.id <= maxOtherReadMsgId ? '✓✓' : '✓'}
@@ -989,7 +1057,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         </TouchableOpacity>
         <TouchableOpacity style={s.headerCenter} activeOpacity={0.7}
           onPress={async () => {
-            if (room.is_dm) return;
+            if (room.is_dm) {
+              setShowMedia(true);
+              setMediaTab('images');
+              const m = await apiFetch(`/room-media/${room.id}`);
+              if (!m.error) setMediaData(m);
+              return;
+            }
             setShowRoomInfo(true);
             const info = await apiFetch(`/room-info/${room.id}`);
             if (!info.error) setRoomInfo(info);
@@ -1084,6 +1158,27 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             <Text style={s.lightboxCloseText}>⬇</Text>
           </TouchableOpacity>
           {lightboxUrl && <ZoomableImage uri={lightboxUrl} />}
+          {lightboxUrl && (() => {
+            const list = chatImageUrls();
+            const idx = list.indexOf(lightboxUrl);
+            return (
+              <>
+                {idx > 0 && (
+                  <TouchableOpacity style={[s.lightboxNav, { left: 10 }]} onPress={() => setLightboxUrl(list[idx - 1])}>
+                    <Text style={s.lightboxNavText}>‹</Text>
+                  </TouchableOpacity>
+                )}
+                {idx >= 0 && idx < list.length - 1 && (
+                  <TouchableOpacity style={[s.lightboxNav, { right: 10 }]} onPress={() => setLightboxUrl(list[idx + 1])}>
+                    <Text style={s.lightboxNavText}>›</Text>
+                  </TouchableOpacity>
+                )}
+                {list.length > 1 && idx >= 0 && (
+                  <Text style={s.lightboxCounter}>{idx + 1} / {list.length}</Text>
+                )}
+              </>
+            );
+          })()}
         </View>
       </Modal>
 
@@ -1268,6 +1363,96 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             );
           })()}
         </Pressable>
+      </Modal>
+
+      {/* Shared media browser (DM profile) */}
+      <Modal visible={showMedia} transparent animationType="slide" onRequestClose={() => setShowMedia(false)}>
+        <View style={s.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowMedia(false)} />
+          <View style={[s.attachSheet, { maxHeight: '75%' }]}>
+            <View style={s.sheetHandle} />
+            <Text style={s.forwardTitle}>{room.other_username || room.name}</Text>
+            <View style={s.mediaTabs}>
+              {([['images', '🖼 Photos'], ['files', '📄 Files'], ['music', '🎵 Music'], ['links', '🔗 Links']] as const).map(([key, label]) => (
+                <TouchableOpacity key={key} style={[s.mediaTab, mediaTab === key && s.mediaTabActive]} onPress={() => setMediaTab(key)}>
+                  <Text style={[s.mediaTabText, mediaTab === key && s.mediaTabTextActive]}>{label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            {!mediaData ? (
+              <ActivityIndicator color={C.accent} style={{ marginVertical: 30 }} />
+            ) : (
+              <ScrollView style={{ maxHeight: 380 }} nestedScrollEnabled>
+                {mediaTab === 'images' && (
+                  <View style={s.mediaGrid}>
+                    {mediaData.images.map((u: string, i: number) => (
+                      <TouchableOpacity key={i} onPress={() => { setShowMedia(false); setLightboxUrl(`${BASE_URL}${u}`); }}>
+                        <Image source={{ uri: `${BASE_URL}${u}` }} style={s.mediaThumb} />
+                      </TouchableOpacity>
+                    ))}
+                    {!mediaData.images.length && <Text style={s.mediaEmpty}>No photos yet</Text>}
+                  </View>
+                )}
+                {mediaTab === 'files' && (
+                  <>
+                    {mediaData.files.map((f: any, i: number) => (
+                      <TouchableOpacity key={i} style={s.attachOption} onPress={() => Linking.openURL(`${BASE_URL}${f.url}`)}>
+                        <Text style={s.attachOptionText} numberOfLines={1}>📄 {f.name}</Text>
+                      </TouchableOpacity>
+                    ))}
+                    {!mediaData.files.length && <Text style={s.mediaEmpty}>No files yet</Text>}
+                  </>
+                )}
+                {mediaTab === 'music' && (
+                  <>
+                    {mediaData.music.map((f: any, i: number) => (
+                      <TouchableOpacity key={i} style={s.attachOption}
+                        onPress={() => audioManager.play(`media-${i}`, `${BASE_URL}${f.url}`, `🎵 ${f.name}`, room.id, room)}>
+                        <Text style={s.attachOptionText} numberOfLines={1}>🎵 {f.name}</Text>
+                      </TouchableOpacity>
+                    ))}
+                    {!mediaData.music.length && <Text style={s.mediaEmpty}>No music yet</Text>}
+                  </>
+                )}
+                {mediaTab === 'links' && (
+                  <>
+                    {mediaData.links.map((l: string, i: number) => (
+                      <TouchableOpacity key={i} style={s.attachOption}
+                        onPress={() => Linking.openURL(/^https?:/.test(l) ? l : 'https://' + l)}>
+                        <Text style={[s.attachOptionText, { color: C.accent }]} numberOfLines={1}>🔗 {l}</Text>
+                      </TouchableOpacity>
+                    ))}
+                    {!mediaData.links.length && <Text style={s.mediaEmpty}>No links yet</Text>}
+                  </>
+                )}
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* E2E unlock (sessions that logged in before encryption existed) */}
+      <Modal visible={showE2EUnlock} transparent animationType="fade" onRequestClose={() => setShowE2EUnlock(false)}>
+        <View style={s.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowE2EUnlock(false)} />
+          <View style={[s.attachSheet, { paddingHorizontal: 16 }]}>
+            <View style={s.sheetHandle} />
+            <Text style={s.forwardTitle}>🔒 Unlock encrypted messages</Text>
+            <Text style={s.oneTimeHint}>
+              Enter your account password once to unlock end-to-end encryption on this device.
+            </Text>
+            <TextInput
+              style={s.unlockInput} secureTextEntry placeholder="Password" placeholderTextColor={C.muted}
+              value={e2ePass} onChangeText={setE2ePass} onSubmitEditing={unlockE2E}
+            />
+            <TouchableOpacity style={s.unlockBtn} onPress={unlockE2E}>
+              <Text style={s.unlockBtnText}>Unlock</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={s.attachCancel} onPress={() => setShowE2EUnlock(false)}>
+              <Text style={s.attachCancelText}>Not now</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
 
       {/* One-time message duration picker */}
@@ -1499,6 +1684,32 @@ const s = StyleSheet.create({
   oneTimeTag: { color: '#f87171', fontSize: 11 },
   oneTimeActive: { backgroundColor: 'rgba(248,113,113,0.25)', borderRadius: 8 },
   oneTimeHint: { color: C.muted, fontSize: 13, paddingHorizontal: 16, paddingBottom: 8 },
+  oneTimeHideBtn: { color: C.muted, fontSize: 12, marginTop: 5 },
+  lightboxNav: {
+    position: 'absolute', top: '50%', marginTop: -23, zIndex: 10,
+    width: 46, height: 46, borderRadius: 23, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.18)',
+  },
+  lightboxNavText: { color: '#fff', fontSize: 28, lineHeight: 32 },
+  lightboxCounter: {
+    position: 'absolute', bottom: 26, alignSelf: 'center', color: '#fff', fontSize: 13,
+    backgroundColor: 'rgba(0,0,0,0.5)', paddingHorizontal: 12, paddingVertical: 4,
+    borderRadius: 12, overflow: 'hidden',
+  },
+  mediaTabs: { flexDirection: 'row', gap: 6, paddingHorizontal: 12, paddingBottom: 10, flexWrap: 'wrap' },
+  mediaTab: { borderRadius: 14, paddingHorizontal: 10, paddingVertical: 5, backgroundColor: 'rgba(59,125,216,0.08)' },
+  mediaTabActive: { backgroundColor: C.accent },
+  mediaTabText: { color: C.accent, fontSize: 12.5, fontWeight: '600' },
+  mediaTabTextActive: { color: '#fff' },
+  mediaGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, paddingHorizontal: 12 },
+  mediaThumb: { width: 100, height: 100, borderRadius: 8 },
+  mediaEmpty: { color: C.muted, textAlign: 'center', paddingVertical: 24, width: '100%' },
+  unlockInput: {
+    backgroundColor: 'rgba(128,128,128,0.12)', borderRadius: 10, color: C.text,
+    paddingHorizontal: 14, paddingVertical: 10, marginHorizontal: 4, marginBottom: 10, fontSize: 15,
+  },
+  unlockBtn: { backgroundColor: C.accent, borderRadius: 10, padding: 12, alignItems: 'center', marginHorizontal: 4 },
+  unlockBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
   plusBtnText: { fontSize: 22, color: C.accent, fontWeight: '600' },
   caption: { marginTop: 6 },
   optionsStrip: {

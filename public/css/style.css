@@ -188,7 +188,7 @@ html {
 }
 
 #scroll-fab {
-  position: absolute; right: 18px; bottom: 84px;
+  position: absolute; right: 18px; bottom: 132px;
   width: 42px; height: 42px; border-radius: 50%;
   background: var(--accent); color: #fff; border: none;
   font-size: 1.1rem; cursor: pointer; z-index: 50;
@@ -481,6 +481,25 @@ html {
   font-size: 0.88rem; font-weight: 600; padding: 4px 2px;
 }
 .one-time-tag { font-size: 0.68rem; color: #f87171; margin-left: 4px; }
+.one-time-hide {
+  display: block; background: none; border: none; color: var(--muted);
+  cursor: pointer; font-size: 0.72rem; margin-top: 4px; padding: 0;
+}
+.one-time-hide:hover { color: #f87171; }
+
+.lightbox-nav {
+  position: absolute; top: 50%; transform: translateY(-50%); z-index: 5;
+  width: 46px; height: 46px; border-radius: 50%; border: none; cursor: pointer;
+  background: rgba(255,255,255,0.15); color: #fff; font-size: 1.6rem; line-height: 1;
+}
+.lightbox-nav:hover { background: rgba(255,255,255,0.3); }
+#lightbox-prev { left: 14px; }
+#lightbox-next { right: 14px; }
+#lightbox-counter {
+  position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
+  color: #fff; font-size: 0.85rem; background: rgba(0,0,0,0.5);
+  padding: 4px 12px; border-radius: 12px;
+}
 
 .voice-waveform {
   flex: 1; position: relative; height: 32px;
