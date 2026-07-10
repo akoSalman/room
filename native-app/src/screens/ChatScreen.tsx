@@ -91,7 +91,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [showOneTimeMenu, setShowOneTimeMenu] = useState(false);
   const [actionsMsg, setActionsMsg] = useState<{ msg: Message; x: number; y: number } | null>(null); // tap menu for a message
   const [pendingMedia, setPendingMedia] = useState<{ uri: string; name: string; mime: string }[]>([]);
-  const [pendingVoice, setPendingVoice] = useState<{ uri: string; peaks: number[] } | null>(null);
   const [forwardMsg, setForwardMsg] = useState<Message | null>(null);
   const [forwardTargets, setForwardTargets] = useState<any[]>([]);
   const [showRoomInfo, setShowRoomInfo] = useState(false);
@@ -313,28 +312,22 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }, [room.id]);
 
   function sendText() {
-    if ((pendingMedia.length || pendingVoice) && !editingId) {
+    if (pendingMedia.length && !editingId) {
       const items = pendingMedia;
-      const voice = pendingVoice;
       const caption = text.trim() || null;
       const oneTime = oneTimeSecs ?? undefined;
       setPendingMedia([]);
-      setPendingVoice(null);
       setOneTimeSecs(null);
       if (caption) { setText(''); emitStopTyping(); }
       const images = items.filter(m => m.mime.startsWith('image/'));
       const others = items.filter(m => !m.mime.startsWith('image/'));
-      let captionUsed = false;
       if (images.length > 1) {
         // Multiple images travel as ONE gallery message with the caption below.
         sendGallery(images, caption, oneTime);
-        captionUsed = !!caption;
         others.forEach(m => uploadFile(m.uri, m.name, m.mime, null, oneTime));
-      } else if (items.length) {
+      } else {
         items.forEach((m, i) => uploadFile(m.uri, m.name, m.mime, i === 0 ? caption : null, oneTime));
-        captionUsed = !!caption;
       }
-      if (voice) sendVoice(voice.uri, voice.peaks, captionUsed ? null : caption, oneTime);
       return;
     }
     const t = text.trim();
@@ -1347,7 +1340,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       {recording ? (
         <VoiceRecorder
           onCancel={() => stopRecordingUI()}
-          onSend={(uri, peaks) => { stopRecordingUI(); setPendingVoice({ uri, peaks }); }}
+          onSend={(uri, peaks) => { stopRecordingUI(); sendVoice(uri, peaks); }}
         />
       ) : (
         <View>
@@ -1364,17 +1357,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               <Text style={s.stripBtnText}>🔥 One-time{oneTimeSecs ? ` ${oneTimeSecs}s` : ''}</Text>
             </TouchableOpacity>
           </View>
-          {pendingVoice && (
-            <View style={s.pendingMediaBar}>
-              <View style={[s.pendingMediaThumb, s.pendingMediaFile]}>
-                <Text style={s.pendingMediaIcon}>🎙</Text>
-              </View>
-              <Text style={s.pendingVoiceLabel}>Voice message — add a caption or send</Text>
-              <TouchableOpacity onPress={() => setPendingVoice(null)}>
-                <Text style={s.pendingVoiceClose}>✕</Text>
-              </TouchableOpacity>
-            </View>
-          )}
           {pendingMedia.length > 0 && (
             <View style={s.pendingMediaBar}>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, alignItems: 'center' }}>
@@ -1402,7 +1384,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           )}
           <View style={s.inputBar}>
             <TextInput
-              style={s.input} placeholder={(pendingMedia.length || pendingVoice) ? 'Add a caption…' : 'Message...'} placeholderTextColor={C.muted}
+              style={s.input} placeholder={pendingMedia.length ? 'Add a caption…' : 'Message...'} placeholderTextColor={C.muted}
               value={text} onChangeText={t => { setText(t); emitTyping(); }}
               onSubmitEditing={sendText} blurOnSubmit={false} multiline
             />
@@ -1493,8 +1475,6 @@ const s = StyleSheet.create({
     backgroundColor: '#f87171', alignItems: 'center', justifyContent: 'center',
   },
   pendingMediaRemoveText: { color: '#fff', fontSize: 10, fontWeight: '700', lineHeight: 12 },
-  pendingVoiceLabel: { flex: 1, color: C.text, fontSize: 13 },
-  pendingVoiceClose: { color: C.muted, fontSize: 16, padding: 6 },
   copyableNumber: { color: C.accent, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
   inlineCopy: { fontSize: 13 },
   bubbleHighlight: { borderWidth: 2, borderColor: C.accent },

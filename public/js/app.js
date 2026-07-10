@@ -821,7 +821,7 @@ function renderOnlinePanel() {
 function handleInputKey(e) { if (e.key === 'Enter') sendOrSave(); }
 function sendOrSave() {
   if (editingMsgId) return saveEdit();
-  if (pendingFiles.length || pendingVoice) return sendPendingFiles();
+  if (pendingFiles.length) return sendPendingFiles();
   sendText();
 }
 
@@ -1026,23 +1026,8 @@ function stageFile() {
 function renderPendingFiles() {
   const bar = document.getElementById('media-preview-bar');
   bar.innerHTML = '';
-  if (!pendingFiles.length && !pendingVoice) { bar.classList.add('hidden'); return; }
+  if (!pendingFiles.length) { bar.classList.add('hidden'); return; }
   bar.classList.remove('hidden');
-  if (pendingVoice) {
-    const item = document.createElement('div');
-    item.className = 'pending-item';
-    const box = document.createElement('div');
-    box.className = 'pending-file-box';
-    box.textContent = '🎙';
-    box.title = 'Voice message';
-    item.appendChild(box);
-    const x = document.createElement('button');
-    x.className = 'pending-remove';
-    x.textContent = '✕';
-    x.onclick = () => { pendingVoice = null; renderPendingFiles(); };
-    item.appendChild(x);
-    bar.appendChild(item);
-  }
   pendingFiles.forEach((p, i) => {
     const item = document.createElement('div');
     item.className = 'pending-item';
@@ -1074,11 +1059,9 @@ function renderPendingFiles() {
 }
 
 function sendPendingFiles() {
-  if ((!pendingFiles.length && !pendingVoice) || !currentRoomId) return;
+  if (!pendingFiles.length || !currentRoomId) return;
   const items = pendingFiles;
-  const voice = pendingVoice;
   pendingFiles = [];
-  pendingVoice = null;
   renderPendingFiles();
   const oneTimeSeconds = pendingOneTimeSeconds || undefined;
   clearOneTime();
@@ -1089,19 +1072,12 @@ function sendPendingFiles() {
 
   const images = items.filter(p => p.file.type.startsWith('image/'));
   const others = items.filter(p => !p.file.type.startsWith('image/'));
-  let captionUsed = false;
   if (images.length > 1) {
     // Multiple images travel as ONE gallery message with the caption below.
     sendGallery(images, caption, oneTimeSeconds, roomId, replyToId);
-    captionUsed = !!caption;
     others.forEach(p => stagedSendOne(p, null, oneTimeSeconds, roomId, replyToId));
-  } else if (items.length) {
+  } else {
     items.forEach((p, i) => stagedSendOne(p, i === 0 ? caption : null, oneTimeSeconds, roomId, replyToId));
-    captionUsed = !!caption;
-  }
-  if (voice) {
-    uploadAndSendMedia(voice.blob, 'audio', voice.name, voice.peaks, roomId, replyToId,
-      captionUsed ? null : caption, oneTimeSeconds);
   }
   cancelReply();
 }
@@ -1335,19 +1311,18 @@ function cancelPreview() {
   resetRecordingUI();
 }
 
-// Recording finishes into the staging area so a caption can be added; it is
-// sent together with the caption when the user hits send.
-let pendingVoice = null; // { blob, name, peaks }
 function sendRecording() {
   if (!recordedBlob || recordedBlob.size < 500) return;
   if (previewAudio) { previewAudio.pause(); previewAudio = null; }
   const ext = recordedMime.includes('mp4') ? 'mp4' : recordedMime.includes('ogg') ? 'ogg' : 'webm';
   // Store normalized peaks in the filename slot for waveform rendering
   const peaks = normalizePeaks(previewWaveformPeaks, 50).map(v => Math.round(v * 100)).join(',');
-  pendingVoice = { blob: recordedBlob, name: `voice-${Date.now()}.${ext}`, peaks };
+  const roomId = currentRoomId, replyToId = replyTo?.id || null;
+  const oneTimeSeconds = pendingOneTimeSeconds || undefined;
+  clearOneTime();
+  uploadAndSendMedia(recordedBlob, 'audio', `voice-${Date.now()}.${ext}`, peaks, roomId, replyToId, null, oneTimeSeconds);
   resetRecordingUI();
-  renderPendingFiles();
-  document.getElementById('msg-input').focus();
+  cancelReply();
 }
 
 // ─── Links in messages ────────────────────────────────────────────────────────

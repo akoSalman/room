@@ -68,6 +68,9 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
 
   useEffect(() => { load(); }, [load]);
 
+  // Check for a newer build once on mount: drives the header update badge.
+  useEffect(() => { checkLatestVersion(); }, []);
+
   useEffect(() => {
     if (openProfileOnMount) {
       setShowProfile(true);
@@ -251,7 +254,11 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
           </View>
         </TouchableOpacity>
         <Text style={s.headerTitle}>{me}</Text>
-        <TouchableOpacity onPress={onLogout}><Text style={s.logout}>⎋</Text></TouchableOpacity>
+        {latestVersion !== null && BUILD_VERSION !== latestVersion ? (
+          <TouchableOpacity style={s.updateBadge} onPress={() => { setShowProfile(true); downloadAndInstallUpdate(); }}>
+            <Text style={s.updateBadgeText}>⚡ v{latestVersion}</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
 
       {/* Search users & rooms; + creates a room */}
@@ -550,6 +557,11 @@ const s = StyleSheet.create({
   avatarEmoji: { fontSize: 20 },
   headerTitle: { flex: 1, color: C.text, fontWeight: '600', fontSize: 15 },
   logout: { color: C.danger, fontSize: 20, padding: 4 },
+  updateBadge: {
+    backgroundColor: 'rgba(74,222,128,0.15)', borderWidth: 1, borderColor: C.online,
+    borderRadius: 16, paddingHorizontal: 10, paddingVertical: 4,
+  },
+  updateBadgeText: { color: C.online, fontSize: 13, fontWeight: '700' },
   createRow: { flexDirection: 'row', padding: 10, gap: 8, borderBottomWidth: 1, borderBottomColor: C.border },
   createInput: { flex: 1, backgroundColor: C.inputBg, borderRadius: 8, padding: 8, color: C.text, fontSize: 14, borderWidth: 1, borderColor: C.border, textAlign: isRTL ? 'right' : 'left' },
   createBtn: { backgroundColor: C.accent, borderRadius: 8, paddingHorizontal: 14, justifyContent: 'center' },
