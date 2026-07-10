@@ -100,11 +100,17 @@
       <button onclick="cancelReply()">✕</button>
     </div>
 
+    <!-- Floating quick-emoji bar: 10 handy emojis, closable -->
+    <div id="quick-emoji-bar" class="hidden">
+      <div id="quick-emoji-list"></div>
+      <button id="quick-emoji-close" onclick="closeQuickEmoji()" title="Hide">✕</button>
+    </div>
     <!-- Options strip: sits on top of the input bar, collapses while typing -->
     <div id="composer-strip">
       <button onclick="composerAttach()">📎 Media</button>
       <button onclick="composerRecord()">🎙 Voice</button>
       <button id="composer-one-time" onclick="composerOneTime()">🔥 One-time</button>
+      <button id="composer-emoji" class="hidden" onclick="openQuickEmoji()" title="Quick emojis">😊</button>
     </div>
     <!-- Staged media preview (media is sent only when the user hits send) -->
     <div id="media-preview-bar" class="hidden"></div>

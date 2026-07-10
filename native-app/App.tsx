@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { StatusBar, View, I18nManager, BackHandler } from 'react-native';
+import { StatusBar, View, I18nManager, BackHandler, AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -19,10 +19,13 @@ import { C } from './src/theme';
 I18nManager.allowRTL(false);
 I18nManager.forceRTL(false);
 
-// Android needs a notification channel or notifications never show at all
+// Notifications are for when the user is OUT of the app. This handler only
+// runs while the app is foregrounded, so suppress the popup entirely there —
+// in-app unread badges do the signalling. Background pushes are shown by the
+// system tray as usual.
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
-    shouldShowAlert: true, shouldPlaySound: true, shouldSetBadge: false,
+    shouldShowAlert: false, shouldPlaySound: false, shouldSetBadge: false,
   }),
 });
 // 'messages-v2': Android caches channel settings forever, so shipping the new
@@ -82,6 +85,7 @@ export default function App() {
       handler = (msg: any) => {
         if (pushRegisteredRef.current) return; // FCM push covers notifications
         if (msg.username === uname) return;
+        if (AppState.currentState === 'active') return; // in-app badges cover it
         if (screen === 'chat' && room && msg.room_id === room.id) return;
         // Never preview content — only the kind of message received
         const body = msg.type === 'text' ? '💬 New message'

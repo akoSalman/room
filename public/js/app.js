@@ -91,7 +91,9 @@ function requestNotifPermission() {
 }
 function showNotif(msg) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
-  if (document.visibilityState === 'visible' && String(msg.room_id) === String(currentRoomId)) return;
+  // Notifications are only for when the user is away from the app; while it's
+  // open, unread badges/dots do the signalling.
+  if (document.visibilityState === 'visible') return;
   // Never preview content — only the kind of message received
   const body = msg.type === 'text' ? '💬 New message'
     : msg.type === 'audio' ? '🎙 Voice message'
@@ -105,6 +107,7 @@ function showNotif(msg) {
 
 window.addEventListener('DOMContentLoaded', () => {
   buildEmojiPicker();
+  initQuickEmoji();
 
   // Keep the layout inside the visual viewport so the composer isn't hidden
   // behind the on-screen keyboard (iOS Safari doesn't resize the layout
@@ -132,21 +135,6 @@ window.addEventListener('DOMContentLoaded', () => {
     })
     .catch(() => {});
   document.addEventListener('click', handleGlobalClick);
-  // Clicking the empty space beside a message opens its actions menu
-  document.getElementById('messages').addEventListener('click', (e) => {
-    if (e.target !== e.currentTarget) return; // only direct whitespace clicks
-    const rows = [...e.currentTarget.querySelectorAll('.msg-wrapper')];
-    const hit = rows.find(w => {
-      const r = w.getBoundingClientRect();
-      return e.clientY >= r.top && e.clientY <= r.bottom;
-    });
-    if (hit && hit._msg) {
-      e.stopPropagation();
-      const menuEl = document.getElementById('ctx-menu');
-      if (!menuEl.classList.contains('hidden')) { closeCtxMenu(); return; }
-      openCtxMenu(hit._msg.id, hit._msg.type, hit._isMine, hit, hit._msg);
-    }
-  });
   document.addEventListener('contextmenu', e => e.preventDefault());
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
   // Prevent document-level scroll from touch gestures on mobile
@@ -921,10 +909,6 @@ function sendText() {
 
 // Appears in the chat instantly; a failed/timed-out send shows tap-to-retry.
 function dispatchText(plain, roomId, replyToId, oneTimeSeconds) {
-  let wire = plain;
-  if (currentRoomIsDM && currentDMPeerPk && String(roomId) === String(currentRoomId)) {
-    wire = E2E.encrypt(plain, currentDMPeerPk) || plain;
-  }
   const clientId = 'tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2);
   const tempMsg = {
     id: clientId, username, avatar: localStorage.getItem('avatar') || '',
@@ -939,13 +923,51 @@ function dispatchText(plain, roomId, replyToId, oneTimeSeconds) {
     scrollBottom();
   }
   pendingUploads[clientId] = { wrapper, previewUrl: null };
-  socket.timeout(8000).emit('send_message', {
-    roomId, type: 'text', content: wire, replyToId, clientId, oneTimeSeconds,
-  }, (err, res) => {
-    if ((err || !res?.ok) && pendingUploads[clientId]) {
-      markUploadFailed(wrapper, clientId, () => dispatchText(plain, roomId, replyToId, oneTimeSeconds));
+  // Encrypt + emit after the bubble has painted, so the send button feels
+  // instant even when E2E key work makes the wire format slow to build.
+  setTimeout(() => {
+    let wire = plain;
+    if (currentRoomIsDM && currentDMPeerPk && String(roomId) === String(currentRoomId)) {
+      wire = E2E.encrypt(plain, currentDMPeerPk) || plain;
     }
+    socket.timeout(8000).emit('send_message', {
+      roomId, type: 'text', content: wire, replyToId, clientId, oneTimeSeconds,
+    }, (err, res) => {
+      if ((err || !res?.ok) && pendingUploads[clientId]) {
+        markUploadFailed(wrapper, clientId, () => dispatchText(plain, roomId, replyToId, oneTimeSeconds));
+      }
+    });
+  }, 0);
+}
+
+// ── Quick emoji bar ───────────────────────────────────────────────────────────
+const QUICK_EMOJIS = ['😂', '❤️', '👍', '🙏', '😍', '🔥', '🎉', '😢', '😮', '👌'];
+function initQuickEmoji() {
+  const list = document.getElementById('quick-emoji-list');
+  list.innerHTML = '';
+  QUICK_EMOJIS.forEach(em => {
+    const b = document.createElement('button');
+    b.textContent = em;
+    b.onclick = () => {
+      const input = document.getElementById('msg-input');
+      input.value += em;
+      input.focus();
+      updateComposerButtons();
+    };
+    list.appendChild(b);
   });
+  if (localStorage.getItem('quickEmojiClosed') === '1') closeQuickEmoji();
+  else openQuickEmoji();
+}
+function openQuickEmoji() {
+  localStorage.removeItem('quickEmojiClosed');
+  show('quick-emoji-bar');
+  document.getElementById('composer-emoji').classList.add('hidden');
+}
+function closeQuickEmoji() {
+  localStorage.setItem('quickEmojiClosed', '1');
+  hide('quick-emoji-bar');
+  document.getElementById('composer-emoji').classList.remove('hidden');
 }
 
 // ── Composer ＋ menu ──────────────────────────────────────────────────────────
@@ -1814,17 +1836,17 @@ function buildMessageElement(msg) {
     reactBtn.onclick = (e) => { e.stopPropagation(); showEmojiPicker(msg.id, reactBtn, wrapper); };
     footer.appendChild(reactBtn);
 
-    // Tapping the bubble (or the whitespace beside it) opens the actions menu
-    wrapper._msg = msg;
-    wrapper._isMine = isMine;
-    const openMenu = (e) => {
-      if (e.target.closest('a, button, video, audio, img, input')) return;
+    // Message actions live behind an explicit ⋯ button so ordinary taps on
+    // the bubble (emoji, reply-quote jumps, links) never open the menu.
+    const menuBtn = document.createElement('button');
+    menuBtn.className = 'react-btn msg-menu-btn'; menuBtn.textContent = '⋯'; menuBtn.title = 'Message actions';
+    menuBtn.onclick = (e) => {
       e.stopPropagation();
       const menuEl = document.getElementById('ctx-menu');
       if (!menuEl.classList.contains('hidden')) { closeCtxMenu(); return; }
       openCtxMenu(msg.id, msg.type, isMine, wrapper, msg);
     };
-    wrapper.addEventListener('click', openMenu);
+    footer.appendChild(menuBtn);
   }
 
   wrapper.appendChild(footer);
@@ -2229,17 +2251,22 @@ function openLightbox(src) {
 }
 
 // ── (3) swipe left/right in the gallery ──
+let lightboxSwipedAt = 0; // suppresses the tap-to-close click a swipe generates
 (() => {
-  let sx = null;
+  let sx = null, sy = null;
   const lb = () => document.getElementById('lightbox');
   document.addEventListener('touchstart', (e) => {
-    if (!lb().classList.contains('hidden')) sx = e.touches[0].clientX;
+    if (!lb().classList.contains('hidden')) { sx = e.touches[0].clientX; sy = e.touches[0].clientY; }
   }, { passive: true });
   document.addEventListener('touchend', (e) => {
     if (sx === null || lb().classList.contains('hidden')) { sx = null; return; }
     const dx = e.changedTouches[0].clientX - sx;
-    sx = null;
-    if (Math.abs(dx) > 60 && lightboxScale <= 1.05) lightboxNav(dx < 0 ? 1 : -1);
+    const dy = e.changedTouches[0].clientY - sy;
+    sx = null; sy = null;
+    if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) && lightboxScale <= 1.05) {
+      lightboxSwipedAt = Date.now();
+      lightboxNav(dx < 0 ? 1 : -1);
+    }
   }, { passive: true });
 })();
 
@@ -2257,7 +2284,12 @@ function showLightboxAt(idx) {
 
 function lightboxNav(dir) { showLightboxAt(lightboxIdx + dir); }
 
-function closeLightbox() { hide('lightbox'); }
+function closeLightbox() {
+  // A horizontal swipe fires a synthetic click on the backdrop right after
+  // touchend — don't let that click close the gallery the user is browsing.
+  if (Date.now() - lightboxSwipedAt < 500) return;
+  hide('lightbox');
+}
 document.addEventListener('keydown', (e) => {
   if (document.getElementById('lightbox').classList.contains('hidden')) return;
   if (e.key === 'ArrowLeft') lightboxNav(-1);

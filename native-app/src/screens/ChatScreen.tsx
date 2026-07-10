@@ -4,6 +4,7 @@ import {
   StyleSheet, KeyboardAvoidingView, Platform, Alert, Dimensions,
   ActivityIndicator, Modal, ScrollView, Image, Linking, Share, Pressable,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Audio, Video, ResizeMode } from 'expo-av';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
@@ -57,6 +58,7 @@ type Reaction = { emoji: string; username: string; user_id: number };
 type ReplyTo = { id: number | string; username: string; content: string | null; type: string };
 
 const EMOJIS = ['👍','❤️','😂','😮','😢','🔥','👏','🎉','🤔','😍','👎','😡'];
+const QUICK_EMOJIS = ['😂','❤️','👍','🙏','😍','🔥','🎉','😢','😮','👌'];
 const MESSAGES_PAGE_SIZE = 20;
 
 export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, initialJumpMsgId }: {
@@ -113,6 +115,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // Every image ever sent in this chat (chronological), from /room-media —
   // lets the lightbox traverse the whole chat, not just loaded messages.
   const [allImages, setAllImages] = useState<string[]>([]);
+  // A message arrived in ANOTHER chat while this one is open → dot on "Chats"
+  const [otherUnread, setOtherUnread] = useState(false);
+  // Quick-emoji bar above the composer (closable; reopens from the strip)
+  const [quickEmoji, setQuickEmoji] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const hasMoreOlderRef = useRef(true);
   const loadingOlderRef = useRef(false);
@@ -295,7 +301,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       sock.emit('join_room', room.id);
 
       sock.on('message_received', (msg: Message) => {
-        if (msg.room_id !== room.id) return;
+        if (msg.room_id !== room.id) {
+          if (msg.username !== me) setOtherUnread(true);
+          return;
+        }
         // Reconcile our optimistic upload bubble with the server's echo.
         // Prefer the echoed client_id; fall back to matching the uploaded
         // file path (covers servers that don't echo client_id back).
@@ -369,7 +378,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }, [room.id]);
 
   useEffect(() => {
+    AsyncStorage.getItem('quickEmojiClosed').then(v => { if (v === '1') setQuickEmoji(false); });
+  }, []);
+
+  useEffect(() => {
     let alive = true;
+    setOtherUnread(false);
     apiFetch(`/room-media/${room.id}`)
       .then((m: any) => {
         if (alive && m && Array.isArray(m.images)) {
@@ -385,7 +399,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   function dispatchText(plain: string, replyToId: number | null, oneTime: number | null, replyMeta?: ReplyTo | null) {
     const sock = socketRef.current;
     if (!sock) return;
-    const wire = (room.is_dm && dmPeerPk.current) ? (e2eEncrypt(plain, dmPeerPk.current) || plain) : plain;
     const clientId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const optimistic: Message = {
       id: clientId, room_id: room.id, user_id: 0, username: me, avatar: myAvatar,
@@ -398,12 +411,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     } as Message;
     setMessages(prev => [...prev, optimistic]);
     if (isNearBottomRef.current) setTimeout(scrollBottom, 50);
-    (sock as any).timeout(8000).emit('send_message', {
-      roomId: room.id, type: 'text', content: wire, replyToId,
-      clientId, oneTimeSeconds: oneTime ?? undefined,
-    }, (err: any, res: any) => {
-      if (err || !res?.ok) markUploadFailed(clientId);
-    });
+    // Encrypt + emit AFTER the bubble has painted — E2E key math on a slow
+    // phone must never delay the send button's visual feedback.
+    setTimeout(() => {
+      const wire = (room.is_dm && dmPeerPk.current) ? (e2eEncrypt(plain, dmPeerPk.current) || plain) : plain;
+      (sock as any).timeout(8000).emit('send_message', {
+        roomId: room.id, type: 'text', content: wire, replyToId,
+        clientId, oneTimeSeconds: oneTime ?? undefined,
+      }, (err: any, res: any) => {
+        if (err || !res?.ok) markUploadFailed(clientId);
+      });
+    }, 0);
   }
 
   function sendText() {
@@ -874,10 +892,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     });
 
     return (
-      <Pressable
-        style={s.msgRow}
-        onPress={(e) => !msg._uploading && setActionsMsg({ msg, x: e.nativeEvent.pageX, y: e.nativeEvent.pageY })}
-      >
+      <View style={s.msgRow}>
       <View
         style={[s.msgWrapper, mine ? s.mine : s.theirs]}
       >
@@ -912,7 +927,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         >
         <TouchableOpacity
           style={[s.bubble, mine ? s.mineBubble : s.theirsBubble, highlightId === msg.id && s.bubbleHighlight]}
-          onPress={(e) => !msg._uploading && setActionsMsg({ msg, x: e.nativeEvent.pageX, y: e.nativeEvent.pageY })}
           onLongPress={() => setShowEmojiFor(msg.id)}
           activeOpacity={0.85}
         >
@@ -1061,8 +1075,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             </Text>
           )}
           {!msg._uploading && !msg._uploadFailed && (
-            <TouchableOpacity onPress={() => setShowEmojiFor(msg.id)}>
+            <TouchableOpacity onPress={() => setShowEmojiFor(msg.id)} hitSlop={{ top: 6, bottom: 6 }}>
               <Text style={s.footerBtn}>😊</Text>
+            </TouchableOpacity>
+          )}
+          {!msg._uploading && !msg._uploadFailed && (
+            <TouchableOpacity
+              onPress={(e) => setActionsMsg({ msg, x: e.nativeEvent.pageX, y: e.nativeEvent.pageY })}
+              hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}>
+              <Text style={s.footerBtn}>⋯</Text>
             </TouchableOpacity>
           )}
         </View>
@@ -1083,7 +1104,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           </View>
         )}
       </View>
-      </Pressable>
+      </View>
     );
   }
 
@@ -1095,6 +1116,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}>
           <Text style={s.backText}>‹</Text>
           <Text style={s.backLabel}>Chats</Text>
+          {otherUnread && <View style={s.unreadDot} />}
         </TouchableOpacity>
         <TouchableOpacity style={s.headerCenter} activeOpacity={0.7}
           onPress={async () => {
@@ -1631,6 +1653,23 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         />
       ) : (
         <View>
+          {/* Floating quick-emoji bar: 10 handy emojis, closable via ✕;
+              reopens from the 😊 button in the options strip. */}
+          {quickEmoji && (
+            <View style={s.quickEmojiBar}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="always" contentContainerStyle={{ alignItems: 'center' }} style={{ flex: 1 }}>
+                {QUICK_EMOJIS.map(em => (
+                  <TouchableOpacity key={em} style={s.quickEmojiBtn} onPress={() => setText(t => t + em)}>
+                    <Text style={s.quickEmojiText}>{em}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+              <TouchableOpacity style={s.quickEmojiClose} hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+                onPress={() => { setQuickEmoji(false); AsyncStorage.setItem('quickEmojiClosed', '1'); }}>
+                <Text style={s.quickEmojiCloseText}>✕</Text>
+              </TouchableOpacity>
+            </View>
+          )}
           {/* Options strip: always pinned on top of the input bar. Media
               picked while text is present is ONE message (caption). */}
           <View style={s.optionsStrip}>
@@ -1643,6 +1682,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             <TouchableOpacity style={[s.stripBtn, oneTimeSecs ? s.oneTimeActive : null]} onPress={() => setShowOneTimeMenu(true)}>
               <Text style={s.stripBtnText}>🔥 One-time{oneTimeSecs ? ` ${oneTimeSecs}s` : ''}</Text>
             </TouchableOpacity>
+            {!quickEmoji && (
+              <TouchableOpacity style={s.stripBtn}
+                onPress={() => { setQuickEmoji(true); AsyncStorage.removeItem('quickEmojiClosed'); }}>
+                <Text style={s.stripBtnText}>😊</Text>
+              </TouchableOpacity>
+            )}
           </View>
           {pendingMedia.length > 0 && (
             <View style={s.pendingMediaBar}>
@@ -1769,6 +1814,15 @@ const s = StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 6,
   },
   stripBtnText: { color: C.accent, fontSize: 13, fontWeight: '600' },
+  quickEmojiBar: {
+    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 2,
+    backgroundColor: 'rgba(30,34,44,0.55)', borderTopWidth: 1, borderTopColor: 'rgba(128,128,128,0.15)',
+  },
+  quickEmojiBtn: { paddingHorizontal: 6, paddingVertical: 4 },
+  quickEmojiText: { fontSize: 22 },
+  quickEmojiClose: { paddingHorizontal: 8, paddingVertical: 4 },
+  quickEmojiCloseText: { color: C.muted, fontSize: 13, fontWeight: '700' },
+  unreadDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: C.online, marginLeft: 4, marginTop: -8 },
   actionsMenu: {
     backgroundColor: C.msgBg, borderRadius: 12, paddingVertical: 4,
     elevation: 6, shadowColor: '#000', shadowOpacity: 0.2,
