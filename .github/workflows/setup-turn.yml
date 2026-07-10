@@ -1,0 +1,107 @@
+name: Setup TURN Server
+
+# One-off/maintenance job: installs coturn on each chat server and wires the
+# TURN_* env vars into the chatroom systemd service so WebRTC calls relay
+# across restrictive networks (mobile carriers, strict NATs). Idempotent —
+# re-running keeps the existing TURN password.
+on:
+  workflow_dispatch:
+
+jobs:
+  setup-turn:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: akosalman
+            domain: chat.akosalman.com
+            host_secret: DEPLOY_HOST_AKOSALMAN
+            service_secret: DEPLOY_SERVICE_AKOSALMAN
+          - name: bistbarg
+            domain: chat.bistbarg.com
+            host_secret: DEPLOY_HOST_BISTBARG
+            service_secret: DEPLOY_SERVICE_BISTBARG
+
+    steps:
+      - name: Install and configure TURN on ${{ matrix.name }}
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets[matrix.host_secret] }}
+          SERVICE: ${{ secrets[matrix.service_secret] }}
+          TURN_DOMAIN: ${{ matrix.domain }}
+        run: |
+          if [ -z "$HOST" ] || [ -z "$SERVICE" ] || [ -z "$SSH_KEY" ]; then
+            echo "Deploy secrets for ${{ matrix.name }} are not configured — skipping."
+            exit 0
+          fi
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "root@$HOST" \
+            TURN_DOMAIN="$TURN_DOMAIN" SERVICE="$SERVICE" bash -s <<'EOF'
+          set -euo pipefail
+          TURN_USER=chatturn
+          DROPIN_DIR="/etc/systemd/system/${SERVICE}.service.d"
+          DROPIN="${DROPIN_DIR}/turn.conf"
+
+          # Keep the existing password on re-runs so clients/config stay valid
+          if [ -f "$DROPIN" ] && grep -q TURN_PASSWORD "$DROPIN"; then
+            TURN_PASS=$(grep -oP 'TURN_PASSWORD=\K.*' "$DROPIN")
+            echo "Reusing existing TURN password from ${DROPIN}"
+          else
+            TURN_PASS=$(head -c 24 /dev/urandom | base64 | tr -d '/+=' | head -c 24)
+          fi
+
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -y
+          apt-get install -y coturn
+
+          cat > /etc/turnserver.conf <<CONF
+          listening-port=3478
+          fingerprint
+          lt-cred-mech
+          user=${TURN_USER}:${TURN_PASS}
+          realm=${TURN_DOMAIN}
+          no-cli
+          no-tcp-relay
+          denied-peer-ip=10.0.0.0-10.255.255.255
+          denied-peer-ip=192.168.0.0-192.168.255.255
+          denied-peer-ip=172.16.0.0-172.31.255.255
+          total-quota=100
+          stale-nonce=600
+          CONF
+
+          sed -i 's/#TURNSERVER_ENABLED=1/TURNSERVER_ENABLED=1/' /etc/default/coturn 2>/dev/null || true
+          systemctl enable coturn
+          systemctl restart coturn
+          systemctl is-active coturn
+
+          # Open firewall ports if a firewall is managing this box
+          if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
+            ufw allow 3478/udp || true
+            ufw allow 3478/tcp || true
+            ufw allow 49152:65535/udp || true
+          fi
+          if command -v csf >/dev/null; then
+            echo "NOTE: CSF firewall detected — ensure UDP/TCP 3478 and UDP 49152-65535 are allowed in /etc/csf/csf.conf"
+          fi
+
+          # Wire the TURN credentials into the chat service environment
+          mkdir -p "$DROPIN_DIR"
+          cat > "$DROPIN" <<UNIT
+          [Service]
+          Environment=TURN_URL=turn:${TURN_DOMAIN}:3478
+          Environment=TURN_USERNAME=${TURN_USER}
+          Environment=TURN_PASSWORD=${TURN_PASS}
+          UNIT
+          systemctl daemon-reload
+          systemctl restart "$SERVICE"
+          systemctl is-active "$SERVICE"
+
+          sleep 2
+          echo "ice-config now returns:"
+          curl -s http://127.0.0.1:3000/ice-config | sed "s/${TURN_PASS}/***/g" || true
+          echo ""
+          echo "TURN setup complete on ${TURN_DOMAIN}"
+          EOF
