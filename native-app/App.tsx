@@ -6,6 +6,8 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import * as Notifications from 'expo-notifications';
 import AuthScreen from './src/screens/AuthScreen';
 import RoomsScreen from './src/screens/RoomsScreen';
+import CallOverlay from './src/components/CallOverlay';
+import { callManager } from './src/callManager';
 import ChatScreen from './src/screens/ChatScreen';
 import MiniPlayer from './src/components/MiniPlayer';
 import { disconnectSocket, getSocket, getUsername, apiFetch } from './src/api';
@@ -118,6 +120,10 @@ export default function App() {
     setRoom(null);
   }
 
+  useEffect(() => {
+    if (screen !== 'auth') callManager.init().catch(() => {});
+  }, [screen]);
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
@@ -140,6 +146,7 @@ export default function App() {
               onProfileOpened={() => setOpenProfileOnRooms(false)}
             />
           )}
+          {screen !== 'auth' && <CallOverlay />}
           {screen === 'chat' && room && (
             <ChatScreen
               key={room.id}

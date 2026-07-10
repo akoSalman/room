@@ -16,6 +16,7 @@ import {
 import { C, isRTL } from '../theme';
 import { apiFetch, getSocket, getToken, getUsername, getAvatar, BASE_URL } from '../api';
 import { e2eReady, e2eDMPeerKey, e2eEncrypt, e2eDecrypt, e2eIsEncrypted } from '../e2e';
+import { callManager } from '../callManager';
 import { audioManager } from '../audioManager';
 import VoicePlayer from '../components/VoicePlayer';
 import VoiceRecorder from '../components/VoiceRecorder';
@@ -93,6 +94,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [actionsMsg, setActionsMsg] = useState<{ msg: Message; x: number; y: number } | null>(null); // tap menu for a message
   const [pendingMedia, setPendingMedia] = useState<{ uri: string; name: string; mime: string }[]>([]);
   const dmPeerPk = useRef<Uint8Array | null>(null); // DM partner's public key (E2E)
+  const dmPeerId = useRef<number | null>(null); // DM partner's user id (calls)
   const [e2eActive, setE2eActive] = useState(false);
   const [forwardMsg, setForwardMsg] = useState<Message | null>(null);
   const [forwardTargets, setForwardTargets] = useState<any[]>([]);
@@ -216,6 +218,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   useEffect(() => {
     if (!room.is_dm) return;
     (async () => {
+      try {
+        const res = await apiFetch(`/dm-peer-key/${room.id}`);
+        dmPeerId.current = res?.userId ?? null;
+      } catch {}
       if (await e2eReady()) {
         dmPeerPk.current = await e2eDMPeerKey(room.id);
         setE2eActive(!!dmPeerPk.current);
@@ -1004,6 +1010,26 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             ) : null}
           </View>
         </TouchableOpacity>
+        {room.is_dm ? (
+          <>
+            <TouchableOpacity
+              onPress={() => callManager.startDM(dmPeerId.current, room.other_username || room.name, 'voice')}
+              style={s.callBtn} hitSlop={{ top: 10, bottom: 10 }}>
+              <Text style={s.callBtnText}>📞</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => callManager.startDM(dmPeerId.current, room.other_username || room.name, 'video')}
+              style={s.callBtn} hitSlop={{ top: 10, bottom: 10 }}>
+              <Text style={s.callBtnText}>🎥</Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          <TouchableOpacity
+            onPress={() => callManager.toggleRoomVoice(room.id, room.name)}
+            style={s.callBtn} hitSlop={{ top: 10, bottom: 10 }}>
+            <Text style={s.callBtnText}>📞</Text>
+          </TouchableOpacity>
+        )}
         <TouchableOpacity onPress={onOpenProfile} style={s.headerAvatar} activeOpacity={0.7}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
           {myAvatar
@@ -1446,6 +1472,8 @@ const s = StyleSheet.create({
   loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   messagesList: { padding: 12, gap: 6 },
   msgRow: { width: '100%' },
+  callBtn: { paddingHorizontal: 6, paddingVertical: 4 },
+  callBtnText: { fontSize: 18 },
   msgWrapper: { maxWidth: '80%', marginVertical: 2 },
   mine: { alignSelf: 'flex-end', alignItems: 'flex-end' },
   theirs: { alignSelf: 'flex-start', alignItems: 'flex-start' },

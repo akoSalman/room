@@ -257,6 +257,7 @@ function connectSocket() {
     socket.once('connect', () => { socketReady = true; hideConnectionBanner(); resolve(); });
 
     socket.on('connect', () => { socketReady = true; hideConnectionBanner(); });
+    if (typeof Calls !== 'undefined') Calls.bindSocket(socket);
     socket.on('disconnect', () => { socketReady = false; showConnectionBanner(); });
     socket.on('reconnecting', () => showConnectionBanner());
     socket.on('reconnect', () => { socketReady = true; hideConnectionBanner(); });
@@ -760,11 +761,19 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   loadingOlderMsgs = false;
   maxOtherReadMsgId = 0;
   currentDMPeerPk = null;
-  if (isDM && E2E.ready()) {
+  document.getElementById('call-voice-btn').classList.toggle('hidden', !isDM);
+  document.getElementById('call-video-btn').classList.toggle('hidden', !isDM);
+  document.getElementById('room-voice-btn').classList.toggle('hidden', isDM);
+  document.getElementById('room-voice-btn').textContent = '📞';
+  Calls.setDMPeer(null, null);
+  if (isDM) {
     try {
       const pk = await api('/dm-peer-key/' + roomId);
-      currentDMPeerPk = pk?.publicKey ? E2E.decodeKey(pk.publicKey) : null;
-      if (currentDMPeerPk) document.getElementById('room-title').textContent = '🔒 ' + roomName;
+      Calls.setDMPeer(pk?.userId || null, roomName);
+      if (E2E.ready() && pk?.publicKey) {
+        currentDMPeerPk = E2E.decodeKey(pk.publicKey);
+        document.getElementById('room-title').textContent = '🔒 ' + roomName;
+      }
     } catch {}
   }
   socket.emit('join_room', roomId);

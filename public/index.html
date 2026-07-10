@@ -66,6 +66,9 @@
     <header id="chat-header">
       <button id="menu-btn" class="icon-btn" onclick="openSidebar()">☰</button>
       <span id="room-title">Select a room</span>
+      <button id="call-voice-btn" class="icon-btn hidden" title="Voice call" onclick="Calls.startDM('voice')">📞</button>
+      <button id="call-video-btn" class="icon-btn hidden" title="Video call" onclick="Calls.startDM('video')">🎥</button>
+      <button id="room-voice-btn" class="icon-btn hidden" title="Join voice chat" onclick="Calls.toggleRoomVoice()">📞</button>
       <button id="room-link-btn" class="icon-btn hidden" title="Room info" onclick="openRoomInfo()">ℹ️</button>
       <button id="online-indicator" class="online-badge hidden" onclick="toggleOnlinePanel()"></button>
     </header>
@@ -296,8 +299,31 @@
 </div>
 
 <script src="/socket.io/socket.io.js"></script>
+<!-- ── Call UI ─────────────────────────────────────── -->
+<div id="incoming-call" class="hidden">
+  <span id="incoming-call-text"></span>
+  <button class="call-accept" onclick="Calls.accept()">✔ Accept</button>
+  <button class="call-decline" onclick="Calls.decline()">✕ Decline</button>
+</div>
+
+<div id="call-overlay" class="hidden">
+  <video id="call-remote-video" class="hidden" autoplay playsinline></video>
+  <video id="call-local-video" class="hidden" autoplay playsinline muted></video>
+  <div id="call-audios"></div>
+  <div id="call-info">
+    <div id="call-title"></div>
+    <div id="call-status"></div>
+  </div>
+  <div id="call-controls">
+    <button id="call-mute-btn" onclick="Calls.toggleMute()" title="Mute">🎙</button>
+    <button id="call-cam-btn" class="hidden" onclick="Calls.toggleCam()" title="Camera">🎥</button>
+    <button id="call-end-btn" onclick="Calls.end()" title="End call">📵</button>
+  </div>
+</div>
+
 <script src="/js/nacl-fast.min.js"></script>
 <script src="/js/e2e.js"></script>
 <script src="/js/app.js"></script>
+<script src="/js/calls.js"></script>
 </body>
 </html>

@@ -285,6 +285,21 @@ app.get('/unread-counts', authMiddleware, (req, res) => {
   res.json(counts);
 });
 
+// ── WebRTC calls: ICE server config ──────────────────────────────────────────
+// STUN is always available; add a TURN server via env for reliability on
+// restrictive networks: TURN_URL, TURN_USERNAME, TURN_PASSWORD.
+app.get('/ice-config', authMiddleware, (req, res) => {
+  const ice = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+  if (process.env.TURN_URL && process.env.TURN_USERNAME && process.env.TURN_PASSWORD) {
+    ice.push({
+      urls: process.env.TURN_URL,
+      username: process.env.TURN_USERNAME,
+      credential: process.env.TURN_PASSWORD,
+    });
+  }
+  res.json({ iceServers: ice });
+});
+
 // ── End-to-end encryption key storage ────────────────────────────────────────
 // The private key blob is encrypted client-side with a password-derived key;
 // the server only ever stores/relays opaque strings.
@@ -500,6 +515,7 @@ app.get('/join/:roomId', (req, res) => {
 
 // Socket.IO
 const onlineUsers = new Map(); // socketId -> { userId, username, roomId }
+const voiceRooms = new Map(); // roomId -> Map(socketId -> { userId, username })
 
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
@@ -586,6 +602,58 @@ io.on('connection', (socket) => {
       io.emit('dm_activity', { room });
     }
   });
+
+  // ── WebRTC signaling ────────────────────────────────────────────────────────
+  // The server only relays SDP/ICE blobs between users; media flows P2P.
+  socket.on('call_offer', ({ toUserId, roomId, kind, sdp }) => {
+    io.to('user:' + toUserId).emit('call_offer', {
+      fromUserId: socket.user.id, fromUsername: socket.user.username,
+      roomId: roomId || null, kind: kind === 'video' ? 'video' : 'voice', sdp,
+    });
+  });
+  socket.on('call_answer', ({ toUserId, sdp }) => {
+    io.to('user:' + toUserId).emit('call_answer', { fromUserId: socket.user.id, sdp });
+  });
+  socket.on('call_ice', ({ toUserId, candidate }) => {
+    io.to('user:' + toUserId).emit('call_ice', { fromUserId: socket.user.id, candidate });
+  });
+  socket.on('call_end', ({ toUserId }) => {
+    io.to('user:' + toUserId).emit('call_end', { fromUserId: socket.user.id });
+  });
+
+  // Room voice chat: mesh membership. Existing participants send offers to
+  // each newcomer; the server just tracks who is in the voice chat.
+  socket.on('voice_join', ({ roomId }) => {
+    const key = String(roomId);
+    if (!voiceRooms.has(key)) voiceRooms.set(key, new Map());
+    const members = voiceRooms.get(key);
+    // Tell the joiner who is already in (they will RECEIVE offers from them)
+    socket.emit('voice_peers', {
+      roomId: key,
+      peers: [...members.values()].map(m => ({ userId: m.userId, username: m.username })),
+    });
+    // Tell existing members to initiate an offer to the newcomer
+    members.forEach(m => {
+      io.to('user:' + m.userId).emit('voice_peer_joined', {
+        roomId: key, userId: socket.user.id, username: socket.user.username,
+      });
+    });
+    members.set(socket.id, { userId: socket.user.id, username: socket.user.username });
+    io.to(key).emit('voice_count', { roomId: key, count: members.size });
+  });
+  const leaveVoice = () => {
+    voiceRooms.forEach((members, key) => {
+      if (members.delete(socket.id)) {
+        members.forEach(m => {
+          io.to('user:' + m.userId).emit('voice_peer_left', { roomId: key, userId: socket.user.id });
+        });
+        io.to(key).emit('voice_count', { roomId: key, count: members.size });
+        if (!members.size) voiceRooms.delete(key);
+      }
+    });
+  };
+  socket.on('voice_leave', leaveVoice);
+  socket.on('disconnect', leaveVoice);
 
   socket.on('typing_start', ({ roomId }) => {
     socket.to(String(roomId)).emit('user_typing', { username: socket.user.username });

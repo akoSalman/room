@@ -24,7 +24,7 @@ export default function MiniPlayer({ hideForRoomId, onNavigate }: {
         style={s.info}
         activeOpacity={0.7}
         onPress={() => {
-          if (onNavigate && audioManager.roomMeta && audioManager.currentId != null) {
+          if (onNavigate && audioManager.roomMeta && typeof audioManager.currentId === 'number') {
             onNavigate(audioManager.roomMeta, audioManager.currentId);
           }
         }}
