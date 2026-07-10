@@ -4,6 +4,7 @@ let currentRoomId = null;
 let currentRoomIsDM = false;
 let maxOtherReadMsgId = 0; // highest message id any other room member has read (for seen checkmarks)
 let currentDMPeerPk = null; // the DM partner's public key (E2E) or null
+let allChatImages = []; // every image of the current chat (from /room-media)
 let e2eUnlockAsked = false;
 
 // Sessions started before E2E existed never ran key setup at login — unlock
@@ -794,6 +795,12 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   loadingOlderMsgs = false;
   maxOtherReadMsgId = 0;
   currentDMPeerPk = null;
+  allChatImages = [];
+  api('/room-media/' + roomId).then(m => {
+    if (m && !m.error && String(roomId) === String(currentRoomId)) {
+      allChatImages = m.images.slice().reverse().map(u => location.origin + u);
+    }
+  }).catch(() => {});
   document.getElementById('call-voice-btn').classList.toggle('hidden', !isDM);
   document.getElementById('call-video-btn').classList.toggle('hidden', !isDM);
   document.getElementById('room-voice-btn').classList.toggle('hidden', isDM);
@@ -899,20 +906,46 @@ function cancelReply() { replyTo = null; hide('reply-bar'); }
 
 function sendText() {
   const input = document.getElementById('msg-input');
-  let content = input.value.trim();
-  if (!content || !currentRoomId || !socketReady) return;
+  const plain = input.value.trim();
+  if (!plain || !currentRoomId || !socket) return;
   stopTypingSignal();
-  if (currentRoomIsDM && currentDMPeerPk) {
-    content = E2E.encrypt(content, currentDMPeerPk) || content;
-  }
-  socket.emit('send_message', {
-    roomId: currentRoomId, type: 'text', content, replyToId: replyTo?.id || null,
-    oneTimeSeconds: pendingOneTimeSeconds || undefined,
-  });
+  const roomId = currentRoomId;
+  const replyToId = replyTo?.id || null;
+  const oneTimeSeconds = pendingOneTimeSeconds || undefined;
   clearOneTime();
   input.value = '';
   updateComposerButtons();
   cancelReply();
+  dispatchText(plain, roomId, replyToId, oneTimeSeconds);
+}
+
+// Appears in the chat instantly; a failed/timed-out send shows tap-to-retry.
+function dispatchText(plain, roomId, replyToId, oneTimeSeconds) {
+  let wire = plain;
+  if (currentRoomIsDM && currentDMPeerPk && String(roomId) === String(currentRoomId)) {
+    wire = E2E.encrypt(plain, currentDMPeerPk) || plain;
+  }
+  const clientId = 'tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+  const tempMsg = {
+    id: clientId, username, avatar: localStorage.getItem('avatar') || '',
+    type: 'text', content: plain, file_path: null, file_name: null,
+    created_at: new Date().toISOString(),
+    reply_to_id: replyToId, reply_username: replyTo?.username || null,
+    one_time_seconds: oneTimeSeconds || null,
+  };
+  const wrapper = buildMessageElement(tempMsg);
+  if (String(roomId) === String(currentRoomId)) {
+    document.getElementById('messages').appendChild(wrapper);
+    scrollBottom();
+  }
+  pendingUploads[clientId] = { wrapper, previewUrl: null };
+  socket.timeout(8000).emit('send_message', {
+    roomId, type: 'text', content: wire, replyToId, clientId, oneTimeSeconds,
+  }, (err, res) => {
+    if ((err || !res?.ok) && pendingUploads[clientId]) {
+      markUploadFailed(wrapper, clientId, () => dispatchText(plain, roomId, replyToId, oneTimeSeconds));
+    }
+  });
 }
 
 // ── Composer ＋ menu ──────────────────────────────────────────────────────────
@@ -2180,13 +2213,35 @@ let lightboxList = [];
 let lightboxIdx = 0;
 
 function openLightbox(src) {
-  // Every image currently in the chat becomes a browsable gallery
-  lightboxList = [...document.querySelectorAll('#messages .msg-bubble img')].map(i => i.src);
-  lightboxIdx = Math.max(0, lightboxList.indexOf(src));
-  if (!lightboxList.length) lightboxList = [src];
+  // Prefer the full chat history's images (server-side list); fall back to
+  // what is currently rendered.
+  const absolute = src.startsWith('http') ? src : location.origin + src;
+  if (allChatImages.includes(absolute)) {
+    lightboxList = allChatImages;
+    lightboxIdx = allChatImages.indexOf(absolute);
+  } else {
+    lightboxList = [...document.querySelectorAll('#messages .msg-bubble img')].map(i => i.src);
+    lightboxIdx = Math.max(0, lightboxList.indexOf(absolute));
+    if (!lightboxList.length) lightboxList = [absolute];
+  }
   showLightboxAt(lightboxIdx);
   show('lightbox');
 }
+
+// ── (3) swipe left/right in the gallery ──
+(() => {
+  let sx = null;
+  const lb = () => document.getElementById('lightbox');
+  document.addEventListener('touchstart', (e) => {
+    if (!lb().classList.contains('hidden')) sx = e.touches[0].clientX;
+  }, { passive: true });
+  document.addEventListener('touchend', (e) => {
+    if (sx === null || lb().classList.contains('hidden')) { sx = null; return; }
+    const dx = e.changedTouches[0].clientX - sx;
+    sx = null;
+    if (Math.abs(dx) > 60 && lightboxScale <= 1.05) lightboxNav(dx < 0 ? 1 : -1);
+  }, { passive: true });
+})();
 
 function showLightboxAt(idx) {
   lightboxIdx = Math.max(0, Math.min(idx, lightboxList.length - 1));

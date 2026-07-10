@@ -194,7 +194,7 @@ async function sendPushToUsers(userIds, title, body, data = {}) {
             token: t,
             notification: { title, body },
             data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])),
-            android: { priority: 'high', notification: { channel_id: 'messages-v2', sound: 'notify' } },
+            android: { priority: 'high', notification: { channel_id: 'messages-v3', sound: 'notify' } },
           },
         }),
       }).then(async r => {
@@ -593,7 +593,7 @@ io.on('connection', (socket) => {
     io.to(String(roomId)).emit('room_online', { users: roomOnline });
   });
 
-  socket.on('send_message', (data) => {
+  socket.on('send_message', (data, ack) => {
     const { roomId, type, content, filePath, fileName, replyToId, clientId, oneTimeSeconds } = data;
     const oneTime = Number.isInteger(oneTimeSeconds) && oneTimeSeconds >= 1 && oneTimeSeconds <= 3600
       ? oneTimeSeconds : null;
@@ -631,6 +631,7 @@ io.on('connection', (socket) => {
     if (room && room.is_dm) {
       io.emit('dm_activity', { room });
     }
+    if (typeof ack === 'function') ack({ ok: true });
   });
 
   // ── WebRTC signaling ────────────────────────────────────────────────────────

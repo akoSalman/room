@@ -110,6 +110,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [inviteName, setInviteName] = useState('');
   const [highlightId, setHighlightId] = useState<number | string | null>(null);
   const [showScrollFab, setShowScrollFab] = useState(false);
+  // Every image ever sent in this chat (chronological), from /room-media —
+  // lets the lightbox traverse the whole chat, not just loaded messages.
+  const [allImages, setAllImages] = useState<string[]>([]);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const hasMoreOlderRef = useRef(true);
   const loadingOlderRef = useRef(false);
@@ -365,6 +368,44 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     };
   }, [room.id]);
 
+  useEffect(() => {
+    let alive = true;
+    apiFetch(`/room-media/${room.id}`)
+      .then((m: any) => {
+        if (alive && m && Array.isArray(m.images)) {
+          setAllImages(m.images.slice().reverse().map((p: string) => `${BASE_URL}${p}`));
+        }
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [room.id]);
+
+  // Optimistic text send: the bubble appears on first tap; if the server
+  // doesn't ack within the timeout the bubble shows a retry button.
+  function dispatchText(plain: string, replyToId: number | null, oneTime: number | null, replyMeta?: ReplyTo | null) {
+    const sock = socketRef.current;
+    if (!sock) return;
+    const wire = (room.is_dm && dmPeerPk.current) ? (e2eEncrypt(plain, dmPeerPk.current) || plain) : plain;
+    const clientId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const optimistic: Message = {
+      id: clientId, room_id: room.id, user_id: 0, username: me, avatar: myAvatar,
+      type: 'text', content: plain, file_path: null, file_name: null,
+      edited: 0, created_at: new Date().toISOString(),
+      reply_to_id: replyToId, reply_username: replyMeta?.username ?? null,
+      reply_content: replyMeta?.content ?? null, reply_type: replyMeta?.type ?? null,
+      one_time_seconds: oneTime ?? null,
+      _uploading: true,
+    } as Message;
+    setMessages(prev => [...prev, optimistic]);
+    if (isNearBottomRef.current) setTimeout(scrollBottom, 50);
+    (sock as any).timeout(8000).emit('send_message', {
+      roomId: room.id, type: 'text', content: wire, replyToId,
+      clientId, oneTimeSeconds: oneTime ?? undefined,
+    }, (err: any, res: any) => {
+      if (err || !res?.ok) markUploadFailed(clientId);
+    });
+  }
+
   function sendText() {
     if (pendingMedia.length && !editingId) {
       const items = pendingMedia;
@@ -389,15 +430,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     }
     const t = text.trim();
     if (!t || !socketRef.current) return;
-    const wire = (room.is_dm && dmPeerPk.current) ? (e2eEncrypt(t, dmPeerPk.current) || t) : t;
     if (editingId) {
+      const wire = (room.is_dm && dmPeerPk.current) ? (e2eEncrypt(t, dmPeerPk.current) || t) : t;
       socketRef.current.emit('edit_message', { messageId: editingId, content: wire });
       setEditingId(null);
     } else {
-      socketRef.current.emit('send_message', {
-        roomId: room.id, type: 'text', content: wire, replyToId: replyTo?.id ?? null,
-        oneTimeSeconds: oneTimeSecs ?? undefined,
-      });
+      dispatchText(t, replyTo?.id ?? null, oneTimeSecs, replyTo);
       setOneTimeSecs(null);
     }
     setText('');
@@ -655,7 +693,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     if (!msg.client_id && typeof msg.id !== 'string') return;
     const clientId = String(msg.id);
     setMessages(prev => prev.filter(m => m.id !== clientId));
-    if (msg.type === 'audio') {
+    if (msg.type === 'text') {
+      dispatchText(msg.content || '', msg.reply_to_id ?? null, msg.one_time_seconds ?? null,
+        msg.reply_to_id ? { id: msg.reply_to_id, username: msg.reply_username || '', content: msg.reply_content, type: msg.reply_type } as ReplyTo : null);
+    } else if (msg.type === 'audio') {
       const peaks = (msg.file_name || '').split(',').map(n => Number(n) / 100);
       sendVoice(msg.file_path!, peaks);
     } else {
@@ -1157,19 +1198,26 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           <TouchableOpacity onPress={saveImage} style={s.lightboxSave}>
             <Text style={s.lightboxCloseText}>⬇</Text>
           </TouchableOpacity>
-          {lightboxUrl && <ZoomableImage uri={lightboxUrl} />}
           {lightboxUrl && (() => {
-            const list = chatImageUrls();
+            // Prefer the full-chat image list so the gallery traverses every
+            // image ever exchanged, not just the loaded message page.
+            const loaded = chatImageUrls();
+            const list = allImages.includes(lightboxUrl) ? allImages : loaded;
             const idx = list.indexOf(lightboxUrl);
+            const nav = (dir: number) => {
+              const n = idx + dir;
+              if (n >= 0 && n < list.length) setLightboxUrl(list[n]);
+            };
             return (
               <>
+                <ZoomableImage uri={lightboxUrl} onSwipe={nav} />
                 {idx > 0 && (
-                  <TouchableOpacity style={[s.lightboxNav, { left: 10 }]} onPress={() => setLightboxUrl(list[idx - 1])}>
+                  <TouchableOpacity style={[s.lightboxNav, { left: 10 }]} onPress={() => nav(-1)}>
                     <Text style={s.lightboxNavText}>‹</Text>
                   </TouchableOpacity>
                 )}
                 {idx >= 0 && idx < list.length - 1 && (
-                  <TouchableOpacity style={[s.lightboxNav, { right: 10 }]} onPress={() => setLightboxUrl(list[idx + 1])}>
+                  <TouchableOpacity style={[s.lightboxNav, { right: 10 }]} onPress={() => nav(1)}>
                     <Text style={s.lightboxNavText}>›</Text>
                   </TouchableOpacity>
                 )}
@@ -1789,7 +1837,7 @@ const s = StyleSheet.create({
   sendBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
   sendBtnText: { color: '#fff', fontSize: 16 },
   scrollFab: {
-    position: 'absolute', end: 16, bottom: 90, width: 44, height: 44, borderRadius: 22,
+    position: 'absolute', end: 16, bottom: 148, width: 44, height: 44, borderRadius: 22,
     backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center',
     elevation: 4, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 6, shadowOffset: { width: 0, height: 2 },
   },

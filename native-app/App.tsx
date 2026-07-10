@@ -27,7 +27,7 @@ Notifications.setNotificationHandler({
 });
 // 'messages-v2': Android caches channel settings forever, so shipping the new
 // custom sound requires a fresh channel id.
-Notifications.setNotificationChannelAsync('messages-v2', {
+Notifications.setNotificationChannelAsync('messages-v3', {
   name: 'Messages',
   importance: Notifications.AndroidImportance.MAX,
   sound: 'notify.wav',
