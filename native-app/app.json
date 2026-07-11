@@ -95,6 +95,7 @@
         }
       ]
     ],
-    "extra": {}
+    "extra": {},
+    "scheme": "chatroom"
   }
 }
