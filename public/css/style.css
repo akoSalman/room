@@ -442,19 +442,23 @@ html {
 /* ── Heart burst overlay ───────────────────────────── */
 #heart-burst {
   position: fixed; inset: 0; z-index: 900; pointer-events: none;
-  background: radial-gradient(circle at 50% 60%, rgba(244,114,182,0.35), rgba(244,114,182,0.12));
-  animation: heart-bg 2.5s ease both;
+  background: radial-gradient(circle at 50% 65%, rgba(244,114,182,0.16), rgba(244,114,182,0.05));
+  animation: heart-bg 2.5s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 #heart-burst.hidden { display: none; }
 #heart-burst span {
-  position: absolute; bottom: -60px;
-  animation: heart-rise 2.4s ease-out both;
+  position: absolute; bottom: -60px; will-change: transform, opacity;
+  animation: heart-rise 2.4s cubic-bezier(0.25, 0.1, 0.25, 1) both;
+  filter: drop-shadow(0 2px 6px rgba(244,114,182,0.35));
 }
-@keyframes heart-bg { 0% { opacity: 0; } 15% { opacity: 1; } 80% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes heart-bg { 0% { opacity: 0; } 20% { opacity: 1; } 75% { opacity: 1; } 100% { opacity: 0; } }
 @keyframes heart-rise {
-  0% { transform: translateY(0) scale(0.6) rotate(-8deg); opacity: 0; }
-  15% { opacity: 1; }
-  100% { transform: translateY(-85vh) scale(1.25) rotate(8deg); opacity: 0; }
+  0%   { transform: translate(0, 0) scale(0.4) rotate(-6deg); opacity: 0; }
+  12%  { opacity: 0.9; }
+  30%  { transform: translate(14px, -26vh) scale(0.9) rotate(5deg); }
+  55%  { transform: translate(-12px, -48vh) scale(1.05) rotate(-5deg); opacity: 0.85; }
+  80%  { transform: translate(10px, -68vh) scale(1.12) rotate(4deg); opacity: 0.5; }
+  100% { transform: translate(-6px, -88vh) scale(1.18) rotate(-3deg); opacity: 0; }
 }
 
 /* ── Voice played dot ──────────────────────────────── */

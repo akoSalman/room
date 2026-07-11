@@ -24,6 +24,7 @@ import VoiceRecorder from '../components/VoiceRecorder';
 import ZoomableImage from '../components/ZoomableImage';
 import SwipeableMessage from '../components/SwipeableMessage';
 import MusicPlayer from '../components/MusicPlayer';
+import HeartBurst from '../components/HeartBurst';
 
 type Message = {
   id: number | string; room_id: number; user_id: number; username: string; avatar?: string | null;
@@ -127,15 +128,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [otherUnread, setOtherUnread] = useState(false);
   // Quick-emoji bar above the composer (closable; reopens from the strip)
   const [quickEmoji, setQuickEmoji] = useState(true);
-  // Heart-only messages splash a short full-screen love effect on both sides
-  const [heartBurst, setHeartBurst] = useState(false);
-  const heartTimer = useRef<any>(null);
+  // Heart-only messages splash a short full-screen love effect on both sides.
+  // The counter keys the HeartBurst so a new heart restarts the animation.
+  const [heartKey, setHeartKey] = useState(0);
   const HEART_RE = /^(?:\u2764\uFE0F|\u2764|\uD83D\uDC96|\uD83D\uDC97|\uD83D\uDC95|\uD83D\uDC93|\uD83D\uDC98|\uD83D\uDC9D|\uD83E\uDE77|\s)+$/;
-  function triggerHeart() {
-    setHeartBurst(true);
-    if (heartTimer.current) clearTimeout(heartTimer.current);
-    heartTimer.current = setTimeout(() => setHeartBurst(false), 2500);
-  }
+  function triggerHeart() { setHeartKey(k => k + 1); }
   const [loadingOlder, setLoadingOlder] = useState(false);
   const hasMoreOlderRef = useRef(true);
   const loadingOlderRef = useRef(false);
@@ -1777,17 +1774,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           </View>
         </View>
       )}
-      {heartBurst && (
-        <View pointerEvents="none" style={s.heartOverlay}>
-          {['💖','❤️','💗','💘','❤️','💖','💕'].map((h, i) => (
-            <Text key={i} style={[s.heartFloat, {
-              left: `${8 + (i * 13) % 80}%`,
-              top: `${12 + (i * 23) % 65}%`,
-              fontSize: 30 + (i % 4) * 12,
-            }]}>{h}</Text>
-          ))}
-        </View>
-      )}
+      {heartKey > 0 && <HeartBurst key={heartKey} onDone={() => setHeartKey(0)} />}
     </KeyboardAvoidingView>
   );
 }
@@ -1904,11 +1891,7 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(128,128,128,0.12)',
   },
   msgMenuBtnText: { color: C.muted, fontSize: 15, fontWeight: '700', lineHeight: 18 },
-  heartOverlay: {
-    ...StyleSheet.absoluteFillObject, zIndex: 60,
-    backgroundColor: 'rgba(244,114,182,0.20)',
-  },
-  heartFloat: { position: 'absolute' },
+
   pendingMediaBar: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     paddingHorizontal: 12, paddingVertical: 6,
