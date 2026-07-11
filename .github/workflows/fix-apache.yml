@@ -19,6 +19,14 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "root@$HOST" bash -s <<'EOF'
           set +e
+          echo "===== DirectAdmin webserver setting ====="
+          grep -E '^webserver=' /usr/local/directadmin/custombuild/options.conf 2>/dev/null || echo "options.conf not found"
+          echo ""
+          echo "===== nginx stole ports 80/443 after the reboot — stopping it ====="
+          systemctl disable --now nginx 2>&1
+          sleep 1
+          ss -ltnp | grep -E ':80 ' || echo "port 80 free now"
+          echo ""
           echo "===== why did httpd fail ====="
           systemctl status httpd --no-pager -l | head -25
           journalctl -u httpd --no-pager -n 30
