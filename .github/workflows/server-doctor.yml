@@ -1,0 +1,68 @@
+name: Server Doctor
+
+# Diagnoses a chat server over SSH: service status, recent logs, port checks,
+# then attempts a restart and reports the result.
+on:
+  workflow_dispatch:
+
+jobs:
+  doctor:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: akosalman
+            host_secret: DEPLOY_HOST_AKOSALMAN
+            dir_secret: DEPLOY_DIR_AKOSALMAN
+            service_secret: DEPLOY_SERVICE_AKOSALMAN
+          - name: bistbarg
+            host_secret: DEPLOY_HOST_BISTBARG
+            dir_secret: DEPLOY_DIR_BISTBARG
+            service_secret: DEPLOY_SERVICE_BISTBARG
+
+    steps:
+      - name: Diagnose ${{ matrix.name }}
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets[matrix.host_secret] }}
+          APP_DIR: ${{ secrets[matrix.dir_secret] }}
+          SERVICE: ${{ secrets[matrix.service_secret] }}
+        run: |
+          if [ -z "$HOST" ] || [ -z "$SERVICE" ] || [ -z "$SSH_KEY" ]; then
+            echo "Secrets for ${{ matrix.name }} not configured — skipping."
+            exit 0
+          fi
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "root@$HOST" \
+            SERVICE="$SERVICE" APP_DIR="$APP_DIR" bash -s <<'EOF'
+          set +e
+          echo "===== systemctl status ====="
+          systemctl status "$SERVICE" --no-pager -l | head -30
+          echo ""
+          echo "===== last 60 journal lines ====="
+          journalctl -u "$SERVICE" --no-pager -n 60
+          echo ""
+          echo "===== node syntax check ====="
+          cd "$APP_DIR" && node --check server.js && node --check db.js && echo "syntax OK"
+          echo ""
+          echo "===== git state ====="
+          git -C "$APP_DIR" log --oneline -1; git -C "$APP_DIR" status --short | head -5
+          echo ""
+          echo "===== port 3000 ====="
+          ss -ltnp | grep 3000 || echo "nothing listening on 3000"
+          echo ""
+          echo "===== attempting restart ====="
+          systemctl restart "$SERVICE"
+          sleep 3
+          systemctl is-active "$SERVICE"
+          echo ""
+          echo "===== health check ====="
+          curl -s -m 5 -o /dev/null -w "HTTP %{http_code}\n" http://127.0.0.1:3000/ || echo "app not responding"
+          echo ""
+          echo "===== apache/coturn ====="
+          systemctl is-active apache2 httpd 2>/dev/null | head -2
+          systemctl is-active coturn
+          EOF
