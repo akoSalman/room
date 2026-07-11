@@ -1,0 +1,40 @@
+name: Fix Apache (bistbarg)
+
+# One-off: after a server reboot Apache didn't come back. Show why, run a
+# config test, then enable + start it so it also survives future reboots.
+on:
+  workflow_dispatch:
+
+jobs:
+  fix-apache:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repair Apache on bistbarg
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.DEPLOY_HOST_BISTBARG }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "root@$HOST" bash -s <<'EOF'
+          set +e
+          echo "===== why did httpd fail ====="
+          systemctl status httpd --no-pager -l | head -25
+          journalctl -u httpd --no-pager -n 30
+          echo ""
+          echo "===== apache config test ====="
+          /usr/sbin/httpd -t 2>&1 || apachectl configtest 2>&1
+          echo ""
+          echo "===== port 80/443 owners ====="
+          ss -ltnp | grep -E ':80 |:443 ' || echo "ports 80/443 free"
+          echo ""
+          echo "===== enabling + starting httpd ====="
+          systemctl enable httpd
+          systemctl restart httpd
+          sleep 2
+          systemctl is-active httpd
+          echo ""
+          echo "===== end-to-end check via Apache ====="
+          curl -sk -m 8 -o /dev/null -w "https://chat.bistbarg.com -> HTTP %{http_code}\n" https://chat.bistbarg.com/ --resolve chat.bistbarg.com:443:127.0.0.1
+          EOF
