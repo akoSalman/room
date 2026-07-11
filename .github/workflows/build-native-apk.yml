@@ -125,12 +125,16 @@ jobs:
             -Pandroid.injected.signing.key.alias=chatroom \
             -Pandroid.injected.signing.key.password=chatroom123
 
+      # The release repo below is the real distribution channel; this artifact
+      # is only a convenience copy. Short retention keeps it inside GitHub's
+      # storage quota, and a quota failure must never block the release publish.
       - name: Upload APK
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: ${{ env.RELEASE_TITLE }}-${{ github.run_number }}
           path: native-app/android/app/build/outputs/apk/release/app-release.apk
-          retention-days: 30
+          retention-days: 2
 
       - name: Publish latest APK to public releases repo
         env:
