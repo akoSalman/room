@@ -20,10 +20,11 @@ function parsePeaks(raw: string, count = 40): number[] {
   });
 }
 
-export default function VoicePlayer({ url, peaks: rawPeaks, mine, msgId, roomId, label, roomMeta, onPlayStart }: {
+export default function VoicePlayer({ url, peaks: rawPeaks, mine, msgId, roomId, label, roomMeta, onPlayStart, played }: {
   url: string; peaks: string; mine: boolean;
   msgId: number | string; roomId: number; label: string; roomMeta?: any;
   onPlayStart?: () => void;
+  played?: boolean;
 }) {
   const [, forceUpdate] = useReducer(x => x + 1, 0);
   const peaks = parsePeaks(rawPeaks);
@@ -68,6 +69,8 @@ export default function VoicePlayer({ url, peaks: rawPeaks, mine, msgId, roomId,
       </View>
 
       <View style={s.meta}>
+        {/* Opened indicator: bright dot until the other side has played it */}
+        <View style={[s.playedDot, played ? s.playedDotDone : null]} />
         <Text style={s.duration}>{fmtTime(duration * progress || 0)}</Text>
         <TouchableOpacity onPress={cycleSpeed} style={s.speedBtn}>
           <Text style={s.speedText}>{SPEEDS[speedIdx]}×</Text>
@@ -85,6 +88,8 @@ const s = StyleSheet.create({
   bar: { flex: 1, minWidth: 1, maxWidth: 3, borderRadius: 2 },
   meta: { alignItems: 'flex-end', gap: 3, flexShrink: 0 },
   duration: { color: C.muted, fontSize: 11, fontVariant: ['tabular-nums'] },
+  playedDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: C.accent },
+  playedDotDone: { backgroundColor: 'rgba(128,128,128,0.45)' },
   speedBtn: { backgroundColor: 'rgba(82,136,193,0.2)', borderWidth: 1, borderColor: C.accent, borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1 },
   speedText: { color: C.accent, fontSize: 10, fontWeight: '700' },
 });

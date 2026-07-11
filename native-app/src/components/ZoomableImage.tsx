@@ -63,6 +63,7 @@ export default function ZoomableImage({ uri, onSwipe }: { uri: string; onSwipe?:
       <Animated.View style={s.container}>
         <PinchGestureHandler onGestureEvent={onPinchEvent} onHandlerStateChange={onPinchStateChange}>
           <Animated.Image
+            fadeDuration={0}
             source={{ uri }}
             style={[s.image, {
               transform: [{ translateX }, { translateY }, { scale }],

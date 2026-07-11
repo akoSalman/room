@@ -708,6 +708,20 @@ io.on('connection', (socket) => {
     });
   });
 
+  // Voice message opened/played indicator: only a listener other than the
+  // sender marks it, and everyone in the room (sender included) is told.
+  socket.on('voice_played', ({ messageId }) => {
+    const msg = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
+    if (!msg || msg.type !== 'audio' || msg.user_id === socket.user.id) return;
+    const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(msg.room_id);
+    if (!canAccessRoom(socket.user.id, room)) return;
+    if (!msg.played) {
+      db.prepare('UPDATE messages SET played = 1 WHERE id = ?').run(msg.id);
+      io.to(String(msg.room_id)).emit('voice_played', { messageId: msg.id, roomId: msg.room_id });
+      getRoomMemberIds(room).forEach(id => io.to('user:' + id).emit('voice_played', { messageId: msg.id, roomId: msg.room_id }));
+    }
+  });
+
   socket.on('recording_start', ({ roomId }) => {
     socket.to(String(roomId)).emit('user_recording', { username: socket.user.username });
   });

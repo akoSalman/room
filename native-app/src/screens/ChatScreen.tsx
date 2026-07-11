@@ -32,6 +32,7 @@ type Message = {
   reply_to_id?: number | null; reply_username?: string | null;
   reply_content?: string | null; reply_type?: string | null;
   client_id?: string;
+  played?: number;
   one_time_seconds?: number | null; viewed_at?: number | null;
   _uploading?: boolean; _uploadFailed?: boolean;
 };
@@ -70,7 +71,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [reactions, setReactions] = useState<Record<number, Reaction[]>>({});
-  const [text, setText] = useState('');
+  // The draft lives in a ref, NOT state: keystrokes and emoji taps must not
+  // re-render the whole message list (that's what made typing/sending laggy).
+  const textRef = useRef('');
+  const inputRef = useRef<TextInput>(null);
+  const setTextTo = (v: string) => {
+    textRef.current = v;
+    inputRef.current?.setNativeProps({ text: v });
+  };
   const [me, setMe] = useState('');
   const [myAvatar, setMyAvatar] = useState<string | null>(null);
   const [online, setOnline] = useState<string[]>([]);
@@ -119,6 +127,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [otherUnread, setOtherUnread] = useState(false);
   // Quick-emoji bar above the composer (closable; reopens from the strip)
   const [quickEmoji, setQuickEmoji] = useState(true);
+  // Heart-only messages splash a short full-screen love effect on both sides
+  const [heartBurst, setHeartBurst] = useState(false);
+  const heartTimer = useRef<any>(null);
+  const HEART_RE = /^(?:\u2764\uFE0F|\u2764|\uD83D\uDC96|\uD83D\uDC97|\uD83D\uDC95|\uD83D\uDC93|\uD83D\uDC98|\uD83D\uDC9D|\uD83E\uDE77|\s)+$/;
+  function triggerHeart() {
+    setHeartBurst(true);
+    if (heartTimer.current) clearTimeout(heartTimer.current);
+    heartTimer.current = setTimeout(() => setHeartBurst(false), 2500);
+  }
   const [loadingOlder, setLoadingOlder] = useState(false);
   const hasMoreOlderRef = useRef(true);
   const loadingOlderRef = useRef(false);
@@ -305,6 +322,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           if (msg.username !== me) setOtherUnread(true);
           return;
         }
+        if (msg.type === 'text' && msg.username !== me) {
+          let c: any = msg.content;
+          if (e2eIsEncrypted(c)) c = e2eDecrypt(c, dmPeerPk.current);
+          if (c && HEART_RE.test(String(c).trim())) triggerHeart();
+        }
         // Reconcile our optimistic upload bubble with the server's echo.
         // Prefer the echoed client_id; fall back to matching the uploaded
         // file path (covers servers that don't echo client_id back).
@@ -356,6 +378,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       sock.on('one_time_viewed', ({ messageId, seconds }: any) => {
         setOneTimeExpiry(prev => ({ ...prev, [messageId]: Date.now() + seconds * 1000 }));
       });
+
+      sock.on('voice_played', ({ messageId }: any) => {
+        setMessages(prev => prev.map(msg => msg.id === messageId ? { ...msg, played: 1 } : msg));
+      });
       sock.on('messages_read', ({ roomId, lastReadMsgId }: any) => {
         if (roomId != room.id) return;
         setMaxOtherReadMsgId(prev => lastReadMsgId > prev ? lastReadMsgId : prev);
@@ -374,12 +400,21 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       socketRef.current?.off('user_stopped_recording');
       socketRef.current?.off('messages_read');
       socketRef.current?.off('one_time_viewed');
+      socketRef.current?.off('voice_played');
     };
   }, [room.id]);
 
   useEffect(() => {
     AsyncStorage.getItem('quickEmojiClosed').then(v => { if (v === '1') setQuickEmoji(false); });
   }, []);
+
+  // Swiping the gallery is only smooth if the neighbours are already cached
+  useEffect(() => {
+    if (!lightboxUrl) return;
+    const list = allImages.includes(lightboxUrl) ? allImages : chatImageUrls();
+    const idx = list.indexOf(lightboxUrl);
+    [list[idx - 1], list[idx + 1]].forEach(u => { if (u && u.startsWith('http')) Image.prefetch(u).catch(() => {}); });
+  }, [lightboxUrl, allImages]);
 
   useEffect(() => {
     let alive = true;
@@ -410,6 +445,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       _uploading: true,
     } as Message;
     setMessages(prev => [...prev, optimistic]);
+    if (HEART_RE.test(plain.trim())) triggerHeart();
     if (isNearBottomRef.current) setTimeout(scrollBottom, 50);
     // Encrypt + emit AFTER the bubble has painted — E2E key math on a slow
     // phone must never delay the send button's visual feedback.
@@ -427,14 +463,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   function sendText() {
     if (pendingMedia.length && !editingId) {
       const items = pendingMedia;
-      let caption: string | null = text.trim() || null;
+      let caption: string | null = textRef.current.trim() || null;
       if (caption && room.is_dm && dmPeerPk.current) {
         caption = e2eEncrypt(caption, dmPeerPk.current) || caption;
       }
       const oneTime = oneTimeSecs ?? undefined;
       setPendingMedia([]);
       setOneTimeSecs(null);
-      if (caption) { setText(''); emitStopTyping(); }
+      if (caption) { setTextTo(''); emitStopTyping(); }
       const images = items.filter(m => m.mime.startsWith('image/'));
       const others = items.filter(m => !m.mime.startsWith('image/'));
       if (images.length > 1) {
@@ -446,7 +482,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       }
       return;
     }
-    const t = text.trim();
+    const t = textRef.current.trim();
     if (!t || !socketRef.current) return;
     if (editingId) {
       const wire = (room.is_dm && dmPeerPk.current) ? (e2eEncrypt(t, dmPeerPk.current) || t) : t;
@@ -456,7 +492,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       dispatchText(t, replyTo?.id ?? null, oneTimeSecs, replyTo);
       setOneTimeSecs(null);
     }
-    setText('');
+    setTextTo('');
     setReplyTo(null);
     emitStopTyping();
   }
@@ -799,7 +835,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         <Text key={i}>
           <Text
             style={url ? s.link : s.copyableNumber}
-            onPress={url ? () => handleLinkPress(part) : undefined}
+            onPress={url ? () => handleLinkPress(part) : () => {
+              Clipboard.setStringAsync(part.trim());
+              Alert.alert('Copied', part.trim());
+            }}
           >{part}</Text>
           <Text style={s.inlineCopy} onPress={() => Clipboard.setStringAsync(part.trim())}> 📋</Text>
         </Text>
@@ -997,7 +1036,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           })()}
           {!hiddenOneTime && msg.type === 'audio' && !msg._uploading && (
             <VoicePlayer url={`${BASE_URL}${msg.file_path}`} peaks={msg.file_name || ''} mine={mine} msgId={msg.id} roomId={room.id} roomMeta={room} label={`🎙 ${msg.username} · voice message`}
-              onPlayStart={msg.one_time_seconds && !mine ? () => startOneTimeClock(msg) : undefined} />
+              played={!!msg.played}
+              onPlayStart={() => {
+                if (mine) return;
+                if (msg.one_time_seconds) startOneTimeClock(msg);
+                if (!msg.played) socketRef.current?.emit('voice_played', { messageId: msg.id });
+              }} />
           )}
           {msg.type === 'audio' && msg._uploading && (
             <View style={s.uploadingVoicePlaceholder}>
@@ -1325,7 +1369,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       {editingId && (
         <View style={s.editBanner}>
           <Text style={s.editText}>✏️ Editing message</Text>
-          <TouchableOpacity onPress={() => { setEditingId(null); setText(''); }}>
+          <TouchableOpacity onPress={() => { setEditingId(null); setTextTo(''); }}>
             <Text style={s.editClose}>✕</Text>
           </TouchableOpacity>
         </View>
@@ -1426,7 +1470,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 {mineMsg && m.type === 'text' && (
                   <TouchableOpacity style={s.actionItem} onPress={() => {
                     setActionsMsg(null);
-                    setText(m.content || ''); setEditingId(m.id);
+                    setTextTo(m.content || ''); setEditingId(m.id);
                   }}>
                     <Text style={s.actionText}>✏️  Edit</Text>
                   </TouchableOpacity>
@@ -1666,7 +1710,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             <View style={s.quickEmojiBar}>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="always" contentContainerStyle={{ alignItems: 'center' }} style={{ flex: 1 }}>
                 {QUICK_EMOJIS.map(em => (
-                  <TouchableOpacity key={em} style={s.quickEmojiBtn} onPress={() => setText(t => t + em)}>
+                  <TouchableOpacity key={em} style={s.quickEmojiBtn} onPress={() => setTextTo(textRef.current + em)}>
                     <Text style={s.quickEmojiText}>{em}</Text>
                   </TouchableOpacity>
                 ))}
@@ -1724,13 +1768,24 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           <View style={s.inputBar}>
             <TextInput
               style={s.input} placeholder={pendingMedia.length ? 'Add a caption…' : 'Message...'} placeholderTextColor={C.muted}
-              value={text} onChangeText={t => { setText(t); emitTyping(); }}
+              ref={inputRef} defaultValue="" onChangeText={t => { textRef.current = t; emitTyping(); }}
               onSubmitEditing={sendText} blurOnSubmit={false} multiline
             />
             <TouchableOpacity style={s.sendBtn} onPress={sendText}>
               <Text style={s.sendBtnText}>➤</Text>
             </TouchableOpacity>
           </View>
+        </View>
+      )}
+      {heartBurst && (
+        <View pointerEvents="none" style={s.heartOverlay}>
+          {['💖','❤️','💗','💘','❤️','💖','💕'].map((h, i) => (
+            <Text key={i} style={[s.heartFloat, {
+              left: `${8 + (i * 13) % 80}%`,
+              top: `${12 + (i * 23) % 65}%`,
+              fontSize: 30 + (i % 4) * 12,
+            }]}>{h}</Text>
+          ))}
         </View>
       )}
     </KeyboardAvoidingView>
@@ -1823,7 +1878,7 @@ const s = StyleSheet.create({
   stripBtnText: { color: C.accent, fontSize: 13, fontWeight: '600' },
   quickEmojiBar: {
     flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 2,
-    backgroundColor: 'rgba(30,34,44,0.55)', borderTopWidth: 1, borderTopColor: 'rgba(128,128,128,0.15)',
+    backgroundColor: 'transparent',
   },
   quickEmojiBtn: { paddingHorizontal: 6, paddingVertical: 4 },
   quickEmojiText: { fontSize: 22 },
@@ -1849,6 +1904,11 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(128,128,128,0.12)',
   },
   msgMenuBtnText: { color: C.muted, fontSize: 15, fontWeight: '700', lineHeight: 18 },
+  heartOverlay: {
+    ...StyleSheet.absoluteFillObject, zIndex: 60,
+    backgroundColor: 'rgba(244,114,182,0.20)',
+  },
+  heartFloat: { position: 'absolute' },
   pendingMediaBar: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     paddingHorizontal: 12, paddingVertical: 6,

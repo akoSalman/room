@@ -301,7 +301,16 @@ function connectSocket() {
       } else {
         appendMessage(msg);
         socket.emit('mark_read', { roomId: msg.room_id, lastMsgId: msg.id });
+        if (msg.type === 'text' && msg.username !== username) {
+          let c = msg.content;
+          if (E2E.isEncrypted(c)) c = E2E.decrypt(c, currentDMPeerPk);
+          if (c && HEART_RE.test(String(c).trim())) triggerHeartBurst();
+        }
       }
+    });
+    socket.on('voice_played', ({ messageId }) => {
+      document.querySelectorAll(`.voice-played-dot[data-msg-id="${messageId}"]`)
+        .forEach(d => d.classList.add('played'));
     });
     socket.on('message_edited', ({ messageId, content }) => {
       if (E2E.isEncrypted(content)) {
@@ -923,6 +932,7 @@ function dispatchText(plain, roomId, replyToId, oneTimeSeconds) {
     scrollBottom();
   }
   pendingUploads[clientId] = { wrapper, previewUrl: null };
+  if (HEART_RE.test(plain.trim())) triggerHeartBurst();
   // Encrypt + emit after the bubble has painted, so the send button feels
   // instant even when E2E key work makes the wire format slow to build.
   setTimeout(() => {
@@ -938,6 +948,28 @@ function dispatchText(plain, roomId, replyToId, oneTimeSeconds) {
       }
     });
   }, 0);
+}
+
+// ── Heart burst: a short full-screen love effect on heart-only messages ──────
+const HEART_RE = /^(?:\u2764\uFE0F|\u2764|\uD83D\uDC96|\uD83D\uDC97|\uD83D\uDC95|\uD83D\uDC93|\uD83D\uDC98|\uD83D\uDC9D|\uD83E\uDE77|\s)+$/;
+let heartBurstTimer = null;
+function triggerHeartBurst() {
+  const el = document.getElementById('heart-burst');
+  if (!el) return;
+  if (!el.dataset.filled) {
+    el.dataset.filled = '1';
+    ['\u{1F496}','\u2764\uFE0F','\u{1F497}','\u{1F498}','\u2764\uFE0F','\u{1F496}','\u{1F495}','\u2764\uFE0F'].forEach((h, i) => {
+      const sp = document.createElement('span');
+      sp.textContent = h;
+      sp.style.left = (6 + (i * 12) % 84) + '%';
+      sp.style.animationDelay = (i * 0.12) + 's';
+      sp.style.fontSize = (26 + (i % 4) * 12) + 'px';
+      el.appendChild(sp);
+    });
+  }
+  el.classList.remove('hidden');
+  clearTimeout(heartBurstTimer);
+  heartBurstTimer = setTimeout(() => el.classList.add('hidden'), 2500);
 }
 
 // ── Quick emoji bar ───────────────────────────────────────────────────────────
@@ -2043,6 +2075,12 @@ function buildVoicePlayer(msg) {
   const player = document.createElement('div');
   player.className = 'voice-player';
 
+  // Opened indicator: bright dot until the receiving side has played it
+  const dot = document.createElement('span');
+  dot.className = 'voice-played-dot' + (msg.played ? ' played' : '');
+  dot.dataset.msgId = msg.id;
+  player.appendChild(dot);
+
   const playBtn = document.createElement('button');
   playBtn.className = 'voice-play-btn';
   playBtn.innerHTML = '▶';
@@ -2117,7 +2155,12 @@ function buildVoicePlayer(msg) {
     if (wrapper) playNextVoiceAfter(wrapper);
   };
 
+  let playedSent = false;
   function reallyPlay() {
+    if (!playedSent && msg.username !== username) {
+      playedSent = true;
+      socket?.emit('voice_played', { messageId: msg.id });
+    }
     claimPlayback(audio, stopThis); // pause whatever else is playing
     if (audio.ended || audio.currentTime >= audio.duration) audio.currentTime = 0;
     audio.play(); playBtn.innerHTML = '⏸'; playBtn.classList.remove('loading'); playing = true; startRAF();
@@ -2272,6 +2315,11 @@ let lightboxSwipedAt = 0; // suppresses the tap-to-close click a swipe generates
 
 function showLightboxAt(idx) {
   lightboxIdx = Math.max(0, Math.min(idx, lightboxList.length - 1));
+  // Preload neighbours so swiping is instant
+  [lightboxIdx - 1, lightboxIdx + 1].forEach(i => {
+    const u = lightboxList[i];
+    if (u) { const im = new Image(); im.src = u; }
+  });
   lightboxSrc = lightboxList[lightboxIdx];
   lightboxScale = 1; lightboxX = 0; lightboxY = 0;
   document.getElementById('lightbox-img').src = lightboxSrc;

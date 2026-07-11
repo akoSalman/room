@@ -2,8 +2,10 @@
 // Mirrors public/js/calls.js: DMs get 1:1 voice/video, rooms get voice-only
 // mesh. A singleton so the call survives screen changes; CallOverlay renders
 // its state app-wide.
+import { PermissionsAndroid, Platform } from 'react-native';
 import { mediaDevices, RTCPeerConnection, MediaStream } from 'react-native-webrtc';
 import { apiFetch, getSocket } from './api';
+import { audioManager } from './audioManager';
 
 type Listener = () => void;
 type Incoming = { fromUserId: number; fromUsername: string; kind: 'voice' | 'video'; sdp: any } | null;
@@ -66,7 +68,7 @@ class CallManager {
     });
     s.on('voice_peer_joined', async ({ roomId, userId }: any) => {
       if (this.mode === 'room-voice' && String(roomId) === String(this.roomVoiceId)) {
-        await this.makeOffer(userId, { roomId });
+        try { await this.makeOffer(userId, { roomId }); } catch { this.dropPeer(userId); }
       }
     });
     s.on('voice_peer_left', ({ roomId, userId }: any) => {
@@ -80,11 +82,34 @@ class CallManager {
     });
   }
 
-  private async getMedia(video: boolean) {
-    return mediaDevices.getUserMedia({
-      audio: true,
-      video: video ? { facingMode: 'user', width: 640, height: 480 } : false,
-    }) as Promise<MediaStream>;
+  // getUserMedia without granted runtime permissions hard-crashes the app on
+  // some Android builds instead of rejecting — ask explicitly first, and stop
+  // any expo-av playback/recording that holds the audio session.
+  private async ensurePermissions(video: boolean): Promise<boolean> {
+    if (Platform.OS !== 'android') return true;
+    try {
+      const wanted = [
+        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+        ...(video ? [PermissionsAndroid.PERMISSIONS.CAMERA] : []),
+      ];
+      const res = await PermissionsAndroid.requestMultiple(wanted);
+      return wanted.every(w => res[w] === PermissionsAndroid.RESULTS.GRANTED);
+    } catch {
+      return true; // fall through and let getUserMedia decide
+    }
+  }
+
+  private async getMedia(video: boolean): Promise<MediaStream | null> {
+    try { audioManager.stop(); } catch {}
+    if (!(await this.ensurePermissions(video))) return null;
+    try {
+      return await (mediaDevices.getUserMedia({
+        audio: true,
+        video: video ? { facingMode: 'user', width: 640, height: 480 } : false,
+      }) as Promise<MediaStream>);
+    } catch {
+      return null;
+    }
   }
 
   private newPc(userId: number): RTCPeerConnection {
@@ -158,12 +183,16 @@ class CallManager {
   private async onOffer(offer: any) {
     if (offer.roomId != null) {
       if (this.mode === 'room-voice' && String(offer.roomId) === String(this.roomVoiceId)) {
-        const pc = this.newPc(offer.fromUserId);
-        await pc.setRemoteDescription(offer.sdp);
-        this.flushIce(offer.fromUserId);
-        const ans = await pc.createAnswer();
-        await pc.setLocalDescription(ans);
-        this.sock.emit('call_answer', { toUserId: offer.fromUserId, sdp: (pc as any).localDescription });
+        try {
+          const pc = this.newPc(offer.fromUserId);
+          await pc.setRemoteDescription(offer.sdp);
+          this.flushIce(offer.fromUserId);
+          const ans = await pc.createAnswer();
+          await pc.setLocalDescription(ans);
+          this.sock.emit('call_answer', { toUserId: offer.fromUserId, sdp: (pc as any).localDescription });
+        } catch {
+          this.dropPeer(offer.fromUserId);
+        }
       }
       return;
     }
@@ -175,37 +204,41 @@ class CallManager {
   async startDM(peerId: number | null, peerName: string, kind: 'voice' | 'video') {
     if (this.mode || !peerId) return;
     await this.init();
-    try {
-      this.localStream = await this.getMedia(kind === 'video');
-    } catch { return; }
+    const stream = await this.getMedia(kind === 'video');
+    if (!stream) return;
+    this.localStream = stream;
     this.mode = kind === 'video' ? 'dm-video' : 'dm-voice';
     this.title = (kind === 'video' ? '🎥 ' : '📞 ') + peerName;
     this.status = 'Calling…';
     this.emit();
-    await this.makeOffer(peerId);
+    try { await this.makeOffer(peerId); } catch { this.end(); }
   }
 
   async accept() {
     const offer = this.incoming;
     this.incoming = null;
     if (!offer) return;
-    try {
-      this.localStream = await this.getMedia(offer.kind === 'video');
-    } catch {
+    const stream = await this.getMedia(offer.kind === 'video');
+    if (!stream) {
       this.sock.emit('call_end', { toUserId: offer.fromUserId });
       this.emit();
       return;
     }
+    this.localStream = stream;
     this.mode = offer.kind === 'video' ? 'dm-video' : 'dm-voice';
     this.title = (offer.kind === 'video' ? '🎥 ' : '📞 ') + offer.fromUsername;
     this.status = 'Connecting…';
     this.emit();
-    const pc = this.newPc(offer.fromUserId);
-    await pc.setRemoteDescription(offer.sdp);
-    this.flushIce(offer.fromUserId);
-    const ans = await pc.createAnswer();
-    await pc.setLocalDescription(ans);
-    this.sock.emit('call_answer', { toUserId: offer.fromUserId, sdp: (pc as any).localDescription });
+    try {
+      const pc = this.newPc(offer.fromUserId);
+      await pc.setRemoteDescription(offer.sdp);
+      this.flushIce(offer.fromUserId);
+      const ans = await pc.createAnswer();
+      await pc.setLocalDescription(ans);
+      this.sock.emit('call_answer', { toUserId: offer.fromUserId, sdp: (pc as any).localDescription });
+    } catch {
+      this.end();
+    }
   }
 
   decline() {
@@ -218,9 +251,9 @@ class CallManager {
     if (this.mode === 'room-voice') return this.end();
     if (this.mode) return;
     await this.init();
-    try {
-      this.localStream = await this.getMedia(false);
-    } catch { return; }
+    const stream = await this.getMedia(false);
+    if (!stream) return;
+    this.localStream = stream;
     this.mode = 'room-voice';
     this.roomVoiceId = roomId;
     this.title = '📞 ' + roomName;

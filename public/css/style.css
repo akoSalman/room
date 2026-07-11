@@ -415,8 +415,7 @@ html {
 /* ── Quick emoji bar ───────────────────────────────── */
 #quick-emoji-bar {
   display: flex; align-items: center; gap: 4px; flex-shrink: 0;
-  padding: 4px 10px; background: rgba(30, 34, 44, 0.55);
-  backdrop-filter: blur(6px); border-top: 1px solid rgba(128,128,128,0.15);
+  padding: 4px 10px; background: transparent;
 }
 #quick-emoji-bar.hidden { display: none; }
 #quick-emoji-list { display: flex; flex: 1; gap: 2px; overflow-x: auto; scrollbar-width: none; }
@@ -439,6 +438,31 @@ html {
 .msg-wrapper:hover .msg-menu-btn { opacity: 1; }
 .msg-menu-btn:hover { background: rgba(128,128,128,0.18); }
 @media (pointer: coarse) { .msg-menu-btn { opacity: 0.6; } }
+
+/* ── Heart burst overlay ───────────────────────────── */
+#heart-burst {
+  position: fixed; inset: 0; z-index: 900; pointer-events: none;
+  background: radial-gradient(circle at 50% 60%, rgba(244,114,182,0.35), rgba(244,114,182,0.12));
+  animation: heart-bg 2.5s ease both;
+}
+#heart-burst.hidden { display: none; }
+#heart-burst span {
+  position: absolute; bottom: -60px;
+  animation: heart-rise 2.4s ease-out both;
+}
+@keyframes heart-bg { 0% { opacity: 0; } 15% { opacity: 1; } 80% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes heart-rise {
+  0% { transform: translateY(0) scale(0.6) rotate(-8deg); opacity: 0; }
+  15% { opacity: 1; }
+  100% { transform: translateY(-85vh) scale(1.25) rotate(8deg); opacity: 0; }
+}
+
+/* ── Voice played dot ──────────────────────────────── */
+.voice-played-dot {
+  width: 8px; height: 8px; border-radius: 4px; flex-shrink: 0;
+  background: var(--accent); align-self: center;
+}
+.voice-played-dot.played { background: rgba(128,128,128,0.45); }
 #media-preview-bar {
   display: flex; align-items: center; gap: 10px; padding: 8px 14px; flex-shrink: 0;
   background: rgba(59,125,216,0.08); border-top: 1px solid var(--accent);
