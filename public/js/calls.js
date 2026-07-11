@@ -31,7 +31,7 @@ const Calls = (() => {
       const pc = pcs.get(fromUserId);
       if (pc) await pc.setRemoteDescription(sdp).catch(() => {});
       flushIce(fromUserId);
-      setStatus('Connected');
+      markConnected();
     });
     s.on('call_ice', ({ fromUserId, candidate }) => {
       const pc = pcs.get(fromUserId);
@@ -85,7 +85,7 @@ const Calls = (() => {
     pc.ontrack = (e) => attachRemote(userId, e.streams[0]);
     pc.onconnectionstatechange = () => {
       if (['failed', 'closed'].includes(pc.connectionState)) dropPeer(userId);
-      if (pc.connectionState === 'connected') setStatus(mode === 'room-voice' ? 'Voice chat' : 'Connected');
+      if (pc.connectionState === 'connected') mode === 'room-voice' ? setStatus('Voice chat') : markConnected();
     };
     localStream?.getTracks().forEach(t => pc.addTrack(t, localStream));
     pcs.set(userId, pc);
@@ -146,6 +146,34 @@ const Calls = (() => {
 
   function setStatus(text) { const el = $('call-status'); if (el) el.textContent = text; }
 
+  // ── Ring sound + connected timer ──
+  let ringAudio = null;
+  function startRing() {
+    stopRing();
+    try {
+      ringAudio = new Audio('/ring.wav');
+      ringAudio.loop = true;
+      ringAudio.play().catch(() => {});
+    } catch {}
+  }
+  function stopRing() {
+    if (ringAudio) { try { ringAudio.pause(); } catch {} ringAudio = null; }
+  }
+  let connectedAt = null, timerInterval = null;
+  function markConnected() {
+    stopRing();
+    if (!connectedAt) {
+      connectedAt = Date.now();
+      clearInterval(timerInterval);
+      timerInterval = setInterval(() => {
+        const sec = Math.floor((Date.now() - connectedAt) / 1000);
+        const m = Math.floor(sec / 60), ss = String(sec % 60).padStart(2, '0');
+        setStatus(`${m}:${ss}`);
+      }, 1000);
+    }
+    markConnected();
+  }
+
   function teardown() {
     pcs.forEach(pc => pc.close());
     pcs.clear();
@@ -160,6 +188,10 @@ const Calls = (() => {
     mode = null;
     roomVoiceId = null;
     incoming = null;
+    stopRing();
+    connectedAt = null;
+    clearInterval(timerInterval);
+    timerInterval = null;
   }
 
   // ── DM calls ────────────────────────────────────────────────────────────────
@@ -171,7 +203,8 @@ const Calls = (() => {
     } catch { return alert('Microphone/camera access is required.'); }
     mode = kind === 'video' ? 'dm-video' : 'dm-voice';
     showOverlay((kind === 'video' ? '🎥 ' : '📞 ') + dmPeer.username, kind === 'video');
-    setStatus('Calling…');
+    setStatus('Ringing…');
+    startRing();
     if (kind === 'video') { $('call-local-video').srcObject = localStream; $('call-local-video').muted = true; }
     await makeOffer(dmPeer.userId);
   }
@@ -191,6 +224,7 @@ const Calls = (() => {
     }
     if (mode) { sock.emit('call_end', { toUserId: offer.fromUserId }); return; } // busy
     incoming = offer;
+    startRing();
     $('incoming-call-text').textContent =
       `${offer.kind === 'video' ? '🎥' : '📞'} ${offer.fromUsername} is calling…`;
     $('incoming-call').classList.remove('hidden');
@@ -199,6 +233,7 @@ const Calls = (() => {
   async function accept() {
     const offer = incoming;
     incoming = null;
+    stopRing();
     $('incoming-call').classList.add('hidden');
     if (!offer) return;
     try {
@@ -219,6 +254,7 @@ const Calls = (() => {
   function decline() {
     if (incoming) sock.emit('call_end', { toUserId: incoming.fromUserId });
     incoming = null;
+    stopRing();
     $('incoming-call').classList.add('hidden');
   }
 

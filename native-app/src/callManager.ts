@@ -3,6 +3,7 @@
 // mesh. A singleton so the call survives screen changes; CallOverlay renders
 // its state app-wide.
 import { PermissionsAndroid, Platform } from 'react-native';
+import { Audio } from 'expo-av';
 import { mediaDevices, RTCPeerConnection, MediaStream } from 'react-native-webrtc';
 import { apiFetch, getSocket } from './api';
 import { audioManager } from './audioManager';
@@ -19,6 +20,29 @@ class CallManager {
   remoteStream: MediaStream | null = null; // dm-video only
   muted = false;
   cameraOff = false;
+  connectedAt: number | null = null; // for the in-call timer
+
+  private ringSound: Audio.Sound | null = null;
+  private async startRing() {
+    this.stopRing();
+    try {
+      const { sound } = await Audio.Sound.createAsync(
+        require('../assets/ring.wav'), { isLooping: true, shouldPlay: true, volume: 0.8 },
+      );
+      this.ringSound = sound;
+    } catch {}
+  }
+  private stopRing() {
+    const snd = this.ringSound;
+    this.ringSound = null;
+    if (snd) snd.unloadAsync().catch(() => {});
+  }
+  private markConnected() {
+    this.stopRing();
+    if (!this.connectedAt) this.connectedAt = Date.now();
+    this.status = 'Connected';
+    this.emit();
+  }
 
   private sock: any = null;
   private pcs = new Map<number, RTCPeerConnection>();
@@ -48,8 +72,7 @@ class CallManager {
       const pc = this.pcs.get(fromUserId);
       if (pc) await pc.setRemoteDescription(sdp).catch(() => {});
       this.flushIce(fromUserId);
-      this.status = 'Connected';
-      this.emit();
+      if (this.mode !== 'room-voice') this.markConnected();
     });
     s.on('call_ice', ({ fromUserId, candidate }: any) => {
       const pc = this.pcs.get(fromUserId);
@@ -128,7 +151,7 @@ class CallManager {
     (pc as any).onconnectionstatechange = () => {
       const st = (pc as any).connectionState;
       if (['failed', 'closed'].includes(st)) this.dropPeer(userId);
-      if (st === 'connected' && this.mode !== 'room-voice') { this.status = 'Connected'; this.emit(); }
+      if (st === 'connected' && this.mode !== 'room-voice') this.markConnected();
     };
     this.localStream?.getTracks().forEach(t => (pc as any).addTrack(t, this.localStream));
     this.pcs.set(userId, pc);
@@ -177,6 +200,8 @@ class CallManager {
     this.incoming = null;
     this.muted = false;
     this.cameraOff = false;
+    this.connectedAt = null;
+    this.stopRing();
     this.emit();
   }
 
@@ -198,6 +223,7 @@ class CallManager {
     }
     if (this.mode) { this.sock.emit('call_end', { toUserId: offer.fromUserId }); return; } // busy
     this.incoming = offer;
+    this.startRing();
     this.emit();
   }
 
@@ -209,7 +235,8 @@ class CallManager {
     this.localStream = stream;
     this.mode = kind === 'video' ? 'dm-video' : 'dm-voice';
     this.title = (kind === 'video' ? '🎥 ' : '📞 ') + peerName;
-    this.status = 'Calling…';
+    this.status = 'Ringing…';
+    this.startRing();
     this.emit();
     try { await this.makeOffer(peerId); } catch { this.end(); }
   }
@@ -217,6 +244,7 @@ class CallManager {
   async accept() {
     const offer = this.incoming;
     this.incoming = null;
+    this.stopRing();
     if (!offer) return;
     const stream = await this.getMedia(offer.kind === 'video');
     if (!stream) {
@@ -244,6 +272,7 @@ class CallManager {
   decline() {
     if (this.incoming) this.sock.emit('call_end', { toUserId: this.incoming.fromUserId });
     this.incoming = null;
+    this.stopRing();
     this.emit();
   }
 

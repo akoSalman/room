@@ -87,7 +87,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [recordingUsers, setRecordingUsers] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<number | string | null>(null);
-  const [showEmojiFor, setShowEmojiFor] = useState<number | string | null>(null);
+  // Reaction picker: rendered in a Modal at the tap position so ANY outside tap closes it
+  const [emojiPicker, setEmojiPicker] = useState<{ id: number | string; x: number; y: number } | null>(null);
   const [recording, setRecording] = useState(false);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<ReplyTo | null>(null);
@@ -233,6 +234,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       if (msgs[idx].type !== 'audio') return; // only chain voice messages
       const next = msgs.slice(idx + 1).find(m => m.type === 'audio');
       if (!next) return;
+      // Auto-advanced voices count as played too (manual taps report via VoicePlayer)
+      if (next.username !== meRef.current && !next.played) {
+        socketRef.current?.emit('voice_played', { messageId: next.id });
+      }
       audioManager.play(
         next.id,
         `${BASE_URL}${next.file_path}`,
@@ -308,6 +313,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         hasMoreOlderRef.current = msgs.length >= MESSAGES_PAGE_SIZE;
         if (msgs.length) sock.emit('mark_read', { roomId: room.id, lastMsgId: msgs[msgs.length - 1].id });
       }
+      // Re-append failed sends persisted from a previous session (retryable)
+      try {
+        const failed = JSON.parse((await AsyncStorage.getItem(failedKey)) || '[]');
+        if (mounted && Array.isArray(failed) && failed.length) {
+          setMessages(prev => [...prev, ...failed.filter((f: any) => !prev.some(p => p.id === f.id))]);
+        }
+      } catch {}
       setLoading(false);
       if (initialJumpMsgId) setTimeout(() => jumpToMessage(initialJumpMsgId), 300);
 
@@ -627,9 +639,32 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     if (isNearBottomRef.current) setTimeout(scrollBottom, 50);
   }
 
+  // Failed sends survive app restarts so they can still be retried.
+  const failedKey = `failed-msgs-${room.id}`;
+  async function saveFailedMsg(m: Message) {
+    try {
+      const arr = JSON.parse((await AsyncStorage.getItem(failedKey)) || '[]')
+        .filter((x: any) => x.id !== m.id);
+      arr.push({ ...m, _uploading: false, _uploadFailed: true });
+      await AsyncStorage.setItem(failedKey, JSON.stringify(arr.slice(-20)));
+    } catch {}
+  }
+  async function removeFailedMsg(id: string | number) {
+    try {
+      const arr = JSON.parse((await AsyncStorage.getItem(failedKey)) || '[]')
+        .filter((x: any) => x.id !== id);
+      await AsyncStorage.setItem(failedKey, JSON.stringify(arr));
+    } catch {}
+  }
+
   function markUploadFailed(clientId: string) {
     setUploadProgress(prev => { const { [clientId]: _d, ...rest } = prev; return rest; });
-    setMessages(prev => prev.map(m => m.id === clientId ? { ...m, _uploading: false, _uploadFailed: true } : m));
+    setMessages(prev => {
+      const next = prev.map(m => m.id === clientId ? { ...m, _uploading: false, _uploadFailed: true } : m);
+      const failed = next.find(m => m.id === clientId);
+      if (failed) saveFailedMsg(failed);
+      return next;
+    });
   }
 
   async function uploadFile(uri: string, name: string, mime: string, caption: string | null = null, oneTimeOverride?: number) {
@@ -743,6 +778,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   function retryUpload(msg: Message) {
     if (!msg.client_id && typeof msg.id !== 'string') return;
     const clientId = String(msg.id);
+    removeFailedMsg(clientId);
     setMessages(prev => prev.filter(m => m.id !== clientId));
     if (msg.type === 'text') {
       dispatchText(msg.content || '', msg.reply_to_id ?? null, msg.one_time_seconds ?? null,
@@ -768,7 +804,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
   function toggleReact(messageId: number | string, emoji: string) {
     socketRef.current?.emit('toggle_reaction', { messageId, emoji });
-    setShowEmojiFor(null);
+    setEmojiPicker(null);
   }
 
   function deleteMsg(id: number | string) {
@@ -964,7 +1000,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         >
         <TouchableOpacity
           style={[s.bubble, mine ? s.mineBubble : s.theirsBubble, highlightId === msg.id && s.bubbleHighlight]}
-          onLongPress={() => setShowEmojiFor(msg.id)}
+          onLongPress={(e) => setEmojiPicker({ id: msg.id, x: e.nativeEvent.pageX, y: e.nativeEvent.pageY })}
           activeOpacity={0.85}
         >
           {/* Reply quote */}
@@ -1126,27 +1162,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             </Text>
           )}
           {!msg._uploading && !msg._uploadFailed && (
-            <TouchableOpacity onPress={() => setShowEmojiFor(msg.id)} hitSlop={{ top: 6, bottom: 6 }}>
+            <TouchableOpacity onPress={(e) => setEmojiPicker({ id: msg.id, x: e.nativeEvent.pageX, y: e.nativeEvent.pageY })} hitSlop={{ top: 6, bottom: 6 }}>
               <Text style={s.footerBtn}>😊</Text>
             </TouchableOpacity>
           )}
         </View>
 
-        {/* Emoji picker */}
-        {showEmojiFor === msg.id && (
-          <View style={[s.emojiPicker, mine ? { alignSelf: 'flex-end' } : {}]}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              {EMOJIS.map(e => (
-                <TouchableOpacity key={e} onPress={() => toggleReact(msg.id, e)} style={s.emojiBtn}>
-                  <Text style={s.emoji}>{e}</Text>
-                </TouchableOpacity>
-              ))}
-              <TouchableOpacity onPress={() => setShowEmojiFor(null)} style={s.emojiBtn}>
-                <Text style={s.emoji}>✕</Text>
-              </TouchableOpacity>
-            </ScrollView>
-          </View>
-        )}
+
       </View>
       </View>
     );
@@ -1330,7 +1352,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           inverted
           keyExtractor={m => String(m.id)}
           renderItem={renderMessage}
-          extraData={[maxOtherReadMsgId, uploadProgress, reactions, showEmojiFor, highlightId, online, revealedOneTime, e2eActive]}
+          extraData={[maxOtherReadMsgId, uploadProgress, reactions, highlightId, online, revealedOneTime, e2eActive]}
           contentContainerStyle={s.messagesList}
           onScroll={onMessagesScroll}
           scrollEventThrottle={100}
@@ -1415,6 +1437,29 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             </TouchableOpacity>
           </View>
         </View>
+      </Modal>
+
+      {/* Reaction picker: popover at the tap position; closes on outside tap */}
+      <Modal visible={!!emojiPicker} transparent animationType="fade" onRequestClose={() => setEmojiPicker(null)}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={() => setEmojiPicker(null)}>
+          {emojiPicker && (() => {
+            const win = Dimensions.get('window');
+            const W = Math.min(340, win.width - 24);
+            const left = Math.max(12, Math.min(emojiPicker.x - W / 2, win.width - W - 12));
+            const top = Math.max(70, Math.min(emojiPicker.y - 64, win.height - 130));
+            return (
+              <View style={[s.emojiPicker, { position: 'absolute', left, top, width: W }]} onStartShouldSetResponder={() => true}>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="always">
+                  {EMOJIS.map(e => (
+                    <TouchableOpacity key={e} onPress={() => toggleReact(emojiPicker.id, e)} style={s.emojiBtn}>
+                      <Text style={s.emoji}>{e}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+            );
+          })()}
+        </Pressable>
       </Modal>
 
       {/* Message actions: minimal popover near the tapped message; closes on outside tap */}
@@ -1869,8 +1914,11 @@ const s = StyleSheet.create({
   },
   quickEmojiBtn: { paddingHorizontal: 6, paddingVertical: 4 },
   quickEmojiText: { fontSize: 22 },
-  quickEmojiClose: { paddingHorizontal: 8, paddingVertical: 4 },
-  quickEmojiCloseText: { color: C.muted, fontSize: 13, fontWeight: '700' },
+  quickEmojiClose: {
+    width: 24, height: 24, borderRadius: 12, marginLeft: 6,
+    backgroundColor: 'rgba(239,68,68,0.9)', alignItems: 'center', justifyContent: 'center',
+  },
+  quickEmojiCloseText: { color: '#fff', fontSize: 12, fontWeight: '800', lineHeight: 14 },
   unreadDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: C.online, marginLeft: 4, marginTop: -8 },
   actionsMenu: {
     backgroundColor: C.msgBg, borderRadius: 16, paddingVertical: 6, paddingHorizontal: 5,
@@ -1931,7 +1979,7 @@ const s = StyleSheet.create({
   reactChip: { backgroundColor: C.inputBg, borderWidth: 1, borderColor: C.border, borderRadius: 20, paddingHorizontal: 8, paddingVertical: 3 },
   reactMine: { borderColor: C.accent, backgroundColor: 'rgba(82,136,193,0.15)' },
   reactText: { fontSize: 13, color: C.text },
-  emojiPicker: { flexDirection: 'row', backgroundColor: C.sidebar, borderRadius: 12, padding: 6, borderWidth: 1, borderColor: C.border, marginTop: 4 },
+  emojiPicker: { flexDirection: 'row', backgroundColor: C.sidebar, borderRadius: 14, padding: 6, borderWidth: 1, borderColor: C.border, elevation: 10, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 14, shadowOffset: { width: 0, height: 5 } },
   emojiBtn: { padding: 6 },
   emoji: { fontSize: 22 },
   typingBar: { color: C.success, fontSize: 12, textAlign: 'center', paddingVertical: 4, paddingHorizontal: 12 },

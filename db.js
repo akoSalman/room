@@ -58,6 +58,13 @@ try { db.exec('ALTER TABLE messages ADD COLUMN forwarded_from TEXT'); } catch {}
 try { db.exec('ALTER TABLE messages ADD COLUMN one_time_seconds INTEGER'); } catch {}
 try { db.exec('ALTER TABLE messages ADD COLUMN viewed_at INTEGER'); } catch {}
 try { db.exec('ALTER TABLE messages ADD COLUMN played INTEGER DEFAULT 0'); } catch {}
+// One-time backfill: voices sent before the played-status feature existed
+// can never receive a voice_played event, so treat them as already played.
+db.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)');
+if (!db.prepare("SELECT value FROM meta WHERE key = 'voice_played_backfill'").get()) {
+  db.prepare("UPDATE messages SET played = 1 WHERE type = 'audio'").run();
+  db.prepare("INSERT INTO meta (key, value) VALUES ('voice_played_backfill', '1')").run();
+}
 // End-to-end encryption: the user's X25519 public key, plus their private key
 // encrypted client-side with a password-derived key (the server can never
 // read it) so the same identity works across web and mobile.

@@ -53,6 +53,13 @@ export default function App() {
       if (t) setScreen('rooms');
     });
     Notifications.requestPermissionsAsync().catch(() => {});
+    // Old notifications lingering in the tray are stale the moment the app
+    // is opened — clear them on launch and every return to the foreground.
+    Notifications.dismissAllNotificationsAsync().catch(() => {});
+    const sub = AppState.addEventListener('change', st => {
+      if (st === 'active') Notifications.dismissAllNotificationsAsync().catch(() => {});
+    });
+    return () => sub.remove();
   }, []);
 
   // Register the device FCM token so the server can push notifications that
@@ -153,7 +160,6 @@ export default function App() {
               onProfileOpened={() => setOpenProfileOnRooms(false)}
             />
           )}
-          {screen !== 'auth' && <CallOverlay />}
           {screen === 'chat' && room && (
             <ChatScreen
               key={room.id}
@@ -164,6 +170,8 @@ export default function App() {
               initialJumpMsgId={pendingJumpMsgId}
             />
           )}
+          {/* Rendered last so the full-screen call UI sits above every screen */}
+          {screen !== 'auth' && <CallOverlay />}
         </SafeAreaView>
       </SafeAreaProvider>
     </GestureHandlerRootView>
