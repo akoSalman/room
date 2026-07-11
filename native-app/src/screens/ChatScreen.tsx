@@ -11,6 +11,7 @@ import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
 import * as FileSystem from 'expo-file-system';
 import * as Clipboard from 'expo-clipboard';
+import * as ScreenCapture from 'expo-screen-capture';
 import {
   PinchGestureHandler, PanGestureHandler, State as GHState, GestureHandlerRootView,
 } from 'react-native-gesture-handler';
@@ -417,6 +418,27 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     AsyncStorage.getItem('quickEmojiClosed').then(v => { if (v === '1') setQuickEmoji(false); });
   }, []);
 
+  // URLs belonging to one-time media: view-only, never saved or screenshotted
+  function isOneTimeUrl(url: string | null): boolean {
+    if (!url) return false;
+    return messagesRef.current.some((m: any) => {
+      if (!m.one_time_seconds || !m.file_path) return false;
+      if (m.type === 'gallery') {
+        try { return JSON.parse(m.file_path).some((u: string) => `${BASE_URL}${u}` === url || u === url); } catch { return false; }
+      }
+      return `${BASE_URL}${m.file_path}` === url || m.file_path === url;
+    });
+  }
+
+  // Block screenshots/screen recording while any one-time content is on
+  // screen (revealed in the chat or open in the lightbox).
+  useEffect(() => {
+    const sensitive = revealedOneTime.size > 0 || isOneTimeUrl(lightboxUrl);
+    if (sensitive) ScreenCapture.preventScreenCaptureAsync().catch(() => {});
+    else ScreenCapture.allowScreenCaptureAsync().catch(() => {});
+    return () => { ScreenCapture.allowScreenCaptureAsync().catch(() => {}); };
+  }, [revealedOneTime, lightboxUrl]);
+
   // Swiping the gallery is only smooth if the neighbours are already cached
   useEffect(() => {
     if (!lightboxUrl) return;
@@ -740,6 +762,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
   async function downloadMedia(msg: Message) {
     if (!msg.file_path) return;
+    if (msg.one_time_seconds) { Alert.alert('Not allowed', 'One-time media cannot be downloaded.'); return; }
     if (msg.type === 'gallery') {
       try {
         let urls: string[] = [];
@@ -834,6 +857,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   async function saveImage() {
+    if (isOneTimeUrl(lightboxUrl)) { Alert.alert('Not allowed', 'One-time media cannot be saved.'); return; }
     if (!lightboxUrl) return;
     try {
       const { status } = await MediaLibrary.requestPermissionsAsync();
@@ -1286,9 +1310,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           <TouchableOpacity onPress={() => setLightboxUrl(null)} style={s.lightboxClose}>
             <Text style={s.lightboxCloseText}>✕</Text>
           </TouchableOpacity>
+          {!isOneTimeUrl(lightboxUrl) && (
           <TouchableOpacity onPress={saveImage} style={s.lightboxSave}>
             <Text style={s.lightboxCloseText}>⬇</Text>
           </TouchableOpacity>
+          )}
           {lightboxUrl && (() => {
             // Prefer the full-chat image list so the gallery traverses every
             // image ever exchanged, not just the loaded message page.
@@ -1472,9 +1498,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             const win = Dimensions.get('window');
             const MENU_W = 165;
             const items = 1
-              + ((m.type === 'text' || m.file_path) && !hidden ? 1 : 0)
+              + ((m.type === 'text' || (m.file_path && !m.one_time_seconds)) && !hidden ? 1 : 0)
               + (m.type !== 'invite' && !m.one_time_seconds ? 1 : 0)
-              + (m.file_path && !hidden ? 1 : 0)
+              + (m.file_path && !hidden && !m.one_time_seconds ? 1 : 0)
               + (mineMsg && m.type === 'text' ? 1 : 0)
               + (mineMsg ? 1 : 0);
             const menuH = items * 42 + 8;
@@ -1488,7 +1514,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 }}>
                   <Text style={s.actionText}>↩  Reply</Text>
                 </TouchableOpacity>
-                {(m.type === 'text' || m.file_path) && !hidden && (
+                {(m.type === 'text' || (m.file_path && !m.one_time_seconds)) && !hidden && (
                   <TouchableOpacity style={s.actionItem} onPress={() => {
                     let fp = m.file_path || '';
                     if (m.type === 'gallery') { try { fp = JSON.parse(fp)[0] || ''; } catch {} }
@@ -1504,7 +1530,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                     <Text style={s.actionText}>↪  Forward</Text>
                   </TouchableOpacity>
                 )}
-                {m.file_path && !hidden && (
+                {m.file_path && !hidden && !m.one_time_seconds && (
                   <TouchableOpacity style={s.actionItem} onPress={() => { setActionsMsg(null); downloadMedia(m); }}>
                     <Text style={s.actionText}>⬇  Download</Text>
                   </TouchableOpacity>

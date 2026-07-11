@@ -1755,6 +1755,7 @@ function buildMessageElement(msg) {
   } else if (msg.type === 'image') {
     const img = document.createElement('img');
     img.src = msg.file_path; img.onclick = () => openLightbox(msg.file_path);
+    if (msg.one_time_seconds) { oneTimeMediaUrls.add(img.src); img.draggable = false; }
     bubble.appendChild(img);
   } else if (msg.type === 'gallery') {
     let urls = [];
@@ -1766,6 +1767,7 @@ function buildMessageElement(msg) {
       const img = document.createElement('img');
       img.src = src;
       img.onclick = () => openLightbox(src);
+      if (msg.one_time_seconds) { oneTimeMediaUrls.add(img.src); img.draggable = false; }
       grid.appendChild(img);
     });
     bubble.appendChild(grid);
@@ -2276,6 +2278,9 @@ let lightboxSrc = '';
 let lightboxList = [];
 let lightboxIdx = 0;
 
+// Absolute URLs of one-time media — never downloadable from the lightbox
+const oneTimeMediaUrls = new Set();
+
 function openLightbox(src) {
   // Prefer the full chat history's images (server-side list); fall back to
   // what is currently rendered.
@@ -2323,6 +2328,8 @@ function showLightboxAt(idx) {
   lightboxSrc = lightboxList[lightboxIdx];
   lightboxScale = 1; lightboxX = 0; lightboxY = 0;
   document.getElementById('lightbox-img').src = lightboxSrc;
+  const dlBtn = document.querySelector('.lightbox-download');
+  if (dlBtn) dlBtn.classList.toggle('hidden', oneTimeMediaUrls.has(lightboxSrc));
   applyLightboxTransform();
   document.getElementById('lightbox-counter').textContent =
     lightboxList.length > 1 ? `${lightboxIdx + 1} / ${lightboxList.length}` : '';
@@ -2357,6 +2364,7 @@ function lightboxZoom(delta, clientX, clientY) {
 }
 
 function downloadLightboxImage() {
+  if (oneTimeMediaUrls.has(lightboxSrc)) return; // one-time media is view-only
   const a = document.createElement('a');
   a.href = lightboxSrc;
   a.download = lightboxSrc.split('/').pop() || 'image.jpg';
