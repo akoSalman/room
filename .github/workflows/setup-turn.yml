@@ -42,8 +42,20 @@ jobs:
             TURN_DOMAIN="$TURN_DOMAIN" SERVICE="$SERVICE" bash -s <<'EOF'
           set -euo pipefail
           TURN_USER=chatturn
-          DROPIN_DIR="/etc/systemd/system/${SERVICE}.service.d"
+          # Normalize the unit name: the SERVICE secret may or may not carry
+          # the .service suffix, and the drop-in dir must match the unit
+          # exactly or systemd silently ignores it (the original calls bug).
+          UNIT="${SERVICE%.service}.service"
+          DROPIN_DIR="/etc/systemd/system/${UNIT}.d"
           DROPIN="${DROPIN_DIR}/turn.conf"
+          # Migrate a drop-in previously written to a mismatched directory
+          BAD_DIR="/etc/systemd/system/${SERVICE}.service.d"
+          if [ "$BAD_DIR" != "$DROPIN_DIR" ] && [ -f "${BAD_DIR}/turn.conf" ]; then
+            mkdir -p "$DROPIN_DIR"
+            mv "${BAD_DIR}/turn.conf" "$DROPIN"
+            rmdir "$BAD_DIR" 2>/dev/null || true
+            echo "Migrated drop-in from ${BAD_DIR} to ${DROPIN_DIR}"
+          fi
 
           # Keep the existing password on re-runs so clients/config stay valid
           if [ -f "$DROPIN" ] && grep -q TURN_PASSWORD "$DROPIN"; then
@@ -114,8 +126,15 @@ jobs:
           Environment=TURN_PASSWORD=${TURN_PASS}
           UNIT
           systemctl daemon-reload
-          systemctl restart "$SERVICE"
-          systemctl is-active "$SERVICE"
+          systemctl restart "$UNIT"
+          systemctl is-active "$UNIT"
+
+          echo "service environment now contains:"
+          if systemctl show "$UNIT" -p Environment | tr ' ' '\n' | grep -E 'TURN_(URL|USERNAME)'; then
+            echo "TURN env loaded OK"
+          else
+            echo "ERROR: TURN env still missing from ${UNIT}"; exit 1
+          fi
 
           sleep 4
           echo "ice-config now returns:"
