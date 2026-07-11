@@ -273,7 +273,19 @@ function connectSocket() {
 
     socket.once('connect', () => { socketReady = true; hideConnectionBanner(); resolve(); });
 
-    socket.on('connect', () => { socketReady = true; hideConnectionBanner(); });
+    socket.on('connect', () => {
+      socketReady = true;
+      hideConnectionBanner();
+      // On reconnect the server no longer has us in the room channel — re-join
+      // and pull anything that arrived while the connection was down.
+      if (currentRoomId) {
+        socket.emit('join_room', currentRoomId);
+        refreshLatestMessages();
+      }
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && currentRoomId) refreshLatestMessages();
+    });
     if (typeof Calls !== 'undefined') Calls.bindSocket(socket);
     socket.on('disconnect', () => { socketReady = false; showConnectionBanner(); });
     socket.on('reconnecting', () => showConnectionBanner());
@@ -2280,6 +2292,28 @@ let lightboxIdx = 0;
 
 // Absolute URLs of one-time media — never downloadable from the lightbox
 const oneTimeMediaUrls = new Set();
+
+// Fetch the newest page and append any messages missing from the DOM —
+// used after reconnects and when the tab becomes visible again.
+async function refreshLatestMessages() {
+  if (!currentRoomId) return;
+  try {
+    const msgs = await api('/messages/' + currentRoomId);
+    if (!Array.isArray(msgs) || !msgs.length) return;
+    const container = document.getElementById('messages');
+    let appended = false;
+    msgs.forEach(m => {
+      if (!container.querySelector(`[data-msg-id="${m.id}"]`)) {
+        container.appendChild(buildMessageElement(m));
+        appended = true;
+      }
+    });
+    if (appended) {
+      scrollBottom();
+      socket?.emit('mark_read', { roomId: currentRoomId, lastMsgId: msgs[msgs.length - 1].id });
+    }
+  } catch {}
+}
 
 function openLightbox(src) {
   // Prefer the full chat history's images (server-side list); fall back to

@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   View, Text, TextInput, FlatList, TouchableOpacity,
   StyleSheet, KeyboardAvoidingView, Platform, Alert, Dimensions,
-  ActivityIndicator, Modal, ScrollView, Image, Linking, Share, Pressable,
+  ActivityIndicator, Modal, ScrollView, Image, Linking, Share, Pressable, AppState,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Audio, Video, ResizeMode } from 'expo-av';
@@ -284,6 +284,35 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     return () => clearInterval(iv);
   }, [Object.keys(oneTimeExpiry).length > 0]);
 
+  // Pull anything we missed while the device was locked / app backgrounded.
+  // The socket auto-reconnects, but events sent meanwhile are gone — so on
+  // every reconnect and every return to the foreground, re-sync the tail.
+  async function refreshLatest() {
+    try {
+      const msgs = await apiFetch(`/messages/${room.id}`);
+      if (!Array.isArray(msgs) || !msgs.length) return;
+      setMessages(prev => {
+        const have = new Set(prev.map(m => m.id));
+        const fresh = msgs.filter((m: any) => !have.has(m.id));
+        if (!fresh.length) return prev;
+        // Server messages (numeric ids) stay ordered; optimistic tmp-* stay last
+        const numeric = prev.filter(m => typeof m.id === 'number');
+        const temp = prev.filter(m => typeof m.id !== 'number');
+        const merged = [...numeric, ...fresh].sort((a: any, b: any) => a.id - b.id);
+        return [...merged, ...temp];
+      });
+      socketRef.current?.emit('mark_read', { roomId: room.id, lastMsgId: msgs[msgs.length - 1].id });
+      if (isNearBottomRef.current) setTimeout(scrollBottom, 100);
+    } catch {}
+  }
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', st => {
+      if (st === 'active') refreshLatest();
+    });
+    return () => sub.remove();
+  }, [room.id]);
+
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -326,6 +355,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
       socketRef.current = sock;
       sock.emit('join_room', room.id);
+
+      // socket.io reconnects by itself, but the server no longer has us in
+      // the room channel — re-join and re-sync on every reconnect.
+      sock.on('connect', () => {
+        sock.emit('join_room', room.id);
+        refreshLatest();
+      });
 
       sock.on('message_received', (msg: Message) => {
         if (msg.room_id !== room.id) {
@@ -411,6 +447,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       socketRef.current?.off('messages_read');
       socketRef.current?.off('one_time_viewed');
       socketRef.current?.off('voice_played');
+      socketRef.current?.off('connect');
     };
   }, [room.id]);
 
