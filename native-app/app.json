@@ -33,16 +33,68 @@
       ]
     },
     "plugins": [
-      ["expo-av", { "microphonePermission": "Allow ChatRoom to record voice messages." }],
-      ["expo-image-picker", { "photosPermission": "Allow ChatRoom to attach photos." }],
-      ["expo-notifications", { "icon": "./assets/notification-icon.png", "color": "#3b7dd8", "sounds": ["./assets/notify.wav"] }],
-      ["expo-media-library", { "photosPermission": "Allow ChatRoom to save images to your device.", "savePhotosPermission": "Allow ChatRoom to save images to your device." }],
-      ["@config-plugins/react-native-webrtc", { "cameraPermission": "Allow ChatRoom to use the camera for video calls.", "microphonePermission": "Allow ChatRoom to use the microphone for calls." }],
-      ["expo-build-properties", { "android": { "minSdkVersion": 24 } }]
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Allow ChatRoom to record voice messages."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow ChatRoom to attach photos."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#3b7dd8",
+          "sounds": [
+            "./assets/notify.wav"
+          ]
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow ChatRoom to save images to your device.",
+          "savePhotosPermission": "Allow ChatRoom to save images to your device."
+        }
+      ],
+      [
+        "@config-plugins/react-native-webrtc",
+        {
+          "cameraPermission": "Allow ChatRoom to use the camera for video calls.",
+          "microphonePermission": "Allow ChatRoom to use the microphone for calls."
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 24
+          }
+        }
+      ],
+      [
+        "expo-share-intent",
+        {
+          "androidIntentFilters": [
+            "text/*",
+            "image/*",
+            "video/*",
+            "audio/*",
+            "application/*"
+          ],
+          "androidMultiIntentFilters": [
+            "image/*",
+            "video/*",
+            "application/*"
+          ]
+        }
+      ]
     ],
     "extra": {}
   }
 }
-
-
-

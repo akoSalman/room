@@ -64,8 +64,10 @@ const EMOJIS = ['👍','❤️','😂','😮','😢','🔥','👏','🎉','🤔'
 const QUICK_EMOJIS = ['😂','❤️','👍','🙏','😍','🔥','🎉','😢','😮','👌'];
 const MESSAGES_PAGE_SIZE = 20;
 
-export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, initialJumpMsgId }: {
+export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, initialJumpMsgId, initialShare, onShareConsumed }: {
   room: { id: number; name: string; is_dm: number; other_username?: string; is_private?: number; created_by?: number };
+  initialShare?: { files?: { path: string; mimeType?: string; fileName?: string }[]; text?: string | null } | null;
+  onShareConsumed?: () => void;
   onBack: () => void;
   onOpenDM: (room: { id: number; name: string; is_dm: number; other_username?: string }) => void;
   onOpenProfile: () => void;
@@ -101,6 +103,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // clientId -> uploaded file URL, so the server's echo can be matched back to
   // its optimistic bubble even when the server doesn't echo client_id.
   const pendingUploadPaths = useRef<Record<string, string>>({});
+  const reconnectHandlerRef = useRef<(() => void) | null>(null);
   const [oneTimeSecs, setOneTimeSecs] = useState<number | null>(null); // 🔥 applies to next message
   const [revealedOneTime, setRevealedOneTime] = useState<Set<number | string>>(new Set());
   const [showOneTimeMenu, setShowOneTimeMenu] = useState(false);
@@ -308,7 +311,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', st => {
-      if (st === 'active') refreshLatest();
+      if (st !== 'active') return;
+      // The socket can be a half-dead zombie after Doze: force reconnect
+      const sock = socketRef.current;
+      if (sock && !sock.connected) sock.connect();
+      refreshLatest();
+      // Mobile radio may need a moment after unlock — one delayed retry
+      setTimeout(refreshLatest, 2500);
     });
     return () => sub.remove();
   }, [room.id]);
@@ -358,10 +367,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
       // socket.io reconnects by itself, but the server no longer has us in
       // the room channel — re-join and re-sync on every reconnect.
-      sock.on('connect', () => {
+      reconnectHandlerRef.current = () => {
         sock.emit('join_room', room.id);
         refreshLatest();
-      });
+      };
+      sock.on('connect', reconnectHandlerRef.current);
 
       sock.on('message_received', (msg: Message) => {
         if (msg.room_id !== room.id) {
@@ -447,12 +457,28 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       socketRef.current?.off('messages_read');
       socketRef.current?.off('one_time_viewed');
       socketRef.current?.off('voice_played');
-      socketRef.current?.off('connect');
+      if (reconnectHandlerRef.current) socketRef.current?.off('connect', reconnectHandlerRef.current);
     };
   }, [room.id]);
 
   useEffect(() => {
     AsyncStorage.getItem('quickEmojiClosed').then(v => { if (v === '1') setQuickEmoji(false); });
+  }, []);
+
+  // Files/text shared from another app land staged in the composer
+  useEffect(() => {
+    if (!initialShare) return;
+    if (initialShare.files?.length) {
+      setPendingMedia(prev => [...prev, ...initialShare.files!
+        .filter(f => f.path)
+        .map(f => ({
+          uri: /^(file|content):\/\//.test(f.path) ? f.path : 'file://' + f.path,
+          name: f.fileName || f.path.split('/').pop() || `shared-${Date.now()}`,
+          mime: f.mimeType || 'application/octet-stream',
+        }))]);
+    }
+    if (initialShare.text) setTextTo(initialShare.text);
+    onShareConsumed?.();
   }, []);
 
   // URLs belonging to one-time media: view-only, never saved or screenshotted

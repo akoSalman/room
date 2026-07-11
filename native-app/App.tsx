@@ -1,5 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { StatusBar, View, I18nManager, BackHandler, AppState } from 'react-native';
+import {
+  StatusBar, View, Text, I18nManager, BackHandler, AppState,
+  Modal, TouchableOpacity, FlatList, StyleSheet,
+} from 'react-native';
+import { useShareIntent } from 'expo-share-intent';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -38,6 +42,20 @@ Notifications.setNotificationChannelAsync('messages-v3', {
 }).catch(() => {});
 
 type Room = { id: number; name: string; is_dm: number; other_username?: string };
+
+const sh = StyleSheet.create({
+  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
+  sheet: {
+    backgroundColor: C.header, borderTopLeftRadius: 18, borderTopRightRadius: 18,
+    padding: 16, paddingBottom: 28,
+  },
+  title: { color: C.text, fontSize: 17, fontWeight: '800', marginBottom: 10, textAlign: 'center' },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 12, paddingHorizontal: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
+  rowIcon: { fontSize: 18, width: 26, textAlign: 'center' },
+  rowText: { color: C.text, fontSize: 15.5, fontWeight: '600', flex: 1 },
+  cancel: { marginTop: 12, alignSelf: 'center', paddingHorizontal: 22, paddingVertical: 10, borderRadius: 12, backgroundColor: 'rgba(239,68,68,0.15)' },
+  cancelText: { color: '#ef4444', fontWeight: '700' },
+});
 type Screen = 'auth' | 'rooms' | 'chat';
 
 export default function App() {
@@ -47,6 +65,46 @@ export default function App() {
   const [pendingJumpMsgId, setPendingJumpMsgId] = useState<number | null>(null);
 
   const pushRegisteredRef = React.useRef(false);
+
+  // "Share to ChatRoom" from other apps: pick a chat, then the shared
+  // files/text land staged in that chat's composer.
+  const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntent();
+  const [shareRooms, setShareRooms] = useState<any[] | null>(null);
+  const [pendingShare, setPendingShare] = useState<any>(null);
+
+  useEffect(() => {
+    if (!hasShareIntent || screen === 'auth') return;
+    (async () => {
+      try {
+        const [rooms, dms] = await Promise.all([apiFetch('/rooms'), apiFetch('/dm-rooms')]);
+        const list = [
+          ...(Array.isArray(dms) ? dms : []),
+          ...(Array.isArray(rooms) ? rooms : []),
+        ];
+        setShareRooms(list);
+      } catch { setShareRooms([]); }
+    })();
+  }, [hasShareIntent, screen]);
+
+  function chooseShareTarget(r: any) {
+    setPendingShare({
+      files: (shareIntent?.files || []).map((f: any) => ({
+        path: f.path || f.contentUri || '',
+        mimeType: f.mimeType,
+        fileName: f.fileName,
+      })),
+      text: shareIntent?.text || null,
+    });
+    resetShareIntent();
+    setShareRooms(null);
+    setRoom({ id: r.id, name: r.name, is_dm: r.is_dm, other_username: r.other_username });
+    setScreen('chat');
+  }
+
+  function cancelShare() {
+    resetShareIntent();
+    setShareRooms(null);
+  }
 
   useEffect(() => {
     AsyncStorage.getItem('token').then(t => {
@@ -168,8 +226,33 @@ export default function App() {
               onOpenDM={r => { setRoom(r); setPendingJumpMsgId(null); }}
               onOpenProfile={() => { setOpenProfileOnRooms(true); setScreen('rooms'); setPendingJumpMsgId(null); }}
               initialJumpMsgId={pendingJumpMsgId}
+              initialShare={pendingShare}
+              onShareConsumed={() => setPendingShare(null)}
             />
           )}
+
+          {/* Share-target chat picker */}
+          <Modal visible={hasShareIntent && !!shareRooms && screen !== 'auth'} transparent animationType="slide" onRequestClose={cancelShare}>
+            <View style={sh.overlay}>
+              <View style={sh.sheet}>
+                <Text style={sh.title}>Share to…</Text>
+                <FlatList
+                  data={shareRooms || []}
+                  keyExtractor={(item: any) => String(item.id)}
+                  style={{ maxHeight: 420 }}
+                  renderItem={({ item }: any) => (
+                    <TouchableOpacity style={sh.row} onPress={() => chooseShareTarget(item)}>
+                      <Text style={sh.rowIcon}>{item.is_dm ? '💬' : item.is_private ? '🔒' : '#'}</Text>
+                      <Text style={sh.rowText} numberOfLines={1}>{item.is_dm ? (item.other_username || item.name) : item.name}</Text>
+                    </TouchableOpacity>
+                  )}
+                />
+                <TouchableOpacity style={sh.cancel} onPress={cancelShare}>
+                  <Text style={sh.cancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </Modal>
           {/* Rendered last so the full-screen call UI sits above every screen */}
           {screen !== 'auth' && <CallOverlay />}
         </SafeAreaView>
