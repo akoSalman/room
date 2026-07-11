@@ -58,13 +58,19 @@ class CallManager {
   }
   private emit() { this.listeners.forEach(f => f()); }
 
+  // Fetch TURN/STUN servers fresh — stale or missing TURN credentials are
+  // the #1 reason calls never connect across mobile networks.
+  private async refreshIce() {
+    try {
+      const cfg = await apiFetch('/ice-config');
+      if (cfg?.iceServers?.length) this.iceServers = cfg.iceServers;
+    } catch {}
+  }
+
   async init() {
     if (this.inited) return;
     this.inited = true;
-    try {
-      const cfg = await apiFetch('/ice-config');
-      if (cfg?.iceServers) this.iceServers = cfg.iceServers;
-    } catch {}
+    await this.refreshIce();
     const s = await getSocket();
     this.sock = s;
     s.on('call_offer', (offer: any) => this.onOffer(offer));
@@ -72,7 +78,8 @@ class CallManager {
       const pc = this.pcs.get(fromUserId);
       if (pc) await pc.setRemoteDescription(sdp).catch(() => {});
       this.flushIce(fromUserId);
-      if (this.mode !== 'room-voice') this.markConnected();
+      // Answer received = signaling done; real "Connected" comes from ICE
+      if (this.mode !== 'room-voice') { this.stopRing(); this.status = 'Connecting…'; this.emit(); }
     });
     s.on('call_ice', ({ fromUserId, candidate }: any) => {
       const pc = this.pcs.get(fromUserId);
@@ -150,8 +157,27 @@ class CallManager {
     };
     (pc as any).onconnectionstatechange = () => {
       const st = (pc as any).connectionState;
-      if (['failed', 'closed'].includes(st)) this.dropPeer(userId);
+      if (st === 'failed') {
+        if (this.mode?.startsWith('dm')) {
+          this.status = 'Connection failed';
+          this.emit();
+          setTimeout(() => this.end(), 2500);
+          return;
+        }
+        this.dropPeer(userId);
+      }
+      if (st === 'closed') this.dropPeer(userId);
       if (st === 'connected' && this.mode !== 'room-voice') this.markConnected();
+    };
+    (pc as any).oniceconnectionstatechange = () => {
+      const st = (pc as any).iceConnectionState;
+      if (this.mode?.startsWith('dm') && !this.connectedAt) {
+        if (st === 'checking') { this.status = 'Connecting…'; this.emit(); }
+      }
+      if (st === 'disconnected' && this.mode?.startsWith('dm') && this.connectedAt) {
+        this.status = 'Reconnecting…'; this.emit();
+      }
+      if ((st === 'connected' || st === 'completed') && this.mode !== 'room-voice') this.markConnected();
     };
     this.localStream?.getTracks().forEach(t => (pc as any).addTrack(t, this.localStream));
     this.pcs.set(userId, pc);
@@ -230,6 +256,7 @@ class CallManager {
   async startDM(peerId: number | null, peerName: string, kind: 'voice' | 'video') {
     if (this.mode || !peerId) return;
     await this.init();
+    await this.refreshIce();
     const stream = await this.getMedia(kind === 'video');
     if (!stream) return;
     this.localStream = stream;
@@ -246,6 +273,7 @@ class CallManager {
     this.incoming = null;
     this.stopRing();
     if (!offer) return;
+    await this.refreshIce();
     const stream = await this.getMedia(offer.kind === 'video');
     if (!stream) {
       this.sock.emit('call_end', { toUserId: offer.fromUserId });
@@ -280,6 +308,7 @@ class CallManager {
     if (this.mode === 'room-voice') return this.end();
     if (this.mode) return;
     await this.init();
+    await this.refreshIce();
     const stream = await this.getMedia(false);
     if (!stream) return;
     this.localStream = stream;

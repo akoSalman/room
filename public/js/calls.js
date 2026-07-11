@@ -31,7 +31,7 @@ const Calls = (() => {
       const pc = pcs.get(fromUserId);
       if (pc) await pc.setRemoteDescription(sdp).catch(() => {});
       flushIce(fromUserId);
-      markConnected();
+      stopRing(); setStatus('Connecting…');
     });
     s.on('call_ice', ({ fromUserId, candidate }) => {
       const pc = pcs.get(fromUserId);
@@ -84,8 +84,16 @@ const Calls = (() => {
     };
     pc.ontrack = (e) => attachRemote(userId, e.streams[0]);
     pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'failed' && mode?.startsWith('dm')) {
+        setStatus('Connection failed');
+        setTimeout(() => end(), 2500);
+        return;
+      }
       if (['failed', 'closed'].includes(pc.connectionState)) dropPeer(userId);
       if (pc.connectionState === 'connected') mode === 'room-voice' ? setStatus('Voice chat') : markConnected();
+    };
+    pc.oniceconnectionstatechange = () => {
+      if ((pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') && mode !== 'room-voice') markConnected();
     };
     localStream?.getTracks().forEach(t => pc.addTrack(t, localStream));
     pcs.set(userId, pc);
@@ -198,6 +206,7 @@ const Calls = (() => {
   async function startDM(kind) {
     if (mode) return alert('You are already in a call.');
     if (!dmPeer) return;
+    await loadIce();
     try {
       localStream = await getMedia(kind === 'video');
     } catch { return alert('Microphone/camera access is required.'); }
@@ -236,6 +245,7 @@ const Calls = (() => {
     stopRing();
     $('incoming-call').classList.add('hidden');
     if (!offer) return;
+    await loadIce();
     try {
       localStream = await getMedia(offer.kind === 'video');
     } catch { sock.emit('call_end', { toUserId: offer.fromUserId }); return alert('Microphone/camera access is required.'); }
@@ -267,6 +277,7 @@ const Calls = (() => {
   async function toggleRoomVoice() {
     if (mode === 'room-voice') return end();
     if (mode) return alert('You are already in a call.');
+    await loadIce();
     try {
       localStream = await getMedia(false);
     } catch { return alert('Microphone access is required.'); }

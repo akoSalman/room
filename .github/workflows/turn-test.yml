@@ -1,0 +1,63 @@
+name: TURN Connectivity Test
+
+# Verifies calls infrastructure end to end:
+#  1. the chat service actually has TURN_* env vars loaded,
+#  2. coturn is running and listening,
+#  3. a REAL TURN allocation succeeds from the public internet (this runner).
+on:
+  workflow_dispatch:
+
+jobs:
+  turn-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: akosalman
+            domain: chat.akosalman.com
+            host_secret: DEPLOY_HOST_AKOSALMAN
+            service_secret: DEPLOY_SERVICE_AKOSALMAN
+          - name: bistbarg
+            domain: chat.bistbarg.com
+            host_secret: DEPLOY_HOST_BISTBARG
+            service_secret: DEPLOY_SERVICE_BISTBARG
+
+    steps:
+      - name: Install TURN test client
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq coturn > /dev/null
+
+      - name: Check ${{ matrix.name }}
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets[matrix.host_secret] }}
+          SERVICE: ${{ secrets[matrix.service_secret] }}
+          DOMAIN: ${{ matrix.domain }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          SSH="ssh -i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=accept-new root@$HOST"
+
+          echo "===== service has TURN env? ====="
+          $SSH "systemctl show \"$SERVICE\" -p Environment | tr ' ' '\n' | grep -E 'TURN_(URL|USERNAME)' || echo 'NO TURN VARS IN SERVICE ENV'"
+
+          echo ""
+          echo "===== coturn running + listening ====="
+          $SSH "systemctl is-active coturn; ss -lunp | grep 3478 | head -2 || echo 'not listening on UDP 3478'"
+
+          echo ""
+          echo "===== real TURN allocation from the public internet ====="
+          TURN_USER=$($SSH "grep -oP 'TURN_USERNAME=\K.*' /etc/systemd/system/\"$SERVICE\".service.d/turn.conf 2>/dev/null || grep -oP 'TURN_USERNAME=\K.*' /etc/systemd/system/\"$SERVICE\".d/turn.conf 2>/dev/null" | tr -d '\r')
+          TURN_PASS=$($SSH "grep -oP 'TURN_PASSWORD=\K.*' /etc/systemd/system/\"$SERVICE\".service.d/turn.conf 2>/dev/null || grep -oP 'TURN_PASSWORD=\K.*' /etc/systemd/system/\"$SERVICE\".d/turn.conf 2>/dev/null" | tr -d '\r')
+          if [ -z "$TURN_USER" ] || [ -z "$TURN_PASS" ]; then
+            echo "Could not read TURN credentials from the systemd drop-in"; exit 1
+          fi
+          echo "::add-mask::$TURN_PASS"
+          # -y: use client-to-client echo through the relay; success proves
+          # allocation + relay work from an external network.
+          if timeout 40 turnutils_uclient -u "$TURN_USER" -w "$TURN_PASS" -p 3478 -y -c -n 3 "$DOMAIN" 2>&1 | tail -6; then
+            echo "TURN ALLOCATION OK for $DOMAIN"
+          else
+            echo "TURN ALLOCATION FAILED for $DOMAIN"; exit 1
+          fi
