@@ -11,6 +11,7 @@ import * as Notifications from 'expo-notifications';
 import AuthScreen from './src/screens/AuthScreen';
 import RoomsScreen from './src/screens/RoomsScreen';
 import CallOverlay from './src/components/CallOverlay';
+import ConnectionStatus from './src/components/ConnectionStatus';
 import { callManager } from './src/callManager';
 import ChatScreen from './src/screens/ChatScreen';
 import MiniPlayer from './src/components/MiniPlayer';
@@ -267,6 +268,7 @@ export default function App() {
           </Modal>
           {/* Rendered last so the full-screen call UI sits above every screen */}
           {screen !== 'auth' && <CallOverlay />}
+          {screen !== 'auth' && <ConnectionStatus />}
         </SafeAreaView>
       </SafeAreaProvider>
     </GestureHandlerRootView>

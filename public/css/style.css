@@ -212,16 +212,36 @@ html {
 #menu-btn { display: none; font-size: 1.3rem; }
 
 /* ── Connection banner ────────────────────────────── */
+/* Floating connection-status pill, centered at the top over everything */
 #connection-banner {
+  position: fixed;
+  top: max(10px, var(--sat, 0px));
+  left: 50%;
+  transform: translateX(-50%);
   background: #7c3a00;
   color: #fbbf24;
   text-align: center;
   font-size: 0.8rem;
   font-weight: 600;
   padding: 6px 16px;
-  flex-shrink: 0;
+  border-radius: 20px;
+  box-shadow: 0 4px 14px rgba(0,0,0,.35);
   letter-spacing: .02em;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+  animation: conn-pop .2s ease both;
 }
+#connection-banner.hidden { display: none; }
+#connection-banner.online { background: #14532d; color: #86efac; }
+#connection-banner .conn-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: currentColor;
+}
+#connection-banner:not(.online) .conn-dot { animation: conn-pulse 1s ease-in-out infinite; }
+@keyframes conn-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+@keyframes conn-pop { from { opacity: 0; transform: translate(-50%, -8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
 .online-badge { background: rgba(74,222,128,.15); border: 1px solid var(--online); color: var(--online); border-radius: 20px; padding: 3px 10px; font-size: 0.75rem; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0; transition: background .15s; }
 .online-badge:hover { background: rgba(74,222,128,.25); }

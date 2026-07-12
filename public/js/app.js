@@ -277,11 +277,11 @@ function connectSocket() {
     if (socket) socket.disconnect();
     socket = io({ auth: { token }, reconnectionAttempts: 10 });
 
-    socket.once('connect', () => { socketReady = true; hideConnectionBanner(); resolve(); });
+    socket.once('connect', () => { socketReady = true; setConnStatus('online'); resolve(); });
 
     socket.on('connect', () => {
       socketReady = true;
-      hideConnectionBanner();
+      setConnStatus('online');
       // On reconnect the server no longer has us in the room channel — re-join
       // and pull anything that arrived while the connection was down.
       if (currentRoomId) {
@@ -293,13 +293,15 @@ function connectSocket() {
       if (document.visibilityState === 'visible' && currentRoomId) refreshLatestMessages();
     });
     if (typeof Calls !== 'undefined') Calls.bindSocket(socket);
-    socket.on('disconnect', () => { socketReady = false; showConnectionBanner(); });
-    socket.on('reconnecting', () => showConnectionBanner());
-    socket.on('reconnect', () => { socketReady = true; hideConnectionBanner(); });
+    socket.on('disconnect', () => { socketReady = false; setConnStatus(navigator.onLine ? 'reconnecting' : 'offline'); });
+    socket.io.on('reconnect_attempt', () => setConnStatus(navigator.onLine ? 'reconnecting' : 'offline'));
+    socket.on('reconnect', () => { socketReady = true; setConnStatus('online'); });
     socket.on('connect_error', (err) => {
-      showConnectionBanner();
+      setConnStatus(navigator.onLine ? 'reconnecting' : 'offline');
       if (err.message === 'Unauthorized') logout();
     });
+    window.addEventListener('offline', () => setConnStatus('offline'));
+    window.addEventListener('online', () => { if (!socketReady) setConnStatus('reconnecting'); });
 
     socket.on('message_received', (msg) => {
       if (msg.client_id && pendingUploads[msg.client_id]) {
@@ -361,8 +363,29 @@ function connectSocket() {
 }
 
 // ─── Connection banner ────────────────────────────────────────────────────────
-function showConnectionBanner() { show('connection-banner'); }
-function hideConnectionBanner() { hide('connection-banner'); }
+// Connection-status pill (top center). States: online (briefly), reconnecting,
+// offline. 'online' auto-hides after a moment; the others stay until resolved.
+let connHideTimer = null;
+function setConnStatus(state) {
+  const el = document.getElementById('connection-banner');
+  const txt = document.getElementById('connection-banner-text');
+  if (!el || !txt) return;
+  clearTimeout(connHideTimer);
+  el.classList.toggle('online', state === 'online');
+  if (state === 'online') {
+    txt.textContent = 'Back online';
+    el.classList.remove('hidden');
+    connHideTimer = setTimeout(() => el.classList.add('hidden'), 1500);
+  } else if (state === 'offline') {
+    txt.textContent = 'No internet connection';
+    el.classList.remove('hidden');
+  } else {
+    txt.textContent = 'Reconnecting…';
+    el.classList.remove('hidden');
+  }
+}
+function showConnectionBanner() { setConnStatus(navigator.onLine ? 'reconnecting' : 'offline'); }
+function hideConnectionBanner() { setConnStatus('online'); }
 
 // ─── Unread badges ────────────────────────────────────────────────────────────
 function updateUnreadBadge(roomId) {
