@@ -1,0 +1,56 @@
+name: Diagnose Subdomain (akosalman)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: External checks from the internet
+        run: |
+          for u in http://bbrgtlgbot.akosalman.com/ https://bbrgtlgbot.akosalman.com/; do
+            echo "== $u =="
+            curl -sS -m 12 -o /dev/null -w "HTTP %{http_code}  time:%{time_total}s\n" "$u" || echo "FAILED"
+          done
+          echo "== DNS =="
+          python3 - <<'PY'
+          import socket
+          for h in ['bbrgtlgbot.akosalman.com', 'chat.akosalman.com', 'akosalman.com']:
+              try: print(h, '->', socket.gethostbyname(h))
+              except Exception as e: print(h, 'DNS FAIL:', e)
+          PY
+
+      - name: Inspect server
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.DEPLOY_HOST_AKOSALMAN }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "root@$HOST" bash -s <<'EOF'
+          set +e
+          echo "===== web servers ====="
+          for svc in httpd apache2 nginx; do echo -n "$svc: "; systemctl is-active $svc 2>/dev/null; done
+          echo ""
+          echo "===== who owns 80/443 ====="
+          ss -ltnp | grep -E ':80 |:443 ' | head -4
+          echo ""
+          echo "===== vhost config for bbrgtlgbot ====="
+          grep -ril "bbrgtlgbot" /etc/httpd/ /usr/local/directadmin/data/users/ /etc/nginx/ 2>/dev/null | head -10
+          echo ""
+          echo "===== curl the subdomain from the server itself ====="
+          curl -sk -m 8 -o /dev/null -w "https local -> HTTP %{http_code}\n" https://bbrgtlgbot.akosalman.com/ --resolve bbrgtlgbot.akosalman.com:443:127.0.0.1
+          curl -s -m 8 -o /dev/null -w "http local -> HTTP %{http_code}\n" http://bbrgtlgbot.akosalman.com/ --resolve bbrgtlgbot.akosalman.com:80:127.0.0.1
+          echo ""
+          echo "===== backend processes possibly serving the bot ====="
+          ss -ltnp | grep -vE ':80 |:443 |:22 |:3000 |:3478 ' | head -10
+          echo ""
+          echo "===== recent apache error log mentions ====="
+          grep -i "bbrgtlgbot" /var/log/httpd/error_log 2>/dev/null | tail -5
+          tail -5 /var/log/httpd/error_log 2>/dev/null
+          echo ""
+          echo "===== CSF last lines of allowed ports ====="
+          grep -E '^(TCP_IN|UDP_IN) = ' /etc/csf/csf.conf 2>/dev/null
+          EOF
