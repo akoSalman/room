@@ -22,7 +22,9 @@ import { callManager } from '../callManager';
 import { audioManager } from '../audioManager';
 import VoicePlayer from '../components/VoicePlayer';
 import VoiceRecorder from '../components/VoiceRecorder';
-import ZoomableImage from '../components/ZoomableImage';
+import AwesomeGallery from 'react-native-awesome-gallery';
+import GalleryGrid from '../components/GalleryGrid';
+import ImageWithSpinner from '../components/ImageWithSpinner';
 import SwipeableMessage from '../components/SwipeableMessage';
 import MusicPlayer from '../components/MusicPlayer';
 import HeartBurst from '../components/HeartBurst';
@@ -39,24 +41,6 @@ type Message = {
   _uploading?: boolean; _uploadFailed?: boolean;
 };
 // Shows a spinner over the image until it finishes loading (download progress proxy).
-function ImageWithSpinner({ uri, style, resizeMode, onLoaded }: { uri: string; style: any; resizeMode: 'cover' | 'contain'; onLoaded?: () => void }) {
-  const [loaded, setLoaded] = useState(false);
-  return (
-    <View>
-      <Image
-        source={{ uri }} style={style} resizeMode={resizeMode}
-        onLoad={() => { setLoaded(true); onLoaded?.(); }}
-        onError={() => setLoaded(true)}
-      />
-      {!loaded && (
-        <View style={[style, { position: 'absolute', top: 0, left: 0, alignItems: 'center', justifyContent: 'center' }]}>
-          <ActivityIndicator size="small" color="#fff" />
-        </View>
-      )}
-    </View>
-  );
-}
-
 type Reaction = { emoji: string; username: string; user_id: number };
 type ReplyTo = { id: number | string; username: string; content: string | null; type: string };
 
@@ -77,12 +61,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [reactions, setReactions] = useState<Record<number, Reaction[]>>({});
   // The draft lives in a ref, NOT state: keystrokes and emoji taps must not
   // re-render the whole message list (that's what made typing/sending laggy).
-  const textRef = useRef('');
-  const inputRef = useRef<TextInput>(null);
-  const setTextTo = (v: string) => {
-    textRef.current = v;
-    inputRef.current?.setNativeProps({ text: v });
-  };
+  // Controlled composer state: React owns the value, so clearing after send is
+  // deterministic (no lost/duplicated keystrokes when typing right after send).
+  const [text, setText] = useState('');
   const [me, setMe] = useState('');
   const [myAvatar, setMyAvatar] = useState<string | null>(null);
   const [online, setOnline] = useState<string[]>([]);
@@ -94,6 +75,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [emojiPicker, setEmojiPicker] = useState<{ id: number | string; x: number; y: number } | null>(null);
   const [recording, setRecording] = useState(false);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const lightboxIndexRef = useRef(0);
   const [replyTo, setReplyTo] = useState<ReplyTo | null>(null);
   const [showOnline, setShowOnline] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
@@ -477,7 +459,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           mime: f.mimeType || 'application/octet-stream',
         }))]);
     }
-    if (initialShare.text) setTextTo(initialShare.text);
+    if (initialShare.text) setText(initialShare.text);
     onShareConsumed?.();
   }, []);
 
@@ -557,14 +539,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   function sendText() {
     if (pendingMedia.length && !editingId) {
       const items = pendingMedia;
-      let caption: string | null = textRef.current.trim() || null;
+      let caption: string | null = text.trim() || null;
       if (caption && room.is_dm && dmPeerPk.current) {
         caption = e2eEncrypt(caption, dmPeerPk.current) || caption;
       }
       const oneTime = oneTimeSecs ?? undefined;
       setPendingMedia([]);
       setOneTimeSecs(null);
-      if (caption) { setTextTo(''); emitStopTyping(); }
+      if (caption) { setText(''); emitStopTyping(); }
       const images = items.filter(m => m.mime.startsWith('image/'));
       const others = items.filter(m => !m.mime.startsWith('image/'));
       if (images.length > 1) {
@@ -576,7 +558,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       }
       return;
     }
-    const t = textRef.current.trim();
+    const t = text.trim();
     if (!t || !socketRef.current) return;
     if (editingId) {
       const wire = (room.is_dm && dmPeerPk.current) ? (e2eEncrypt(t, dmPeerPk.current) || t) : t;
@@ -586,7 +568,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       dispatchText(t, replyTo?.id ?? null, oneTimeSecs, replyTo);
       setOneTimeSecs(null);
     }
-    setTextTo('');
+    setText('');
     setReplyTo(null);
     emitStopTyping();
   }
@@ -877,6 +859,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     }
   }
 
+  // Remove a failed message for good (from the list and persisted storage).
+  function discardFailed(msg: Message) {
+    const clientId = String(msg.id);
+    removeFailedMsg(clientId);
+    setMessages(prev => prev.filter(m => m.id !== clientId));
+  }
+
   function startRecordingUI() {
     audioManager.stop(); // don't record over playing audio
     setRecording(true);
@@ -1109,6 +1098,23 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           {!hiddenOneTime && msg.type === 'text' && (
             <Text style={s.msgText}>{renderTextWithLinks(msg.content || '')}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}{msg.one_time_seconds ? <Text style={s.oneTimeTag}> 🔥{msg.one_time_seconds}s</Text> : null}</Text>
           )}
+          {msg.type === 'call' && (() => {
+            let c: any = {};
+            try { c = JSON.parse(msg.content || '{}'); } catch {}
+            const icon = c.kind === 'video' ? '🎥' : '📞';
+            const fmtDur = (s: number) => s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
+            const label = c.outcome === 'completed' ? `${c.kind === 'video' ? 'Video' : 'Voice'} call · ${fmtDur(c.duration || 0)}`
+              : c.outcome === 'declined' ? 'Call declined'
+              : c.outcome === 'missed' ? 'Missed call'
+              : 'Call failed';
+            const bad = c.outcome !== 'completed';
+            return (
+              <View style={s.callLog}>
+                <Text style={[s.callLogIcon, bad && { color: '#f87171' }]}>{icon}</Text>
+                <Text style={[s.callLogText, bad && { color: '#f87171' }]}>{label}</Text>
+              </View>
+            );
+          })()}
           {msg.type === 'invite' && (() => {
             let inv: any = null;
             try { inv = JSON.parse(msg.content || ''); } catch {}
@@ -1138,20 +1144,23 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           {!hiddenOneTime && msg.type === 'gallery' && (() => {
             let urls: string[] = [];
             try { urls = JSON.parse(msg.file_path || '[]'); } catch {}
+            const full = urls.map(u => (msg._uploading ? u : `${BASE_URL}${u}`));
+            if (msg._uploading) {
+              // While uploading, show a simple grid of the local previews.
+              return (
+                <View style={s.galleryGrid}>
+                  {full.slice(0, 4).map((uri, i) => (
+                    <Image key={i} source={{ uri }} style={s.galleryImg} resizeMode="cover" />
+                  ))}
+                </View>
+              );
+            }
             return (
-              <View style={s.galleryGrid}>
-                {urls.map((u, i) => {
-                  const uri = msg._uploading ? u : `${BASE_URL}${u}`;
-                  const onLoaded = i === 0 && msg.one_time_seconds && !mine ? () => startOneTimeClock(msg) : undefined;
-                  return (
-                    <TouchableOpacity key={i} onPress={() => !msg._uploading && setLightboxUrl(uri)} disabled={msg._uploading}>
-                      {msg._uploading
-                        ? <Image source={{ uri }} style={s.galleryImg} resizeMode="cover" />
-                        : <ImageWithSpinner uri={uri} style={s.galleryImg} resizeMode="cover" onLoaded={onLoaded} />}
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
+              <GalleryGrid
+                uris={full}
+                onOpen={(i) => setLightboxUrl(full[i])}
+                onFirstLoaded={msg.one_time_seconds && !mine ? () => startOneTimeClock(msg) : undefined}
+              />
             );
           })()}
           {!hiddenOneTime && msg.type === 'audio' && !msg._uploading && (
@@ -1206,9 +1215,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             </View>
           )}
           {msg._uploadFailed && (
-            <TouchableOpacity onPress={() => retryUpload(msg)}>
-              <Text style={s.uploadRetryText}>⚠️ Failed to send — tap to retry</Text>
-            </TouchableOpacity>
+            <View style={s.failedRow}>
+              <TouchableOpacity onPress={() => retryUpload(msg)}>
+                <Text style={s.uploadRetryText}>⚠️ Failed — tap to retry</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => discardFailed(msg)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Text style={s.failedDelete}>🗑 Delete</Text>
+              </TouchableOpacity>
+            </View>
           )}
         </TouchableOpacity>
         </SwipeableMessage>
@@ -1364,50 +1378,40 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         </View>
       </Modal>
 
-      {/* Image lightbox */}
+      {/* Full-screen image viewer: real mobile-gallery feel — pinch zoom,
+          double-tap, swipe left/right between images, and pull down to close.
+          Powered by react-native-awesome-gallery (reanimated + gestures). */}
       <Modal visible={!!lightboxUrl} transparent animationType="fade" onRequestClose={() => setLightboxUrl(null)}>
-        {/* Gesture handlers are dead inside an RN Modal unless the modal has
-            its own GestureHandlerRootView — without it pinch/pan/swipe never fire. */}
-        <GestureHandlerRootView style={{ flex: 1 }}>
-        <View style={s.lightboxOverlay}>
-          <TouchableOpacity onPress={() => setLightboxUrl(null)} style={s.lightboxClose}>
-            <Text style={s.lightboxCloseText}>✕</Text>
-          </TouchableOpacity>
-          {!isOneTimeUrl(lightboxUrl) && (
-          <TouchableOpacity onPress={saveImage} style={s.lightboxSave}>
-            <Text style={s.lightboxCloseText}>⬇</Text>
-          </TouchableOpacity>
-          )}
+        <GestureHandlerRootView style={{ flex: 1, backgroundColor: '#000' }}>
           {lightboxUrl && (() => {
-            // Prefer the full-chat image list so the gallery traverses every
-            // image ever exchanged, not just the loaded message page.
             const loaded = chatImageUrls();
             const list = allImages.includes(lightboxUrl) ? allImages : loaded;
-            const idx = list.indexOf(lightboxUrl);
-            const nav = (dir: number) => {
-              const n = idx + dir;
-              if (n >= 0 && n < list.length) setLightboxUrl(list[n]);
-            };
+            const startIndex = Math.max(0, list.indexOf(lightboxUrl));
             return (
               <>
-                <ZoomableImage uri={lightboxUrl} onSwipe={nav} />
-                {idx > 0 && (
-                  <TouchableOpacity style={[s.lightboxNav, { left: 10 }]} onPress={() => nav(-1)}>
-                    <Text style={s.lightboxNavText}>‹</Text>
+                <AwesomeGallery
+                  data={list}
+                  initialIndex={startIndex}
+                  numToRender={3}
+                  doubleTapScale={3}
+                  onIndexChange={(i: number) => { lightboxIndexRef.current = i; setLightboxUrl(list[i]); }}
+                  onSwipeToClose={() => setLightboxUrl(null)}
+                  loop={false}
+                />
+                <TouchableOpacity onPress={() => setLightboxUrl(null)} style={s.lightboxClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                  <Text style={s.lightboxCloseText}>✕</Text>
+                </TouchableOpacity>
+                {!isOneTimeUrl(lightboxUrl) && (
+                  <TouchableOpacity onPress={saveImage} style={s.lightboxSave} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                    <Text style={s.lightboxCloseText}>⬇</Text>
                   </TouchableOpacity>
                 )}
-                {idx >= 0 && idx < list.length - 1 && (
-                  <TouchableOpacity style={[s.lightboxNav, { right: 10 }]} onPress={() => nav(1)}>
-                    <Text style={s.lightboxNavText}>›</Text>
-                  </TouchableOpacity>
-                )}
-                {list.length > 1 && idx >= 0 && (
-                  <Text style={s.lightboxCounter}>{idx + 1} / {list.length}</Text>
+                {list.length > 1 && (
+                  <Text style={s.lightboxCounter}>{startIndex + 1} / {list.length}</Text>
                 )}
               </>
             );
           })()}
-        </View>
         </GestureHandlerRootView>
       </Modal>
 
@@ -1477,7 +1481,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       {editingId && (
         <View style={s.editBanner}>
           <Text style={s.editText}>✏️ Editing message</Text>
-          <TouchableOpacity onPress={() => { setEditingId(null); setTextTo(''); }}>
+          <TouchableOpacity onPress={() => { setEditingId(null); setText(''); }}>
             <Text style={s.editClose}>✕</Text>
           </TouchableOpacity>
         </View>
@@ -1601,7 +1605,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 {mineMsg && m.type === 'text' && (
                   <TouchableOpacity style={s.actionItem} onPress={() => {
                     setActionsMsg(null);
-                    setTextTo(m.content || ''); setEditingId(m.id);
+                    setText(m.content || ''); setEditingId(m.id);
                   }}>
                     <Text style={s.actionText}>✏️  Edit</Text>
                   </TouchableOpacity>
@@ -1841,7 +1845,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             <View style={s.quickEmojiBar}>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="always" contentContainerStyle={{ alignItems: 'center' }} style={{ flex: 1 }}>
                 {QUICK_EMOJIS.map(em => (
-                  <TouchableOpacity key={em} style={s.quickEmojiBtn} onPress={() => setTextTo(textRef.current + em)}>
+                  <TouchableOpacity key={em} style={s.quickEmojiBtn} onPress={() => setText(t => t + em)}>
                     <Text style={s.quickEmojiText}>{em}</Text>
                   </TouchableOpacity>
                 ))}
@@ -1899,7 +1903,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           <View style={s.inputBar}>
             <TextInput
               style={s.input} placeholder={pendingMedia.length ? 'Add a caption…' : 'Message...'} placeholderTextColor={C.muted}
-              ref={inputRef} defaultValue="" onChangeText={t => { textRef.current = t; emitTyping(); }}
+              value={text} onChangeText={t => { setText(t); emitTyping(); }}
               onSubmitEditing={sendText} blurOnSubmit={false} multiline
             />
             <TouchableOpacity style={s.sendBtn} onPress={sendText}>
@@ -1954,6 +1958,11 @@ const s = StyleSheet.create({
   uploadOverlay: { height: 3, backgroundColor: 'rgba(255,255,255,0.25)', marginTop: 6, borderRadius: 2, overflow: 'hidden' },
   uploadProgressBar: { height: '100%', backgroundColor: C.accent },
   uploadRetryText: { color: '#f87171', fontSize: 12, marginTop: 6, textDecorationLine: 'underline' },
+  failedRow: { flexDirection: 'row', alignItems: 'center', gap: 14, marginTop: 6 },
+  failedDelete: { color: '#f87171', fontSize: 12, fontWeight: '600' },
+  callLog: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 },
+  callLogIcon: { fontSize: 18, color: C.accent },
+  callLogText: { color: C.text, fontSize: 14, fontWeight: '600' },
   uploadingVoicePlaceholder: { paddingVertical: 4 },
   uploadingVoiceText: { color: C.text, fontSize: 14, opacity: 0.7 },
   oneTimeReveal: { color: '#f87171', fontSize: 14, fontWeight: '600', paddingVertical: 4 },

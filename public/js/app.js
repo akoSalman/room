@@ -104,7 +104,8 @@ function showNotif(msg) {
     : msg.type === 'image' ? '🖼 Photo'
     : msg.type === 'gallery' ? '🖼 Photos'
     : msg.type === 'video' ? '🎥 Video'
-    : msg.type === 'music' ? '🎵 Audio file' : '📄 File';
+    : msg.type === 'music' ? '🎵 Audio file'
+    : msg.type === 'call' ? '📞 Call' : '📄 File';
   const n = new Notification(msg.username, { body, icon: '/icons/icon-192.png', tag: 'chatroom-msg-' + msg.id, silent: true });
   openNotifications[msg.id] = n;
   n.onclose = () => { delete openNotifications[msg.id]; };
@@ -1777,6 +1778,17 @@ function buildMessageElement(msg) {
     bubble.appendChild(textSpan);
     if (msg.edited) { const tag = document.createElement('span'); tag.className = 'edited-tag'; tag.textContent = '(edited)'; bubble.appendChild(tag); }
     if (msg.one_time_seconds) { const ot = document.createElement('span'); ot.className = 'one-time-tag'; ot.textContent = ` 🔥${msg.one_time_seconds}s`; bubble.appendChild(ot); }
+  } else if (msg.type === 'call') {
+    let c = {};
+    try { c = JSON.parse(msg.content || '{}'); } catch {}
+    const el = document.createElement('div');
+    el.className = 'call-log' + (c.outcome !== 'completed' ? ' call-log-bad' : '');
+    const fmtDur = s => s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
+    const label = c.outcome === 'completed' ? `${c.kind === 'video' ? 'Video' : 'Voice'} call · ${fmtDur(c.duration || 0)}`
+      : c.outcome === 'declined' ? 'Call declined'
+      : c.outcome === 'missed' ? 'Missed call' : 'Call failed';
+    el.textContent = `${c.kind === 'video' ? '🎥' : '📞'} ${label}`;
+    bubble.appendChild(el);
   } else if (msg.type === 'invite') {
     let inv = null;
     try { inv = JSON.parse(msg.content || ''); } catch {}

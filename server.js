@@ -262,7 +262,8 @@ function messagePreview(msg) {
     : msg.type === 'gallery' ? '🖼 Photos'
     : msg.type === 'video' ? '🎥 Video'
     : msg.type === 'music' ? '🎵 Audio file'
-    : msg.type === 'invite' ? '🔒 Room invitation' : '📄 File';
+    : msg.type === 'invite' ? '🔒 Room invitation'
+    : msg.type === 'call' ? '📞 Call' : '📄 File';
 }
 
 // Register/unregister device push tokens
@@ -670,6 +671,44 @@ io.on('connection', (socket) => {
       fromUserId: socket.user.id, fromUsername: socket.user.username,
       roomId: roomId || null, kind: kind === 'video' ? 'video' : 'voice', sdp,
     });
+    // Ring the callee even when their app is closed (1:1 DM calls only).
+    if (!roomId) {
+      const k = kind === 'video' ? 'video' : 'voice';
+      sendPushToUsers(
+        [toUserId],
+        (socket.user.avatar ? socket.user.avatar + ' ' : '') + socket.user.username,
+        k === 'video' ? '🎥 Incoming video call' : '📞 Incoming voice call',
+        { type: 'call', kind: k, fromUserId: socket.user.id },
+      );
+    }
+  });
+
+  // Record a finished 1:1 call in the DM's chat history (both users see it).
+  socket.on('call_log', ({ peerId, kind, outcome, duration, outgoing }) => {
+    const peer = parseInt(peerId, 10);
+    if (!peer || peer === socket.user.id) return;
+    const a = Math.min(socket.user.id, peer);
+    const b = Math.max(socket.user.id, peer);
+    const dmName = `__dm__${a}__${b}__`;
+    let dm = db.prepare('SELECT * FROM rooms WHERE name = ?').get(dmName);
+    if (!dm) {
+      const r = db.prepare('INSERT INTO rooms (name, created_by, is_dm) VALUES (?, ?, 1)').run(dmName, socket.user.id);
+      dm = db.prepare('SELECT * FROM rooms WHERE id = ?').get(r.lastInsertRowid);
+    }
+    const content = JSON.stringify({
+      kind: kind === 'video' ? 'video' : 'voice',
+      outcome: ['completed', 'missed', 'declined', 'failed'].includes(outcome) ? outcome : 'missed',
+      duration: Math.max(0, parseInt(duration, 10) || 0),
+      by: socket.user.id, // who logged it (the one who ended/declined)
+    });
+    const result = db.prepare(
+      'INSERT INTO messages (room_id, user_id, type, content) VALUES (?, ?, ?, ?)'
+    ).run(dm.id, socket.user.id, 'call', content);
+    const msg = db.prepare(`
+      SELECT m.*, u.username, u.avatar FROM messages m JOIN users u ON m.user_id = u.id WHERE m.id = ?
+    `).get(result.lastInsertRowid);
+    [socket.user.id, peer].forEach(id => io.to('user:' + id).emit('message_received', msg));
+    io.emit('dm_activity', { room: dm });
   });
   socket.on('call_answer', ({ toUserId, sdp }) => {
     io.to('user:' + toUserId).emit('call_answer', { fromUserId: socket.user.id, sdp });

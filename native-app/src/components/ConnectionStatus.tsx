@@ -68,27 +68,24 @@ export default function ConnectionStatus() {
   const label = online ? 'Back online' : state === 'offline' ? 'No internet connection' : 'Reconnecting…';
 
   return (
-    <Animated.View pointerEvents="none" style={[s.wrap, { opacity }]}>
-      <View style={[s.pill, online ? s.pillOnline : s.pillDown]}>
-        <View style={[s.dot, { backgroundColor: online ? '#86efac' : '#fbbf24' }]} />
-        <Text style={[s.text, { color: online ? '#86efac' : '#fbbf24' }]}>{label}</Text>
-      </View>
+    // Full-width bar pinned above every screen (including the chat header) so
+    // it reads as an app-level status, never overlapping a chat's title.
+    <Animated.View pointerEvents="none" style={[s.bar, online ? s.barOnline : s.barDown, { opacity }]}>
+      <View style={[s.dot, { backgroundColor: online ? '#86efac' : '#fbbf24' }]} />
+      <Text style={[s.text, { color: online ? '#86efac' : '#fbbf24' }]}>{label}</Text>
     </Animated.View>
   );
 }
 
 const s = StyleSheet.create({
-  wrap: {
-    position: 'absolute', top: 8, left: 0, right: 0, zIndex: 500,
-    alignItems: 'center',
+  bar: {
+    position: 'absolute', top: 0, left: 0, right: 0, zIndex: 1000,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
+    paddingVertical: 5,
+    elevation: 8, shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 6, shadowOffset: { width: 0, height: 2 },
   },
-  pill: {
-    flexDirection: 'row', alignItems: 'center', gap: 7,
-    paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20,
-    elevation: 6, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 8, shadowOffset: { width: 0, height: 3 },
-  },
-  pillDown: { backgroundColor: '#7c3a00' },
-  pillOnline: { backgroundColor: '#14532d' },
+  barDown: { backgroundColor: '#7c3a00' },
+  barOnline: { backgroundColor: '#14532d' },
   dot: { width: 8, height: 8, borderRadius: 4 },
   text: { fontSize: 12.5, fontWeight: '700' },
 });

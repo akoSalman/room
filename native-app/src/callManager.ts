@@ -8,6 +8,12 @@ import { mediaDevices, RTCPeerConnection, MediaStream } from 'react-native-webrt
 import { apiFetch, getSocket } from './api';
 import { audioManager } from './audioManager';
 
+// react-native-incall-manager routes call audio (earpiece/speaker/proximity)
+// like a real phone. Loaded defensively so a missing native module never
+// crashes the app in dev/Expo Go.
+let InCallManager: any = null;
+try { InCallManager = require('react-native-incall-manager').default; } catch {}
+
 type Listener = () => void;
 type Incoming = { fromUserId: number; fromUsername: string; kind: 'voice' | 'video'; sdp: any } | null;
 
@@ -20,7 +26,15 @@ class CallManager {
   remoteStream: MediaStream | null = null; // dm-video only
   muted = false;
   cameraOff = false;
+  speakerOn = false;    // voice calls: earpiece by default, toggle to speaker
+  frontCamera = true;   // video calls: front/back camera
   connectedAt: number | null = null; // for the in-call timer
+
+  // Details needed to write the call into chat history when it ends.
+  private peerId: number | null = null;
+  private peerName = '';
+  private outgoing = false; // did we initiate?
+  private logged = false;
 
   private ringSound: Audio.Sound | null = null;
   private async startRing() {
@@ -39,9 +53,51 @@ class CallManager {
   }
   private markConnected() {
     this.stopRing();
-    if (!this.connectedAt) this.connectedAt = Date.now();
+    if (!this.connectedAt) {
+      this.connectedAt = Date.now();
+      // Hand audio to InCallManager for proper phone-call routing. Video calls
+      // default to speaker; voice calls to the earpiece (like a real call).
+      try {
+        InCallManager?.start({ media: this.mode === 'dm-video' ? 'video' : 'audio' });
+        this.speakerOn = this.mode === 'dm-video';
+        InCallManager?.setForceSpeakerphoneOn(this.speakerOn);
+      } catch {}
+    }
     this.status = 'Connected';
     this.emit();
+  }
+
+  toggleSpeaker() {
+    this.speakerOn = !this.speakerOn;
+    try { InCallManager?.setForceSpeakerphoneOn(this.speakerOn); } catch {}
+    this.emit();
+  }
+
+  // Flip between front and back camera on a video call.
+  async switchCamera() {
+    if (this.mode !== 'dm-video' || !this.localStream) return;
+    const track: any = this.localStream.getVideoTracks()[0];
+    try {
+      if (track?._switchCamera) track._switchCamera();
+      this.frontCamera = !this.frontCamera;
+      this.emit();
+    } catch {}
+  }
+
+  // Record the finished call in the DM's chat history (server inserts a
+  // 'call' message both users receive). Outcome: 'completed' | 'missed' |
+  // 'failed' | 'declined'.
+  private logCall(outcome: string) {
+    if (this.logged || !this.peerId) return;
+    this.logged = true;
+    const duration = this.connectedAt ? Math.round((Date.now() - this.connectedAt) / 1000) : 0;
+    try {
+      this.sock?.emit('call_log', {
+        peerId: this.peerId,
+        kind: this.mode === 'dm-video' ? 'video' : 'voice',
+        outcome, duration, outgoing: this.outgoing,
+      });
+    } catch {}
   }
 
   private sock: any = null;
@@ -212,6 +268,10 @@ class CallManager {
   }
 
   private teardown() {
+    // Log the DM call outcome before clearing state (rooms aren't logged).
+    if (this.mode?.startsWith('dm')) {
+      this.logCall(this.connectedAt ? 'completed' : 'missed');
+    }
     this.pcs.forEach(pc => pc.close());
     this.pcs.clear();
     this.pendingIce.clear();
@@ -219,6 +279,7 @@ class CallManager {
     if (this.mode === 'room-voice' && this.roomVoiceId != null) {
       this.sock?.emit('voice_leave', { roomId: this.roomVoiceId });
     }
+    try { InCallManager?.stop(); InCallManager?.stopRingback?.(); } catch {}
     this.localStream = null;
     this.remoteStream = null;
     this.mode = null;
@@ -226,7 +287,10 @@ class CallManager {
     this.incoming = null;
     this.muted = false;
     this.cameraOff = false;
+    this.speakerOn = false;
+    this.frontCamera = true;
     this.connectedAt = null;
+    this.peerId = null;
     this.stopRing();
     this.emit();
   }
@@ -260,6 +324,8 @@ class CallManager {
     const stream = await this.getMedia(kind === 'video');
     if (!stream) return;
     this.localStream = stream;
+    this.peerId = peerId; this.peerName = peerName; this.outgoing = true; this.logged = false;
+    try { InCallManager?.startRingback?.('_DTMF_'); } catch {}
     this.mode = kind === 'video' ? 'dm-video' : 'dm-voice';
     this.title = (kind === 'video' ? '🎥 ' : '📞 ') + peerName;
     this.status = 'Ringing…';
@@ -281,6 +347,8 @@ class CallManager {
       return;
     }
     this.localStream = stream;
+    this.peerId = offer.fromUserId; this.peerName = offer.fromUsername; this.outgoing = false; this.logged = false;
+    try { InCallManager?.stopRingtone?.(); } catch {}
     this.mode = offer.kind === 'video' ? 'dm-video' : 'dm-voice';
     this.title = (offer.kind === 'video' ? '🎥 ' : '📞 ') + offer.fromUsername;
     this.status = 'Connecting…';
@@ -298,7 +366,14 @@ class CallManager {
   }
 
   decline() {
-    if (this.incoming) this.sock.emit('call_end', { toUserId: this.incoming.fromUserId });
+    if (this.incoming) {
+      this.sock.emit('call_end', { toUserId: this.incoming.fromUserId });
+      // Log the declined incoming call so it shows in history for both sides.
+      this.peerId = this.incoming.fromUserId; this.peerName = this.incoming.fromUsername;
+      this.outgoing = false; this.mode = this.incoming.kind === 'video' ? 'dm-video' : 'dm-voice';
+      this.logCall('declined');
+      this.mode = null;
+    }
     this.incoming = null;
     this.stopRing();
     this.emit();

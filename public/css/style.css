@@ -492,6 +492,10 @@ html {
   background: var(--accent); align-self: center;
 }
 .voice-played-dot.played { background: rgba(128,128,128,0.45); }
+
+/* ── Call log bubble ───────────────────────────────── */
+.call-log { display: flex; align-items: center; gap: 8px; font-size: 0.9rem; font-weight: 600; color: var(--text); }
+.call-log-bad { color: #f87171; }
 #media-preview-bar {
   display: flex; align-items: center; gap: 10px; padding: 8px 14px; flex-shrink: 0;
   background: rgba(59,125,216,0.08); border-top: 1px solid var(--accent);

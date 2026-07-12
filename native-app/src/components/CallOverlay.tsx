@@ -75,7 +75,14 @@ export default function CallOverlay() {
         <RTCView streamURL={cm.remoteStream.toURL()} style={StyleSheet.absoluteFill as any} objectFit="cover" />
       )}
       {isVideo && cm.localStream && !cm.cameraOff && (
-        <RTCView streamURL={cm.localStream.toURL()} style={s.localVideo} objectFit="cover" zOrder={1} />
+        // Mirror the self-view only for the front camera, like every phone.
+        <RTCView
+          streamURL={cm.localStream.toURL()}
+          style={s.localVideo}
+          objectFit="cover"
+          zOrder={1}
+          mirror={cm.frontCamera}
+        />
       )}
 
       {!(isVideo && cm.remoteStream) && (
@@ -95,12 +102,30 @@ export default function CallOverlay() {
           </TouchableOpacity>
           <Text style={s.actionLabel}>{cm.muted ? 'Unmute' : 'Mute'}</Text>
         </View>
+        {/* Voice: speaker/earpiece toggle like a real phone call */}
+        {!isVideo && (
+          <View style={s.actionCol}>
+            <TouchableOpacity style={[s.roundBtn, s.ctrlBtn, cm.speakerOn && s.ctrlActive]} onPress={() => cm.toggleSpeaker()}>
+              <Text style={s.roundBtnIcon}>{cm.speakerOn ? '🔊' : '📢'}</Text>
+            </TouchableOpacity>
+            <Text style={s.actionLabel}>{cm.speakerOn ? 'Speaker' : 'Earpiece'}</Text>
+          </View>
+        )}
         {isVideo && (
           <View style={s.actionCol}>
             <TouchableOpacity style={[s.roundBtn, s.ctrlBtn, cm.cameraOff && s.ctrlActive]} onPress={() => cm.toggleCamera()}>
               <Text style={s.roundBtnIcon}>{cm.cameraOff ? '🚫' : '🎥'}</Text>
             </TouchableOpacity>
             <Text style={s.actionLabel}>Camera</Text>
+          </View>
+        )}
+        {/* Video: flip front/back camera */}
+        {isVideo && (
+          <View style={s.actionCol}>
+            <TouchableOpacity style={[s.roundBtn, s.ctrlBtn]} onPress={() => cm.switchCamera()}>
+              <Text style={s.roundBtnIcon}>🔄</Text>
+            </TouchableOpacity>
+            <Text style={s.actionLabel}>Flip</Text>
           </View>
         )}
         <View style={s.actionCol}>
