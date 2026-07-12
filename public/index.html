@@ -118,7 +118,9 @@
     <!-- Normal input bar -->
     <div id="input-bar">
       <input type="file" id="file-input" style="display:none" multiple onchange="stageFile()" />
-      <input id="msg-input" type="text" placeholder="Message..."
+      <input id="msg-input" type="text" placeholder="Message..." name="chat-message"
+        autocomplete="off" autocorrect="off" autocapitalize="sentences" spellcheck="false"
+        data-lpignore="true" data-form-type="other" data-1p-ignore
         onkeydown="handleInputKey(event)" oninput="onTypingInput()" />
       <button id="send-btn" onclick="sendOrSave()" class="send-btn">➤</button>
     </div>

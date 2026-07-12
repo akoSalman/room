@@ -144,6 +144,7 @@ export default function App() {
     if (screen === 'auth') return;
     let sock: any = null;
     let handler: any = null;
+    let delHandler: any = null;
     (async () => {
       const uname = await getUsername();
       sock = await getSocket();
@@ -160,14 +161,25 @@ export default function App() {
           : msg.type === 'video' ? '🎥 Video'
           : msg.type === 'music' ? '🎵 Audio file'
           : msg.type === 'invite' ? '🔒 Room invitation' : '📄 File';
+        // Tie the notification to the message id so it can be pulled from the
+        // tray if the sender deletes the message.
         Notifications.scheduleNotificationAsync({
+          identifier: `msg-${msg.id}`,
           content: { title: msg.username, body, sound: 'notify.wav' },
           trigger: null,
         }).catch(() => {});
       };
+      // When a message is deleted, dismiss its notification on this device too.
+      delHandler = ({ messageId }: any) => {
+        Notifications.dismissNotificationAsync(`msg-${messageId}`).catch(() => {});
+      };
       sock.on('message_received', handler);
+      sock.on('message_deleted', delHandler);
     })();
-    return () => { if (sock && handler) sock.off('message_received', handler); };
+    return () => {
+      if (sock && handler) sock.off('message_received', handler);
+      if (sock && delHandler) sock.off('message_deleted', delHandler);
+    };
   }, [screen, room?.id]);
 
   // Hardware back: step back through screens instead of closing the app.

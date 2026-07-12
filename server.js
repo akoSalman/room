@@ -194,7 +194,15 @@ async function sendPushToUsers(userIds, title, body, data = {}) {
             token: t,
             notification: { title, body },
             data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])),
-            android: { priority: 'high', notification: { channel_id: 'messages-v3', sound: 'notify' } },
+            android: {
+              priority: 'high',
+              // Tag the tray notification with the message id so a later
+              // delete can replace/collapse it on the recipient's device.
+              notification: {
+                channel_id: 'messages-v3', sound: 'notify',
+                ...(data.msgId ? { tag: `msg-${data.msgId}` } : {}),
+              },
+            },
           },
         }),
       }).then(async r => {

@@ -67,6 +67,7 @@ let replyTo = null; // { id, username, content, type }
 
 let onlineUsers = [];
 const unreadCounts = {};
+const openNotifications = {}; // msg id -> Notification, so deletes can close them
 let dmDividerInserted = false;
 
 function getSupportedMimeType() {
@@ -101,7 +102,9 @@ function showNotif(msg) {
     : msg.type === 'gallery' ? '🖼 Photos'
     : msg.type === 'video' ? '🎥 Video'
     : msg.type === 'music' ? '🎵 Audio file' : '📄 File';
-  new Notification(msg.username, { body, icon: '/icons/icon-192.png', tag: 'chatroom-' + msg.room_id, silent: true });
+  const n = new Notification(msg.username, { body, icon: '/icons/icon-192.png', tag: 'chatroom-msg-' + msg.id, silent: true });
+  openNotifications[msg.id] = n;
+  n.onclose = () => { delete openNotifications[msg.id]; };
   try { new Audio('/notify.wav').play().catch(() => {}); } catch {}
 }
 
@@ -655,11 +658,9 @@ async function loadRooms() {
   document.getElementById('room-list').innerHTML = '';
   dmDividerInserted = false;
   rooms.forEach(addRoomToList);
-  const general = rooms.find(r => r.name === 'General') || rooms[0];
-  if (general) {
-    const li = document.querySelector(`[data-room-id="${general.id}"]`);
-    if (li) { await joinRoom(general.id, general.name, li); collapseSidebar(); }
-  }
+  // Land on the list of chats/rooms after login rather than auto-opening a
+  // chat. On desktop the sidebar is always visible; on mobile, open it.
+  if (isMobile()) openSidebar();
 }
 
 function addRoomToList(room) {
@@ -1094,7 +1095,11 @@ function applyEdit(messageId, content) {
 }
 
 // ─── Delete ───────────────────────────────────────────────────────────────────
-function applyDelete(messageId) { document.querySelector(`[data-msg-id="${messageId}"]`)?.remove(); }
+function applyDelete(messageId) {
+  document.querySelector(`[data-msg-id="${messageId}"]`)?.remove();
+  // If a notification for this message is still on screen, close it too.
+  if (openNotifications[messageId]) { try { openNotifications[messageId].close(); } catch {} delete openNotifications[messageId]; }
+}
 function confirmDelete(messageId) {
   if (!confirm('Delete this message?')) return;
   socket.emit('delete_message', { messageId });
@@ -1931,12 +1936,20 @@ function openCtxMenu(messageId, type, isMine, wrapperEl, msg) {
   menu.querySelector('hr').style.display = isMine ? '' : 'none';
   menu.classList.remove('hidden');
   const rect = wrapperEl.getBoundingClientRect();
-  const mw = 160, mh = 120;
-  let left = rect.left, top = rect.bottom + 4;
+  // Measure the menu's real size now that it's visible, and keep it above the
+  // composer/input bar so it never slides underneath that section.
+  const mw = menu.offsetWidth || 180;
+  const mh = menu.offsetHeight || 160;
+  const composer = document.getElementById('input-bar') || document.getElementById('composer-strip');
+  const floorY = (composer ? composer.getBoundingClientRect().top : window.innerHeight) - 8;
+  let left = rect.left;
+  let top = rect.bottom + 4;
   if (left + mw > window.innerWidth) left = window.innerWidth - mw - 8;
-  if (top + mh > window.innerHeight) top = rect.top - mh - 4;
+  // If opening downward would collide with the composer, open upward instead.
+  if (top + mh > floorY) top = rect.top - mh - 4;
+  if (top < 4) top = Math.max(4, floorY - mh); // still clamp within the viewport
   menu.style.left = Math.max(4, left) + 'px';
-  menu.style.top = Math.max(4, top) + 'px';
+  menu.style.top = top + 'px';
 }
 function closeCtxMenu() { document.getElementById('ctx-menu').classList.add('hidden'); ctxTarget = null; }
 function ctxReply() {
