@@ -74,19 +74,24 @@ export async function e2eSetup(password: string): Promise<boolean> {
   try {
     const mine = await apiFetch('/keys/me');
     if (mine?.encPriv) {
+      // An identity already exists — the ONLY correct action is to unlock it
+      // with the password. Never generate a replacement keypair here, or the
+      // published public key would diverge from what peers encrypt to.
       const key = deriveKey(password, b64dec(mine.encPriv.salt));
       const sk = nacl.secretbox.open(b64dec(mine.encPriv.ct), b64dec(mine.encPriv.nonce), key);
       if (sk) {
         await storeLocal({ publicKey: b64dec(mine.publicKey), secretKey: new Uint8Array(sk) });
         return true;
       }
-      return loadLocal();
+      return false; // wrong password — stay locked, do NOT overwrite keys
     }
+    // First-ever identity for this account.
     const keys = nacl.box.keyPair();
-    await apiFetch('/keys', 'POST', {
+    const r = await apiFetch('/keys', 'POST', {
       publicKey: b64enc(keys.publicKey),
       encPriv: makeEncPrivBlob(keys.secretKey, password),
     });
+    if (r?.error === 'public_key_exists') return false; // raced with another device
     await storeLocal(keys);
     return true;
   } catch {
@@ -97,8 +102,8 @@ export async function e2eSetup(password: string): Promise<boolean> {
 export async function e2eRewrap(newPassword: string) {
   if (!(await loadLocal()) || !myKeys) return;
   try {
-    await apiFetch('/keys', 'POST', {
-      publicKey: b64enc(myKeys.publicKey),
+    // Re-wrap only: keep the same public key, just re-encrypt the private blob.
+    await apiFetch('/keys/rewrap', 'POST', {
       encPriv: makeEncPrivBlob(myKeys.secretKey, newPassword),
     });
   } catch {}

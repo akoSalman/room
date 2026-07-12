@@ -50,20 +50,23 @@ const E2E = (() => {
     try {
       const mine = await api('/keys/me');
       if (mine?.encPriv) {
+        // Identity exists — unlock only. Never publish a replacement keypair,
+        // or peers' messages (encrypted to the original key) become unreadable.
         const key = deriveKey(password, b64.dec(mine.encPriv.salt));
         const sk = nacl.secretbox.open(b64.dec(mine.encPriv.ct), b64.dec(mine.encPriv.nonce), key);
         if (sk) {
           storeLocal({ publicKey: b64.dec(mine.publicKey), secretKey: new Uint8Array(sk) });
           return true;
         }
-        console.warn('[e2e] could not unlock key blob (password changed elsewhere?)');
-        return loadLocal();
+        console.warn('[e2e] wrong password — key stays locked');
+        return false;
       }
       const keys = nacl.box.keyPair();
-      await api('/keys', 'POST', {
+      const r = await api('/keys', 'POST', {
         publicKey: b64.enc(keys.publicKey),
         encPriv: makeEncPrivBlob(keys.secretKey, password),
       });
+      if (r?.error === 'public_key_exists') return false;
       storeLocal(keys);
       return true;
     } catch (e) {
@@ -76,8 +79,8 @@ const E2E = (() => {
   async function rewrap(newPassword, api) {
     if (!myKeys) return;
     try {
-      await api('/keys', 'POST', {
-        publicKey: b64.enc(myKeys.publicKey),
+      // Re-wrap only: keep the published public key, refresh the private blob.
+      await api('/keys/rewrap', 'POST', {
         encPriv: makeEncPrivBlob(myKeys.secretKey, newPassword),
       });
     } catch {}

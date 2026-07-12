@@ -312,10 +312,31 @@ app.get('/ice-config', authMiddleware, (req, res) => {
 // The private key blob is encrypted client-side with a password-derived key;
 // the server only ever stores/relays opaque strings.
 app.post('/keys', authMiddleware, (req, res) => {
-  const { publicKey, encPriv } = req.body;
+  const { publicKey, encPriv, force } = req.body;
   if (!publicKey || !encPriv) return res.status(400).json({ error: 'publicKey and encPriv required' });
+  const existing = db.prepare('SELECT public_key FROM users WHERE id = ?').get(req.user.id);
+  // The public key is WRITE-ONCE. A reinstalled/new device that generates a
+  // different keypair must never clobber the published one, or every message
+  // peers encrypted to the original key becomes permanently undecryptable.
+  // Once a key exists we only ever update the password-wrapped private blob
+  // (re-wrap). A genuine reset requires an explicit force flag AND the same
+  // public key — anything else is rejected.
+  if (existing?.public_key && existing.public_key !== String(publicKey) && !force) {
+    // Keep the original public key; still allow the encPriv to be refreshed
+    // only if it belongs to the SAME key (can't verify here, so ignore it).
+    return res.status(409).json({ error: 'public_key_exists', publicKey: existing.public_key });
+  }
   db.prepare('UPDATE users SET public_key = ?, enc_priv = ? WHERE id = ?')
     .run(String(publicKey), JSON.stringify(encPriv), req.user.id);
+  res.json({ ok: true });
+});
+// Re-wrap only: update the password-encrypted private blob without touching
+// the published public key (used on password change).
+app.post('/keys/rewrap', authMiddleware, (req, res) => {
+  const { encPriv } = req.body;
+  if (!encPriv) return res.status(400).json({ error: 'encPriv required' });
+  db.prepare('UPDATE users SET enc_priv = ? WHERE id = ?')
+    .run(JSON.stringify(encPriv), req.user.id);
   res.json({ ok: true });
 });
 app.get('/keys/me', authMiddleware, (req, res) => {

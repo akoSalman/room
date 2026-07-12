@@ -14,9 +14,12 @@ async function ensureE2EUnlocked() {
   if (e2eUnlockAsked) return false;
   e2eUnlockAsked = true;
   const pw = prompt('🔒 Enter your account password to unlock end-to-end encryption on this device:');
-  if (!pw) return false;
+  if (!pw) { e2eUnlockAsked = false; return false; }
   const ok = await E2E.setup(pw, api);
-  if (!ok) alert('Could not unlock encryption with that password.');
+  if (!ok) {
+    e2eUnlockAsked = false; // let them try again with the right password
+    alert('Could not unlock encryption with that password. Please try again.');
+  }
   return ok;
 }
 
