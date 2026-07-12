@@ -1201,7 +1201,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           {!hiddenOneTime && (msg.type === 'file' || (msg.type === 'music' && msg._uploading)) && (
             <Text style={s.fileLink}>📄 {msg.file_name || 'File'}</Text>
           )}
-          {!hiddenOneTime && msg.type !== 'text' && msg.type !== 'invite' && msg.content ? (
+          {!hiddenOneTime && msg.type !== 'text' && msg.type !== 'invite' && msg.type !== 'call' && msg.content ? (
             <Text style={[s.msgText, s.caption]}>{renderTextWithLinks(msg.content)}</Text>
           ) : null}
           {msg.one_time_seconds && !hiddenOneTime && !msg._uploading ? (

@@ -53,6 +53,9 @@ class CallManager {
   }
   private markConnected() {
     this.stopRing();
+    // Stop every ring source: the expo-av loop AND InCallManager's ringback/
+    // ringtone — otherwise ringing keeps playing over a connected call.
+    try { InCallManager?.stopRingback?.(); InCallManager?.stopRingtone?.(); } catch {}
     if (!this.connectedAt) {
       this.connectedAt = Date.now();
       // Hand audio to InCallManager for proper phone-call routing. Video calls
@@ -135,7 +138,11 @@ class CallManager {
       if (pc) await pc.setRemoteDescription(sdp).catch(() => {});
       this.flushIce(fromUserId);
       // Answer received = signaling done; real "Connected" comes from ICE
-      if (this.mode !== 'room-voice') { this.stopRing(); this.status = 'Connecting…'; this.emit(); }
+      if (this.mode !== 'room-voice') {
+        this.stopRing();
+        try { InCallManager?.stopRingback?.(); } catch {}
+        this.status = 'Connecting…'; this.emit();
+      }
     });
     s.on('call_ice', ({ fromUserId, candidate }: any) => {
       const pc = this.pcs.get(fromUserId);

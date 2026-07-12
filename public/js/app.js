@@ -1854,7 +1854,7 @@ function buildMessageElement(msg) {
     bubble.appendChild(a);
   }
 
-  if (!oneTimeHidden && msg.type !== 'text' && msg.type !== 'invite' && msg.content) {
+  if (!oneTimeHidden && msg.type !== 'text' && msg.type !== 'invite' && msg.type !== 'call' && msg.content) {
     const cap = document.createElement('div');
     cap.className = 'msg-caption';
     appendLinkifiedText(cap, msg.content);
