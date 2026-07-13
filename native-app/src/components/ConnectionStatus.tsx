@@ -2,7 +2,7 @@
 // is not connected (offline / reconnecting), plus a brief "Back online" flash.
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, Animated, AppState } from 'react-native';
-import { getSocket } from '../api';
+import { getSocket, ensureSocketAlive } from '../api';
 
 type State = 'online' | 'reconnecting' | 'offline' | null;
 
@@ -35,7 +35,9 @@ export default function ConnectionStatus() {
     })();
 
     const appSub = AppState.addEventListener('change', st => {
-      if (st === 'active' && sock && !sock.connected) apply('reconnecting');
+      if (st !== 'active') return;
+      ensureSocketAlive();
+      if (sock && !sock.connected) apply('reconnecting');
     });
 
     return () => {

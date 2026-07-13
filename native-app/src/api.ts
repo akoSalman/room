@@ -56,8 +56,32 @@ export async function getSocket(): Promise<Socket> {
   // Default transports: start on HTTP long-polling, upgrade to WebSocket when
   // the proxy supports it. Forcing websocket-only made the app silently dead
   // (no sends, no realtime) behind proxies without WebSocket upgrade support.
-  socket = io(BASE_URL, { auth: { token } });
+  socket = io(BASE_URL, {
+    auth: { token },
+    // Come back fast after network changes (SIM calls, Wi-Fi/data switches)
+    reconnectionDelay: 500,
+    reconnectionDelayMax: 3000,
+    timeout: 8000,
+  });
   return socket;
+}
+
+// After a SIM call or network switch the socket can be a zombie: it still
+// says connected but the server timed it out, and noticing that organically
+// takes tens of seconds. Probe with an acked ping and force a reconnect if
+// the ack doesn't arrive quickly.
+export function ensureSocketAlive() {
+  const s: any = socket;
+  if (!s) return;
+  if (!s.connected) { s.connect(); return; }
+  try {
+    s.timeout(3000).emit('ping_check', (err: any, res: any) => {
+      if (err || !res?.ok) {
+        try { s.disconnect(); } catch {}
+        s.connect();
+      }
+    });
+  } catch {}
 }
 
 export function disconnectSocket() {

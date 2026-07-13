@@ -3,6 +3,7 @@
 // round controls at the bottom.
 import React, { useEffect, useReducer } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Dimensions } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { RTCView } from 'react-native-webrtc';
 import { C } from '../theme';
 import { callManager } from '../callManager';
@@ -42,7 +43,10 @@ export default function CallOverlay() {
     const inc = cm.incoming;
     return (
       <View style={s.fullscreen}>
-        <Text style={s.incomingKind}>{inc.kind === 'video' ? '🎥 Incoming video call' : '📞 Incoming voice call'}</Text>
+        <View style={s.incomingKindRow}>
+          <Ionicons name={inc.kind === 'video' ? 'videocam' : 'call'} size={16} color="rgba(255,255,255,0.75)" />
+          <Text style={s.incomingKind}>{inc.kind === 'video' ? 'Incoming video call' : 'Incoming voice call'}</Text>
+        </View>
         <View style={[s.bigAvatar, { marginTop: H * 0.12 }]}>
           <Text style={s.bigAvatarText}>{initialsOf(inc.fromUsername)}</Text>
         </View>
@@ -51,13 +55,13 @@ export default function CallOverlay() {
         <View style={s.incomingActions}>
           <View style={s.actionCol}>
             <TouchableOpacity style={[s.roundBtn, s.declineBtn]} onPress={() => cm.decline()}>
-              <Text style={s.roundBtnIcon}>✕</Text>
+              <Ionicons name="call" size={30} color="#fff" style={s.endIcon} />
             </TouchableOpacity>
             <Text style={s.actionLabel}>Decline</Text>
           </View>
           <View style={s.actionCol}>
             <TouchableOpacity style={[s.roundBtn, s.acceptBtn]} onPress={() => cm.accept()}>
-              <Text style={s.roundBtnIcon}>📞</Text>
+              <Ionicons name="call" size={30} color="#fff" />
             </TouchableOpacity>
             <Text style={s.actionLabel}>Accept</Text>
           </View>
@@ -98,7 +102,7 @@ export default function CallOverlay() {
       <View style={s.controls}>
         <View style={s.actionCol}>
           <TouchableOpacity style={[s.roundBtn, s.ctrlBtn, cm.muted && s.ctrlActive]} onPress={() => cm.toggleMute()}>
-            <Text style={s.roundBtnIcon}>{cm.muted ? '🔇' : '🎙'}</Text>
+            <Ionicons name={cm.muted ? 'mic-off' : 'mic'} size={26} color="#fff" />
           </TouchableOpacity>
           <Text style={s.actionLabel}>{cm.muted ? 'Unmute' : 'Mute'}</Text>
         </View>
@@ -106,7 +110,7 @@ export default function CallOverlay() {
         {!isVideo && (
           <View style={s.actionCol}>
             <TouchableOpacity style={[s.roundBtn, s.ctrlBtn, cm.speakerOn && s.ctrlActive]} onPress={() => cm.toggleSpeaker()}>
-              <Text style={s.roundBtnIcon}>{cm.speakerOn ? '🔊' : '📢'}</Text>
+              <Ionicons name={cm.speakerOn ? 'volume-high' : 'ear'} size={26} color="#fff" />
             </TouchableOpacity>
             <Text style={s.actionLabel}>{cm.speakerOn ? 'Speaker' : 'Earpiece'}</Text>
           </View>
@@ -114,7 +118,7 @@ export default function CallOverlay() {
         {isVideo && (
           <View style={s.actionCol}>
             <TouchableOpacity style={[s.roundBtn, s.ctrlBtn, cm.cameraOff && s.ctrlActive]} onPress={() => cm.toggleCamera()}>
-              <Text style={s.roundBtnIcon}>{cm.cameraOff ? '🚫' : '🎥'}</Text>
+              <Ionicons name={cm.cameraOff ? 'videocam-off' : 'videocam'} size={26} color="#fff" />
             </TouchableOpacity>
             <Text style={s.actionLabel}>Camera</Text>
           </View>
@@ -123,14 +127,14 @@ export default function CallOverlay() {
         {isVideo && (
           <View style={s.actionCol}>
             <TouchableOpacity style={[s.roundBtn, s.ctrlBtn]} onPress={() => cm.switchCamera()}>
-              <Text style={s.roundBtnIcon}>🔄</Text>
+              <Ionicons name="camera-reverse" size={26} color="#fff" />
             </TouchableOpacity>
             <Text style={s.actionLabel}>Flip</Text>
           </View>
         )}
         <View style={s.actionCol}>
           <TouchableOpacity style={[s.roundBtn, s.declineBtn]} onPress={() => cm.end()}>
-            <Text style={s.roundBtnIcon}>📵</Text>
+            <Ionicons name="call" size={28} color="#fff" style={s.endIcon} />
           </TouchableOpacity>
           <Text style={s.actionLabel}>End</Text>
         </View>
@@ -144,7 +148,9 @@ const s = StyleSheet.create({
     ...StyleSheet.absoluteFillObject, zIndex: 400,
     backgroundColor: '#0c1220', alignItems: 'center',
   },
-  incomingKind: { color: 'rgba(255,255,255,0.75)', fontSize: 14, fontWeight: '600', marginTop: 64 },
+  incomingKindRow: { flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 64 },
+  incomingKind: { color: 'rgba(255,255,255,0.75)', fontSize: 14, fontWeight: '600' },
+  endIcon: { transform: [{ rotate: '135deg' }] },
   bigAvatar: {
     width: 128, height: 128, borderRadius: 64, backgroundColor: C.accent,
     alignItems: 'center', justifyContent: 'center',

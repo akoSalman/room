@@ -15,7 +15,7 @@ import ConnectionStatus from './src/components/ConnectionStatus';
 import { callManager } from './src/callManager';
 import ChatScreen from './src/screens/ChatScreen';
 import MiniPlayer from './src/components/MiniPlayer';
-import { disconnectSocket, getSocket, getUsername, apiFetch } from './src/api';
+import { disconnectSocket, getSocket, getUsername, apiFetch, ensureSocketAlive } from './src/api';
 import { audioManager } from './src/audioManager';
 import { C } from './src/theme';
 
@@ -40,6 +40,15 @@ Notifications.setNotificationChannelAsync('messages-v3', {
   importance: Notifications.AndroidImportance.MAX,
   sound: 'notify.wav',
   vibrationPattern: [0, 250, 250, 250],
+}).catch(() => {});
+// Incoming calls get their own channel that RINGS (looping-feel ring sound,
+// long vibration) so it behaves like a real phone call notification.
+Notifications.setNotificationChannelAsync('calls-v1', {
+  name: 'Calls',
+  importance: Notifications.AndroidImportance.MAX,
+  sound: 'ring.wav',
+  vibrationPattern: [0, 800, 400, 800, 400, 800],
+  bypassDnd: false,
 }).catch(() => {});
 
 type Room = { id: number; name: string; is_dm: number; other_username?: string };
@@ -116,10 +125,40 @@ export default function App() {
     // is opened — clear them on launch and every return to the foreground.
     Notifications.dismissAllNotificationsAsync().catch(() => {});
     const sub = AppState.addEventListener('change', st => {
-      if (st === 'active') Notifications.dismissAllNotificationsAsync().catch(() => {});
+      if (st === 'active') {
+        Notifications.dismissAllNotificationsAsync().catch(() => {});
+        ensureSocketAlive(); // recover fast after SIM calls / network switches
+      }
     });
-    return () => sub.remove();
+    // Tapping a message notification opens its chat; tapping a call
+    // notification just needs the app open — the server re-delivers the
+    // still-ringing call over the fresh socket.
+    const respSub = Notifications.addNotificationResponseReceivedListener(resp => {
+      const data: any = resp?.notification?.request?.content?.data || {};
+      if (data.roomId && data.type !== 'call') openRoomById(parseInt(String(data.roomId), 10));
+      if (data.type === 'call') ensureSocketAlive();
+    });
+    // Cold start from a tapped notification
+    Notifications.getLastNotificationResponseAsync().then(resp => {
+      const data: any = resp?.notification?.request?.content?.data || {};
+      if (data.roomId && data.type !== 'call') openRoomById(parseInt(String(data.roomId), 10));
+    }).catch(() => {});
+    return () => { sub.remove(); respSub.remove(); };
   }, []);
+
+  // Find a room/DM by id and open its chat screen.
+  async function openRoomById(roomId: number) {
+    if (!roomId) return;
+    try {
+      const [rooms, dms] = await Promise.all([apiFetch('/rooms'), apiFetch('/dm-rooms')]);
+      const all = [...(Array.isArray(dms) ? dms : []), ...(Array.isArray(rooms) ? rooms : [])];
+      const r = all.find((x: any) => x.id === roomId);
+      if (r) {
+        setRoom({ id: r.id, name: r.name, is_dm: r.is_dm, other_username: r.other_username });
+        setScreen('chat');
+      }
+    } catch {}
+  }
 
   // Register the device FCM token so the server can push notifications that
   // arrive even when the app is closed. Silently no-ops until the build

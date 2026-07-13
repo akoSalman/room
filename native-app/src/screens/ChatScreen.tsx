@@ -16,12 +16,13 @@ import {
   PinchGestureHandler, PanGestureHandler, State as GHState, GestureHandlerRootView,
 } from 'react-native-gesture-handler';
 import { C, isRTL } from '../theme';
-import { apiFetch, getSocket, getToken, getUsername, getAvatar, BASE_URL } from '../api';
+import { apiFetch, getSocket, getToken, getUsername, getAvatar, BASE_URL, ensureSocketAlive } from '../api';
 import { e2eReady, e2eDMPeerKey, e2eEncrypt, e2eDecrypt, e2eIsEncrypted, e2eSetup } from '../e2e';
 import { callManager } from '../callManager';
 import { audioManager } from '../audioManager';
 import VoicePlayer from '../components/VoicePlayer';
 import VoiceRecorder from '../components/VoiceRecorder';
+import { Ionicons } from '@expo/vector-icons';
 import AwesomeGallery from 'react-native-awesome-gallery';
 import GalleryGrid from '../components/GalleryGrid';
 import ImageWithSpinner from '../components/ImageWithSpinner';
@@ -294,9 +295,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   useEffect(() => {
     const sub = AppState.addEventListener('change', st => {
       if (st !== 'active') return;
-      // The socket can be a half-dead zombie after Doze: force reconnect
-      const sock = socketRef.current;
-      if (sock && !sock.connected) sock.connect();
+      // The socket can be a half-dead zombie after Doze or a SIM call:
+      // verify with an acked ping and force-reconnect if needed.
+      ensureSocketAlive();
       refreshLatest();
       // Mobile radio may need a moment after unlock — one delayed retry
       setTimeout(refreshLatest, 2500);
@@ -1101,16 +1102,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           {msg.type === 'call' && (() => {
             let c: any = {};
             try { c = JSON.parse(msg.content || '{}'); } catch {}
-            const icon = c.kind === 'video' ? '🎥' : '📞';
-            const fmtDur = (s: number) => s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
+            const fmtDur = (n: number) => n >= 60 ? `${Math.floor(n / 60)}m ${n % 60}s` : `${n}s`;
             const label = c.outcome === 'completed' ? `${c.kind === 'video' ? 'Video' : 'Voice'} call · ${fmtDur(c.duration || 0)}`
               : c.outcome === 'declined' ? 'Call declined'
               : c.outcome === 'missed' ? 'Missed call'
               : 'Call failed';
             const bad = c.outcome !== 'completed';
+            const color = bad ? '#f87171' : C.accent;
             return (
               <View style={s.callLog}>
-                <Text style={[s.callLogIcon, bad && { color: '#f87171' }]}>{icon}</Text>
+                <View style={[s.callLogIconWrap, { backgroundColor: bad ? 'rgba(248,113,113,0.15)' : 'rgba(59,125,216,0.15)' }]}>
+                  <Ionicons name={c.kind === 'video' ? 'videocam' : 'call'} size={16} color={color} />
+                </View>
                 <Text style={[s.callLogText, bad && { color: '#f87171' }]}>{label}</Text>
               </View>
             );
@@ -1319,19 +1322,19 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             <TouchableOpacity
               onPress={() => callManager.startDM(dmPeerId.current, room.other_username || room.name, 'voice')}
               style={s.callBtn} hitSlop={{ top: 10, bottom: 10 }}>
-              <Text style={s.callBtnText}>📞</Text>
+              <Ionicons name="call-outline" size={22} color={C.accent} />
             </TouchableOpacity>
             <TouchableOpacity
               onPress={() => callManager.startDM(dmPeerId.current, room.other_username || room.name, 'video')}
               style={s.callBtn} hitSlop={{ top: 10, bottom: 10 }}>
-              <Text style={s.callBtnText}>🎥</Text>
+              <Ionicons name="videocam-outline" size={23} color={C.accent} />
             </TouchableOpacity>
           </>
         ) : (
           <TouchableOpacity
             onPress={() => callManager.toggleRoomVoice(room.id, room.name)}
             style={s.callBtn} hitSlop={{ top: 10, bottom: 10 }}>
-            <Text style={s.callBtnText}>📞</Text>
+            <Ionicons name="call-outline" size={22} color={C.accent} />
           </TouchableOpacity>
         )}
         <TouchableOpacity onPress={onOpenProfile} style={s.headerAvatar} activeOpacity={0.7}
@@ -1961,7 +1964,7 @@ const s = StyleSheet.create({
   failedRow: { flexDirection: 'row', alignItems: 'center', gap: 14, marginTop: 6 },
   failedDelete: { color: '#f87171', fontSize: 12, fontWeight: '600' },
   callLog: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 },
-  callLogIcon: { fontSize: 18, color: C.accent },
+  callLogIconWrap: { width: 30, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
   callLogText: { color: C.text, fontSize: 14, fontWeight: '600' },
   uploadingVoicePlaceholder: { paddingVertical: 4 },
   uploadingVoiceText: { color: C.text, fontSize: 14, opacity: 0.7 },

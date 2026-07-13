@@ -52,6 +52,7 @@ class CallManager {
     if (snd) snd.unloadAsync().catch(() => {});
   }
   private markConnected() {
+    clearTimeout(this.noAnswerTimer);
     this.stopRing();
     // Stop every ring source: the expo-av loop AND InCallManager's ringback/
     // ringtone — otherwise ringing keeps playing over a connected call.
@@ -109,7 +110,8 @@ class CallManager {
   private iceServers: any[] = [{ urls: ['stun:stun.l.google.com:19302'] }];
   private roomVoiceId: number | null = null;
   private listeners = new Set<Listener>();
-  private inited = false;
+  private initPromise: Promise<void> | null = null;
+  private noAnswerTimer: any = null;
 
   subscribe(fn: Listener) {
     this.listeners.add(fn);
@@ -127,8 +129,15 @@ class CallManager {
   }
 
   async init() {
-    if (this.inited) return;
-    this.inited = true;
+    // A single shared promise: concurrent callers WAIT for the socket to be
+    // bound instead of racing ahead with this.sock still null (which made
+    // the call window flash and immediately die).
+    if (this.initPromise) return this.initPromise;
+    this.initPromise = this.doInit();
+    return this.initPromise;
+  }
+
+  private async doInit() {
     await this.refreshIce();
     const s = await getSocket();
     this.sock = s;
@@ -298,6 +307,7 @@ class CallManager {
     this.frontCamera = true;
     this.connectedAt = null;
     this.peerId = null;
+    clearTimeout(this.noAnswerTimer);
     this.stopRing();
     this.emit();
   }
@@ -338,6 +348,15 @@ class CallManager {
     this.status = 'Ringing…';
     this.startRing();
     this.emit();
+    // Give up after 45s of no answer (logged as a missed call)
+    clearTimeout(this.noAnswerTimer);
+    this.noAnswerTimer = setTimeout(() => {
+      if (this.mode?.startsWith('dm') && !this.connectedAt) {
+        this.status = 'No answer';
+        this.emit();
+        setTimeout(() => this.end(), 1200);
+      }
+    }, 45000);
     try { await this.makeOffer(peerId); } catch { this.end(); }
   }
 

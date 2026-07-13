@@ -176,7 +176,7 @@ async function getFcmAccessToken() {
   return fcmToken;
 }
 
-async function sendPushToUsers(userIds, title, body, data = {}) {
+async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
   if (!fcmCreds || !userIds.length) return;
   try {
     const placeholders = userIds.map(() => '?').join(',');
@@ -199,7 +199,8 @@ async function sendPushToUsers(userIds, title, body, data = {}) {
               // Tag the tray notification with the message id so a later
               // delete can replace/collapse it on the recipient's device.
               notification: {
-                channel_id: 'messages-v3', sound: 'notify',
+                channel_id: android.channelId || 'messages-v3',
+                sound: android.sound || 'notify',
                 ...(data.msgId ? { tag: `msg-${data.msgId}` } : {}),
               },
             },
@@ -301,7 +302,9 @@ app.get('/ice-config', authMiddleware, (req, res) => {
   const ice = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
   if (process.env.TURN_URL && process.env.TURN_USERNAME && process.env.TURN_PASSWORD) {
     ice.push({
-      urls: process.env.TURN_URL,
+      // UDP first; TCP fallback rescues networks that block/throttle UDP
+      // (a common cause of 'connection failed' on video calls).
+      urls: [process.env.TURN_URL, process.env.TURN_URL + '?transport=tcp'],
       username: process.env.TURN_USERNAME,
       credential: process.env.TURN_PASSWORD,
     });
@@ -577,6 +580,16 @@ app.get('/join/:roomId', (req, res) => {
 const onlineUsers = new Map(); // socketId -> { userId, username, roomId }
 const voiceRooms = new Map(); // roomId -> Map(socketId -> { userId, username })
 
+// Pending 1:1 call offers, so a callee whose app was closed can still receive
+// the call when they open it from the push notification. Entries expire.
+const pendingCalls = new Map(); // toUserId -> { fromUserId, fromUsername, kind, sdp, candidates: [], ts }
+const PENDING_CALL_TTL = 60 * 1000;
+function clearPendingCallsBetween(a, b) {
+  for (const [to, pc] of pendingCalls) {
+    if ((to === a && pc.fromUserId === b) || (to === b && pc.fromUserId === a)) pendingCalls.delete(to);
+  }
+}
+
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
   try {
@@ -674,11 +687,18 @@ io.on('connection', (socket) => {
     // Ring the callee even when their app is closed (1:1 DM calls only).
     if (!roomId) {
       const k = kind === 'video' ? 'video' : 'voice';
+      // Keep the offer around so a callee opening the app from the push
+      // notification still receives the call (offer re-delivered on connect).
+      pendingCalls.set(parseInt(toUserId, 10), {
+        fromUserId: socket.user.id, fromUsername: socket.user.username,
+        kind: k, sdp, candidates: [], ts: Date.now(),
+      });
       sendPushToUsers(
         [toUserId],
         (socket.user.avatar ? socket.user.avatar + ' ' : '') + socket.user.username,
         k === 'video' ? '🎥 Incoming video call' : '📞 Incoming voice call',
         { type: 'call', kind: k, fromUserId: socket.user.id },
+        { channelId: 'calls-v1', sound: 'ring' },
       );
     }
   });
@@ -711,14 +731,44 @@ io.on('connection', (socket) => {
     io.emit('dm_activity', { room: dm });
   });
   socket.on('call_answer', ({ toUserId, sdp }) => {
+    clearPendingCallsBetween(socket.user.id, parseInt(toUserId, 10));
     io.to('user:' + toUserId).emit('call_answer', { fromUserId: socket.user.id, sdp });
   });
   socket.on('call_ice', ({ toUserId, candidate }) => {
+    // Also stash candidates with a pending offer so a late-connecting callee
+    // gets the caller's early candidates (they'd otherwise be lost).
+    const pc = pendingCalls.get(parseInt(toUserId, 10));
+    if (pc && pc.fromUserId === socket.user.id && pc.candidates.length < 60) pc.candidates.push(candidate);
     io.to('user:' + toUserId).emit('call_ice', { fromUserId: socket.user.id, candidate });
   });
   socket.on('call_end', ({ toUserId }) => {
+    clearPendingCallsBetween(socket.user.id, parseInt(toUserId, 10));
     io.to('user:' + toUserId).emit('call_end', { fromUserId: socket.user.id });
   });
+
+  // Lightweight liveness probe: clients verify the socket isn't a zombie
+  // (e.g. after a SIM call or network switch) and force-reconnect if this
+  // ack never arrives.
+  socket.on('ping_check', (ack) => { if (typeof ack === 'function') ack({ ok: true }); });
+
+  // Re-deliver a still-fresh pending call to a callee who just connected
+  // (opened the app from the incoming-call notification).
+  {
+    const pc = pendingCalls.get(socket.user.id);
+    if (pc) {
+      if (Date.now() - pc.ts > PENDING_CALL_TTL) {
+        pendingCalls.delete(socket.user.id);
+      } else {
+        setTimeout(() => {
+          socket.emit('call_offer', {
+            fromUserId: pc.fromUserId, fromUsername: pc.fromUsername,
+            roomId: null, kind: pc.kind, sdp: pc.sdp,
+          });
+          pc.candidates.forEach(c => socket.emit('call_ice', { fromUserId: pc.fromUserId, candidate: c }));
+        }, 600);
+      }
+    }
+  }
 
   // Room voice chat: mesh membership. Existing participants send offers to
   // each newcomer; the server just tracks who is in the voice chat.
