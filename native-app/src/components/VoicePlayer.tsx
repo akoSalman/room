@@ -1,5 +1,5 @@
-import React, { useEffect, useReducer } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
+import React, { useEffect, useReducer, useRef } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, PanResponder } from 'react-native';
 import { C } from '../theme';
 import { audioManager } from '../audioManager';
 
@@ -38,6 +38,21 @@ export default function VoicePlayer({ url, peaks: rawPeaks, mine, msgId, roomId,
   const duration = isCurrent ? audioManager.duration : 0;
   const speedIdx = Math.max(0, SPEEDS.indexOf(audioManager.rate));
 
+  // Drag across the waveform to scrub through the voice message.
+  const waveWidth = useRef(0);
+  const seekAtX = (x: number) => {
+    if (!isCurrent || !waveWidth.current) return;
+    audioManager.seek(x / waveWidth.current);
+  };
+  const pan = useRef(PanResponder.create({
+    onStartShouldSetPanResponder: () => isCurrentRef.current,
+    onMoveShouldSetPanResponder: () => isCurrentRef.current,
+    onPanResponderGrant: (e) => seekAtX(e.nativeEvent.locationX),
+    onPanResponderMove: (e) => seekAtX(e.nativeEvent.locationX),
+  })).current;
+  const isCurrentRef = useRef(false);
+  isCurrentRef.current = isCurrent;
+
   function toggle() {
     if (isCurrent) audioManager.toggle();
     else {
@@ -59,7 +74,11 @@ export default function VoicePlayer({ url, peaks: rawPeaks, mine, msgId, roomId,
         {loading ? <ActivityIndicator size="small" color="#fff" /> : <Text style={s.playIcon}>{playing ? '⏸' : '▶'}</Text>}
       </TouchableOpacity>
 
-      <View style={s.waveform}>
+      <View
+        style={s.waveform}
+        onLayout={(e) => { waveWidth.current = e.nativeEvent.layout.width; }}
+        {...pan.panHandlers}
+      >
         {peaks.map((h, i) => (
           <View key={i} style={[s.bar, {
             height: Math.max(3, h * 28),

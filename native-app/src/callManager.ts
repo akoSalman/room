@@ -330,8 +330,44 @@ class CallManager {
     }
     if (this.mode) { this.sock.emit('call_end', { toUserId: offer.fromUserId }); return; } // busy
     this.incoming = offer;
+    // Auto-accept if the user already tapped "Accept" on the notification.
+    if (this.autoAcceptFrom && this.autoAcceptFrom === offer.fromUserId) {
+      this.autoAcceptFrom = null;
+      this.emit();
+      this.accept();
+      return;
+    }
     this.startRing();
     this.emit();
+  }
+
+  // ── Answering from the notification shade ──
+  private autoAcceptFrom: number | null = null;
+
+  // Called when the user taps "Accept" on the call notification: accept the
+  // incoming offer as soon as it's (re)delivered over the reconnected socket.
+  armAutoAccept(fromUserId: number) {
+    if (!fromUserId) return;
+    this.autoAcceptFrom = fromUserId;
+    // Already ringing? accept right now.
+    if (this.incoming && this.incoming.fromUserId === fromUserId) {
+      this.autoAcceptFrom = null;
+      this.accept();
+    } else {
+      // Give the server a moment to re-deliver, then give up arming.
+      setTimeout(() => { this.autoAcceptFrom = null; }, 15000);
+    }
+  }
+
+  // Called when the user taps "Decline" on the call notification.
+  declineIncomingFrom(fromUserId: number) {
+    getSocket().then(s => {
+      if (this.incoming && this.incoming.fromUserId === fromUserId) {
+        this.decline();
+      } else if (fromUserId) {
+        s.emit('call_end', { toUserId: fromUserId });
+      }
+    }).catch(() => {});
   }
 
   async startDM(peerId: number | null, peerName: string, kind: 'voice' | 'video') {

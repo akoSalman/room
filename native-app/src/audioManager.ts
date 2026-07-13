@@ -146,6 +146,18 @@ class AudioManager {
     }
     this.emit();
   }
+
+  // Seek to a fraction (0..1) of the current sound — lets the user scrub a
+  // voice message by dragging across its waveform.
+  async seek(fraction: number) {
+    if (!this.sound || !this.duration) return;
+    const f = Math.max(0, Math.min(1, fraction));
+    try {
+      await this.sound.setPositionAsync(Math.round(f * this.duration * 1000));
+      this.progress = f;
+      this.emit();
+    } catch {}
+  }
 }
 
 export const audioManager = new AudioManager();

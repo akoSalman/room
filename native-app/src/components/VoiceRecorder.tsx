@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Alert, Platform } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Alert, Platform, Animated } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { Audio } from 'expo-av';
 import { C } from '../theme';
 import { audioManager } from '../audioManager';
@@ -24,10 +25,17 @@ export default function VoiceRecorder({ onCancel, onSend }: {
   const peakTimerRef = useRef<any>(null);
   const [uri, setUri] = useState('');
   const peaks = peaksRef.current;
+  const pulse = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
     startRecording();
+    const loop = Animated.loop(Animated.sequence([
+      Animated.timing(pulse, { toValue: 0.3, duration: 600, useNativeDriver: true }),
+      Animated.timing(pulse, { toValue: 1, duration: 600, useNativeDriver: true }),
+    ]));
+    loop.start();
     return () => {
+      loop.stop();
       stopTimers();
       recordingRef.current?.stopAndUnloadAsync().catch(() => {});
       previewSoundRef.current?.unloadAsync().catch(() => {});
@@ -41,7 +49,10 @@ export default function VoiceRecorder({ onCancel, onSend }: {
 
   async function startRecording() {
     try {
-      const { status } = await Audio.requestPermissionsAsync();
+      // Use the cached permission if we already have it — asking again adds a
+      // round-trip that delayed the actual capture (first words were lost).
+      let status = (await Audio.getPermissionsAsync()).status;
+      if (status !== 'granted') status = (await Audio.requestPermissionsAsync()).status;
       if (status !== 'granted') {
         Alert.alert(
           'Microphone Permission Required',
@@ -57,9 +68,12 @@ export default function VoiceRecorder({ onCancel, onSend }: {
         playsInSilentModeIOS: true,
         staysActiveInBackground: false,
       });
-      const { recording } = await Audio.Recording.createAsync(
-        { ...Audio.RecordingOptionsPresets.HIGH_QUALITY, isMeteringEnabled: true }
-      );
+      // Prepare then start explicitly, and only begin the timer AFTER the
+      // recorder reports it is actually running — so the elapsed time matches
+      // the captured audio and the opening words aren't clipped.
+      const recording = new Audio.Recording();
+      await recording.prepareToRecordAsync({ ...Audio.RecordingOptionsPresets.HIGH_QUALITY, isMeteringEnabled: true });
+      await recording.startAsync();
       recordingRef.current = recording;
       timerRef.current = setInterval(() => setSeconds(s => s + 1), 1000);
       peakTimerRef.current = setInterval(async () => {
@@ -142,57 +156,65 @@ export default function VoiceRecorder({ onCancel, onSend }: {
 
   if (phase === 'recording') return (
     <View style={s.bar}>
-      <TouchableOpacity onPress={onCancel} style={s.iconBtn}>
-        <Text style={s.icon}>🗑</Text>
+      <TouchableOpacity onPress={onCancel} style={s.trashBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+        <Ionicons name="trash-outline" size={20} color={C.danger} />
       </TouchableOpacity>
-      <View style={s.dot} />
-      <View style={s.waveform}>
-        {displayPeaks.map((h, i) => (
-          <View key={i} style={[s.waveBar, { height: Math.max(3, h * 28), opacity: paused ? 0.4 : 0.8 }]} />
-        ))}
+      <View style={s.pill}>
+        <Animated.View style={[s.recDot, { opacity: paused ? 0.4 : pulse }]} />
+        <Text style={s.timer}>{fmtTime(seconds)}</Text>
+        <View style={s.waveform}>
+          {displayPeaks.map((h, i) => (
+            <View key={i} style={[s.waveBar, { height: Math.max(3, h * 26), opacity: paused ? 0.4 : 0.9 }]} />
+          ))}
+        </View>
+        <TouchableOpacity onPress={togglePause} hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}>
+          <Ionicons name={paused ? 'play' : 'pause'} size={20} color={C.accent} />
+        </TouchableOpacity>
       </View>
-      <Text style={s.timer}>{fmtTime(seconds)}</Text>
-      <TouchableOpacity onPress={togglePause} style={s.iconBtn}>
-        <Text style={s.icon}>{paused ? '▶' : '⏸'}</Text>
-      </TouchableOpacity>
-      <TouchableOpacity onPress={stopForPreview} style={s.iconBtn}>
-        <Text style={[s.icon, { color: C.danger }]}>⏹</Text>
+      <TouchableOpacity style={s.sendBtn} onPress={stopForPreview} accessibilityLabel="Stop and preview">
+        <Ionicons name="checkmark" size={22} color="#fff" />
       </TouchableOpacity>
     </View>
   );
 
   return (
     <View style={s.bar}>
-      <TouchableOpacity onPress={onCancel} style={s.iconBtn}>
-        <Text style={s.icon}>🗑</Text>
+      <TouchableOpacity onPress={onCancel} style={s.trashBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+        <Ionicons name="trash-outline" size={20} color={C.danger} />
       </TouchableOpacity>
-      <TouchableOpacity onPress={togglePreview} style={s.iconBtn}>
-        <Text style={s.icon}>{previewPlaying ? '⏸' : '▶'}</Text>
-      </TouchableOpacity>
-      <View style={s.waveform}>
-        {displayPeaks.map((h, i) => (
-          <View key={i} style={[s.waveBar, {
-            height: Math.max(3, h * 28),
-            backgroundColor: i / barCount < previewProgress ? C.accent : 'rgba(82,136,193,0.35)',
-          }]} />
-        ))}
+      <View style={s.pill}>
+        <TouchableOpacity onPress={togglePreview} style={s.playBtn}>
+          <Ionicons name={previewPlaying ? 'pause' : 'play'} size={18} color="#fff" />
+        </TouchableOpacity>
+        <View style={s.waveform}>
+          {displayPeaks.map((h, i) => (
+            <View key={i} style={[s.waveBar, {
+              height: Math.max(3, h * 26),
+              backgroundColor: i / barCount < previewProgress ? C.accent : 'rgba(130,136,153,0.4)',
+            }]} />
+          ))}
+        </View>
+        <Text style={s.timer}>{fmtTime(seconds)}</Text>
       </View>
-      <Text style={s.timer}>{fmtTime(seconds)}</Text>
-      <TouchableOpacity style={s.sendBtn} onPress={handleSend}>
-        <Text style={s.sendIcon}>➤</Text>
+      <TouchableOpacity style={s.sendBtn} onPress={handleSend} accessibilityLabel="Send voice message">
+        <Ionicons name="send" size={18} color="#fff" style={{ marginLeft: -1 }} />
       </TouchableOpacity>
     </View>
   );
 }
 
 const s = StyleSheet.create({
-  bar: { flexDirection: 'row', alignItems: 'center', padding: 10, backgroundColor: C.header, borderTopWidth: 1, borderTopColor: C.border, gap: 6 },
-  iconBtn: { padding: 6 },
-  icon: { fontSize: 20 },
-  dot: { width: 10, height: 10, borderRadius: 5, backgroundColor: C.danger },
-  waveform: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 2, height: 32 },
-  waveBar: { width: 3, borderRadius: 2, backgroundColor: C.danger },
-  timer: { color: C.danger, fontSize: 14, fontWeight: '600', minWidth: 38 },
-  sendBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
-  sendIcon: { color: '#fff', fontSize: 16 },
+  bar: { flexDirection: 'row', alignItems: 'center', padding: 10, backgroundColor: C.header, borderTopWidth: 1, borderTopColor: C.border, gap: 8 },
+  trashBtn: { padding: 4 },
+  pill: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: C.inputBg, borderRadius: 22, paddingHorizontal: 12, height: 44,
+    borderWidth: 1, borderColor: C.border,
+  },
+  recDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: C.danger },
+  playBtn: { width: 30, height: 30, borderRadius: 15, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
+  waveform: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 2, height: 30, overflow: 'hidden' },
+  waveBar: { flex: 1, minWidth: 2, maxWidth: 3, borderRadius: 2, backgroundColor: C.danger },
+  timer: { color: C.text, fontSize: 13, fontWeight: '700', minWidth: 38, fontVariant: ['tabular-nums'] },
+  sendBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
 });

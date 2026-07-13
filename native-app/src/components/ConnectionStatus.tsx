@@ -69,25 +69,29 @@ export default function ConnectionStatus() {
   const online = state === 'online';
   const label = online ? 'Back online' : state === 'offline' ? 'No internet connection' : 'Reconnecting…';
 
+  const color = online ? '#4ade80' : '#fbbf24';
   return (
-    // Full-width bar pinned above every screen (including the chat header) so
-    // it reads as an app-level status, never overlapping a chat's title.
-    <Animated.View pointerEvents="none" style={[s.bar, online ? s.barOnline : s.barDown, { opacity }]}>
-      <View style={[s.dot, { backgroundColor: online ? '#86efac' : '#fbbf24' }]} />
-      <Text style={[s.text, { color: online ? '#86efac' : '#fbbf24' }]}>{label}</Text>
-    </Animated.View>
+    // A compact pill centered at the very top — just enough box to hold the
+    // text, no full-width background bar.
+    <View pointerEvents="none" style={s.wrap}>
+      <Animated.View style={[s.pill, { opacity }]}>
+        <View style={[s.dot, { backgroundColor: color }]} />
+        <Text style={[s.text, { color }]}>{label}</Text>
+      </Animated.View>
+    </View>
   );
 }
 
 const s = StyleSheet.create({
-  bar: {
-    position: 'absolute', top: 0, left: 0, right: 0, zIndex: 1000,
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
-    paddingVertical: 5,
-    elevation: 8, shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 6, shadowOffset: { width: 0, height: 2 },
+  wrap: {
+    position: 'absolute', top: 4, left: 0, right: 0, zIndex: 1000, alignItems: 'center',
   },
-  barDown: { backgroundColor: '#7c3a00' },
-  barOnline: { backgroundColor: '#14532d' },
-  dot: { width: 8, height: 8, borderRadius: 4 },
-  text: { fontSize: 12.5, fontWeight: '700' },
+  pill: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 11, paddingVertical: 4, borderRadius: 20,
+    backgroundColor: 'rgba(20,24,33,0.9)',
+    borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.12)',
+  },
+  dot: { width: 7, height: 7, borderRadius: 4 },
+  text: { fontSize: 12, fontWeight: '700' },
 });

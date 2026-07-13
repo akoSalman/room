@@ -201,6 +201,7 @@ async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
               notification: {
                 channel_id: android.channelId || 'messages-v3',
                 sound: android.sound || 'notify',
+                ...(android.categoryId ? { click_action: android.categoryId, notification_priority: 'PRIORITY_MAX' } : {}),
                 ...(data.msgId ? { tag: `msg-${data.msgId}` } : {}),
               },
             },
@@ -698,7 +699,7 @@ io.on('connection', (socket) => {
         (socket.user.avatar ? socket.user.avatar + ' ' : '') + socket.user.username,
         k === 'video' ? '🎥 Incoming video call' : '📞 Incoming voice call',
         { type: 'call', kind: k, fromUserId: socket.user.id },
-        { channelId: 'calls-v1', sound: 'ring' },
+        { channelId: 'calls-v1', sound: 'ring', categoryId: 'incoming_call' },
       );
     }
   });

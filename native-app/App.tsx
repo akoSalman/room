@@ -50,6 +50,12 @@ Notifications.setNotificationChannelAsync('calls-v1', {
   vibrationPattern: [0, 800, 400, 800, 400, 800],
   bypassDnd: false,
 }).catch(() => {});
+// Accept / Decline buttons ON the incoming-call notification, so the user can
+// answer straight from the notification shade without opening the app first.
+Notifications.setNotificationCategoryAsync('incoming_call', [
+  { identifier: 'accept', buttonTitle: '✅ Accept', options: { opensAppToForeground: true } },
+  { identifier: 'decline', buttonTitle: '❌ Decline', options: { opensAppToForeground: false, isDestructive: true } },
+]).catch(() => {});
 
 type Room = { id: number; name: string; is_dm: number; other_username?: string };
 
@@ -135,8 +141,21 @@ export default function App() {
     // still-ringing call over the fresh socket.
     const respSub = Notifications.addNotificationResponseReceivedListener(resp => {
       const data: any = resp?.notification?.request?.content?.data || {};
-      if (data.roomId && data.type !== 'call') openRoomById(parseInt(String(data.roomId), 10));
-      if (data.type === 'call') ensureSocketAlive();
+      const action = resp?.actionIdentifier;
+      if (data.type === 'call') {
+        // Reconnect the socket so the server re-delivers the ringing offer,
+        // then accept/decline once the incoming call is present.
+        ensureSocketAlive();
+        if (action === 'decline') {
+          callManager.declineIncomingFrom(parseInt(String(data.fromUserId), 10));
+        } else {
+          // 'accept' (or tapping the body) — auto-accept as soon as the
+          // re-delivered offer arrives.
+          callManager.armAutoAccept(parseInt(String(data.fromUserId), 10));
+        }
+        return;
+      }
+      if (data.roomId) openRoomById(parseInt(String(data.roomId), 10));
     });
     // Cold start from a tapped notification
     Notifications.getLastNotificationResponseAsync().then(resp => {

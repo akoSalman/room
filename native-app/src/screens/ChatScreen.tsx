@@ -23,6 +23,7 @@ import { audioManager } from '../audioManager';
 import VoicePlayer from '../components/VoicePlayer';
 import VoiceRecorder from '../components/VoiceRecorder';
 import { Ionicons } from '@expo/vector-icons';
+import Composer, { ComposerHandle } from '../components/Composer';
 import AwesomeGallery from 'react-native-awesome-gallery';
 import GalleryGrid from '../components/GalleryGrid';
 import ImageWithSpinner from '../components/ImageWithSpinner';
@@ -46,7 +47,6 @@ type Reaction = { emoji: string; username: string; user_id: number };
 type ReplyTo = { id: number | string; username: string; content: string | null; type: string };
 
 const EMOJIS = ['👍','❤️','😂','😮','😢','🔥','👏','🎉','🤔','😍','👎','😡'];
-const QUICK_EMOJIS = ['😂','❤️','👍','🙏','😍','🔥','🎉','😢','😮','👌'];
 const MESSAGES_PAGE_SIZE = 20;
 
 export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, initialJumpMsgId, initialShare, onShareConsumed }: {
@@ -64,7 +64,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // re-render the whole message list (that's what made typing/sending laggy).
   // Controlled composer state: React owns the value, so clearing after send is
   // deterministic (no lost/duplicated keystrokes when typing right after send).
-  const [text, setText] = useState('');
+  // Text lives INSIDE the Composer (local state) so typing never re-renders
+  // this screen. We reach it imperatively only for edit prefill / share text.
+  const composerRef = useRef<ComposerHandle>(null);
   const [me, setMe] = useState('');
   const [myAvatar, setMyAvatar] = useState<string | null>(null);
   const [online, setOnline] = useState<string[]>([]);
@@ -460,7 +462,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           mime: f.mimeType || 'application/octet-stream',
         }))]);
     }
-    if (initialShare.text) setText(initialShare.text);
+    if (initialShare.text) composerRef.current?.setText(initialShare.text);
     onShareConsumed?.();
   }, []);
 
@@ -537,17 +539,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     }, 0);
   }
 
-  function sendText() {
+  // Receives the composer's text (already cleared locally by the Composer).
+  function sendText(raw: string) {
     if (pendingMedia.length && !editingId) {
       const items = pendingMedia;
-      let caption: string | null = text.trim() || null;
+      let caption: string | null = raw.trim() || null;
       if (caption && room.is_dm && dmPeerPk.current) {
         caption = e2eEncrypt(caption, dmPeerPk.current) || caption;
       }
       const oneTime = oneTimeSecs ?? undefined;
       setPendingMedia([]);
       setOneTimeSecs(null);
-      if (caption) { setText(''); emitStopTyping(); }
+      emitStopTyping();
       const images = items.filter(m => m.mime.startsWith('image/'));
       const others = items.filter(m => !m.mime.startsWith('image/'));
       if (images.length > 1) {
@@ -559,7 +562,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       }
       return;
     }
-    const t = text.trim();
+    const t = raw.trim();
     if (!t || !socketRef.current) return;
     if (editingId) {
       const wire = (room.is_dm && dmPeerPk.current) ? (e2eEncrypt(t, dmPeerPk.current) || t) : t;
@@ -569,7 +572,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       dispatchText(t, replyTo?.id ?? null, oneTimeSecs, replyTo);
       setOneTimeSecs(null);
     }
-    setText('');
     setReplyTo(null);
     emitStopTyping();
   }
@@ -1484,7 +1486,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       {editingId && (
         <View style={s.editBanner}>
           <Text style={s.editText}>✏️ Editing message</Text>
-          <TouchableOpacity onPress={() => { setEditingId(null); setText(''); }}>
+          <TouchableOpacity onPress={() => { setEditingId(null); composerRef.current?.setText(''); }}>
             <Text style={s.editClose}>✕</Text>
           </TouchableOpacity>
         </View>
@@ -1608,7 +1610,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 {mineMsg && m.type === 'text' && (
                   <TouchableOpacity style={s.actionItem} onPress={() => {
                     setActionsMsg(null);
-                    setText(m.content || ''); setEditingId(m.id);
+                    composerRef.current?.setText(m.content || ''); setEditingId(m.id);
                   }}>
                     <Text style={s.actionText}>✏️  Edit</Text>
                   </TouchableOpacity>
@@ -1841,79 +1843,21 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           onSend={(uri, peaks) => { stopRecordingUI(); sendVoice(uri, peaks); }}
         />
       ) : (
-        <View>
-          {/* Floating quick-emoji bar: 10 handy emojis, closable via ✕;
-              reopens from the 😊 button in the options strip. */}
-          {quickEmoji && (
-            <View style={s.quickEmojiBar}>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="always" contentContainerStyle={{ alignItems: 'center' }} style={{ flex: 1 }}>
-                {QUICK_EMOJIS.map(em => (
-                  <TouchableOpacity key={em} style={s.quickEmojiBtn} onPress={() => setText(t => t + em)}>
-                    <Text style={s.quickEmojiText}>{em}</Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-              <TouchableOpacity style={s.quickEmojiClose} hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
-                onPress={() => { setQuickEmoji(false); AsyncStorage.setItem('quickEmojiClosed', '1'); }}>
-                <Text style={s.quickEmojiCloseText}>✕</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-          {/* Options strip: always pinned on top of the input bar. Media
-              picked while text is present is ONE message (caption). */}
-          <View style={s.optionsStrip}>
-            <TouchableOpacity style={s.stripBtn} onPress={() => setShowAttachMenu(true)}>
-              <Text style={s.stripBtnText}>📎 Media</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={s.stripBtn} onPress={() => startRecordingUI()}>
-              <Text style={s.stripBtnText}>🎙 Voice</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[s.stripBtn, oneTimeSecs ? s.oneTimeActive : null]} onPress={() => setShowOneTimeMenu(true)}>
-              <Text style={s.stripBtnText}>🔥 One-time{oneTimeSecs ? ` ${oneTimeSecs}s` : ''}</Text>
-            </TouchableOpacity>
-            {!quickEmoji && (
-              <TouchableOpacity style={s.stripBtn}
-                onPress={() => { setQuickEmoji(true); AsyncStorage.removeItem('quickEmojiClosed'); }}>
-                <Text style={s.stripBtnText}>😊</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-          {pendingMedia.length > 0 && (
-            <View style={s.pendingMediaBar}>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, alignItems: 'center' }}>
-                {pendingMedia.map((m, i) => (
-                  <View key={`${m.uri}-${i}`} style={s.pendingMediaItem}>
-                    <TouchableOpacity onPress={() => m.mime.startsWith('image/') && setLightboxUrl(m.uri)}>
-                      {m.mime.startsWith('image/') ? (
-                        <Image source={{ uri: m.uri }} style={s.pendingMediaThumb} />
-                      ) : (
-                        <View style={[s.pendingMediaThumb, s.pendingMediaFile]}>
-                          <Text style={s.pendingMediaIcon}>{m.mime.startsWith('video/') ? '🎥' : '📄'}</Text>
-                        </View>
-                      )}
-                    </TouchableOpacity>
-                    <TouchableOpacity style={s.pendingMediaRemove} onPress={() => setPendingMedia(prev => prev.filter((_, j) => j !== i))}>
-                      <Text style={s.pendingMediaRemoveText}>✕</Text>
-                    </TouchableOpacity>
-                  </View>
-                ))}
-                <TouchableOpacity style={[s.pendingMediaThumb, s.pendingMediaFile]} onPress={() => setShowAttachMenu(true)}>
-                  <Text style={s.pendingMediaIcon}>＋</Text>
-                </TouchableOpacity>
-              </ScrollView>
-            </View>
-          )}
-          <View style={s.inputBar}>
-            <TextInput
-              style={s.input} placeholder={pendingMedia.length ? 'Add a caption…' : 'Message...'} placeholderTextColor={C.muted}
-              value={text} onChangeText={t => { setText(t); emitTyping(); }}
-              onSubmitEditing={sendText} blurOnSubmit={false} multiline
-            />
-            <TouchableOpacity style={s.sendBtn} onPress={sendText}>
-              <Text style={s.sendBtnText}>➤</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
+        <Composer
+          ref={composerRef}
+          pendingMedia={pendingMedia}
+          oneTimeSecs={oneTimeSecs}
+          quickEmoji={quickEmoji}
+          editing={!!editingId}
+          onTyping={emitTyping}
+          onSend={sendText}
+          onAttach={() => setShowAttachMenu(true)}
+          onRecord={() => startRecordingUI()}
+          onOneTime={() => setShowOneTimeMenu(true)}
+          onToggleQuickEmoji={setQuickEmoji}
+          onRemoveMedia={(i) => setPendingMedia(prev => prev.filter((_, j) => j !== i))}
+          onPreviewMedia={(uri) => setLightboxUrl(uri)}
+        />
       )}
       {heartKey > 0 && <HeartBurst key={heartKey} onDone={() => setHeartKey(0)} />}
     </KeyboardAvoidingView>
