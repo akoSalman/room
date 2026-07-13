@@ -1,0 +1,62 @@
+name: Diagnose bistbarg.com (main domain)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: External checks from the internet
+        run: |
+          echo "== DNS =="
+          python3 - <<'PY'
+          import socket
+          for h in ['bistbarg.com', 'www.bistbarg.com', 'chat.bistbarg.com']:
+              try: print(h, '->', socket.gethostbyname(h))
+              except Exception as e: print(h, 'DNS FAIL:', e)
+          PY
+          echo ""
+          for u in http://bistbarg.com/ https://bistbarg.com/ http://www.bistbarg.com/ https://www.bistbarg.com/; do
+            echo "== $u =="
+            curl -sS -m 12 -o /dev/null -w "HTTP %{http_code}  time:%{time_total}s  remote:%{remote_ip}\n" -L "$u" 2>&1 || true
+          done
+
+      - name: Inspect server
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.DEPLOY_HOST_BISTBARG }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "root@$HOST" bash -s <<'EOF'
+          set +e
+          echo "===== what this server's IP is ====="
+          curl -s -m 5 ifconfig.me || hostname -I
+          echo ""
+          echo ""
+          echo "===== vhosts Apache knows for bistbarg.com ====="
+          /usr/sbin/httpd -S 2>/dev/null | grep -i bistbarg | head -10
+          echo ""
+          echo "===== DirectAdmin domains ====="
+          ls /usr/local/directadmin/data/users/*/domains/ 2>/dev/null | head -20
+          cat /etc/virtual/domains 2>/dev/null | head -10
+          echo ""
+          echo "===== local request for bistbarg.com ====="
+          curl -sk -m 8 -o /tmp/main.html -w "https local -> HTTP %{http_code}\n" https://bistbarg.com/ --resolve bistbarg.com:443:127.0.0.1
+          head -c 300 /tmp/main.html; echo ""
+          curl -s -m 8 -o /tmp/main2.html -w "http local -> HTTP %{http_code}\n" http://bistbarg.com/ --resolve bistbarg.com:80:127.0.0.1
+          head -c 300 /tmp/main2.html; echo ""
+          echo ""
+          echo "===== document root contents ====="
+          for d in /home/*/domains/bistbarg.com/public_html; do
+            echo "--- $d ---"; ls -la "$d" 2>/dev/null | head -10
+          done
+          echo ""
+          echo "===== apache error log tail ====="
+          tail -8 /var/log/httpd/error_log 2>/dev/null
+          for f in /var/log/httpd/domains/bistbarg.com.error.log; do
+            echo "--- $f ---"; tail -8 "$f" 2>/dev/null
+          done
+          EOF
