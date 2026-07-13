@@ -29,7 +29,7 @@ import GalleryGrid from '../components/GalleryGrid';
 import ImageWithSpinner from '../components/ImageWithSpinner';
 import SwipeableMessage from '../components/SwipeableMessage';
 import MusicPlayer from '../components/MusicPlayer';
-import HeartBurst from '../components/HeartBurst';
+import EmojiBurst from '../components/EmojiBurst';
 
 type Message = {
   id: number | string; room_id: number; user_id: number; username: string; avatar?: string | null;
@@ -47,6 +47,11 @@ type Reaction = { emoji: string; username: string; user_id: number };
 type ReplyTo = { id: number | string; username: string; content: string | null; type: string };
 
 const EMOJIS = ['👍','❤️','😂','😮','😢','🔥','👏','🎉','🤔','😍','👎','😡'];
+// Emoji-only messages of these play a full-screen burst effect. Keyed by the
+// first code point so ❤️ (heart + VS16) matches regardless of the selector.
+const BURST_EMOJIS = ['😂','❤️','👍','🙏','😍','🔥','🎉','😢','😮','👌','💯','😭','🥰','😎','👏','🙌','🤣'];
+const EMOJI_EFFECTS = new Set(BURST_EMOJIS.map(e => Array.from(e)[0]));
+const BURST_FORM: Record<string, string> = Object.fromEntries(BURST_EMOJIS.map(e => [Array.from(e)[0], e]));
 const MESSAGES_PAGE_SIZE = 20;
 
 export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, initialJumpMsgId, initialShare, onShareConsumed }: {
@@ -119,10 +124,25 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // Quick-emoji bar above the composer (closable; reopens from the strip)
   const [quickEmoji, setQuickEmoji] = useState(true);
   // Heart-only messages splash a short full-screen love effect on both sides.
-  // The counter keys the HeartBurst so a new heart restarts the animation.
-  const [heartKey, setHeartKey] = useState(0);
-  const HEART_RE = /^(?:\u2764\uFE0F|\u2764|\uD83D\uDC96|\uD83D\uDC97|\uD83D\uDC95|\uD83D\uDC93|\uD83D\uDC98|\uD83D\uDC9D|\uD83E\uDE77|\s)+$/;
-  function triggerHeart() { setHeartKey(k => k + 1); }
+  // Emoji-only messages splash a full-screen effect. The key restarts the
+  // animation; burstEmoji is which emoji to rain.
+  const [burst, setBurst] = useState<{ key: number; emoji: string }>({ key: 0, emoji: '' });
+  function triggerBurst(emoji: string) { setBurst(b => ({ key: b.key + 1, emoji })); }
+  // Returns the single emoji if the text is ONE emoji-only message (optionally
+  // repeated), else null. Covers the popular emojis worth celebrating.
+  function burstEmojiOf(text: string | null | undefined): string | null {
+    if (!text) return null;
+    const t = String(text).trim();
+    if (!t || t.length > 16) return null;
+    // strip variation selectors / ZWJ / whitespace, then grapheme-split
+    const chars = Array.from(t).filter(c => !/[\uFE0E\uFE0F\u200D\s]/.test(c));
+    if (!chars.length) return null;
+    const uniq = new Set(chars);
+    if (uniq.size !== 1) return null;
+    const emoji = t.replace(/\s+/g, '').slice(0, 8); // keep the rendered form (with VS16)
+    const single = Array.from(t.replace(/\s+/g, ''))[0];
+    return EMOJI_EFFECTS.has(single) ? (BURST_FORM[single] || single) : null;
+  }
   const [loadingOlder, setLoadingOlder] = useState(false);
   const hasMoreOlderRef = useRef(true);
   const loadingOlderRef = useRef(false);
@@ -265,12 +285,32 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     setE2eActive(!!dmPeerPk.current);
   }
 
+  // Does the open lightbox image belong to this (image/gallery) message?
+  function lightboxBelongsTo(m: Message): boolean {
+    if (!lightboxUrl || !m.file_path) return false;
+    if (m.type === 'image') return `${BASE_URL}${m.file_path}` === lightboxUrl || m.file_path === lightboxUrl;
+    if (m.type === 'gallery') {
+      try { return JSON.parse(m.file_path).some((u: string) => `${BASE_URL}${u}` === lightboxUrl || u === lightboxUrl); } catch { return false; }
+    }
+    return false;
+  }
+
   // ── (9) one-time countdown ticker ──
   useEffect(() => {
     if (!Object.keys(oneTimeExpiry).length) return;
-    const iv = setInterval(() => setOtTick(t => t + 1), 1000);
+    const iv = setInterval(() => {
+      setOtTick(t => t + 1);
+      // If a one-time image is open in the lightbox and its window has closed,
+      // dismiss it immediately (don't wait for the server's delete event).
+      if (lightboxUrl) {
+        const now = Date.now();
+        const expired = messagesRef.current.find(m =>
+          m.one_time_seconds && oneTimeExpiry[m.id as number] && oneTimeExpiry[m.id as number] <= now && lightboxBelongsTo(m));
+        if (expired) setLightboxUrl(null);
+      }
+    }, 1000);
     return () => clearInterval(iv);
-  }, [Object.keys(oneTimeExpiry).length > 0]);
+  }, [Object.keys(oneTimeExpiry).length > 0, lightboxUrl]);
 
   // Pull anything we missed while the device was locked / app backgrounded.
   // The socket auto-reconnects, but events sent meanwhile are gone — so on
@@ -336,6 +376,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         messagesRef.current = msgs;
         hasMoreOlderRef.current = msgs.length >= MESSAGES_PAGE_SIZE;
         if (msgs.length) sock.emit('mark_read', { roomId: room.id, lastMsgId: msgs[msgs.length - 1].id });
+        // Emoji effect received while we were away: if the newest message is a
+        // recent emoji-only message from the other person, play it on entry.
+        const last: any = msgs[msgs.length - 1];
+        if (last && last.type === 'text' && last.username !== (u || '')) {
+          let c: any = last.content;
+          if (e2eIsEncrypted(c)) c = e2eDecrypt(c, dmPeerPk.current);
+          const em = burstEmojiOf(c);
+          const ageMs = Date.now() - new Date((last.created_at || '').includes('T') ? last.created_at : (last.created_at || '').replace(' ', 'T') + 'Z').getTime();
+          if (em && ageMs < 30000) setTimeout(() => triggerBurst(em), 400);
+        }
       }
       // Re-append failed sends persisted from a previous session (retryable)
       try {
@@ -366,7 +416,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         if (msg.type === 'text' && msg.username !== me) {
           let c: any = msg.content;
           if (e2eIsEncrypted(c)) c = e2eDecrypt(c, dmPeerPk.current);
-          if (c && HEART_RE.test(String(c).trim())) triggerHeart();
+          const em = burstEmojiOf(c);
+          if (em) triggerBurst(em);
         }
         // Reconcile our optimistic upload bubble with the server's echo.
         // Prefer the echoed client_id; fall back to matching the uploaded
@@ -398,6 +449,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content, edited: 1 } : m));
       });
       sock.on('message_deleted', ({ messageId }: any) => {
+        // If the lightbox is showing an image that belongs to the message
+        // being destroyed (e.g. a one-time image whose timer ran out), close
+        // it so the picture vanishes from view too.
+        const gone = messagesRef.current.find(m => m.id === messageId);
+        if (gone && lightboxBelongsTo(gone)) setLightboxUrl(null);
         setMessages(prev => prev.filter(m => m.id !== messageId));
       });
       sock.on('reactions_updated', ({ messageId, reactions: r }: any) => {
@@ -524,7 +580,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       _uploading: true,
     } as Message;
     setMessages(prev => [...prev, optimistic]);
-    if (HEART_RE.test(plain.trim())) triggerHeart();
+    { const em = burstEmojiOf(plain); if (em) triggerBurst(em); }
     if (isNearBottomRef.current) setTimeout(scrollBottom, 50);
     // Encrypt + emit AFTER the bubble has painted — E2E key math on a slow
     // phone must never delay the send button's visual feedback.
@@ -1074,7 +1130,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         )}
         <View style={[s.bubbleRow, mine && s.bubbleRowMine]}>
         <SwipeableMessage
-          onSwipeRight={() => setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type })}
+          onSwipeRight={() => { setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type }); composerRef.current?.focus(); }}
           onSwipeLeft={mine ? () => deleteMsg(msg.id) : undefined}
         >
         <TouchableOpacity
@@ -1583,6 +1639,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 <TouchableOpacity style={s.actionItem} onPress={() => {
                   setActionsMsg(null);
                   setReplyTo({ id: m.id, username: m.username, content: m.content, type: m.type });
+                  composerRef.current?.focus();
                 }}>
                   <Text style={s.actionText}>↩  Reply</Text>
                 </TouchableOpacity>
@@ -1859,7 +1916,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           onPreviewMedia={(uri) => setLightboxUrl(uri)}
         />
       )}
-      {heartKey > 0 && <HeartBurst key={heartKey} onDone={() => setHeartKey(0)} />}
+      {burst.key > 0 && burst.emoji ? (
+        <EmojiBurst key={burst.key} emoji={burst.emoji} onDone={() => setBurst(b => ({ ...b, emoji: '' }))} />
+      ) : null}
     </KeyboardAvoidingView>
   );
 }

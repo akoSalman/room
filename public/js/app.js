@@ -325,7 +325,7 @@ function connectSocket() {
         if (msg.type === 'text' && msg.username !== username) {
           let c = msg.content;
           if (E2E.isEncrypted(c)) c = E2E.decrypt(c, currentDMPeerPk);
-          if (c && HEART_RE.test(String(c).trim())) triggerHeartBurst();
+          { const em = burstEmojiOf(c); if (em) triggerEmojiBurst(em); }
         }
       }
     });
@@ -972,7 +972,7 @@ function dispatchText(plain, roomId, replyToId, oneTimeSeconds) {
     scrollBottom();
   }
   pendingUploads[clientId] = { wrapper, previewUrl: null };
-  if (HEART_RE.test(plain.trim())) triggerHeartBurst();
+  { const em = burstEmojiOf(plain); if (em) triggerEmojiBurst(em); }
   // Encrypt + emit after the bubble has painted, so the send button feels
   // instant even when E2E key work makes the wire format slow to build.
   setTimeout(() => {
@@ -991,25 +991,49 @@ function dispatchText(plain, roomId, replyToId, oneTimeSeconds) {
 }
 
 // ── Heart burst: a short full-screen love effect on heart-only messages ──────
-const HEART_RE = /^(?:\u2764\uFE0F|\u2764|\uD83D\uDC96|\uD83D\uDC97|\uD83D\uDC95|\uD83D\uDC93|\uD83D\uDC98|\uD83D\uDC9D|\uD83E\uDE77|\s)+$/;
-let heartBurstTimer = null;
-function triggerHeartBurst() {
+// Emoji-only messages of these play a full-screen burst (keyed by first code
+// point so \u2764\uFE0F with/without the variation selector both match).
+const BURST_EMOJIS = ['\uD83D\uDE02','\u2764\uFE0F','\uD83D\uDC4D','\uD83D\uDE4F','\uD83D\uDE0D','\uD83D\uDD25','\uD83C\uDF89','\uD83D\uDE22','\uD83D\uDE2E','\uD83D\uDC4C','\uD83D\uDCAF','\uD83D\uDE2D','\uD83E\uDD70','\uD83D\uDE0E','\uD83D\uDC4F','\uD83D\uDE4C','\uD83E\uDD23'];
+const EMOJI_EFFECTS = new Set(BURST_EMOJIS.map(e => [...e][0]));
+const BURST_FORM = Object.fromEntries(BURST_EMOJIS.map(e => [[...e][0], e]));
+const BURST_TINT = {
+  '\u2764': 'rgba(244,114,182,0.16)', '\uD83D\uDE02': 'rgba(250,204,21,0.16)', '\uD83D\uDD25': 'rgba(251,146,60,0.18)',
+  '\uD83C\uDF89': 'rgba(232,121,249,0.16)', '\uD83D\uDC4D': 'rgba(96,165,250,0.16)', '\uD83D\uDE4F': 'rgba(251,191,36,0.16)',
+  '\uD83D\uDE0D': 'rgba(244,114,182,0.16)', '\uD83E\uDD70': 'rgba(244,114,182,0.16)', '\uD83D\uDE22': 'rgba(96,165,250,0.16)',
+  '\uD83D\uDE2D': 'rgba(96,165,250,0.16)', '\uD83D\uDE0E': 'rgba(148,163,184,0.16)', '\uD83D\uDC4C': 'rgba(74,222,128,0.16)',
+  '\uD83D\uDCAF': 'rgba(248,113,113,0.16)', '\uD83D\uDC4F': 'rgba(96,165,250,0.16)', '\uD83D\uDE4C': 'rgba(251,191,36,0.16)',
+  '\uD83E\uDD23': 'rgba(250,204,21,0.16)', '\uD83D\uDE2E': 'rgba(148,163,184,0.16)',
+};
+
+// Returns the emoji to celebrate if the text is one emoji (repeated) only.
+function burstEmojiOf(text) {
+  if (!text) return null;
+  const t = String(text).trim();
+  if (!t || t.length > 16) return null;
+  const chars = [...t].filter(c => !/[\uFE0E\uFE0F\u200D\s]/.test(c));
+  if (!chars.length || new Set(chars).size !== 1) return null;
+  const first = chars[0];
+  return EMOJI_EFFECTS.has(first) ? (BURST_FORM[first] || first) : null;
+}
+
+let burstTimer = null;
+function triggerEmojiBurst(emoji) {
   const el = document.getElementById('heart-burst');
   if (!el) return;
-  if (!el.dataset.filled) {
-    el.dataset.filled = '1';
-    ['\u{1F496}','\u2764\uFE0F','\u{1F497}','\u{1F498}','\u2764\uFE0F','\u{1F496}','\u{1F495}','\u2764\uFE0F'].forEach((h, i) => {
-      const sp = document.createElement('span');
-      sp.textContent = h;
-      sp.style.left = (6 + (i * 12) % 84) + '%';
-      sp.style.animationDelay = (i * 0.12) + 's';
-      sp.style.fontSize = (26 + (i % 4) * 12) + 'px';
-      el.appendChild(sp);
-    });
+  const first = [...emoji][0];
+  el.innerHTML = '';
+  el.style.background = `radial-gradient(circle at 50% 65%, ${BURST_TINT[first] || 'rgba(148,163,184,0.12)'}, transparent 70%)`;
+  for (let i = 0; i < 9; i++) {
+    const sp = document.createElement('span');
+    sp.textContent = emoji;
+    sp.style.left = (6 + (i * 12) % 84) + '%';
+    sp.style.animationDelay = (i * 0.12) + 's';
+    sp.style.fontSize = (26 + (i % 4) * 12) + 'px';
+    el.appendChild(sp);
   }
   el.classList.remove('hidden');
-  clearTimeout(heartBurstTimer);
-  heartBurstTimer = setTimeout(() => el.classList.add('hidden'), 2500);
+  clearTimeout(burstTimer);
+  burstTimer = setTimeout(() => el.classList.add('hidden'), 2500);
 }
 
 // ── Quick emoji bar ───────────────────────────────────────────────────────────
@@ -1123,7 +1147,15 @@ function applyEdit(messageId, content) {
 
 // ─── Delete ───────────────────────────────────────────────────────────────────
 function applyDelete(messageId) {
-  document.querySelector(`[data-msg-id="${messageId}"]`)?.remove();
+  const wrapper = document.querySelector(`[data-msg-id="${messageId}"]`);
+  // If the lightbox is open showing an image from the message being destroyed
+  // (e.g. a one-time image whose timer expired), close it so it vanishes too.
+  const lb = document.getElementById('lightbox');
+  if (wrapper && lb && !lb.classList.contains('hidden')) {
+    const srcs = [...wrapper.querySelectorAll('img')].map(i => i.src);
+    if (srcs.includes(lightboxSrc)) closeLightbox(true);
+  }
+  wrapper?.remove();
   // If a notification for this message is still on screen, close it too.
   if (openNotifications[messageId]) { try { openNotifications[messageId].close(); } catch {} delete openNotifications[messageId]; }
 }
@@ -2424,10 +2456,10 @@ function showLightboxAt(idx) {
 
 function lightboxNav(dir) { showLightboxAt(lightboxIdx + dir); }
 
-function closeLightbox() {
+function closeLightbox(force) {
   // A horizontal swipe fires a synthetic click on the backdrop right after
   // touchend — don't let that click close the gallery the user is browsing.
-  if (Date.now() - lightboxSwipedAt < 500) return;
+  if (!force && Date.now() - lightboxSwipedAt < 500) return;
   hide('lightbox');
 }
 document.addEventListener('keydown', (e) => {

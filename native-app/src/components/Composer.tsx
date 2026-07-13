@@ -17,6 +17,7 @@ export type ComposerHandle = {
   setText: (v: string) => void;
   append: (v: string) => void;
   getText: () => string;
+  focus: () => void;
 };
 
 type Media = { uri: string; name: string; mime: string };
@@ -59,6 +60,7 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
     setText: set,
     append: (v: string) => set(textRef.current + v),
     getText: () => textRef.current,
+    focus: () => inputRef.current?.focus(),
   }), [set]);
 
   const send = useCallback(() => {
