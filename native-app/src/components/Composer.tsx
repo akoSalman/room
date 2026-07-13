@@ -45,7 +45,15 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
 
   const [text, setText] = useState('');
   const textRef = useRef('');
-  const set = useCallback((v: string) => { textRef.current = v; setText(v); }, []);
+  const inputRef = useRef<TextInput>(null);
+  const set = useCallback((v: string) => {
+    textRef.current = v;
+    setText(v);
+    // Also clear/set the native input directly so it updates instantly,
+    // independent of React's batched commit (which can be gated behind the
+    // message-list re-render).
+    inputRef.current?.setNativeProps({ text: v });
+  }, []);
 
   useImperativeHandle(ref, () => ({
     setText: set,
@@ -55,10 +63,14 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
 
   const send = useCallback(() => {
     const t = textRef.current;
-    // Clear instantly and locally — no dependency on the parent re-rendering.
+    if (!t.trim() && !props.pendingMedia.length) return;
+    // Clear the input FIRST (native + state), then hand off the actual send on
+    // the next tick. This keeps the heavy message-list update out of the same
+    // render pass as the clear, so the box empties immediately and the next
+    // keystrokes never land on top of the just-sent text.
     set('');
-    onSend(t);
-  }, [set, onSend]);
+    setTimeout(() => onSend(t), 0);
+  }, [set, onSend, props.pendingMedia.length]);
 
   return (
     <View>
@@ -126,6 +138,7 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
           (and no media staged), and turns into Send as soon as you type. */}
       <View style={s.inputBar}>
         <TextInput
+          ref={inputRef}
           style={s.input}
           placeholder={pendingMedia.length ? 'Add a caption…' : 'Message...'}
           placeholderTextColor={C.muted}
