@@ -422,7 +422,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       try {
         const failed = JSON.parse((await AsyncStorage.getItem(failedKey)) || '[]');
         if (mounted && Array.isArray(failed) && failed.length) {
-          setMessages(prev => [...prev, ...failed.filter((f: any) => !prev.some(p => p.id === f.id))]);
+          setMessages(prev => {
+            // If the send actually reached the server before the app died (the
+            // echo just never arrived to clear the crash-safety copy), the row
+            // is already in history — drop the copy instead of duplicating.
+            const delivered = (f: any) => prev.some(p =>
+              typeof p.id === 'number' && p.username === (u || '') && p.type === f.type &&
+              (f.type === 'text' ? p.content === f.content : p.file_name === f.file_name && p.content === f.content));
+            const keep = failed.filter((f: any) => !prev.some(p => p.id === f.id) && !delivered(f));
+            failed.filter((f: any) => delivered(f)).forEach((f: any) => removeFailedMsg(f.id));
+            return [...prev, ...keep.map((f: any) => ({ ...f, _uploading: false, _uploadFailed: true }))];
+          });
         }
       } catch {}
       setLoading(false);
@@ -459,6 +469,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           || null;
         if (pendingId) {
           delete pendingUploadPaths.current[pendingId];
+          removeFailedMsg(pendingId); // send confirmed — drop the crash-safety copy
           setUploadProgress(prev => {
             const { [pendingId]: _drop, ...rest } = prev;
             return rest;
@@ -611,6 +622,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       _uploading: true,
     } as Message;
     setMessages(prev => [...prev, optimistic]);
+    // Persist right away (removed on server ack) so a kill/close mid-send on a
+    // slow connection can't drop the message silently.
+    saveFailedMsg(optimistic);
     { const em = burstEmojiOf(plain); if (em) triggerBurst(em); }
     if (isNearBottomRef.current) setTimeout(scrollBottom, 50);
     // Encrypt + emit AFTER the bubble has painted — E2E key math on a slow
@@ -792,6 +806,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       _uploading: true,
     };
     setMessages(prev => [...prev, optimistic]);
+    // Persist right away (removed again on server ack): if the app is killed
+    // while the upload is still in flight — the common case on a bad network —
+    // the message must survive the restart as a retryable failed send.
+    saveFailedMsg(optimistic);
     setUploadProgress(prev => ({ ...prev, [clientId]: 0 }));
     if (isNearBottomRef.current) setTimeout(scrollBottom, 50);
   }
@@ -881,6 +899,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     const replyToId = replyTo?.id ?? null;
     const oneTime = oneTimeOverride ?? (oneTimeSecs ?? undefined);
     setOneTimeSecs(null);
+    // Recordings land in the volatile cache dir, which the OS can purge as
+    // soon as the app is backgrounded — move the file somewhere durable first
+    // so a failed send can still be retried (and played back) after a restart.
+    if (uri.includes(FileSystem.cacheDirectory || '/Caches/')) {
+      try {
+        const dest = `${FileSystem.documentDirectory}voice-${Date.now()}.m4a`;
+        await FileSystem.copyAsync({ from: uri, to: dest });
+        uri = dest;
+      } catch {}
+    }
     addOptimisticMessage(clientId, 'audio', uri, peakStr, replyToId, caption);
     setReplyTo(null);
     try {
@@ -1311,14 +1339,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               <TouchableOpacity onPress={() => retryUpload(msg)}>
                 <Text style={s.uploadRetryText}>⚠️ Failed — tap to retry</Text>
               </TouchableOpacity>
-              <TouchableOpacity onPress={() => discardFailed(msg)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                <Text style={s.failedDelete}>🗑 Delete</Text>
-              </TouchableOpacity>
             </View>
           )}
         </TouchableOpacity>
         </SwipeableMessage>
-        {!msg._uploading && !msg._uploadFailed && (
+        {!msg._uploading && (
           <TouchableOpacity
             style={s.msgMenuBtn}
             onPress={(e) => setActionsMsg({ msg, x: e.nativeEvent.pageX, y: e.nativeEvent.pageY })}
@@ -1651,6 +1676,27 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             const hidden = !!m.one_time_seconds && !mineMsg && !revealedOneTime.has(m.id);
             const win = Dimensions.get('window');
             const MENU_W = 165;
+            // A failed (never-sent) message only supports local actions.
+            if (m._uploadFailed) {
+              const left2 = Math.max(8, Math.min(x - MENU_W / 2, win.width - MENU_W - 8));
+              const top2 = Math.max(60, Math.min(y + 8, win.height - 2 * 42 - 24));
+              return (
+                <View style={[s.actionsMenu, { position: 'absolute', left: left2, top: top2, width: MENU_W }]} onStartShouldSetResponder={() => true}>
+                  <TouchableOpacity style={s.actionItem} onPress={() => { setActionsMsg(null); retryUpload(m); }}>
+                    <Text style={s.actionText}>🔄  Retry</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={s.actionItem} onPress={() => {
+                    setActionsMsg(null);
+                    Alert.alert('Delete message?', '', [
+                      { text: 'Cancel', style: 'cancel' },
+                      { text: 'Delete', style: 'destructive', onPress: () => discardFailed(m) },
+                    ]);
+                  }}>
+                    <Text style={[s.actionText, { color: '#f87171' }]}>🗑  Delete</Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            }
             const items = 1
               + ((m.type === 'text' || (m.file_path && !m.one_time_seconds)) && !hidden ? 1 : 0)
               + (m.type !== 'invite' && !m.one_time_seconds ? 1 : 0)
@@ -1991,7 +2037,6 @@ const s = StyleSheet.create({
   uploadProgressBar: { height: '100%', backgroundColor: C.accent },
   uploadRetryText: { color: '#f87171', fontSize: 12, marginTop: 6, textDecorationLine: 'underline' },
   failedRow: { flexDirection: 'row', alignItems: 'center', gap: 14, marginTop: 6 },
-  failedDelete: { color: '#f87171', fontSize: 12, fontWeight: '600' },
   callLog: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 },
   callLogIconWrap: { width: 30, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
   callLogText: { color: C.text, fontSize: 14, fontWeight: '600' },
