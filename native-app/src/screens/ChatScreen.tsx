@@ -17,7 +17,7 @@ import {
 } from 'react-native-gesture-handler';
 import { C, isRTL } from '../theme';
 import { apiFetch, getSocket, getToken, getUsername, getAvatar, BASE_URL, ensureSocketAlive } from '../api';
-import { e2eReady, e2eDMPeerKey, e2eEncrypt, e2eDecrypt, e2eIsEncrypted, e2eSetup } from '../e2e';
+import { e2eReady, e2eDMPeerKey, e2eEncrypt, e2eDecrypt, e2eIsEncrypted, e2eSetup, e2eVerifyIdentity } from '../e2e';
 import { callManager } from '../callManager';
 import { audioManager } from '../audioManager';
 import VoicePlayer from '../components/VoicePlayer';
@@ -82,8 +82,22 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // Reaction picker: rendered in a Modal at the tap position so ANY outside tap closes it
   const [emojiPicker, setEmojiPicker] = useState<{ id: number | string; x: number; y: number } | null>(null);
   const [recording, setRecording] = useState(false);
-  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
-  const lightboxIndexRef = useRef(0);
+  // Fullscreen image viewer. images is snapshotted ONCE when opening so the
+  // gallery's data prop stays stable (churning it on every swipe made fast
+  // swiping hang and left stale frames behind on close). viewerIdx tracks the
+  // current image for the counter / save / screenshot-guard.
+  const [viewer, setViewer] = useState<{ images: string[]; index: number } | null>(null);
+  const [viewerIdx, setViewerIdx] = useState(0);
+  const viewerUrl = viewer ? viewer.images[viewerIdx] ?? null : null;
+  function openViewer(url: string) {
+    const list = allImages.includes(url) ? allImages : chatImageUrls();
+    let idx = list.indexOf(url);
+    let images = list;
+    if (idx < 0) { images = [url, ...list]; idx = 0; }
+    setViewerIdx(idx);
+    setViewer({ images, index: idx });
+  }
+  function closeViewer() { setViewer(null); }
   const [replyTo, setReplyTo] = useState<ReplyTo | null>(null);
   const [showOnline, setShowOnline] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
@@ -267,8 +281,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         dmPeerId.current = res?.userId ?? null;
       } catch {}
       if (await e2eReady()) {
-        dmPeerPk.current = await e2eDMPeerKey(room.id);
-        setE2eActive(!!dmPeerPk.current);
+        // Make sure the local keypair still matches what the server published
+        // for this account. If it diverged (e.g. the identity was rebuilt on
+        // the web and our stored private key no longer corresponds), peers
+        // encrypt to a key we can't open — so wipe it and prompt to unlock the
+        // real identity instead of silently showing undecryptable messages.
+        const status = await e2eVerifyIdentity();
+        if (status === 'mismatch') {
+          setShowE2EUnlock(true);
+        } else {
+          dmPeerPk.current = await e2eDMPeerKey(room.id);
+          setE2eActive(!!dmPeerPk.current);
+        }
       } else {
         // Session predates E2E: the identity was never unlocked on this device
         setShowE2EUnlock(true);
@@ -287,10 +311,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
   // Does the open lightbox image belong to this (image/gallery) message?
   function lightboxBelongsTo(m: Message): boolean {
-    if (!lightboxUrl || !m.file_path) return false;
-    if (m.type === 'image') return `${BASE_URL}${m.file_path}` === lightboxUrl || m.file_path === lightboxUrl;
+    if (!viewerUrl || !m.file_path) return false;
+    if (m.type === 'image') return `${BASE_URL}${m.file_path}` === viewerUrl || m.file_path === viewerUrl;
     if (m.type === 'gallery') {
-      try { return JSON.parse(m.file_path).some((u: string) => `${BASE_URL}${u}` === lightboxUrl || u === lightboxUrl); } catch { return false; }
+      try { return JSON.parse(m.file_path).some((u: string) => `${BASE_URL}${u}` === viewerUrl || u === viewerUrl); } catch { return false; }
     }
     return false;
   }
@@ -302,15 +326,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       setOtTick(t => t + 1);
       // If a one-time image is open in the lightbox and its window has closed,
       // dismiss it immediately (don't wait for the server's delete event).
-      if (lightboxUrl) {
+      if (viewerUrl) {
         const now = Date.now();
         const expired = messagesRef.current.find(m =>
           m.one_time_seconds && oneTimeExpiry[m.id as number] && oneTimeExpiry[m.id as number] <= now && lightboxBelongsTo(m));
-        if (expired) setLightboxUrl(null);
+        if (expired) closeViewer();
       }
     }, 1000);
     return () => clearInterval(iv);
-  }, [Object.keys(oneTimeExpiry).length > 0, lightboxUrl]);
+  }, [Object.keys(oneTimeExpiry).length > 0, viewerUrl]);
 
   // Pull anything we missed while the device was locked / app backgrounded.
   // The socket auto-reconnects, but events sent meanwhile are gone — so on
@@ -336,10 +360,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', st => {
-      if (st !== 'active') return;
+      if (st !== 'active') {
+        // Backgrounded: tell the server we're no longer viewing this room so
+        // our other devices (or a later re-open) get push notifications again.
+        socketRef.current?.emit('leave_room');
+        return;
+      }
       // The socket can be a half-dead zombie after Doze or a SIM call:
       // verify with an acked ping and force-reconnect if needed.
       ensureSocketAlive();
+      // Coming back to the foreground on this screen: re-mark as viewing.
+      socketRef.current?.emit('join_room', room.id);
       refreshLatest();
       // Mobile radio may need a moment after unlock — one delayed retry
       setTimeout(refreshLatest, 2500);
@@ -453,7 +484,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         // being destroyed (e.g. a one-time image whose timer ran out), close
         // it so the picture vanishes from view too.
         const gone = messagesRef.current.find(m => m.id === messageId);
-        if (gone && lightboxBelongsTo(gone)) setLightboxUrl(null);
+        if (gone && lightboxBelongsTo(gone)) closeViewer();
         setMessages(prev => prev.filter(m => m.id !== messageId));
       });
       sock.on('reactions_updated', ({ messageId, reactions: r }: any) => {
@@ -486,6 +517,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     })();
     return () => {
       mounted = false;
+      socketRef.current?.emit('leave_room');
       socketRef.current?.off('message_received');
       socketRef.current?.off('message_edited');
       socketRef.current?.off('message_deleted');
@@ -537,19 +569,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // Block screenshots/screen recording while any one-time content is on
   // screen (revealed in the chat or open in the lightbox).
   useEffect(() => {
-    const sensitive = revealedOneTime.size > 0 || isOneTimeUrl(lightboxUrl);
+    const sensitive = revealedOneTime.size > 0 || isOneTimeUrl(viewerUrl);
     if (sensitive) ScreenCapture.preventScreenCaptureAsync().catch(() => {});
     else ScreenCapture.allowScreenCaptureAsync().catch(() => {});
     return () => { ScreenCapture.allowScreenCaptureAsync().catch(() => {}); };
-  }, [revealedOneTime, lightboxUrl]);
+  }, [revealedOneTime, viewerUrl]);
 
   // Swiping the gallery is only smooth if the neighbours are already cached
   useEffect(() => {
-    if (!lightboxUrl) return;
-    const list = allImages.includes(lightboxUrl) ? allImages : chatImageUrls();
-    const idx = list.indexOf(lightboxUrl);
-    [list[idx - 1], list[idx + 1]].forEach(u => { if (u && u.startsWith('http')) Image.prefetch(u).catch(() => {}); });
-  }, [lightboxUrl, allImages]);
+    if (!viewer) return;
+    const { images } = viewer;
+    [images[viewerIdx - 1], images[viewerIdx + 1]].forEach(u => { if (u && u.startsWith('http')) Image.prefetch(u).catch(() => {}); });
+  }, [viewer, viewerIdx]);
 
   useEffect(() => {
     let alive = true;
@@ -968,8 +999,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   async function saveImage() {
-    if (isOneTimeUrl(lightboxUrl)) { Alert.alert('Not allowed', 'One-time media cannot be saved.'); return; }
-    if (!lightboxUrl) return;
+    if (isOneTimeUrl(viewerUrl)) { Alert.alert('Not allowed', 'One-time media cannot be saved.'); return; }
+    if (!viewerUrl) return;
     try {
       const { status } = await MediaLibrary.requestPermissionsAsync();
       if (status !== 'granted') {
@@ -977,7 +1008,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         return;
       }
       const localUri = FileSystem.cacheDirectory + `chatroom-${Date.now()}.jpg`;
-      const { uri } = await FileSystem.downloadAsync(lightboxUrl, localUri);
+      const { uri } = await FileSystem.downloadAsync(viewerUrl, localUri);
       await MediaLibrary.saveToLibraryAsync(uri);
       Alert.alert('Saved', 'Image saved to your gallery.');
     } catch {
@@ -1195,7 +1226,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             const uri = msg._uploading ? msg.file_path! : `${BASE_URL}${msg.file_path}`;
             const onLoaded = msg.one_time_seconds && !mine ? () => startOneTimeClock(msg) : undefined;
             return (
-              <TouchableOpacity onPress={() => !msg._uploading && setLightboxUrl(uri)} disabled={msg._uploading}>
+              <TouchableOpacity onPress={() => !msg._uploading && openViewer(uri)} disabled={msg._uploading}>
                 {msg._uploading
                   ? <Image source={{ uri }} style={s.msgImage} resizeMode="cover" />
                   : <ImageWithSpinner uri={uri} style={s.msgImage} resizeMode="cover" onLoaded={onLoaded} />}
@@ -1219,7 +1250,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             return (
               <GalleryGrid
                 uris={full}
-                onOpen={(i) => setLightboxUrl(full[i])}
+                onOpen={(i) => openViewer(full[i])}
                 onFirstLoaded={msg.one_time_seconds && !mine ? () => startOneTimeClock(msg) : undefined}
               />
             );
@@ -1442,37 +1473,32 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       {/* Full-screen image viewer: real mobile-gallery feel — pinch zoom,
           double-tap, swipe left/right between images, and pull down to close.
           Powered by react-native-awesome-gallery (reanimated + gestures). */}
-      <Modal visible={!!lightboxUrl} transparent animationType="fade" onRequestClose={() => setLightboxUrl(null)}>
+      <Modal visible={!!viewer} transparent animationType="fade" onRequestClose={closeViewer}>
         <GestureHandlerRootView style={{ flex: 1, backgroundColor: '#000' }}>
-          {lightboxUrl && (() => {
-            const loaded = chatImageUrls();
-            const list = allImages.includes(lightboxUrl) ? allImages : loaded;
-            const startIndex = Math.max(0, list.indexOf(lightboxUrl));
-            return (
-              <>
-                <AwesomeGallery
-                  data={list}
-                  initialIndex={startIndex}
-                  numToRender={3}
-                  doubleTapScale={3}
-                  onIndexChange={(i: number) => { lightboxIndexRef.current = i; setLightboxUrl(list[i]); }}
-                  onSwipeToClose={() => setLightboxUrl(null)}
-                  loop={false}
-                />
-                <TouchableOpacity onPress={() => setLightboxUrl(null)} style={s.lightboxClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                  <Text style={s.lightboxCloseText}>✕</Text>
+          {viewer && (
+            <>
+              <AwesomeGallery
+                data={viewer.images}
+                initialIndex={viewer.index}
+                numToRender={3}
+                doubleTapScale={3}
+                onIndexChange={(i: number) => setViewerIdx(i)}
+                onSwipeToClose={closeViewer}
+                loop={false}
+              />
+              <TouchableOpacity onPress={closeViewer} style={s.lightboxClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Text style={s.lightboxCloseText}>✕</Text>
+              </TouchableOpacity>
+              {!isOneTimeUrl(viewerUrl) && (
+                <TouchableOpacity onPress={saveImage} style={s.lightboxSave} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                  <Text style={s.lightboxCloseText}>⬇</Text>
                 </TouchableOpacity>
-                {!isOneTimeUrl(lightboxUrl) && (
-                  <TouchableOpacity onPress={saveImage} style={s.lightboxSave} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                    <Text style={s.lightboxCloseText}>⬇</Text>
-                  </TouchableOpacity>
-                )}
-                {list.length > 1 && (
-                  <Text style={s.lightboxCounter}>{startIndex + 1} / {list.length}</Text>
-                )}
-              </>
-            );
-          })()}
+              )}
+              {viewer.images.length > 1 && (
+                <Text style={s.lightboxCounter}>{viewerIdx + 1} / {viewer.images.length}</Text>
+              )}
+            </>
+          )}
         </GestureHandlerRootView>
       </Modal>
 
@@ -1704,7 +1730,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 {mediaTab === 'images' && (
                   <View style={s.mediaGrid}>
                     {mediaData.images.map((u: string, i: number) => (
-                      <TouchableOpacity key={i} onPress={() => { setShowMedia(false); setLightboxUrl(`${BASE_URL}${u}`); }}>
+                      <TouchableOpacity key={i} onPress={() => { setShowMedia(false); openViewer(`${BASE_URL}${u}`); }}>
                         <Image source={{ uri: `${BASE_URL}${u}` }} style={s.mediaThumb} />
                       </TouchableOpacity>
                     ))}
@@ -1913,7 +1939,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           onOneTime={() => setShowOneTimeMenu(true)}
           onToggleQuickEmoji={setQuickEmoji}
           onRemoveMedia={(i) => setPendingMedia(prev => prev.filter((_, j) => j !== i))}
-          onPreviewMedia={(uri) => setLightboxUrl(uri)}
+          onPreviewMedia={(uri) => openViewer(uri)}
         />
       )}
       {burst.key > 0 && burst.emoji ? (

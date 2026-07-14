@@ -291,7 +291,14 @@ function connectSocket() {
       }
     });
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && currentRoomId) refreshLatestMessages();
+      if (document.visibilityState === 'visible') {
+        // Back on this tab: re-mark as viewing the open room and re-sync.
+        if (currentRoomId) { socket.emit('join_room', currentRoomId); refreshLatestMessages(); }
+      } else {
+        // Tab hidden: we're no longer actively viewing, so let the account's
+        // other devices receive push notifications again.
+        socket.emit('leave_room');
+      }
     });
     if (typeof Calls !== 'undefined') Calls.bindSocket(socket);
     socket.on('disconnect', () => { socketReady = false; setConnStatus(navigator.onLine ? 'reconnecting' : 'offline'); });

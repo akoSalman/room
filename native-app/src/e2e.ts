@@ -113,6 +113,28 @@ export async function e2eReady(): Promise<boolean> {
   return loadLocal();
 }
 
+// Guards against a divergent identity: if the public key we hold locally does
+// NOT match the one published on the server for this account, then peers (e.g.
+// the web client) are encrypting to a key whose private half we don't have, so
+// every incoming message fails to decrypt. In that case we wipe the stale local
+// identity and report it, so the app can prompt for the password and rebuild
+// the correct keypair from the server's encrypted-private blob via e2eSetup().
+// Returns 'ok' | 'mismatch' | 'none' | 'offline'.
+export async function e2eVerifyIdentity(): Promise<'ok' | 'mismatch' | 'none' | 'offline'> {
+  if (!(await loadLocal()) || !myKeys) return 'none';
+  let mine: any;
+  try {
+    mine = await apiFetch('/keys/me');
+  } catch {
+    return 'offline'; // can't verify right now — don't touch a working identity
+  }
+  if (!mine?.publicKey) return 'ok'; // server has nothing published yet
+  if (mine.publicKey === b64enc(myKeys.publicKey)) return 'ok';
+  // Stale/wrong local identity — drop it so the user can unlock the real one.
+  await e2eClear();
+  return 'mismatch';
+}
+
 export async function e2eDMPeerKey(roomId: number): Promise<Uint8Array | null> {
   const cacheKey = `dm-${roomId}`;
   if (cacheKey in peerKeys) return peerKeys[cacheKey];

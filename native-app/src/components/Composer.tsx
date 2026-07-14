@@ -60,7 +60,16 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
     setText: set,
     append: (v: string) => set(textRef.current + v),
     getText: () => textRef.current,
-    focus: () => inputRef.current?.focus(),
+    // Blur first, then focus on the next tick. A bare focus() is a no-op when
+    // the input is already the focused view (the case on the 2nd+ reply), so
+    // the keyboard never reopens after it's been dismissed once. Cycling focus
+    // forces the keyboard to come back every time.
+    focus: () => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.blur();
+      setTimeout(() => inputRef.current?.focus(), 30);
+    },
   }), [set]);
 
   const send = useCallback(() => {

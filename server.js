@@ -370,7 +370,7 @@ app.get('/room-media/:roomId', authMiddleware, (req, res) => {
   const rows = db.prepare(`
     SELECT id, type, content, file_path, file_name, created_at FROM messages
     WHERE room_id = ? AND one_time_seconds IS NULL
-    ORDER BY id DESC LIMIT 500
+    ORDER BY id DESC LIMIT 5000
   `).all(room.id);
   const media = { images: [], files: [], music: [], links: [] };
   const LINK_RE = /(https?:\/\/[^\s]+|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:\/[^\s]*)?)/g;
@@ -387,7 +387,7 @@ app.get('/room-media/:roomId', authMiddleware, (req, res) => {
       });
     }
   });
-  media.images = media.images.slice(0, 200);
+  media.images = media.images.slice(0, 2000);
   media.files = media.files.slice(0, 200);
   media.music = media.music.slice(0, 200);
   res.json(media);
@@ -637,6 +637,20 @@ io.on('connection', (socket) => {
     io.to(String(roomId)).emit('room_online', { users: roomOnline });
   });
 
+  // The client emits this when the chat screen backgrounds or unmounts, so a
+  // device that isn't actively looking at the room stops counting as "viewing"
+  // (and thus starts receiving push again). Presence is updated to roomId null.
+  socket.on('leave_room', () => {
+    const prev = onlineUsers.get(socket.id);
+    if (!prev?.roomId) return;
+    socket.leave(prev.roomId);
+    onlineUsers.set(socket.id, { userId: socket.user.id, username: socket.user.username, roomId: null });
+    const oldOnline = [...onlineUsers.values()]
+      .filter(u => u.roomId === prev.roomId && u.username !== socket.user.username)
+      .map(u => u.username);
+    io.to(prev.roomId).emit('room_online', { users: oldOnline });
+  });
+
   socket.on('send_message', (data, ack) => {
     const { roomId, type, content, filePath, fileName, replyToId, clientId, oneTimeSeconds } = data;
     const oneTime = Number.isInteger(oneTimeSeconds) && oneTimeSeconds >= 1 && oneTimeSeconds <= 3600
@@ -662,10 +676,19 @@ io.on('connection', (socket) => {
     const memberIds = room ? getRoomMemberIds(room) : [];
     memberIds.forEach(id => io.to('user:' + id).emit('message_received', msg));
 
+    // Users who have ANY socket actively viewing this room right now. Push is
+    // suppressed for them entirely (on all their devices) so a user reading the
+    // chat on one device doesn't get notification buzzes on their other devices.
+    const viewingUserIds = new Set(
+      [...onlineUsers.values()]
+        .filter(u => u.roomId === String(roomId))
+        .map(u => u.userId)
+    );
+
     // Push notification for everyone but the sender (reaches closed apps)
     const roomLabel = room && !room.is_dm ? ` · ${room.name}` : '';
     sendPushToUsers(
-      memberIds.filter(id => id !== socket.user.id),
+      memberIds.filter(id => id !== socket.user.id && !viewingUserIds.has(id)),
       (msg.avatar ? msg.avatar + ' ' : '') + msg.username + roomLabel,
       messagePreview(msg),
       { roomId: String(roomId), msgId: String(msg.id) }
