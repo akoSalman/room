@@ -11,6 +11,7 @@ import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
 import * as FileSystem from 'expo-file-system';
 import * as Clipboard from 'expo-clipboard';
+import * as IntentLauncher from 'expo-intent-launcher';
 import * as ScreenCapture from 'expo-screen-capture';
 import {
   PinchGestureHandler, PanGestureHandler, State as GHState, GestureHandlerRootView,
@@ -29,6 +30,7 @@ import GalleryGrid from '../components/GalleryGrid';
 import ImageWithSpinner from '../components/ImageWithSpinner';
 import SwipeableMessage from '../components/SwipeableMessage';
 import MusicPlayer from '../components/MusicPlayer';
+import { guessMime, messageTypeFor, fileIcon, extOf } from '../mime';
 import EmojiBurst from '../components/EmojiBurst';
 
 type Message = {
@@ -431,6 +433,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               (f.type === 'text' ? p.content === f.content : p.file_name === f.file_name && p.content === f.content));
             const keep = failed.filter((f: any) => !prev.some(p => p.id === f.id) && !delivered(f));
             failed.filter((f: any) => delivered(f)).forEach((f: any) => removeFailedMsg(f.id));
+            // Anything still unsent gets retried automatically as soon as the
+            // chat is open again. A JS upload cannot outlive the process, so a
+            // send interrupted by the app closing resumes here rather than
+            // waiting for the user to notice and tap retry.
+            const resumable = keep.filter((f: any) =>
+              f.type === 'text' || (f.file_path && /^(file|content):\/\//.test(String(f.file_path))));
+            if (resumable.length) {
+              setTimeout(() => resumable.forEach((f: any) => retryUpload({ ...f, _uploadFailed: true })), 800);
+            }
             return [...prev, ...keep.map((f: any) => ({ ...f, _uploading: false, _uploadFailed: true }))];
           });
         }
@@ -555,11 +566,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     if (initialShare.files?.length) {
       setPendingMedia(prev => [...prev, ...initialShare.files!
         .filter(f => f.path)
-        .map(f => ({
-          uri: /^(file|content):\/\//.test(f.path) ? f.path : 'file://' + f.path,
-          name: f.fileName || f.path.split('/').pop() || `shared-${Date.now()}`,
-          mime: f.mimeType || 'application/octet-stream',
-        }))]);
+        .map(f => {
+          const name = f.fileName || f.path.split('/').pop() || `shared-${Date.now()}`;
+          // Share-sheet files often arrive with no (or a useless octet-stream)
+          // mime type; fall back to the extension so music stays music and
+          // documents keep their own look instead of all becoming plain files.
+          return {
+            uri: /^(file|content):\/\//.test(f.path) ? f.path : 'file://' + f.path,
+            name,
+            mime: guessMime(name || f.path, f.mimeType),
+          };
+        })]);
     }
     if (initialShare.text) composerRef.current?.setText(initialShare.text);
     onShareConsumed?.();
@@ -733,7 +750,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     setShowAttachMenu(false);
     const res = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
     if (res.canceled) return;
-    setPendingMedia(prev => [...prev, { uri: res.assets[0].uri, name: res.assets[0].name, mime: res.assets[0].mimeType || 'application/octet-stream' }]);
+    const a = res.assets[0];
+    setPendingMedia(prev => [...prev, { uri: a.uri, name: a.name, mime: guessMime(a.name || a.uri, a.mimeType) }]);
   }
 
   async function pickFromGallery() {
@@ -747,6 +765,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       mediaTypes: ImagePicker.MediaTypeOptions.All,
       allowsMultipleSelection: true,
       selectionLimit: 10,
+      quality: 0.6, // same compression as the camera — see pickFromCamera
+      exif: false,
     });
     if (res.canceled) return;
     setPendingMedia(prev => [...prev, ...res.assets.map((asset, i) => {
@@ -763,12 +783,26 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       return;
     }
     const res = mode === 'photo'
-      ? await ImagePicker.launchCameraAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images })
-      : await ImagePicker.launchCameraAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Videos, videoMaxDuration: 60 });
+      // quality below 1 makes the native picker hand back a re-encoded JPEG
+      // instead of the sensor's full-resolution original. A modern phone camera
+      // produces 8–15 MB frames; at 0.6 they're a few hundred KB, which is what
+      // was making "open camera → shoot → appears in chat" feel so slow (the
+      // delay was the huge file being copied, read and then uploaded).
+      // exif:false skips parsing/copying the metadata block as well.
+      ? await ImagePicker.launchCameraAsync({
+          mediaTypes: ImagePicker.MediaTypeOptions.Images,
+          quality: 0.6,
+          exif: false,
+        })
+      : await ImagePicker.launchCameraAsync({
+          mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+          videoMaxDuration: 60,
+          videoQuality: ImagePicker.UIImagePickerControllerQualityType.Medium,
+        });
     if (res.canceled) return;
     const asset = res.assets[0];
-    if (mode === 'photo') setPendingMedia(prev => [...prev, { uri: asset.uri, name: 'photo.jpg', mime: 'image/jpeg' }]);
-    else setPendingMedia(prev => [...prev, { uri: asset.uri, name: 'video.mp4', mime: 'video/mp4' }]);
+    if (mode === 'photo') setPendingMedia(prev => [...prev, { uri: asset.uri, name: `photo-${Date.now()}.jpg`, mime: 'image/jpeg' }]);
+    else setPendingMedia(prev => [...prev, { uri: asset.uri, name: `video-${Date.now()}.mp4`, mime: 'video/mp4' }]);
   }
 
   // FileSystem.createUploadTask (unlike fetch) reports real progress events.
@@ -814,6 +848,22 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     if (isNearBottomRef.current) setTimeout(scrollBottom, 50);
   }
 
+  // Copy a picked/captured/shared file out of volatile storage (the cache dir,
+  // or a content:// URI whose permission grant dies with the activity) into the
+  // app's document directory. Without this, a send interrupted by the app
+  // closing can't be retried later — the source file is already gone.
+  async function persistLocal(uri: string, name: string): Promise<string> {
+    try {
+      if (uri.startsWith(FileSystem.documentDirectory || ' ')) return uri; // already durable
+      const safe = name.replace(/[^\w.\-]/g, '_') || `file-${Date.now()}`;
+      const dest = `${FileSystem.documentDirectory}outbox-${Date.now()}-${safe}`;
+      await FileSystem.copyAsync({ from: uri, to: dest });
+      return dest;
+    } catch {
+      return uri; // best effort — an un-copyable file still uploads normally
+    }
+  }
+
   // Failed sends survive app restarts so they can still be retried.
   const failedKey = `failed-msgs-${room.id}`;
   async function saveFailedMsg(m: Message) {
@@ -843,13 +893,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   async function uploadFile(uri: string, name: string, mime: string, caption: string | null = null, oneTimeOverride?: number) {
-    const type = mime.startsWith('image/') ? 'image'
-      : mime.startsWith('video/') ? 'video'
-      : mime.startsWith('audio/') ? 'music' : 'file';
+    // messageTypeFor re-checks the extension, so a file whose mime was missing
+    // still lands as 'music'/'video'/'image' and gets the right player/bubble.
+    const type = messageTypeFor(mime, name || uri);
     const clientId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const replyToId = replyTo?.id ?? null;
     const oneTime = oneTimeOverride ?? (oneTimeSecs ?? undefined);
     setOneTimeSecs(null);
+    // Keep a durable copy so an interrupted upload can resume on next open.
+    uri = await persistLocal(uri, name);
     addOptimisticMessage(clientId, type, uri, name, replyToId, caption);
     setReplyTo(null);
     try {
@@ -868,6 +920,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   async function sendGallery(images: { uri: string; name: string; mime: string }[], caption: string | null, oneTime?: number) {
     const clientId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const replyToId = replyTo?.id ?? null;
+    // Durable copies first, so leaving the chat mid-upload doesn't strand the
+    // pictures on cache paths that are gone by the time we retry.
+    images = await Promise.all(images.map(async m => ({ ...m, uri: await persistLocal(m.uri, m.name) })));
     addOptimisticMessage(clientId, 'gallery', JSON.stringify(images.map(m => m.uri)), JSON.stringify(images.map(m => m.name)), replyToId, caption);
     setReplyTo(null);
     try {
@@ -899,16 +954,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     const replyToId = replyTo?.id ?? null;
     const oneTime = oneTimeOverride ?? (oneTimeSecs ?? undefined);
     setOneTimeSecs(null);
-    // Recordings land in the volatile cache dir, which the OS can purge as
-    // soon as the app is backgrounded — move the file somewhere durable first
-    // so a failed send can still be retried (and played back) after a restart.
-    if (uri.includes(FileSystem.cacheDirectory || '/Caches/')) {
-      try {
-        const dest = `${FileSystem.documentDirectory}voice-${Date.now()}.m4a`;
-        await FileSystem.copyAsync({ from: uri, to: dest });
-        uri = dest;
-      } catch {}
-    }
+    // Recordings land in the volatile cache dir, which the OS can purge as soon
+    // as the app is backgrounded — keep a durable copy so a failed send can
+    // still be retried (and played back) after a restart.
+    uri = await persistLocal(uri, `voice-${Date.now()}.m4a`);
     addOptimisticMessage(clientId, 'audio', uri, peakStr, replyToId, caption);
     setReplyTo(null);
     try {
@@ -920,6 +969,37 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       });
     } catch {
       markUploadFailed(clientId);
+    }
+  }
+
+  // Open a document in whatever app the device uses for that type. Android
+  // refuses to open a remote https URL in most viewers, so download to a local
+  // cache file first and hand over a content:// URI it will accept.
+  async function openFile(msg: Message) {
+    if (!msg.file_path) return;
+    if (msg.one_time_seconds) { Alert.alert('Not allowed', 'One-time files cannot be opened externally.'); return; }
+    const url = `${BASE_URL}${msg.file_path}`;
+    const name = msg.file_name || msg.file_path.split('/').pop() || `file-${Date.now()}`;
+    try {
+      const local = FileSystem.cacheDirectory + name.replace(/[^\w.\-]/g, '_');
+      const info = await FileSystem.getInfoAsync(local);
+      const uri = info.exists ? local : (await FileSystem.downloadAsync(url, local)).uri;
+      if (Platform.OS === 'android') {
+        const contentUri = await FileSystem.getContentUriAsync(uri);
+        await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+          data: contentUri,
+          flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
+          type: guessMime(name, null),
+        });
+      } else {
+        await Share.share({ url: uri });
+      }
+    } catch {
+      // No installed app can handle this type — offer the browser as a fallback.
+      Alert.alert('Cannot open', 'No app on this device can open this file type.', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Open in browser', onPress: () => Linking.openURL(url).catch(() => {}) },
+      ]);
     }
   }
 
@@ -972,8 +1052,22 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     } else if (msg.type === 'audio') {
       const peaks = (msg.file_name || '').split(',').map(n => Number(n) / 100);
       sendVoice(msg.file_path!, peaks);
+    } else if (msg.type === 'gallery') {
+      // A gallery bubble holds JSON arrays of local URIs and names.
+      try {
+        const uris: string[] = JSON.parse(msg.file_path || '[]');
+        let names: string[] = [];
+        try { names = JSON.parse(msg.file_name || '[]'); } catch {}
+        const imgs = uris.map((u, i) => ({
+          uri: u, name: names[i] || `photo-${i}.jpg`, mime: guessMime(names[i] || u, 'image/jpeg'),
+        }));
+        if (imgs.length) sendGallery(imgs, msg.content || null, msg.one_time_seconds ?? undefined);
+      } catch {}
     } else {
-      uploadFile(msg.file_path!, msg.file_name || 'file', msg.type === 'image' ? 'image/jpeg' : msg.type === 'video' ? 'video/mp4' : 'application/octet-stream');
+      const name = msg.file_name || 'file';
+      // Recover the real type from the name so a retried document/audio file
+      // doesn't degrade into a generic octet-stream upload.
+      uploadFile(msg.file_path!, name, guessMime(name || msg.file_path!, null));
     }
   }
 
@@ -1318,9 +1412,25 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               </TouchableOpacity>
             );
           })()}
-          {!hiddenOneTime && (msg.type === 'file' || (msg.type === 'music' && msg._uploading)) && (
-            <Text style={s.fileLink}>📄 {msg.file_name || 'File'}</Text>
-          )}
+          {!hiddenOneTime && (msg.type === 'file' || (msg.type === 'music' && msg._uploading)) && (() => {
+            const fname = msg.file_name || 'File';
+            const icon = fileIcon(fname, null);
+            const kind = (extOf(fname) || 'file').toUpperCase();
+            // A real card per file type — the icon distinguishes PDFs, docs,
+            // sheets and archives, and tapping opens it in the device's viewer.
+            return (
+              <TouchableOpacity
+                style={s.fileCard}
+                disabled={!!msg._uploading}
+                onPress={() => openFile(msg)}>
+                <Text style={s.fileCardIcon}>{icon}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.fileCardName} numberOfLines={2}>{fname}</Text>
+                  <Text style={s.fileCardMeta}>{msg._uploading ? 'Uploading…' : `${kind} · tap to open`}</Text>
+                </View>
+              </TouchableOpacity>
+            );
+          })()}
           {!hiddenOneTime && msg.type !== 'text' && msg.type !== 'invite' && msg.type !== 'call' && msg.content ? (
             <Text style={[s.msgText, s.caption]}>{renderTextWithLinks(msg.content)}</Text>
           ) : null}
@@ -2137,6 +2247,14 @@ const s = StyleSheet.create({
   msgText: { color: C.text, fontSize: 15, lineHeight: 21 },
   edited: { color: C.muted, fontSize: 11 },
   fileLink: { color: '#93c5fd', fontSize: 14 },
+  fileCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 10, minWidth: 190,
+    backgroundColor: 'rgba(148,163,184,0.12)', borderRadius: 10, padding: 10,
+    borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(148,163,184,0.3)',
+  },
+  fileCardIcon: { fontSize: 26 },
+  fileCardName: { color: C.text, fontSize: 14, fontWeight: '600' },
+  fileCardMeta: { color: C.muted, fontSize: 11.5, marginTop: 2 },
   msgImage: { width: 200, height: 180, borderRadius: 10 },
   galleryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, maxWidth: 248 },
   galleryImg: { width: 120, height: 120, borderRadius: 8 },

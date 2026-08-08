@@ -63,6 +63,15 @@ jobs:
             cfg.expo.name = brand.name;
             cfg.expo.slug = brand.slug;
             cfg.expo.android.package = brand.package;
+            // Deep links: let this brand's own https://<host>/join/<id> links
+            // open the app directly instead of bouncing to the browser.
+            const host = new URL(brand.baseUrl).host;
+            cfg.expo.android.intentFilters = [{
+              action: 'VIEW',
+              autoVerify: true,
+              data: [{ scheme: 'https', host, pathPrefix: '/join' }],
+              category: ['BROWSABLE', 'DEFAULT'],
+            }];
             fs.writeFileSync('app.json', JSON.stringify(cfg, null, 2));
           "
 

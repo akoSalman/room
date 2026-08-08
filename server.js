@@ -104,16 +104,20 @@ app.put('/profile', authMiddleware, async (req, res) => {
   res.json({ token, username: updated.username, avatar: updated.avatar || null });
 });
 
-// Rooms: public ones + private ones the user owns or is a member of
+// Rooms: public ones + private ones the user owns or is a member of.
+// Ordered by most recent activity (newest message first) so the busiest chats
+// float to the top; rooms with no messages yet fall back to their creation time.
 app.get('/rooms', authMiddleware, (req, res) => {
   const rooms = db.prepare(`
-    SELECT * FROM rooms
+    SELECT rooms.*,
+      (SELECT MAX(m.id) FROM messages m WHERE m.room_id = rooms.id) AS last_msg_id
+    FROM rooms
     WHERE is_dm = 0 AND (
       is_private = 0
       OR created_by = ?
       OR EXISTS (SELECT 1 FROM room_members rm WHERE rm.room_id = rooms.id AND rm.user_id = ?)
     )
-    ORDER BY name
+    ORDER BY last_msg_id IS NULL, last_msg_id DESC, rooms.id DESC
   `).all(req.user.id, req.user.id);
   res.json(rooms);
 });
@@ -513,9 +517,12 @@ app.get('/dm-rooms', authMiddleware, (req, res) => {
     const otherId = a === myId ? b : a;
     const other = db.prepare('SELECT username FROM users WHERE id = ?').get(otherId);
     if (!other) continue;
-    rooms.push({ ...room, other_username: other.username });
+    const last = db.prepare('SELECT MAX(id) AS id FROM messages WHERE room_id = ?').get(room.id);
+    rooms.push({ ...room, other_username: other.username, last_msg_id: last?.id || 0 });
   }
-  rooms.sort((x, y) => new Date(y.created_at) - new Date(x.created_at));
+  // Most recently active DM first (was: newest-created, which never reordered
+  // as conversations went back and forth).
+  rooms.sort((x, y) => (y.last_msg_id || 0) - (x.last_msg_id || 0));
   res.json(rooms);
 });
 
@@ -907,21 +914,38 @@ io.on('connection', (socket) => {
   });
 
   socket.on('accept_invite', ({ roomId }, ack) => {
-    const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
-    if (!room || room.is_dm) return typeof ack === 'function' && ack({ error: 'Room no longer exists' });
-    // verify a matching invite message exists in one of the user's DMs
-    const invite = db.prepare(`
-      SELECT m.id FROM messages m
-      JOIN rooms r ON m.room_id = r.id
-      WHERE m.type = 'invite' AND r.is_dm = 1
-        AND r.name LIKE '%\_\_' || ? || '\_\_%' ESCAPE '\'
-        AND m.content LIKE ?
-      LIMIT 1
-    `).get(String(socket.user.id), '%"roomId":' + room.id + '%');
-    if (room.is_private && !invite) return typeof ack === 'function' && ack({ error: 'No invitation found' });
-    db.prepare('INSERT OR IGNORE INTO room_members (room_id, user_id) VALUES (?, ?)').run(room.id, socket.user.id);
-    io.to('user:' + socket.user.id).emit('room_created', room); // adds it to their sidebar
-    if (typeof ack === 'function') ack({ ok: true, room });
+    const reply = (r) => { if (typeof ack === 'function') ack(r); };
+    try {
+      const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+      if (!room || room.is_dm) return reply({ error: 'Room no longer exists' });
+
+      if (room.is_private && room.created_by !== socket.user.id) {
+        // Verify an invitation for THIS room exists in a DM this user belongs
+        // to. DM rooms are named __dm__<a>__<b>__, so rather than pattern-match
+        // that name in SQL (which needs escaped underscores — a previous
+        // version built an invalid `ESCAPE ''` clause that threw on every call,
+        // silently breaking every join), match the user's id against the parsed
+        // participants.
+        const invites = db.prepare(`
+          SELECT r.name FROM messages m
+          JOIN rooms r ON m.room_id = r.id
+          WHERE m.type = 'invite' AND r.is_dm = 1 AND m.content LIKE ?
+        `).all('%"roomId":' + room.id + '%');
+        const invited = invites.some(row => {
+          const parts = String(row.name).split('__').filter(Boolean); // ['dm','a','b']
+          return parts.length === 3
+            && (parseInt(parts[1], 10) === socket.user.id || parseInt(parts[2], 10) === socket.user.id);
+        });
+        if (!invited) return reply({ error: 'No invitation found' });
+      }
+
+      db.prepare('INSERT OR IGNORE INTO room_members (room_id, user_id) VALUES (?, ?)').run(room.id, socket.user.id);
+      io.to('user:' + socket.user.id).emit('room_created', room); // adds it to their sidebar
+      reply({ ok: true, room });
+    } catch (err) {
+      console.error('[accept_invite]', err.message);
+      reply({ error: 'Could not join the room' });
+    }
   });
 
   // Forward a message to another room/DM. Messages that live in private rooms

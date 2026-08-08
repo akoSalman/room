@@ -85,6 +85,17 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
       const uname = await getUsername();
       sock = await getSocket();
       sock.on('message_received', (msg: any) => {
+        // Float the room that just received a message to the top of its list,
+        // so the ordering tracks activity live instead of only on reload.
+        const bump = (list: Room[]) => {
+          const i = list.findIndex(r => r.id === msg.room_id);
+          if (i <= 0) return list; // absent, or already first
+          const next = list.slice();
+          const [hit] = next.splice(i, 1);
+          return [hit, ...next];
+        };
+        setRooms(prev => bump(prev));
+        setDms(prev => bump(prev));
         if (msg.username === uname) return; // own messages are never "unread"
         setUnread(prev => ({ ...prev, [msg.room_id]: (prev[msg.room_id] || 0) + 1 }));
       });

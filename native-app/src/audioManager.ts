@@ -43,6 +43,14 @@ class AudioManager {
       await Audio.setAudioModeAsync({
         staysActiveInBackground: true,
         playsInSilentModeIOS: true,
+        // DoNotMix means we take audio focus from other apps when we start.
+        // NOTE: the reverse (pausing US when another app starts playing) is not
+        // reliable here — staysActiveInBackground keeps the sound alive and
+        // expo-av does not surface Android's AUDIOFOCUS_LOSS to JS, so there is
+        // nothing to react to. Handling that properly needs a native media
+        // session, which is also what would give us lock-screen/notification
+        // transport controls. Tracked as a follow-up; do not assume this config
+        // alone yields "pause when another app plays".
         interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
         interruptionModeIOS: InterruptionModeIOS.DoNotMix,
         shouldDuckAndroid: false,

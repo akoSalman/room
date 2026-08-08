@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   StatusBar, View, Text, I18nManager, BackHandler, AppState,
-  Modal, TouchableOpacity, FlatList, StyleSheet,
+  Modal, TouchableOpacity, FlatList, StyleSheet, Linking, Alert,
 } from 'react-native';
 import { useShareIntent } from 'expo-share-intent';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -79,6 +79,7 @@ export default function App() {
   const [room, setRoom] = useState<Room | null>(null);
   const [openProfileOnRooms, setOpenProfileOnRooms] = useState(false);
   const [pendingJumpMsgId, setPendingJumpMsgId] = useState<number | null>(null);
+  const [pendingJoinRoomId, setPendingJoinRoomId] = useState<number | null>(null);
 
   const pushRegisteredRef = React.useRef(false);
 
@@ -178,6 +179,45 @@ export default function App() {
       }
     } catch {}
   }
+
+  // Invitation links (https://<host>/join/<roomId>, or chatroom://join/<roomId>).
+  // Tapping one joins the room — for a private room this only succeeds if the
+  // user actually holds an invitation — and then opens it.
+  async function handleJoinLink(url: string | null) {
+    const m = url && /\/join\/(\d+)/.exec(url);
+    if (!m) return;
+    const roomId = parseInt(m[1], 10);
+    const token = await AsyncStorage.getItem('token');
+    if (!token) { setPendingJoinRoomId(roomId); return; } // finish after sign-in
+    try {
+      const sock = await getSocket();
+      sock.emit('accept_invite', { roomId }, (res: any) => {
+        if (res?.error) { Alert.alert('Cannot join', res.error); return; }
+        const r = res.room;
+        setRoom({ id: r.id, name: r.name, is_dm: 0 });
+        setScreen('chat');
+      });
+    } catch {
+      Alert.alert('Cannot join', 'You appear to be offline. Try again once connected.');
+    }
+  }
+
+  useEffect(() => {
+    // Cold start (app was closed when the link was tapped) …
+    Linking.getInitialURL().then(handleJoinLink).catch(() => {});
+    // … and while the app is already running.
+    const sub = Linking.addEventListener('url', e => handleJoinLink(e.url));
+    return () => sub.remove();
+  }, []);
+
+  // A link tapped while signed out is replayed once the user signs in.
+  useEffect(() => {
+    if (screen === 'rooms' && pendingJoinRoomId) {
+      const id = pendingJoinRoomId;
+      setPendingJoinRoomId(null);
+      handleJoinLink(`/join/${id}`);
+    }
+  }, [screen, pendingJoinRoomId]);
 
   // Register the device FCM token so the server can push notifications that
   // arrive even when the app is closed. Silently no-ops until the build
