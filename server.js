@@ -1169,4 +1169,8 @@ io.on('connection', (socket) => {
   });
 });
 
-server.listen(PORT, () => console.log(`Chat server running on http://localhost:${PORT}`));
+server.listen(PORT, () => console.log(`Chat server running on http://localhost:${server.address().port}`));
+
+// Exported so the integration tests can boot the real server on an ephemeral
+// port and drive it over HTTP + Socket.IO. Has no effect in production.
+module.exports = { app, server, io };

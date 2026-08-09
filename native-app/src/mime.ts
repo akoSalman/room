@@ -69,9 +69,13 @@ export function fileIcon(nameOrUri: string, mime?: string | null): string {
   if (m.startsWith('audio/')) return '🎵';
   if (m.startsWith('video/')) return '🎥';
   if (m.startsWith('image/')) return '🖼';
-  if (/word|document/.test(m) || e === 'doc' || e === 'docx') return '📘';
-  if (/sheet|excel|csv/.test(m) || e === 'csv') return '📗';
-  if (/presentation|powerpoint/.test(m)) return '📙';
+  // Order matters: every OOXML type contains the substring "officedocument"
+  // (e.g. …officedocument.spreadsheetml.sheet), so the spreadsheet and
+  // presentation checks must come BEFORE the word-processor one, and the
+  // word-processor pattern must not match on the bare word "document".
+  if (/spreadsheet|excel|csv/.test(m) || e === 'xls' || e === 'xlsx' || e === 'csv') return '📗';
+  if (/presentation|powerpoint/.test(m) || e === 'ppt' || e === 'pptx') return '📙';
+  if (/msword|wordprocessing/.test(m) || e === 'doc' || e === 'docx') return '📘';
   if (/zip|rar|7z|tar|gzip|compressed/.test(m)) return '🗜';
   if (m.startsWith('text/') || /json|xml/.test(m)) return '📝';
   if (e === 'apk') return '📦';

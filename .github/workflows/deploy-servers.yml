@@ -12,7 +12,21 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Gate: the integration suite boots the real server against a scratch DB and
+  # drives it over HTTP + Socket.IO. A broken handler fails here instead of on
+  # the users' servers.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install
+      - run: node test/server.test.js
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
