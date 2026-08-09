@@ -75,7 +75,7 @@
         {
           "android": {
             "minSdkVersion": 24,
-            "enableProguardInReleaseBuilds": true
+            "enableProguardInReleaseBuilds": false
           }
         }
       ],
