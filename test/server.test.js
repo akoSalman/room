@@ -76,7 +76,7 @@ function waitFor(sock, event, match = () => true, ms = 3000) {
 
 // ── runner ───────────────────────────────────────────────────────────────────
 const tests = [];
-const test = (name, fn) => tests.push({ name, fn });
+const test = (name, fn, timeoutMs) => tests.push({ name, fn, timeoutMs });
 
 async function main() {
   const app = require('../server.js');
@@ -97,6 +97,7 @@ async function main() {
   }
   sockets.forEach(s => s.close());
   server.close();
+  try { await require('../ocr').shutdown(); } catch {}
   console.log(`\n${passed} passed, ${failed} failed`);
   fs.rmSync(TMP, { recursive: true, force: true });
   process.exit(failed ? 1 : 0);
@@ -254,5 +255,147 @@ test('room-media returns images for the gallery counter', async () => {
   const media = await api(`/room-media/${room.id}`, 'GET', null, u.token);
   assert.strictEqual(media.images.length, 2, 'image list wrong length');
 });
+
+test('reactions survive a reload (regression: never loaded on chat open)', async () => {
+  const u = await signUp('react10');
+  const sock = await connect(u.token);
+  const room = await api('/rooms', 'POST', { name: 'room-10' }, u.token);
+  const got = waitFor(sock, 'message_received', m => m.room_id === room.id);
+  await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: 'react to me' });
+  const msg = await got;
+
+  const updated = waitFor(sock, 'reactions_updated', p => p.messageId === msg.id);
+  sock.emit('toggle_reaction', { messageId: msg.id, emoji: '🔥' });
+  await updated;
+
+  // Simulating a fresh app start: fetch what the client would load on open.
+  const all = await api(`/room-reactions/${room.id}`, 'GET', null, u.token);
+  assert.ok(all[msg.id], 'reactions missing after reload — nothing to restore the UI from');
+  assert.strictEqual(all[msg.id][0].emoji, '🔥');
+  assert.strictEqual(all[msg.id][0].username, 'react10');
+});
+
+test('reaction reaches a member who is NOT in the presence channel', async () => {
+  const a = await signUp('reactA11');
+  const b = await signUp('reactB11');
+  const aSock = await connect(a.token);
+  const bSock = await connect(b.token);
+
+  const room = await api('/rooms', 'POST', { name: 'room-11' }, a.token);
+  const got = waitFor(bSock, 'message_received', m => m.room_id === room.id);
+  await emit(aSock, 'send_message', { roomId: room.id, type: 'text', content: 'hello' });
+  const msg = await got;
+
+  // B is a member but has NOT joined the presence channel (exactly the state
+  // after backgrounding the app, which emits leave_room). B must still be told.
+  const updated = waitFor(bSock, 'reactions_updated', p => p.messageId === msg.id);
+  aSock.emit('toggle_reaction', { messageId: msg.id, emoji: '👍' });
+  const payload = await updated;
+  assert.strictEqual(payload.reactions.length, 1);
+  assert.strictEqual(payload.reactions[0].emoji, '👍');
+});
+
+test('toggling the same reaction twice removes it', async () => {
+  const u = await signUp('react12');
+  const sock = await connect(u.token);
+  const room = await api('/rooms', 'POST', { name: 'room-12' }, u.token);
+  const got = waitFor(sock, 'message_received', m => m.room_id === room.id);
+  await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: 'toggle' });
+  const msg = await got;
+
+  let up = waitFor(sock, 'reactions_updated', p => p.messageId === msg.id);
+  sock.emit('toggle_reaction', { messageId: msg.id, emoji: '❤️' });
+  assert.strictEqual((await up).reactions.length, 1);
+
+  up = waitFor(sock, 'reactions_updated', p => p.messageId === msg.id);
+  sock.emit('toggle_reaction', { messageId: msg.id, emoji: '❤️' });
+  assert.strictEqual((await up).reactions.length, 0, 'second toggle should remove the reaction');
+
+  const all = await api(`/room-reactions/${room.id}`, 'GET', null, u.token);
+  assert.ok(!all[msg.id], 'removed reaction still persisted');
+});
+
+test('room-reactions is access controlled', async () => {
+  const owner = await signUp('owner13');
+  const outsider = await signUp('outsider13');
+  const room = await api('/rooms', 'POST', { name: 'room-13', isPrivate: true }, owner.token);
+  const res = await api(`/room-reactions/${room.id}`, 'GET', null, outsider.token);
+  assert.ok(res.error, 'outsider could read reactions of a private room');
+});
+
+// ── OCR ──────────────────────────────────────────────────────────────────────
+// These are slower (real recognition), so they run last.
+
+// Upload a fixture image and post it as an image message; returns the message.
+async function sendImage(sock, token, roomId, fixture) {
+  const buf = fs.readFileSync(path.join(__dirname, 'fixtures', fixture));
+  const form = new FormData();
+  form.append('file', new Blob([buf], { type: 'image/png' }), fixture);
+  const up = await fetch(baseUrl + '/upload', {
+    method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form,
+  }).then(r => r.json());
+  assert.ok(up.url, `upload failed: ${JSON.stringify(up)}`);
+  const got = waitFor(sock, 'message_received', m => m.room_id === roomId && m.type === 'image');
+  await emit(sock, 'send_message',
+    { roomId, type: 'image', filePath: up.url, fileName: fixture });
+  return got;
+}
+
+test('OCR reads English text from an image', async () => {
+  const u = await signUp('ocr20');
+  const sock = await connect(u.token);
+  const room = await api('/rooms', 'POST', { name: 'room-20' }, u.token);
+  const msg = await sendImage(sock, u.token, room.id, 'english.png');
+
+  const res = await api(`/ocr/${msg.id}`, 'POST', {}, u.token);
+  assert.ok(!res.error, `ocr failed: ${JSON.stringify(res)}`);
+  assert.match(res.text, /Hello World/, `expected "Hello World", got ${JSON.stringify(res.text)}`);
+  assert.match(res.text, /12345/);
+}, 60000);
+
+test('OCR reads PERSIAN text from an image', async () => {
+  const u = await signUp('ocr21');
+  const sock = await connect(u.token);
+  const room = await api('/rooms', 'POST', { name: 'room-21' }, u.token);
+  const msg = await sendImage(sock, u.token, room.id, 'persian.png');
+
+  const res = await api(`/ocr/${msg.id}`, 'POST', {}, u.token);
+  assert.ok(!res.error, `ocr failed: ${JSON.stringify(res)}`);
+  // The exact Persian sentence must come back intact.
+  assert.ok(res.text.includes('این یک متن آزمایشی است'),
+    `Persian not recognised, got ${JSON.stringify(res.text)}`);
+  assert.ok(res.text.includes('سلام'), `expected سلام in ${JSON.stringify(res.text)}`);
+  assert.strictEqual(res.lang, 'fas', `expected the Persian pass to win, got ${res.lang}`);
+}, 60000);
+
+test('OCR result is cached on the second call', async () => {
+  const u = await signUp('ocr22');
+  const sock = await connect(u.token);
+  const room = await api('/rooms', 'POST', { name: 'room-22' }, u.token);
+  const msg = await sendImage(sock, u.token, room.id, 'english.png');
+
+  const first = await api(`/ocr/${msg.id}`, 'POST', {}, u.token);
+  assert.strictEqual(first.cached, false);
+  const second = await api(`/ocr/${msg.id}`, 'POST', {}, u.token);
+  assert.strictEqual(second.cached, true, 'second call should hit the cache');
+  assert.strictEqual(second.text, first.text);
+}, 60000);
+
+test('OCR is access controlled and refuses non-images', async () => {
+  const owner = await signUp('ocr23');
+  const outsider = await signUp('outsider23');
+  const sock = await connect(owner.token);
+  const room = await api('/rooms', 'POST', { name: 'room-23', isPrivate: true }, owner.token);
+  const msg = await sendImage(sock, owner.token, room.id, 'english.png');
+
+  const denied = await api(`/ocr/${msg.id}`, 'POST', {}, outsider.token);
+  assert.ok(denied.error, 'outsider could OCR a private room image');
+
+  const got = waitFor(sock, 'message_received', m => m.type === 'text' && m.room_id === room.id);
+  await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: 'plain' });
+  const textMsg = await got;
+  const bad = await api(`/ocr/${textMsg.id}`, 'POST', {}, owner.token);
+  assert.ok(bad.error, 'OCR accepted a text message');
+}, 60000);
 
 main().catch(err => { console.error(err); process.exit(1); });

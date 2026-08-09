@@ -59,6 +59,15 @@ const EMOJI_EFFECTS = new Set(BURST_EMOJIS.map(e => Array.from(e)[0]));
 const BURST_FORM: Record<string, string> = Object.fromEntries(BURST_EMOJIS.map(e => [Array.from(e)[0], e]));
 const MESSAGES_PAGE_SIZE = 20;
 
+// Persian/Arabic/Hebrew text must render right-aligned in the OCR popup.
+function looksRTL(t: string): boolean {
+  const rtl = (t.match(/[\u0590-\u05FF\u0600-\u06FF\u0700-\u074F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/g) || []).length;
+  const latin = (t.match(/[A-Za-z]/g) || []).length;
+  // A ratio, not a majority: a Persian receipt with an English product name in
+  // it is still Persian text and should be right-aligned.
+  return rtl > 0 && rtl >= (rtl + latin) * 0.3;
+}
+
 export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, initialJumpMsgId, initialShare, onShareConsumed }: {
   room: { id: number; name: string; is_dm: number; other_username?: string; is_private?: number; created_by?: number };
   initialShare?: { files?: { path: string; mimeType?: string; fileName?: string }[]; text?: string | null } | null;
@@ -133,6 +142,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [showRoomInfo, setShowRoomInfo] = useState(false);
   const [roomInfo, setRoomInfo] = useState<any>(null);
   const [showPlayer, setShowPlayer] = useState(false);
+  // Text extracted from an image (OCR), shown in a selectable popup.
+  const [ocr, setOcr] = useState<{ loading: boolean; text: string; error: string | null } | null>(null);
+  const [copiedOcr, setCopiedOcr] = useState(false);
   const [inviteName, setInviteName] = useState('');
   const [inviteSuggestions, setInviteSuggestions] = useState<any[]>([]);
   const [inviteSearching, setInviteSearching] = useState(false);
@@ -398,6 +410,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       setMe(u || '');
       meRef.current = u || '';
       getAvatar().then(setMyAvatar);
+      // Reactions already on these messages. Without this the chat opened with
+      // an empty reaction map, so every existing reaction disappeared from the
+      // UI on restart even though the server still had it.
+      apiFetch(`/room-reactions/${room.id}`).then(all => {
+        if (!mounted || !all || all.error) return;
+        const parsed: Record<number, any[]> = {};
+        Object.keys(all).forEach(k => { parsed[Number(k)] = all[k]; });
+        setReactions(prev => ({ ...parsed, ...prev })); // live updates win
+      }).catch(() => {});
       apiFetch(`/read-receipts/${room.id}`).then(receipts => {
         if (!mounted) return;
         if (receipts && typeof receipts === 'object' && !Array.isArray(receipts) && !receipts.error) {
@@ -532,7 +553,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         if (gone && lightboxBelongsTo(gone)) closeViewer();
         setMessages(prev => prev.filter(m => m.id !== messageId));
       });
-      sock.on('reactions_updated', ({ messageId, reactions: r }: any) => {
+      sock.on('reactions_updated', ({ messageId, roomId, reactions: r }: any) => {
+        // These now also arrive on our personal channel (so they reach us even
+        // when backgrounded), which means updates for OTHER rooms land here too.
+        if (roomId != null && roomId !== room.id) return;
         setReactions(prev => ({ ...prev, [messageId]: r }));
       });
       sock.on('room_online', ({ users }: any) => setOnline(users));
@@ -1261,6 +1285,20 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     }, 250);
   }
 
+  // Ask the server to read the text in an image and show it in a popup the
+  // user can select and copy from. Server-side because Persian (Arabic script)
+  // is not supported by on-device text recognition.
+  async function extractText(m: Message) {
+    setOcr({ loading: true, text: '', error: null });
+    try {
+      const res = await apiFetch(`/ocr/${m.id}`, 'POST', { index: 0 });
+      if (res?.error) { setOcr({ loading: false, text: '', error: res.error }); return; }
+      setOcr({ loading: false, text: (res?.text || '').trim(), error: null });
+    } catch {
+      setOcr({ loading: false, text: '', error: 'Could not reach the server.' });
+    }
+  }
+
   async function loadRoomInfo() {
     try {
       const info = await apiFetch(`/room-info/${room.id}`);
@@ -1388,7 +1426,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         >
         <TouchableOpacity
           style={[s.bubble, mine ? s.mineBubble : s.theirsBubble, highlightId === msg.id && s.bubbleHighlight]}
-          onLongPress={(e) => setEmojiPicker({ id: msg.id, x: e.nativeEvent.pageX, y: e.nativeEvent.pageY })}
+          onLongPress={(e) => setActionsMsg({ msg, x: e.nativeEvent.pageX, y: e.nativeEvent.pageY })}
           activeOpacity={0.85}
         >
           {/* Reply quote */}
@@ -1555,14 +1593,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           )}
         </TouchableOpacity>
         </SwipeableMessage>
-        {!msg._uploading && (
-          <TouchableOpacity
-            style={s.msgMenuBtn}
-            onPress={(e) => setActionsMsg({ msg, x: e.nativeEvent.pageX, y: e.nativeEvent.pageY })}
-            hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}>
-            <Text style={s.msgMenuBtnText}>⋮</Text>
-          </TouchableOpacity>
-        )}
+
         </View>
 
         {/* Reactions */}
@@ -1592,7 +1623,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             </Text>
           )}
           {!msg._uploading && !msg._uploadFailed && (
-            <TouchableOpacity onPress={(e) => setEmojiPicker({ id: msg.id, x: e.nativeEvent.pageX, y: e.nativeEvent.pageY })} hitSlop={{ top: 6, bottom: 6 }}>
+            <TouchableOpacity onPress={(e) => setActionsMsg({ msg, x: e.nativeEvent.pageX, y: e.nativeEvent.pageY })} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
               <Text style={s.footerBtn}>😊</Text>
             </TouchableOpacity>
           )}
@@ -1736,6 +1767,44 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             </>
           )}
         </GestureHandlerRootView>
+      </Modal>
+
+      {/* Extracted image text: selectable + copyable, RTL-aware for Persian */}
+      <Modal visible={!!ocr} transparent animationType="fade" onRequestClose={() => setOcr(null)}>
+        <View style={s.sheetOverlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setOcr(null)} />
+          <View style={s.ocrSheet}>
+            <View style={s.sheetGrip} />
+            <Text style={s.ocrTitle}>Text in image</Text>
+            {ocr?.loading ? (
+              <View style={s.ocrBusy}>
+                <ActivityIndicator color={C.accent} />
+                <Text style={s.ocrBusyText}>Reading the image…</Text>
+              </View>
+            ) : ocr?.error ? (
+              <Text style={s.ocrError}>{ocr.error}</Text>
+            ) : !ocr?.text ? (
+              <Text style={s.ocrEmpty}>No text found in this image.</Text>
+            ) : (
+              <>
+                <ScrollView style={s.ocrScroll} contentContainerStyle={{ padding: 14 }}>
+                  {/* selectable makes the text long-press selectable/copyable */}
+                  <Text style={[s.ocrText, looksRTL(ocr.text) && s.ocrTextRTL]} selectable>
+                    {ocr.text}
+                  </Text>
+                </ScrollView>
+                <TouchableOpacity
+                  style={s.ocrCopyBtn}
+                  onPress={() => { Clipboard.setStringAsync(ocr.text); setCopiedOcr(true); setTimeout(() => setCopiedOcr(false), 1500); }}>
+                  <Text style={s.ocrCopyText}>{copiedOcr ? '✓ Copied' : '📋  Copy all text'}</Text>
+                </TouchableOpacity>
+              </>
+            )}
+            <TouchableOpacity style={s.sheetCancel} onPress={() => setOcr(null)}>
+              <Text style={s.sheetCancelText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
 
       <FullMusicPlayer
@@ -1886,92 +1955,98 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         </Pressable>
       </Modal>
 
-      {/* Message actions: minimal popover near the tapped message; closes on outside tap */}
-      <Modal visible={!!actionsMsg} transparent animationType="fade" onRequestClose={() => setActionsMsg(null)}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={() => setActionsMsg(null)}>
+      {/* Message actions: a bottom sheet with quick reactions on top. Replaces
+          the old cramped ⋮ button and tap-positioned popover — the whole bubble
+          is now the target (long-press), the rows are full-width and finger
+          sized, and reactions live in the same place as the actions. */}
+      <Modal visible={!!actionsMsg} transparent animationType="slide" onRequestClose={() => setActionsMsg(null)}>
+        <View style={s.sheetOverlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setActionsMsg(null)} />
           {actionsMsg && (() => {
-            const { msg: m, x, y } = actionsMsg;
+            const m = actionsMsg.msg;
             const mineMsg = m.username === me;
             const hidden = !!m.one_time_seconds && !mineMsg && !revealedOneTime.has(m.id);
-            const win = Dimensions.get('window');
-            const MENU_W = 165;
+            const close = () => setActionsMsg(null);
+            const Row = ({ icon, label, onPress, danger }: any) => (
+              <TouchableOpacity style={s.sheetRow} onPress={onPress} activeOpacity={0.6}>
+                <Text style={s.sheetRowIcon}>{icon}</Text>
+                <Text style={[s.sheetRowText, danger && s.sheetRowDanger]}>{label}</Text>
+              </TouchableOpacity>
+            );
+
             // A failed (never-sent) message only supports local actions.
             if (m._uploadFailed) {
-              const left2 = Math.max(8, Math.min(x - MENU_W / 2, win.width - MENU_W - 8));
-              const top2 = Math.max(60, Math.min(y + 8, win.height - 2 * 42 - 24));
               return (
-                <View style={[s.actionsMenu, { position: 'absolute', left: left2, top: top2, width: MENU_W }]} onStartShouldSetResponder={() => true}>
-                  <TouchableOpacity style={s.actionItem} onPress={() => { setActionsMsg(null); retryUpload(m); }}>
-                    <Text style={s.actionText}>🔄  Retry</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={s.actionItem} onPress={() => {
-                    setActionsMsg(null);
+                <View style={s.actionSheet}>
+                  <View style={s.sheetGrip} />
+                  <Row icon="🔄" label="Retry" onPress={() => { close(); retryUpload(m); }} />
+                  <Row icon="🗑" label="Delete" danger onPress={() => {
+                    close();
                     Alert.alert('Delete message?', '', [
                       { text: 'Cancel', style: 'cancel' },
                       { text: 'Delete', style: 'destructive', onPress: () => discardFailed(m) },
                     ]);
-                  }}>
-                    <Text style={[s.actionText, { color: '#f87171' }]}>🗑  Delete</Text>
-                  </TouchableOpacity>
+                  }} />
                 </View>
               );
             }
-            const items = 1
-              + ((m.type === 'text' || (m.file_path && !m.one_time_seconds)) && !hidden ? 1 : 0)
-              + (m.type !== 'invite' && !m.one_time_seconds ? 1 : 0)
-              + (m.file_path && !hidden && !m.one_time_seconds ? 1 : 0)
-              + (mineMsg && m.type === 'text' ? 1 : 0)
-              + (mineMsg ? 1 : 0);
-            const menuH = items * 42 + 8;
-            const left = Math.max(8, Math.min(x - MENU_W / 2, win.width - MENU_W - 8));
-            const top = Math.max(60, Math.min(y + 8, win.height - menuH - 16));
+
+            const isImage = (m.type === 'image' || m.type === 'gallery') && !hidden && !m._uploading;
             return (
-              <View style={[s.actionsMenu, { position: 'absolute', left, top, width: MENU_W }]} onStartShouldSetResponder={() => true}>
-                <TouchableOpacity style={s.actionItem} onPress={() => {
-                  setActionsMsg(null);
+              <View style={s.actionSheet}>
+                <View style={s.sheetGrip} />
+
+                {/* Quick reactions */}
+                <ScrollView horizontal showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={s.sheetReactRow} keyboardShouldPersistTaps="always">
+                  {EMOJIS.map(e => (
+                    <TouchableOpacity key={e} style={s.sheetReactBtn}
+                      onPress={() => { close(); toggleReact(m.id, e); }}>
+                      <Text style={s.sheetReactEmoji}>{e}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+                <View style={s.sheetDivider} />
+
+                <Row icon="↩" label="Reply" onPress={() => {
+                  close();
                   setReplyTo({ id: m.id, username: m.username, content: m.content, type: m.type });
                   composerRef.current?.focus();
-                }}>
-                  <Text style={s.actionText}>↩  Reply</Text>
-                </TouchableOpacity>
+                }} />
+                {isImage && (
+                  <Row icon="🔎" label="Extract text from image" onPress={() => { close(); extractText(m); }} />
+                )}
                 {(m.type === 'text' || (m.file_path && !m.one_time_seconds)) && !hidden && (
-                  <TouchableOpacity style={s.actionItem} onPress={() => {
+                  <Row icon="📋" label="Copy" onPress={() => {
                     let fp = m.file_path || '';
                     if (m.type === 'gallery') { try { fp = JSON.parse(fp)[0] || ''; } catch {} }
                     const t = m.type === 'text' ? (m.content || '') : `${BASE_URL}${fp}`;
                     if (t) Clipboard.setStringAsync(t);
-                    setActionsMsg(null);
-                  }}>
-                    <Text style={s.actionText}>📋  Copy</Text>
-                  </TouchableOpacity>
+                    close();
+                  }} />
                 )}
                 {m.type !== 'invite' && !m.one_time_seconds && (
-                  <TouchableOpacity style={s.actionItem} onPress={() => { setActionsMsg(null); openForwardPicker(m); }}>
-                    <Text style={s.actionText}>↪  Forward</Text>
-                  </TouchableOpacity>
+                  <Row icon="↪" label="Forward" onPress={() => { close(); openForwardPicker(m); }} />
                 )}
                 {m.file_path && !hidden && !m.one_time_seconds && (
-                  <TouchableOpacity style={s.actionItem} onPress={() => { setActionsMsg(null); downloadMedia(m); }}>
-                    <Text style={s.actionText}>⬇  Download</Text>
-                  </TouchableOpacity>
+                  <Row icon="⬇" label="Download" onPress={() => { close(); downloadMedia(m); }} />
                 )}
                 {mineMsg && m.type === 'text' && (
-                  <TouchableOpacity style={s.actionItem} onPress={() => {
-                    setActionsMsg(null);
+                  <Row icon="✏️" label="Edit" onPress={() => {
+                    close();
                     composerRef.current?.setText(m.content || ''); setEditingId(m.id);
-                  }}>
-                    <Text style={s.actionText}>✏️  Edit</Text>
-                  </TouchableOpacity>
+                  }} />
                 )}
                 {mineMsg && (
-                  <TouchableOpacity style={s.actionItem} onPress={() => { setActionsMsg(null); deleteMsg(m.id); }}>
-                    <Text style={[s.actionText, { color: '#f87171' }]}>🗑  Delete</Text>
-                  </TouchableOpacity>
+                  <Row icon="🗑" label="Delete" danger onPress={() => { close(); deleteMsg(m.id); }} />
                 )}
+                <TouchableOpacity style={s.sheetCancel} onPress={close}>
+                  <Text style={s.sheetCancelText}>Cancel</Text>
+                </TouchableOpacity>
               </View>
             );
           })()}
-        </Pressable>
+        </View>
       </Modal>
 
       {/* Shared media browser (DM profile) */}
@@ -2347,12 +2422,52 @@ const s = StyleSheet.create({
   actionText: { color: C.text, fontSize: 14.5, fontWeight: '600' },
   bubbleRow: { flexDirection: 'row', alignItems: 'center', maxWidth: '100%' },
   bubbleRowMine: { flexDirection: 'row-reverse' },
-  msgMenuBtn: {
-    width: 26, height: 26, borderRadius: 13, marginHorizontal: 3,
-    alignItems: 'center', justifyContent: 'center',
-    backgroundColor: 'rgba(128,128,128,0.12)',
+  sheetOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  actionSheet: {
+    backgroundColor: C.sidebar, borderTopLeftRadius: 20, borderTopRightRadius: 20,
+    paddingBottom: 24, paddingTop: 8, maxHeight: '80%',
   },
-  msgMenuBtnText: { color: C.muted, fontSize: 15, fontWeight: '700', lineHeight: 18 },
+  sheetGrip: {
+    width: 40, height: 4, borderRadius: 2, backgroundColor: C.border,
+    alignSelf: 'center', marginBottom: 8,
+  },
+  sheetReactRow: { paddingHorizontal: 12, paddingVertical: 4, alignItems: 'center' },
+  sheetReactBtn: {
+    width: 46, height: 46, borderRadius: 23, marginHorizontal: 3,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(128,128,128,0.10)',
+  },
+  sheetReactEmoji: { fontSize: 25 },
+  sheetDivider: { height: StyleSheet.hairlineWidth, backgroundColor: C.border, marginVertical: 8 },
+  sheetRow: { flexDirection: 'row', alignItems: 'center', gap: 16, paddingHorizontal: 22, paddingVertical: 15 },
+  sheetRowIcon: { fontSize: 19, width: 26, textAlign: 'center' },
+  sheetRowText: { color: C.text, fontSize: 16, fontWeight: '500' },
+  sheetRowDanger: { color: '#f87171' },
+  sheetCancel: {
+    marginTop: 8, marginHorizontal: 16, backgroundColor: C.inputBg,
+    borderRadius: 14, paddingVertical: 14, alignItems: 'center',
+  },
+  sheetCancelText: { color: C.muted, fontSize: 16, fontWeight: '600' },
+  ocrSheet: {
+    backgroundColor: C.sidebar, borderTopLeftRadius: 20, borderTopRightRadius: 20,
+    paddingTop: 8, paddingBottom: 24, maxHeight: '80%',
+  },
+  ocrTitle: { color: C.text, fontSize: 17, fontWeight: '800', textAlign: 'center', marginBottom: 10 },
+  ocrScroll: {
+    marginHorizontal: 16, backgroundColor: C.inputBg, borderRadius: 12,
+    borderWidth: 1, borderColor: C.border, maxHeight: 340,
+  },
+  ocrText: { color: C.text, fontSize: 15.5, lineHeight: 26 },
+  ocrTextRTL: { textAlign: 'right', writingDirection: 'rtl' },
+  ocrBusy: { alignItems: 'center', gap: 10, paddingVertical: 30 },
+  ocrBusyText: { color: C.muted, fontSize: 13.5 },
+  ocrError: { color: '#f87171', fontSize: 14, textAlign: 'center', paddingVertical: 26, paddingHorizontal: 20 },
+  ocrEmpty: { color: C.muted, fontSize: 14, textAlign: 'center', paddingVertical: 26 },
+  ocrCopyBtn: {
+    marginTop: 12, marginHorizontal: 16, backgroundColor: C.accent,
+    borderRadius: 12, paddingVertical: 13, alignItems: 'center',
+  },
+  ocrCopyText: { color: '#fff', fontSize: 15, fontWeight: '700' },
 
   pendingMediaBar: {
     flexDirection: 'row', alignItems: 'center', gap: 10,

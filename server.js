@@ -8,6 +8,7 @@ const path = require('path');
 const fs = require('fs');
 const cors = require('cors');
 const db = require('./db');
+const ocr = require('./ocr');
 
 const app = express();
 const server = http.createServer(app);
@@ -558,6 +559,74 @@ app.get('/messages/:roomId', authMiddleware, (req, res) => {
         ORDER BY m.created_at DESC LIMIT ?
       `).all(req.params.roomId, MESSAGES_PAGE_SIZE);
   res.json(messages.reverse());
+});
+
+// Extract text from an image message (OCR). Cached: recognition takes seconds
+// and the result never changes. `index` selects which picture of a gallery.
+app.post('/ocr/:messageId', authMiddleware, async (req, res) => {
+  const msg = db.prepare('SELECT * FROM messages WHERE id = ?').get(req.params.messageId);
+  if (!msg) return res.status(404).json({ error: 'Message not found' });
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(msg.room_id);
+  if (!room || !canAccessRoom(req.user.id, room)) return res.status(403).json({ error: 'Not allowed' });
+  if (msg.one_time_seconds) return res.status(403).json({ error: 'One-time media cannot be scanned' });
+  if (msg.type !== 'image' && msg.type !== 'gallery') {
+    return res.status(400).json({ error: 'Not an image' });
+  }
+
+  // Resolve which file to read.
+  let rel = msg.file_path;
+  if (msg.type === 'gallery') {
+    let urls = [];
+    try { urls = JSON.parse(msg.file_path || '[]'); } catch {}
+    const i = Math.max(0, Math.min(parseInt(req.body?.index, 10) || 0, urls.length - 1));
+    rel = urls[i];
+  }
+  if (!rel) return res.status(400).json({ error: 'No image on this message' });
+
+  const cached = db.prepare('SELECT * FROM ocr_results WHERE message_id = ? AND file_path = ?')
+    .get(msg.id, rel);
+  if (cached) {
+    return res.json({ text: cached.text || '', lang: cached.lang, confidence: cached.confidence, cached: true });
+  }
+
+  // Keep the path inside uploads/ — never let a crafted file_path escape it.
+  const uploadsDir = path.resolve(__dirname, 'uploads');
+  const abs = path.resolve(__dirname, '.' + rel);
+  if (!abs.startsWith(uploadsDir + path.sep) || !fs.existsSync(abs)) {
+    return res.status(404).json({ error: 'Image file not found' });
+  }
+
+  try {
+    const { text, lang, confidence } = await ocr.recognise(abs);
+    db.prepare(`INSERT OR REPLACE INTO ocr_results (message_id, file_path, text, lang, confidence)
+                VALUES (?, ?, ?, ?, ?)`).run(msg.id, rel, text, lang, confidence);
+    res.json({ text, lang, confidence, cached: false });
+  } catch (err) {
+    console.error('[ocr]', err.message);
+    res.status(500).json({ error: 'Could not read text from this image' });
+  }
+});
+
+// Every reaction in a room, keyed by message id. The client had no way to load
+// existing reactions when opening a chat — they only arrived via live
+// `reactions_updated` events — so every reaction vanished from the UI on
+// restart even though it was still in the database.
+app.get('/room-reactions/:roomId', authMiddleware, (req, res) => {
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
+  if (!room || !canAccessRoom(req.user.id, room)) return res.status(404).json({ error: 'Not found' });
+  const rows = db.prepare(`
+    SELECT r.message_id, r.emoji, r.user_id, u.username
+    FROM reactions r
+    JOIN users u ON u.id = r.user_id
+    JOIN messages m ON m.id = r.message_id
+    WHERE m.room_id = ?
+  `).all(room.id);
+  const byMessage = {};
+  rows.forEach(r => {
+    (byMessage[r.message_id] = byMessage[r.message_id] || [])
+      .push({ emoji: r.emoji, username: r.username, user_id: r.user_id });
+  });
+  res.json(byMessage);
 });
 
 // Reactions
@@ -1129,8 +1198,19 @@ io.on('connection', (socket) => {
       JOIN users u ON r.user_id = u.id WHERE r.message_id = ?
     `).all(messageId);
 
+    // Deliver to every member's personal channel, not just the presence room.
+    // Sockets drop out of the presence channel whenever the app is backgrounded
+    // (leave_room) or after a reconnect that hasn't re-joined yet, which is why
+    // reactions sometimes silently failed to arrive.
     const msg = db.prepare('SELECT room_id FROM messages WHERE id = ?').get(messageId);
-    if (msg) io.to(String(msg.room_id)).emit('reactions_updated', { messageId, reactions });
+    if (msg) {
+      const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(msg.room_id);
+      const payload = { messageId, roomId: msg.room_id, reactions };
+      io.to(String(msg.room_id)).emit('reactions_updated', payload);
+      if (room) {
+        getRoomMemberIds(room).forEach(id => io.to('user:' + id).emit('reactions_updated', payload));
+      }
+    }
   });
 
   socket.on('delete_room', ({ roomId }) => {

@@ -2,3 +2,4 @@ node_modules/
 chat.db
 uploads/*
 !uploads/.gitkeep
+ocr-lang/

@@ -48,6 +48,18 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   const [updateProgress, setUpdateProgress] = useState<number | null>(null); // 0..1 while downloading
   const [myAvatar, setMyAvatar] = useState<string | null>(null);
   const updateDownloadRef = useRef<FileSystem.DownloadResumable | null>(null);
+  // Used to scroll the profile sheet straight to the APP UPDATE section when
+  // the user arrives via the update badge — otherwise the sheet opened at the
+  // top and the update controls sat off-screen below the fold.
+  const profileScrollRef = useRef<ScrollView>(null);
+  const updateSectionY = useRef(0);
+  const scrollToUpdate = useCallback(() => {
+    // Two passes: the section's onLayout may not have fired on the first frame
+    // the sheet is mounted.
+    const go = () => profileScrollRef.current?.scrollTo({ y: Math.max(0, updateSectionY.current - 12), animated: true });
+    setTimeout(go, 350);
+    setTimeout(go, 700);
+  }, []);
 
   const load = useCallback(async () => {
     const [r, d, u, id, counts] = await Promise.all([
@@ -75,6 +87,7 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
     if (openProfileOnMount) {
       setShowProfile(true);
       checkLatestVersion();
+      scrollToUpdate();
       onProfileOpened?.();
     }
   }, [openProfileOnMount]);
@@ -266,7 +279,7 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
         </TouchableOpacity>
         <Text style={s.headerTitle}>{me}</Text>
         {latestVersion !== null && BUILD_VERSION !== latestVersion ? (
-          <TouchableOpacity style={s.updateBadge} onPress={() => { setShowProfile(true); downloadAndInstallUpdate(); }}>
+          <TouchableOpacity style={s.updateBadge} onPress={() => { setShowProfile(true); checkLatestVersion(); scrollToUpdate(); }}>
             <Text style={s.updateBadgeText}>⚡ v{latestVersion}</Text>
           </TouchableOpacity>
         ) : null}
@@ -352,7 +365,7 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
               </TouchableOpacity>
             </View>
 
-            <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled>
+            <ScrollView ref={profileScrollRef} showsVerticalScrollIndicator={false} nestedScrollEnabled>
             {/* Avatar + name */}
             <View style={s.profileTop}>
               <View style={s.bigAvatar}>
@@ -432,7 +445,7 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
             </View>
 
             {/* App Update */}
-            <View style={s.section}>
+            <View style={s.section} onLayout={e => { updateSectionY.current = e.nativeEvent.layout.y; }}>
               <Text style={s.sectionTitle}>APP UPDATE</Text>
               <View style={s.versionRow}>
                 <View style={s.versionBox}>

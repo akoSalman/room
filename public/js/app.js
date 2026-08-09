@@ -349,7 +349,11 @@ function connectSocket() {
       applyEdit(messageId, content);
     });
     socket.on('message_deleted', ({ messageId }) => applyDelete(messageId));
-    socket.on('reactions_updated', ({ messageId, reactions }) => renderReactions(messageId, reactions));
+    socket.on('reactions_updated', ({ messageId, roomId, reactions }) => {
+      // Also delivered on our personal channel now, so other rooms land here too.
+      if (roomId != null && String(roomId) !== String(currentRoomId)) return;
+      renderReactions(messageId, reactions);
+    });
     socket.on('room_online', ({ users }) => updateOnlineUsers(users));
     socket.on('room_created', (room) => addRoomToList(room));
     socket.on('room_deleted', ({ roomId }) => removeRoomFromList(roomId));
@@ -878,6 +882,14 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
     }
     hasMoreOlderMsgs = msgs.length >= MESSAGES_PAGE_SIZE;
   }
+  // Paint reactions that already exist on these messages — they were only ever
+  // applied from live events, so a reload showed none of them.
+  try {
+    const all = await api('/room-reactions/' + roomId);
+    if (all && !all.error) {
+      Object.keys(all).forEach(id => renderReactions(Number(id), all[id]));
+    }
+  } catch {}
   updateSeenCheckmarks();
   scrollBottom();
 }
