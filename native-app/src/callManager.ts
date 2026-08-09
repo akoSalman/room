@@ -51,6 +51,26 @@ class CallManager {
     this.ringSound = null;
     if (snd) snd.unloadAsync().catch(() => {});
   }
+  // Room voice chat connected its first peer. This does NOT go through
+  // markConnected(): that one owns the DM call's "Connected" status, its
+  // duration timer and its call-log entry, none of which apply to a room mesh
+  // whose status line is "Voice chat · N in". What a room call DOES need is the
+  // audio session — without InCallManager.start() the WebRTC audio route is
+  // never set up, so a room call connected but nobody could hear anything.
+  private markRoomAudioStarted() {
+    if (this.roomAudioStarted) return;
+    this.roomAudioStarted = true;
+    try {
+      InCallManager?.start({ media: 'audio' });
+      // Group calls are hands-free by nature — default to speaker, like every
+      // other app's group voice chat.
+      this.speakerOn = true;
+      InCallManager?.setForceSpeakerphoneOn(true);
+    } catch {}
+    this.emit();
+  }
+  private roomAudioStarted = false;
+
   private markConnected() {
     clearTimeout(this.noAnswerTimer);
     this.stopRing();
@@ -239,7 +259,10 @@ class CallManager {
         this.dropPeer(userId);
       }
       if (st === 'closed') this.dropPeer(userId);
-      if (st === 'connected' && this.mode !== 'room-voice') this.markConnected();
+      if (st === 'connected') {
+        if (this.mode === 'room-voice') this.markRoomAudioStarted();
+        else this.markConnected();
+      }
     };
     (pc as any).oniceconnectionstatechange = () => {
       const st = (pc as any).iceConnectionState;
@@ -249,7 +272,10 @@ class CallManager {
       if (st === 'disconnected' && this.mode?.startsWith('dm') && this.connectedAt) {
         this.status = 'Reconnecting…'; this.emit();
       }
-      if ((st === 'connected' || st === 'completed') && this.mode !== 'room-voice') this.markConnected();
+      if (st === 'connected' || st === 'completed') {
+        if (this.mode === 'room-voice') this.markRoomAudioStarted();
+        else this.markConnected();
+      }
     };
     this.localStream?.getTracks().forEach(t => (pc as any).addTrack(t, this.localStream));
     this.pcs.set(userId, pc);
@@ -305,6 +331,7 @@ class CallManager {
     this.cameraOff = false;
     this.speakerOn = false;
     this.frontCamera = true;
+    this.roomAudioStarted = false;
     this.connectedAt = null;
     this.peerId = null;
     clearTimeout(this.noAnswerTimer);

@@ -105,7 +105,8 @@ function showNotif(msg) {
     : msg.type === 'gallery' ? '🖼 Photos'
     : msg.type === 'video' ? '🎥 Video'
     : msg.type === 'music' ? '🎵 Audio file'
-    : msg.type === 'call' ? '📞 Call' : '📄 File';
+    : msg.type === 'call' ? '📞 Call'
+    : msg.type === 'system' ? 'ℹ️ Room update' : '📄 File';
   const n = new Notification(msg.username, { body, icon: '/icons/icon-192.png', tag: 'chatroom-msg-' + msg.id, silent: true });
   openNotifications[msg.id] = n;
   n.onclose = () => { delete openNotifications[msg.id]; };
@@ -1827,6 +1828,28 @@ function buildMessageElement(msg) {
       : c.outcome === 'declined' ? 'Call declined'
       : c.outcome === 'missed' ? 'Missed call' : 'Call failed';
     el.textContent = `${c.kind === 'video' ? '🎥' : '📞'} ${label}`;
+    bubble.appendChild(el);
+  } else if (msg.type === 'system') {
+    // Room notice (someone joined, or was removed). Centered line, with the
+    // affected username clickable to open a DM with them.
+    let d = {};
+    try { d = JSON.parse(msg.content || '{}'); } catch {}
+    const who = d.username || msg.username;
+    const isMe = who === username;
+    const el = document.createElement('div');
+    el.className = 'system-notice';
+    const nameEl = document.createElement('span');
+    nameEl.className = 'system-name' + (isMe ? '' : ' system-name-link');
+    nameEl.textContent = (d.avatar ? d.avatar + ' ' : '') + (isMe ? 'You' : who);
+    if (!isMe) {
+      nameEl.onclick = (e) => { e.stopPropagation(); openDM(who); };
+    }
+    el.appendChild(nameEl);
+    const rest = document.createElement('span');
+    rest.textContent = d.kind === 'removed'
+      ? ` ${isMe ? 'were' : 'was'} removed from the room${d.byUsername ? ' by ' + d.byUsername : ''}`
+      : ' joined the room';
+    el.appendChild(rest);
     bubble.appendChild(el);
   } else if (msg.type === 'invite') {
     let inv = null;

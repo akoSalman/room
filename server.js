@@ -269,7 +269,8 @@ function messagePreview(msg) {
     : msg.type === 'video' ? '🎥 Video'
     : msg.type === 'music' ? '🎵 Audio file'
     : msg.type === 'invite' ? '🔒 Room invitation'
-    : msg.type === 'call' ? '📞 Call' : '📄 File';
+    : msg.type === 'call' ? '📞 Call'
+    : msg.type === 'system' ? 'ℹ️ Room update' : '📄 File';
 }
 
 // Register/unregister device push tokens
@@ -440,25 +441,25 @@ app.get('/room-info/:roomId', authMiddleware, (req, res) => {
     return res.status(403).json({ error: 'This room is private' });
   }
   const owner = room.created_by
-    ? db.prepare('SELECT username, avatar FROM users WHERE id = ?').get(room.created_by)
+    ? db.prepare('SELECT id, username, avatar FROM users WHERE id = ?').get(room.created_by)
     : null;
   // Private rooms: explicit member list. Public rooms: everyone who has posted.
   let members = [];
   if (room.is_private) {
     members = db.prepare(`
-      SELECT u.username, u.avatar FROM room_members rm
+      SELECT u.id, u.username, u.avatar FROM room_members rm
       JOIN users u ON u.id = rm.user_id
       WHERE rm.room_id = ? ORDER BY u.username
     `).all(room.id);
   } else {
     members = db.prepare(`
-      SELECT DISTINCT u.username, u.avatar FROM messages m
+      SELECT DISTINCT u.id, u.username, u.avatar FROM messages m
       JOIN users u ON u.id = m.user_id
       WHERE m.room_id = ? ORDER BY u.username
     `).all(room.id);
   }
   if (owner && !members.some(m => m.username === owner.username)) {
-    members.unshift({ username: owner.username, avatar: owner.avatar });
+    members.unshift({ id: owner.id, username: owner.username, avatar: owner.avatar });
   }
   res.json({
     id: room.id, name: room.name, is_private: room.is_private, is_dm: room.is_dm,
@@ -607,6 +608,30 @@ io.use((socket, next) => {
     next(new Error('Unauthorized'));
   }
 });
+
+// Insert a system message (a join announcement, a member removal, …) into a
+// room. `kind` goes in the message content alongside its data so clients can
+// render it as a centered notice rather than a normal bubble.
+function insertSystemMessage(roomId, userId, kind, data) {
+  try {
+    const content = JSON.stringify({ kind, ...data });
+    const r = db.prepare(
+      'INSERT INTO messages (room_id, user_id, type, content) VALUES (?, ?, ?, ?)'
+    ).run(roomId, userId, 'system', content);
+    return db.prepare(`
+      SELECT m.*, u.username, u.avatar FROM messages m
+      JOIN users u ON m.user_id = u.id WHERE m.id = ?
+    `).get(r.lastInsertRowid);
+  } catch (err) {
+    console.error('[insertSystemMessage]', err.message);
+    return null;
+  }
+}
+
+// Deliver a message to every member of a room over their personal channels.
+function broadcastRoomMessage(room, msg) {
+  getRoomMemberIds(room).forEach(id => io.to('user:' + id).emit('message_received', msg));
+}
 
 function getRoomMemberIds(room) {
   if (room.is_dm) {
@@ -910,7 +935,50 @@ io.on('connection', (socket) => {
     `).get(result.lastInsertRowid);
     [socket.user.id, target.id].forEach(id => io.to('user:' + id).emit('message_received', msg));
     io.emit('dm_activity', { room: dm });
+
+    // An invitation is a real message, so it gets a real push — previously it
+    // landed silently in the invitee's DMs and was only noticed by accident.
+    // Suppressed if they already have the DM open on some device.
+    const viewingDm = [...onlineUsers.values()].some(u => u.userId === target.id && u.roomId === String(dm.id));
+    if (!viewingDm) {
+      sendPushToUsers(
+        [target.id],
+        (socket.user.avatar ? socket.user.avatar + ' ' : '') + socket.user.username,
+        `🔒 Invited you to "${room.name}"`,
+        { roomId: String(dm.id), msgId: String(msg.id) },
+      );
+    }
     if (typeof ack === 'function') ack({ ok: true });
+  });
+
+  // Room owner removes a member. The member loses access immediately and the
+  // removal is announced in the room.
+  socket.on('remove_member', ({ roomId, userId }, ack) => {
+    const reply = (r) => { if (typeof ack === 'function') ack(r); };
+    try {
+      const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+      if (!room || room.is_dm) return reply({ error: 'Room not found' });
+      if (room.created_by !== socket.user.id) return reply({ error: 'Only the room owner can remove members' });
+      const target = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+      if (!target) return reply({ error: 'User not found' });
+      if (target.id === socket.user.id) return reply({ error: 'You cannot remove yourself' });
+
+      const del = db.prepare('DELETE FROM room_members WHERE room_id = ? AND user_id = ?').run(room.id, target.id);
+      if (!del.changes) return reply({ error: 'That user is not a member' });
+
+      // Any socket of theirs sitting in the room is pushed out of the channel.
+      io.to('user:' + target.id).emit('removed_from_room', { roomId: room.id, roomName: room.name });
+
+      const msg = insertSystemMessage(room.id, target.id, 'removed', {
+        userId: target.id, username: target.username, avatar: target.avatar || null,
+        byUserId: socket.user.id, byUsername: socket.user.username,
+      });
+      if (msg) broadcastRoomMessage(room, msg);
+      reply({ ok: true });
+    } catch (err) {
+      console.error('[remove_member]', err.message);
+      reply({ error: 'Could not remove that member' });
+    }
   });
 
   socket.on('accept_invite', ({ roomId }, ack) => {
@@ -939,8 +1007,19 @@ io.on('connection', (socket) => {
         if (!invited) return reply({ error: 'No invitation found' });
       }
 
-      db.prepare('INSERT OR IGNORE INTO room_members (room_id, user_id) VALUES (?, ?)').run(room.id, socket.user.id);
+      const ins = db.prepare('INSERT OR IGNORE INTO room_members (room_id, user_id) VALUES (?, ?)')
+        .run(room.id, socket.user.id);
       io.to('user:' + socket.user.id).emit('room_created', room); // adds it to their sidebar
+
+      // Announce the new member in the room itself (only on a genuinely new
+      // join, so re-opening an invite link doesn't spam the room). The content
+      // carries the user id so the client can make the name tappable.
+      if (ins.changes > 0) {
+        const sysMsg = insertSystemMessage(room.id, socket.user.id, 'joined', {
+          userId: socket.user.id, username: socket.user.username, avatar: socket.user.avatar || null,
+        });
+        if (sysMsg) broadcastRoomMessage(room, sysMsg);
+      }
       reply({ ok: true, room });
     } catch (err) {
       console.error('[accept_invite]', err.message);

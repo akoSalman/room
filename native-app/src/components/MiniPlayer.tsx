@@ -17,9 +17,19 @@ export default function MiniPlayer({ hideForRoomId, onNavigate }: {
 
   return (
     <View style={s.bar}>
+      {audioManager.hasPrev() && (
+        <TouchableOpacity style={s.skipBtn} onPress={() => audioManager.prev()}>
+          <Text style={s.skipIcon}>⏮</Text>
+        </TouchableOpacity>
+      )}
       <TouchableOpacity style={s.playBtn} onPress={() => audioManager.toggle()}>
         <Text style={s.playIcon}>{audioManager.playing ? '⏸' : '▶'}</Text>
       </TouchableOpacity>
+      {audioManager.hasNext() && (
+        <TouchableOpacity style={s.skipBtn} onPress={() => audioManager.next()}>
+          <Text style={s.skipIcon}>⏭</Text>
+        </TouchableOpacity>
+      )}
       <TouchableOpacity
         style={s.info}
         activeOpacity={0.7}
@@ -29,7 +39,12 @@ export default function MiniPlayer({ hideForRoomId, onNavigate }: {
           }
         }}
       >
-        <Text style={s.label} numberOfLines={1}>{audioManager.label || 'Voice message'}</Text>
+        <Text style={s.label} numberOfLines={1}>
+          {audioManager.label || 'Voice message'}
+          {audioManager.queue.length > 1
+            ? <Text style={s.count}>  {audioManager.queueIndex + 1}/{audioManager.queue.length}</Text>
+            : null}
+        </Text>
         <View style={s.track}>
           <View style={[s.fill, { width: `${Math.min(100, audioManager.progress * 100)}%` }]} />
         </View>
@@ -55,4 +70,7 @@ const s = StyleSheet.create({
   fill: { height: '100%', backgroundColor: C.accent },
   closeBtn: { padding: 6 },
   closeIcon: { color: C.muted, fontSize: 16 },
+  skipBtn: { paddingHorizontal: 2, paddingVertical: 6 },
+  skipIcon: { color: C.accent, fontSize: 15 },
+  count: { color: C.muted, fontSize: 11, fontWeight: '600' },
 });

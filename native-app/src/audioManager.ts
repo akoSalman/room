@@ -2,6 +2,7 @@ import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av';
 
 type Listener = () => void;
 type FinishHandler = (finishedId: number | string) => void;
+export type Track = { id: number | string; uri: string; title: string };
 
 // Global playback owner: only one sound plays at a time (in the app AND on the
 // device — audio focus is requested with DoNotMix), and playback survives
@@ -23,6 +24,12 @@ class AudioManager {
   // superseded and unload themselves instead of playing alongside the winner.
   private playToken = 0;
 
+  // ── Playlist ────────────────────────────────────────────────────────────────
+  // The music player plays through every audio file in a chat, so a track that
+  // ends advances to the next one and the UI can offer next/previous.
+  queue: Track[] = [];
+  queueIndex = -1;
+
   private listeners = new Set<Listener>();
   private finishHandler: FinishHandler | null = null;
 
@@ -34,10 +41,12 @@ class AudioManager {
 
   setFinishHandler(cb: FinishHandler | null) { this.finishHandler = cb; }
 
-  async play(id: number | string, uri: string, label: string, roomId: number | null = null, roomMeta: any = null) {
+  async play(id: number | string, uri: string, label: string, roomId: number | null = null, roomMeta: any = null, keepQueue = false) {
     // Claim this play request immediately so any call already in flight
     // (e.g. from a prior tap) knows it's been superseded once it resolves.
     const token = ++this.playToken;
+    // A one-off play (e.g. a voice message) leaves any music playlist behind.
+    if (!keepQueue) { this.queue = []; this.queueIndex = -1; }
 
     try {
       await Audio.setAudioModeAsync({
@@ -91,6 +100,9 @@ class AudioManager {
             sound.stopAsync().catch(() => {});
             const finishedId = this.currentId;
             this.emit();
+            // Playlist: roll straight into the next track. Otherwise hand off
+            // to the finish handler (voice-message auto-advance).
+            if (this.hasNext()) { this.next(); return; }
             if (this.finishHandler && finishedId != null) this.finishHandler(finishedId);
             return;
           }
@@ -113,6 +125,31 @@ class AudioManager {
       this.loading = false;
       this.emit();
     }
+  }
+
+  // Start a playlist at `index`. Everything else (single voice messages) keeps
+  // using play() directly, which clears the queue so the two never interfere.
+  async playQueue(tracks: Track[], index: number, roomId: number | null = null, roomMeta: any = null) {
+    if (!tracks.length) return;
+    const i = Math.max(0, Math.min(index, tracks.length - 1));
+    this.queue = tracks;
+    this.queueIndex = i;
+    const t = tracks[i];
+    await this.play(t.id, t.uri, t.title, roomId, roomMeta, true);
+  }
+
+  hasNext() { return this.queueIndex >= 0 && this.queueIndex < this.queue.length - 1; }
+  hasPrev() { return this.queueIndex > 0; }
+
+  async next() {
+    if (!this.hasNext()) return;
+    await this.playQueue(this.queue, this.queueIndex + 1, this.roomId, this.roomMeta);
+  }
+  async prev() {
+    // Standard behaviour: restart the track if we're past the first seconds.
+    if (this.progress * this.duration > 3) return this.seek(0);
+    if (!this.hasPrev()) return this.seek(0);
+    await this.playQueue(this.queue, this.queueIndex - 1, this.roomId, this.roomMeta);
   }
 
   async toggle() {
@@ -141,6 +178,8 @@ class AudioManager {
     this.currentId = null;
     this.roomId = null;
     this.roomMeta = null;
+    this.queue = [];
+    this.queueIndex = -1;
     this.playing = false;
     this.loading = false;
     this.progress = 0;

@@ -17,6 +17,8 @@ import ChatScreen from './src/screens/ChatScreen';
 import MiniPlayer from './src/components/MiniPlayer';
 import { disconnectSocket, getSocket, getUsername, apiFetch, ensureSocketAlive } from './src/api';
 import { audioManager } from './src/audioManager';
+import * as outbox from './src/outbox';
+import * as mediaNotification from './src/mediaNotification';
 import { C } from './src/theme';
 
 // Keep the app layout LTR even on RTL locales (Persian/Arabic): mirroring the
@@ -89,8 +91,16 @@ export default function App() {
   const [shareRooms, setShareRooms] = useState<any[] | null>(null);
   const [pendingShare, setPendingShare] = useState<any>(null);
 
+  // The chat picker must be built exactly ONCE per incoming share. This effect
+  // also depends on `screen` (it has to wait for sign-in before it can load the
+  // room list), and without this guard every later screen change — including
+  // the setScreen('chat') that share targeting itself performs — re-ran it and
+  // popped another copy of the picker on top of the previous one.
+  const sharePickerBuiltRef = React.useRef(false);
   useEffect(() => {
-    if (!hasShareIntent || screen === 'auth') return;
+    if (!hasShareIntent) { sharePickerBuiltRef.current = false; return; } // armed for the next share
+    if (screen === 'auth' || sharePickerBuiltRef.current) return;
+    sharePickerBuiltRef.current = true;
     (async () => {
       try {
         const [rooms, dms] = await Promise.all([apiFetch('/rooms'), apiFetch('/dm-rooms')]);
@@ -104,15 +114,25 @@ export default function App() {
   }, [hasShareIntent, screen]);
 
   function chooseShareTarget(r: any) {
+    const si: any = shareIntent || {};
+    // Carry across everything the sender gave us: the real filename (so the
+    // chat shows "Report.pdf", not "shared-1739…"), any per-file mime type, and
+    // the accompanying text/subject/link, which becomes the caption.
+    const caption = [si.text, si.webUrl, si.meta?.title]
+      .filter((v: any) => typeof v === 'string' && v.trim())
+      .filter((v: string, i: number, a: string[]) => a.indexOf(v) === i) // de-dupe
+      .join('\n')
+      .trim();
     setPendingShare({
-      files: (shareIntent?.files || []).map((f: any) => ({
+      files: (si.files || []).map((f: any) => ({
         path: f.path || f.contentUri || '',
         mimeType: f.mimeType,
-        fileName: f.fileName,
+        fileName: f.fileName || f.name || null,
       })),
-      text: shareIntent?.text || null,
+      text: caption || null,
     });
     resetShareIntent();
+    sharePickerBuiltRef.current = false;
     setShareRooms(null);
     setRoom({ id: r.id, name: r.name, is_dm: r.is_dm, other_username: r.other_username });
     setScreen('chat');
@@ -120,6 +140,7 @@ export default function App() {
 
   function cancelShare() {
     resetShareIntent();
+    sharePickerBuiltRef.current = false;
     setShareRooms(null);
   }
 
@@ -127,6 +148,11 @@ export default function App() {
     AsyncStorage.getItem('token').then(t => {
       if (t) setScreen('rooms');
     });
+    // App-wide ack listener: clears pending-send copies even when the chat
+    // that created them is closed.
+    outbox.init().catch(() => {});
+    // Playback controls in the notification shade while the app is backgrounded.
+    mediaNotification.setup().catch(() => {});
     Notifications.requestPermissionsAsync().catch(() => {});
     // Old notifications lingering in the tray are stale the moment the app
     // is opened — clear them on launch and every return to the foreground.

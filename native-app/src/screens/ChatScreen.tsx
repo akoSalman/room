@@ -30,7 +30,10 @@ import GalleryGrid from '../components/GalleryGrid';
 import ImageWithSpinner from '../components/ImageWithSpinner';
 import SwipeableMessage from '../components/SwipeableMessage';
 import MusicPlayer from '../components/MusicPlayer';
+import FullMusicPlayer from '../components/FullMusicPlayer';
+import type { Track } from '../audioManager';
 import { guessMime, messageTypeFor, fileIcon, extOf } from '../mime';
+import * as outbox from '../outbox';
 import EmojiBurst from '../components/EmojiBurst';
 
 type Message = {
@@ -129,7 +132,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [forwardTargets, setForwardTargets] = useState<any[]>([]);
   const [showRoomInfo, setShowRoomInfo] = useState(false);
   const [roomInfo, setRoomInfo] = useState<any>(null);
+  const [showPlayer, setShowPlayer] = useState(false);
   const [inviteName, setInviteName] = useState('');
+  const [inviteSuggestions, setInviteSuggestions] = useState<any[]>([]);
+  const [inviteSearching, setInviteSearching] = useState(false);
   const [highlightId, setHighlightId] = useState<number | string | null>(null);
   const [showScrollFab, setShowScrollFab] = useState(false);
   // Every image ever sent in this chat (chronological), from /room-media —
@@ -431,18 +437,28 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             const delivered = (f: any) => prev.some(p =>
               typeof p.id === 'number' && p.username === (u || '') && p.type === f.type &&
               (f.type === 'text' ? p.content === f.content : p.file_name === f.file_name && p.content === f.content));
-            const keep = failed.filter((f: any) => !prev.some(p => p.id === f.id) && !delivered(f));
+            // An upload that is STILL RUNNING (the user left this chat and came
+            // straight back) must neither be re-listed as failed nor retried —
+            // doing both is what previously produced two copies of the image.
+            const keep = failed.filter((f: any) =>
+              !prev.some(p => p.id === f.id) && !delivered(f) && !outbox.isInFlight(f.id));
             failed.filter((f: any) => delivered(f)).forEach((f: any) => removeFailedMsg(f.id));
-            // Anything still unsent gets retried automatically as soon as the
-            // chat is open again. A JS upload cannot outlive the process, so a
-            // send interrupted by the app closing resumes here rather than
-            // waiting for the user to notice and tap retry.
+            // Whatever is genuinely stalled (the process died mid-send) resumes
+            // automatically, since a JS upload cannot outlive the process.
             const resumable = keep.filter((f: any) =>
               f.type === 'text' || (f.file_path && /^(file|content):\/\//.test(String(f.file_path))));
             if (resumable.length) {
-              setTimeout(() => resumable.forEach((f: any) => retryUpload({ ...f, _uploadFailed: true })), 800);
+              setTimeout(() => resumable.forEach((f: any) => {
+                if (!outbox.isInFlight(f.id)) retryUpload({ ...f, _uploadFailed: true });
+              }), 800);
             }
-            return [...prev, ...keep.map((f: any) => ({ ...f, _uploading: false, _uploadFailed: true }))];
+            // Still-uploading sends are shown with their progress bar, not as failures.
+            const running = failed.filter((f: any) => outbox.isInFlight(f.id) && !prev.some(p => p.id === f.id));
+            return [
+              ...prev,
+              ...running.map((f: any) => ({ ...f, _uploading: true, _uploadFailed: false })),
+              ...keep.map((f: any) => ({ ...f, _uploading: false, _uploadFailed: true })),
+            ];
           });
         }
       } catch {}
@@ -480,6 +496,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           || null;
         if (pendingId) {
           delete pendingUploadPaths.current[pendingId];
+          outbox.markDone(pendingId);
           removeFailedMsg(pendingId); // send confirmed — drop the crash-safety copy
           setUploadProgress(prev => {
             const { [pendingId]: _drop, ...rest } = prev;
@@ -497,6 +514,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         }
         if (isNearBottomRef.current) scrollBottom();
         sock.emit('mark_read', { roomId: room.id, lastMsgId: msg.id });
+      });
+      // The owner removed us: leave the chat immediately.
+      sock.on('removed_from_room', ({ roomId, roomName }: any) => {
+        if (roomId !== room.id) return;
+        Alert.alert('Removed', `You were removed from "${roomName}".`);
+        onBack();
       });
       sock.on('message_edited', ({ messageId, content }: any) => {
         setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content, edited: 1 } : m));
@@ -541,6 +564,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       mounted = false;
       socketRef.current?.emit('leave_room');
       socketRef.current?.off('message_received');
+      socketRef.current?.off('removed_from_room');
       socketRef.current?.off('message_edited');
       socketRef.current?.off('message_deleted');
       socketRef.current?.off('reactions_updated');
@@ -642,6 +666,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // Persist right away (removed on server ack) so a kill/close mid-send on a
     // slow connection can't drop the message silently.
     saveFailedMsg(optimistic);
+    outbox.markStart(clientId, room.id);
     { const em = burstEmojiOf(plain); if (em) triggerBurst(em); }
     if (isNearBottomRef.current) setTimeout(scrollBottom, 50);
     // Encrypt + emit AFTER the bubble has painted — E2E key math on a slow
@@ -710,6 +735,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   // Every image in the chat, in order — the lightbox browses through these.
+  // Every audio file in this chat, oldest first — the playlist the music
+  // player walks through (and what the full-screen player lists).
+  function chatTracks(): Track[] {
+    return messagesRef.current
+      .filter((m: any) => m.type === 'music' && m.file_path && !m._uploading && !m.one_time_seconds)
+      .map((m: any) => ({
+        id: m.id,
+        uri: `${BASE_URL}${m.file_path}`,
+        title: m.file_name || 'Audio',
+      }));
+  }
+
   function chatImageUrls(): string[] {
     const urls: string[] = [];
     messagesRef.current.forEach((m: any) => {
@@ -866,23 +903,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
   // Failed sends survive app restarts so they can still be retried.
   const failedKey = `failed-msgs-${room.id}`;
-  async function saveFailedMsg(m: Message) {
-    try {
-      const arr = JSON.parse((await AsyncStorage.getItem(failedKey)) || '[]')
-        .filter((x: any) => x.id !== m.id);
-      arr.push({ ...m, _uploading: false, _uploadFailed: true });
-      await AsyncStorage.setItem(failedKey, JSON.stringify(arr.slice(-20)));
-    } catch {}
-  }
-  async function removeFailedMsg(id: string | number) {
-    try {
-      const arr = JSON.parse((await AsyncStorage.getItem(failedKey)) || '[]')
-        .filter((x: any) => x.id !== id);
-      await AsyncStorage.setItem(failedKey, JSON.stringify(arr));
-    } catch {}
-  }
+  const saveFailedMsg = (m: Message) => outbox.remember(room.id, m);
+  const removeFailedMsg = (id: string | number) => outbox.forget(room.id, id);
 
   function markUploadFailed(clientId: string) {
+    outbox.markDone(clientId);
     setUploadProgress(prev => { const { [clientId]: _d, ...rest } = prev; return rest; });
     setMessages(prev => {
       const next = prev.map(m => m.id === clientId ? { ...m, _uploading: false, _uploadFailed: true } : m);
@@ -904,6 +929,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     uri = await persistLocal(uri, name);
     addOptimisticMessage(clientId, type, uri, name, replyToId, caption);
     setReplyTo(null);
+    // Registered at module scope: the upload keeps running if the user leaves
+    // this chat, and re-entering must not start a second copy of it.
+    outbox.markStart(clientId, room.id);
     try {
       const res = await uploadWithProgress(uri, name, mime, pct => setUploadProgress(prev => ({ ...prev, [clientId]: pct })));
       if (res.error) throw new Error(res.error);
@@ -925,6 +953,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     images = await Promise.all(images.map(async m => ({ ...m, uri: await persistLocal(m.uri, m.name) })));
     addOptimisticMessage(clientId, 'gallery', JSON.stringify(images.map(m => m.uri)), JSON.stringify(images.map(m => m.name)), replyToId, caption);
     setReplyTo(null);
+    outbox.markStart(clientId, room.id);
     try {
       const progress = images.map(() => 0);
       const urls: string[] = [];
@@ -960,6 +989,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     uri = await persistLocal(uri, `voice-${Date.now()}.m4a`);
     addOptimisticMessage(clientId, 'audio', uri, peakStr, replyToId, caption);
     setReplyTo(null);
+    outbox.markStart(clientId, room.id);
     try {
       const res = await uploadWithProgress(uri, `voice-${Date.now()}.m4a`, 'audio/m4a', pct => setUploadProgress(prev => ({ ...prev, [clientId]: pct })));
       if (res.error) throw new Error(res.error);
@@ -1210,12 +1240,59 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
   const roomLink = `${BASE_URL}/join/${room.id}`;
 
+  // Live, case-insensitive username suggestions while typing an invite. The
+  // /search endpoint matches with SQL LIKE, which is already case-insensitive
+  // for ASCII; results exclude people who are already in the room.
+  const inviteSearchTimer = useRef<any>(null);
+  function onInviteNameChange(q: string) {
+    setInviteName(q);
+    clearTimeout(inviteSearchTimer.current);
+    const term = q.trim();
+    if (!term) { setInviteSuggestions([]); setInviteSearching(false); return; }
+    setInviteSearching(true);
+    inviteSearchTimer.current = setTimeout(async () => {
+      try {
+        const res = await apiFetch(`/search?q=${encodeURIComponent(term)}`);
+        const already = new Set((roomInfo?.members || []).map((m: any) => m.username));
+        const users = (res?.users || []).filter((u: any) => !already.has(u.username));
+        setInviteSuggestions(users.slice(0, 6));
+      } catch { setInviteSuggestions([]); }
+      setInviteSearching(false);
+    }, 250);
+  }
+
+  async function loadRoomInfo() {
+    try {
+      const info = await apiFetch(`/room-info/${room.id}`);
+      if (!info?.error) setRoomInfo(info);
+    } catch {}
+  }
+
+  function removeMember(m: any) {
+    Alert.alert(`Remove ${m.username}?`, 'They will lose access to this room.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Remove', style: 'destructive',
+        onPress: () => socketRef.current?.emit('remove_member', { roomId: room.id, userId: m.id }, (res: any) => {
+          if (res?.error) { Alert.alert('Could not remove', res.error); return; }
+          setRoomInfo((prev: any) => prev
+            ? { ...prev, members: (prev.members || []).filter((x: any) => x.id !== m.id) }
+            : prev);
+        }),
+      },
+    ]);
+  }
+
   function sendInvite() {
     const name = inviteName.trim();
     if (!name) return;
     socketRef.current?.emit('invite_to_room', { roomId: room.id, username: name }, (res: any) => {
       if (res?.error) Alert.alert('Invite failed', res.error);
-      else { Alert.alert('Invitation sent', `${name} received an invite in their DMs.`); setInviteName(''); }
+      else {
+        Alert.alert('Invitation sent', `${name} received an invite in their DMs.`);
+        setInviteName(''); setInviteSuggestions([]);
+        loadRoomInfo();
+      }
     });
   }
 
@@ -1240,6 +1317,29 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         const decR = e2eDecrypt(msg.reply_content ?? null, dmPeerPk.current);
         msg.reply_content = decR !== null ? decR : '🔒 Encrypted';
       }
+    }
+    // System notices (a member joined, or was removed) render as a centered
+    // line rather than a chat bubble, with the affected username tappable so
+    // you can open a DM with them straight from the announcement.
+    if (msg.type === 'system') {
+      let d: any = {};
+      try { d = JSON.parse(msg.content || '{}'); } catch {}
+      const who = d.username || msg.username;
+      const isMe = who === me;
+      return (
+        <View style={s.systemRow}>
+          <Text style={s.systemText}>
+            <Text
+              style={[s.systemName, !isMe && s.systemNameLink]}
+              onPress={isMe ? undefined : () => openDM(who)}>
+              {d.avatar ? `${d.avatar} ` : ''}{isMe ? 'You' : who}
+            </Text>
+            {d.kind === 'removed'
+              ? <Text>{' '}{isMe ? 'were' : 'was'} removed from the room{d.byUsername ? ` by ${d.byUsername}` : ''}</Text>
+              : <Text>{' '}joined the room</Text>}
+          </Text>
+        </View>
+      );
     }
     const mine = msg.username === me;
     const hiddenOneTime = !!msg.one_time_seconds && !revealedOneTime.has(msg.id) && !msg._uploading;
@@ -1393,6 +1493,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           )}
           {!hiddenOneTime && msg.type === 'music' && !msg._uploading && (
             <MusicPlayer url={`${BASE_URL}${msg.file_path}`} fileName={msg.file_name || 'Audio'} mine={mine} msgId={msg.id} roomId={room.id} roomMeta={room}
+              playlist={chatTracks}
+              onOpenPlayer={() => setShowPlayer(true)}
               onPlayStart={msg.one_time_seconds && !mine ? () => startOneTimeClock(msg) : undefined} />
           )}
           {!hiddenOneTime && msg.type === 'video' && (() => {
@@ -1522,8 +1624,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               return;
             }
             setShowRoomInfo(true);
-            const info = await apiFetch(`/room-info/${room.id}`);
-            if (!info.error) setRoomInfo(info);
+            loadRoomInfo();
           }}>
           <View style={s.roomAvatar}>
             <Text style={s.roomAvatarText}>{room.is_dm ? '💬' : room.is_private ? '🔒' : '#'}</Text>
@@ -1636,6 +1737,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           )}
         </GestureHandlerRootView>
       </Modal>
+
+      <FullMusicPlayer
+        visible={showPlayer}
+        onClose={() => setShowPlayer(false)}
+        tracks={chatTracks()}
+        roomId={room.id}
+        roomMeta={room}
+      />
 
       {/* Video player */}
       <Modal visible={!!videoUrl} transparent animationType="fade" onRequestClose={() => setVideoUrl(null)}>
@@ -2045,9 +2154,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 <View style={s.roomLinkBox}>
                   <Text style={s.roomLinkLabel}>MEMBERS ({roomInfo.members.length})</Text>
                   {roomInfo.members.map((m: any) => (
-                    <View key={m.username} style={s.memberRow}>
+                    <View key={m.id ?? m.username} style={s.memberRow}>
                       <Text style={s.memberName}>{m.avatar ? m.avatar + ' ' : ''}{m.username}</Text>
-                      {m.username === roomInfo.owner_username && <Text style={s.memberOwnerTag}>owner</Text>}
+                      {m.username === roomInfo.owner_username
+                        ? <Text style={s.memberOwnerTag}>owner</Text>
+                        : (roomInfo.is_owner && m.id ? (
+                            <TouchableOpacity onPress={() => removeMember(m)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                              <Text style={s.memberRemove}>Remove</Text>
+                            </TouchableOpacity>
+                          ) : null)}
                     </View>
                   ))}
                 </View>
@@ -2057,10 +2172,24 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 <View style={s.roomLinkBox}>
                   <Text style={s.roomLinkLabel}>ADD MEMBER</Text>
                   <TextInput
-                    style={s.inviteInput} placeholder="Username to invite" placeholderTextColor={C.muted}
-                    value={inviteName} onChangeText={setInviteName} autoCapitalize="none"
-                    onSubmitEditing={sendInvite}
+                    style={s.inviteInput} placeholder="Search a username…" placeholderTextColor={C.muted}
+                    value={inviteName} onChangeText={onInviteNameChange} autoCapitalize="none"
+                    autoCorrect={false} onSubmitEditing={sendInvite}
                   />
+                  {inviteSuggestions.length > 0 && (
+                    <View style={s.suggestBox}>
+                      {inviteSuggestions.map((u: any) => (
+                        <TouchableOpacity key={u.id} style={s.suggestRow}
+                          onPress={() => { setInviteName(u.username); setInviteSuggestions([]); }}>
+                          <Text style={s.suggestIcon}>{u.avatar || '👤'}</Text>
+                          <Text style={s.suggestName}>{u.username}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  )}
+                  {inviteSearching && inviteSuggestions.length === 0 && !!inviteName.trim() && (
+                    <Text style={s.inviteHint}>Searching…</Text>
+                  )}
                   <TouchableOpacity style={s.shareBtn} onPress={sendInvite}>
                     <Text style={s.shareBtnText}>Send invitation</Text>
                   </TouchableOpacity>
@@ -2247,6 +2376,14 @@ const s = StyleSheet.create({
   msgText: { color: C.text, fontSize: 15, lineHeight: 21 },
   edited: { color: C.muted, fontSize: 11 },
   fileLink: { color: '#93c5fd', fontSize: 14 },
+  systemRow: { alignItems: 'center', paddingVertical: 6, paddingHorizontal: 20 },
+  systemText: {
+    color: C.muted, fontSize: 12.5, textAlign: 'center', lineHeight: 18,
+    backgroundColor: 'rgba(148,163,184,0.10)', borderRadius: 12,
+    paddingHorizontal: 12, paddingVertical: 5, overflow: 'hidden',
+  },
+  systemName: { fontWeight: '700', color: C.text },
+  systemNameLink: { color: C.accent, textDecorationLine: 'underline' },
   fileCard: {
     flexDirection: 'row', alignItems: 'center', gap: 10, minWidth: 190,
     backgroundColor: 'rgba(148,163,184,0.12)', borderRadius: 10, padding: 10,
@@ -2323,6 +2460,18 @@ const s = StyleSheet.create({
   shareBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
   inviteInput: { backgroundColor: C.inputBg, borderRadius: 8, padding: 10, color: C.text, fontSize: 14, borderWidth: 1, borderColor: C.border },
   inviteHint: { color: C.muted, fontSize: 11.5 },
+  memberRemove: { color: '#f87171', fontSize: 12, fontWeight: '700' },
+  suggestBox: {
+    backgroundColor: C.inputBg, borderRadius: 8, borderWidth: 1, borderColor: C.border,
+    marginTop: 6, overflow: 'hidden',
+  },
+  suggestRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 12, paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border,
+  },
+  suggestIcon: { fontSize: 16, width: 22, textAlign: 'center' },
+  suggestName: { color: C.text, fontSize: 14.5, fontWeight: '600', flex: 1 },
   roomMetaRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.border },
   roomMetaLabel: { color: C.muted, fontSize: 10.5, fontWeight: '700', letterSpacing: 0.5 },
   roomMetaValue: { color: C.text, fontSize: 13.5, fontWeight: '600' },

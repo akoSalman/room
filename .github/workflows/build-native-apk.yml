@@ -9,6 +9,12 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Put [skip apk] in the commit message to land native-app changes without
+    # spending build minutes — useful when the work is being deployed to the
+    # servers first and the APK is cut later, deliberately.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      !contains(github.event.head_commit.message, '[skip apk]')
     strategy:
       fail-fast: false
       matrix:
