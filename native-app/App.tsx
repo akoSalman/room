@@ -32,9 +32,16 @@ I18nManager.forceRTL(false);
 // in-app unread badges do the signalling. Background pushes are shown by the
 // system tray as usual.
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: false, shouldPlaySound: false, shouldSetBadge: false,
-  }),
+  handleNotification: async (notification) => {
+    // The playback-controls notification MUST be shown — it is the media
+    // player in the shade, not an alert. Everything else stays suppressed
+    // while the app is foregrounded (in-app badges do the signalling).
+    const data: any = notification?.request?.content?.data || {};
+    if (data.mediaControls) {
+      return { shouldShowAlert: true, shouldPlaySound: false, shouldSetBadge: false };
+    }
+    return { shouldShowAlert: false, shouldPlaySound: false, shouldSetBadge: false };
+  },
 });
 // 'messages-v2': Android caches channel settings forever, so shipping the new
 // custom sound requires a fresh channel id.

@@ -110,6 +110,16 @@ jobs:
       - name: Generate native Android project
         run: npx expo prebuild --platform android --no-install --clean
 
+      # The release APK was 117MB because it packed native libraries for all
+      # four ABIs. x86/x86_64 exist only for emulators, so dropping them halves
+      # the download for every real device and costs nothing. (Going arm64-only
+      # would shrink it further but drops pre-2017 32-bit phones.)
+      - name: Limit to real-device architectures
+        run: |
+          sed -i '/^reactNativeArchitectures=/d' android/gradle.properties
+          echo 'reactNativeArchitectures=armeabi-v7a,arm64-v8a' >> android/gradle.properties
+          grep reactNativeArchitectures android/gradle.properties
+
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
@@ -139,6 +149,14 @@ jobs:
             -Pandroid.injected.signing.store.password=chatroom123 \
             -Pandroid.injected.signing.key.alias=chatroom \
             -Pandroid.injected.signing.key.password=chatroom123
+
+      - name: Report APK size
+        run: |
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          SIZE=$(du -h "$APK" | cut -f1)
+          echo "### ${{ matrix.brand }} APK: $SIZE" >> "$GITHUB_STEP_SUMMARY"
+          echo "APK size: $SIZE"
+          unzip -l "$APK" | awk '/lib\// {print $4}' | cut -d/ -f2 | sort -u | sed 's/^/  packaged ABI: /'
 
       # The release repo below is the real distribution channel; this artifact
       # is only a convenience copy. Short retention keeps it inside GitHub's

@@ -64,12 +64,15 @@ export default function FullMusicPlayer({ visible, onClose, tracks, roomId, room
           </View>
 
           {/* Scrubber */}
+          {/* Generous touch strip around the thin bar so it's draggable. */}
           <View
-            style={s.barTrack}
+            style={s.barHit}
             onLayout={e => { barWidth.current = e.nativeEvent.layout.width; }}
             {...(current ? pan.panHandlers : {})}
           >
-            <View style={[s.barFill, { width: `${Math.min(100, progress * 100)}%` }]} />
+            <View style={s.barTrack}>
+              <View style={[s.barFill, { width: `${Math.min(100, progress * 100)}%` }]} />
+            </View>
             {!!current && <View style={[s.barKnob, { left: `${Math.min(100, progress * 100)}%` }]} />}
           </View>
           <View style={s.timeRow}>
@@ -140,9 +143,10 @@ const s = StyleSheet.create({
   artIcon: { fontSize: 44 },
   nowTitle: { color: C.text, fontSize: 17, fontWeight: '800', textAlign: 'center' },
   nowArtist: { color: C.muted, fontSize: 13, textAlign: 'center' },
+  barHit: { height: 34, justifyContent: 'center', marginTop: 10 },
   barTrack: {
     height: 5, borderRadius: 3, backgroundColor: 'rgba(128,128,128,0.28)',
-    marginTop: 16, justifyContent: 'center',
+    justifyContent: 'center',
   },
   barFill: { height: 5, borderRadius: 3, backgroundColor: C.accent },
   barKnob: { position: 'absolute', width: 13, height: 13, borderRadius: 7, backgroundColor: C.accent, marginLeft: -6.5 },

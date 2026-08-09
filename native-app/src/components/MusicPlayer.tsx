@@ -32,7 +32,16 @@ export default function MusicPlayer({
   onOpenPlayer?: () => void;     // opens the full-screen player
 }) {
   const [, forceUpdate] = useReducer(x => x + 1, 0);
-  useEffect(() => audioManager.subscribe(forceUpdate), []);
+  const pendingSeek = useRef<number | null>(null);
+  useEffect(() => audioManager.subscribe(() => {
+    if (pendingSeek.current != null
+        && audioManager.currentId === msgId && audioManager.duration > 0) {
+      const f = pendingSeek.current;
+      pendingSeek.current = null;
+      audioManager.seek(f);
+    }
+    forceUpdate();
+  }), [msgId]);
 
   const isCurrent = audioManager.currentId === msgId;
   const playing = isCurrent && audioManager.playing;
@@ -41,7 +50,6 @@ export default function MusicPlayer({
   const duration = isCurrent ? audioManager.duration : 0;
   const { title, artist } = trackTitle(fileName);
 
-  const barRef = useRef<View>(null);
   const barWidth = useRef(0);
   const pan = useRef(
     PanResponder.create({
@@ -52,8 +60,13 @@ export default function MusicPlayer({
     })
   ).current;
   function seekTo(x: number) {
-    if (audioManager.currentId !== msgId || !barWidth.current) return;
-    audioManager.seek(x / barWidth.current);
+    if (!barWidth.current) return;
+    const f = Math.max(0, Math.min(1, x / barWidth.current));
+    if (audioManager.currentId === msgId) { audioManager.seek(f); return; }
+    // Dragging the bar of a track that isn't playing starts it, then seeks
+    // once it has loaded enough to know its duration.
+    pendingSeek.current = f;
+    toggle();
   }
 
   function toggle() {
@@ -76,16 +89,23 @@ export default function MusicPlayer({
           ? <ActivityIndicator size="small" color="#fff" />
           : <Text style={s.playIcon}>{playing ? '❚❚' : '▶'}</Text>}
       </TouchableOpacity>
-      <TouchableOpacity style={s.info} activeOpacity={0.7} onPress={onOpenPlayer} disabled={!onOpenPlayer}>
-        <Text style={s.title} numberOfLines={1}>{title}</Text>
-        <Text style={s.artist} numberOfLines={1}>{artist || 'Audio file'}</Text>
+      {/* The title/duration open the full player, but the progress bar must NOT
+          sit inside that touchable — a parent TouchableOpacity swallows the
+          touches before the PanResponder ever sees them, which is why dragging
+          the bar did nothing. It's a sibling with its own gesture handling. */}
+      <View style={s.info}>
+        <TouchableOpacity activeOpacity={0.7} onPress={onOpenPlayer} disabled={!onOpenPlayer}>
+          <Text style={s.title} numberOfLines={1}>{title}</Text>
+          <Text style={s.artist} numberOfLines={1}>{artist || 'Audio file'}</Text>
+        </TouchableOpacity>
         <View
-          ref={barRef}
-          style={s.progressTrack}
+          style={s.progressHit}
           onLayout={e => { barWidth.current = e.nativeEvent.layout.width; }}
-          {...(isCurrent ? pan.panHandlers : {})}
+          {...pan.panHandlers}
         >
-          <View style={[s.progressFill, { width: `${Math.min(100, progress * 100)}%` }]} />
+          <View style={s.progressTrack}>
+            <View style={[s.progressFill, { width: `${Math.min(100, progress * 100)}%` }]} />
+          </View>
           {isCurrent && (
             <View style={[s.progressKnob, { left: `${Math.min(100, progress * 100)}%` }]} />
           )}
@@ -93,7 +113,7 @@ export default function MusicPlayer({
         <Text style={s.duration}>
           {isCurrent ? `${fmtTime(duration * progress)} / ${fmtTime(duration)}` : fmtTime(duration) === '0:00' ? 'Tap to play' : fmtTime(duration)}
         </Text>
-      </TouchableOpacity>
+      </View>
     </View>
   );
 }
@@ -108,9 +128,12 @@ const s = StyleSheet.create({
   info: { flex: 1, gap: 2 },
   title: { color: C.text, fontSize: 13.5, fontWeight: '700' },
   artist: { color: C.muted, fontSize: 11.5 },
+  // A 22px-tall transparent strip around the 4px bar: a 4px target is far too
+  // small to hit with a finger.
+  progressHit: { height: 22, justifyContent: 'center', marginTop: 2, marginBottom: -2 },
   progressTrack: {
     height: 4, borderRadius: 2, backgroundColor: 'rgba(128,128,128,0.28)',
-    marginTop: 5, marginBottom: 2, justifyContent: 'center',
+    justifyContent: 'center',
   },
   progressFill: { height: 4, borderRadius: 2, backgroundColor: C.accent },
   progressKnob: {

@@ -93,20 +93,6 @@ db.exec(`
   );
 `);
 
-// OCR results are cached per message: recognising a photo takes seconds and
-// the answer never changes, so it's computed once and replayed after that.
-db.exec(`
-  CREATE TABLE IF NOT EXISTS ocr_results (
-    message_id INTEGER NOT NULL,
-    file_path TEXT NOT NULL,
-    text TEXT,
-    lang TEXT,
-    confidence REAL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(message_id, file_path)
-  );
-`);
-
 // Seed a default room
 const existing = db.prepare('SELECT id FROM rooms WHERE name = ?').get('General');
 if (!existing) {

@@ -85,11 +85,16 @@ function sync() {
       title: String(label || 'Audio').replace(/^🎵\s*/, '🎵 '),
       body: (playing ? 'Playing' : 'Paused') + position,
       categoryIdentifier: CATEGORY_ID,
+      data: { mediaControls: true },  // lets the app-wide handler let this through
       sticky: true,        // ongoing: can't be swiped away while playing
       autoDismiss: false,
       sound: null,
       priority: Notifications.AndroidNotificationPriority.LOW,
     },
-    trigger: null,
+    // A channelId can only be attached to a SCHEDULABLE trigger — with
+    // `trigger: null` the notification silently lands on the default channel
+    // (wrong importance, and it could buzz). A date trigger 1ms out is
+    // effectively immediate and does carry the channel.
+    trigger: { channelId: CHANNEL_ID, date: Date.now() + 1 },
   }).catch(() => {});
 }

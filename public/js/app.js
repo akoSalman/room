@@ -84,6 +84,45 @@ function getSupportedMimeType() {
 const EMOJIS = ['👍','❤️','😂','😮','😢','🔥','👏','🎉','🤔','😍','👎','😡'];
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
+// ── Auto-update ──────────────────────────────────────────────────────────────
+// Remember the front-end version this page loaded with, then re-check whenever
+// the tab regains focus, on socket reconnect, and periodically. If the server
+// is serving something newer, reload — otherwise a long-lived tab or installed
+// PWA keeps running old code indefinitely after a deploy.
+let loadedAppVersion = null;
+let reloadingForUpdate = false;
+
+async function checkAppVersion() {
+  if (reloadingForUpdate) return;
+  try {
+    const res = await fetch('/version', { cache: 'no-store' });
+    const { version } = await res.json();
+    if (!version) return;
+    if (loadedAppVersion === null) { loadedAppVersion = version; return; }
+    if (version === loadedAppVersion) return;
+
+    reloadingForUpdate = true;
+    // Clear the service-worker caches first, so the reload genuinely fetches
+    // the new files rather than replaying the old ones.
+    try {
+      if (window.caches) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map(k => caches.delete(k)));
+      }
+      const reg = await navigator.serviceWorker?.getRegistration();
+      await reg?.update();
+    } catch {}
+    showToast('Updating to the latest version…');
+    setTimeout(() => location.reload(), 600);
+  } catch {}
+}
+
+checkAppVersion();
+setInterval(checkAppVersion, 5 * 60 * 1000);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') checkAppVersion();
+});
+
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
 }
@@ -290,6 +329,7 @@ function connectSocket() {
         socket.emit('join_room', currentRoomId);
         refreshLatestMessages();
       }
+      checkAppVersion(); // a reconnect often follows a deploy
     });
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {

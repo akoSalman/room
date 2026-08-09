@@ -61,12 +61,10 @@ const EMOJI_EFFECTS = new Set(BURST_EMOJIS.map(e => Array.from(e)[0]));
 const BURST_FORM: Record<string, string> = Object.fromEntries(BURST_EMOJIS.map(e => [Array.from(e)[0], e]));
 const MESSAGES_PAGE_SIZE = 20;
 
-// Persian/Arabic/Hebrew text must render right-aligned in the OCR popup.
-function looksRTL(t: string): boolean {
+// Right-align predominantly RTL text (Persian/Arabic) in the select sheet.
+function looksRTLText(t: string): boolean {
   const rtl = (t.match(/[\u0590-\u05FF\u0600-\u06FF\u0700-\u074F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/g) || []).length;
   const latin = (t.match(/[A-Za-z]/g) || []).length;
-  // A ratio, not a majority: a Persian receipt with an English product name in
-  // it is still Persian text and should be right-aligned.
   return rtl > 0 && rtl >= (rtl + latin) * 0.3;
 }
 
@@ -144,11 +142,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [showRoomInfo, setShowRoomInfo] = useState(false);
   const [roomInfo, setRoomInfo] = useState<any>(null);
   const [showPlayer, setShowPlayer] = useState(false);
-  // Text extracted from an image (OCR), shown in a selectable popup.
-  const [ocr, setOcr] = useState<{ loading: boolean; text: string; error: string | null } | null>(null);
-  const [copiedOcr, setCopiedOcr] = useState(false);
   // Tapped link / phone number → sheet offering both sensible actions.
   const [tokenAction, setTokenAction] = useState<{ kind: 'url' | 'phone'; text: string } | null>(null);
+  // Double-tap "select all" sheet: a read-only TextInput lets the selection be
+  // preset to the whole message and then adjusted by hand, which a <Text> can't.
+  const [selectText, setSelectText] = useState<string | null>(null);
+  const [selectRange, setSelectRange] = useState<{ start: number; end: number } | undefined>(undefined);
+  // How many messages arrived while the user was scrolled up, shown as a badge
+  // on the scroll-to-bottom button.
+  const [missedCount, setMissedCount] = useState(0);
   const [inviteName, setInviteName] = useState('');
   const [inviteSuggestions, setInviteSuggestions] = useState<any[]>([]);
   const [inviteSearching, setInviteSearching] = useState(false);
@@ -252,6 +254,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     const nearBottom = e.nativeEvent.contentOffset.y < 80;
     isNearBottomRef.current = nearBottom;
     setShowScrollFab(!nearBottom);
+    if (nearBottom && missedCount) setMissedCount(0);
   }
 
   async function loadOlderMessages() {
@@ -549,6 +552,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           setMessages(prev => [...prev, msg]);
         }
         if (isNearBottomRef.current) scrollBottom();
+        else if (msg.username !== meRef.current) setMissedCount(n => n + 1);
         sock.emit('mark_read', { roomId: room.id, lastMsgId: msg.id });
       });
       // The owner removed us: leave the chat immediately.
@@ -1305,18 +1309,45 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     }, 250);
   }
 
-  // Ask the server to read the text in an image and show it in a popup the
-  // user can select and copy from. Server-side because Persian (Arabic script)
-  // is not supported by on-device text recognition.
-  async function extractText(m: Message) {
-    setOcr({ loading: true, text: '', error: null });
-    try {
-      const res = await apiFetch(`/ocr/${m.id}`, 'POST', { index: 0 });
-      if (res?.error) { setOcr({ loading: false, text: '', error: res.error }); return; }
-      setOcr({ loading: false, text: (res?.text || '').trim(), error: null });
-    } catch {
-      setOcr({ loading: false, text: '', error: 'Could not reach the server.' });
+  // Message press routing.
+  //   • text bubbles      : single tap opens the menu, double tap selects all
+  //   • media bubbles     : single tap opens/plays, long press opens the menu
+  // A single tap on text is deferred briefly so a double tap can win instead.
+  const tapTimer = useRef<any>(null);
+  const lastTap = useRef(0);
+  const DOUBLE_MS = 260;
+
+  function openMenuFor(msg: Message, e?: any) {
+    setActionsMsg({ msg, x: e?.nativeEvent?.pageX ?? 0, y: e?.nativeEvent?.pageY ?? 0 });
+  }
+
+  function onBubblePress(msg: Message, e: any) {
+    if (!isTextual(msg)) return;           // media handles its own tap
+    const now = Date.now();
+    if (now - lastTap.current < DOUBLE_MS) {
+      clearTimeout(tapTimer.current);      // second tap: select the whole message
+      lastTap.current = 0;
+      openSelectText(msg);
+      return;
     }
+    lastTap.current = now;
+    const ev = { nativeEvent: { pageX: e?.nativeEvent?.pageX, pageY: e?.nativeEvent?.pageY } };
+    clearTimeout(tapTimer.current);
+    tapTimer.current = setTimeout(() => openMenuFor(msg, ev), DOUBLE_MS);
+  }
+
+  // Bubbles whose primary content is text — everything else opens media on tap.
+  function isTextual(m: Message) {
+    return m.type === 'text' || m.type === 'system' || m.type === 'call' || m.type === 'invite';
+  }
+
+  function openSelectText(msg: Message) {
+    const t = (msg.content || '').trim();
+    if (!t) return;
+    setSelectText(t);
+    setSelectRange({ start: 0, end: t.length }); // whole message selected to begin with
+    // Release the controlled selection shortly after so the handles are draggable.
+    setTimeout(() => setSelectRange(undefined), 400);
   }
 
   async function loadRoomInfo() {
@@ -1446,7 +1477,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         >
         <TouchableOpacity
           style={[s.bubble, mine ? s.mineBubble : s.theirsBubble, highlightId === msg.id && s.bubbleHighlight]}
-          onLongPress={(e) => setActionsMsg({ msg, x: e.nativeEvent.pageX, y: e.nativeEvent.pageY })}
+          onPress={(e) => onBubblePress(msg, e)}
+          onLongPress={(e) => openMenuFor(msg, e)}
+          delayLongPress={350}
           activeOpacity={0.85}
         >
           {/* Reply quote */}
@@ -1506,7 +1539,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             const uri = msg._uploading ? msg.file_path! : `${BASE_URL}${msg.file_path}`;
             const onLoaded = msg.one_time_seconds && !mine ? () => startOneTimeClock(msg) : undefined;
             return (
-              <TouchableOpacity onPress={() => !msg._uploading && openViewer(uri)} disabled={msg._uploading}>
+              <TouchableOpacity
+                onPress={() => !msg._uploading && openViewer(uri)}
+                onLongPress={(e) => openMenuFor(msg, e)}
+                delayLongPress={350}
+                disabled={msg._uploading}>
                 {msg._uploading
                   ? <Image source={{ uri }} style={s.msgImage} resizeMode="cover" />
                   : <ImageWithSpinner uri={uri} style={s.msgImage} resizeMode="cover" onLoaded={onLoaded} />}
@@ -1530,6 +1567,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             return (
               <GalleryGrid
                 uris={full}
+                onLongPress={() => openMenuFor(msg)}
                 onOpen={(i) => openViewer(full[i])}
                 onFirstLoaded={msg.one_time_seconds && !mine ? () => startOneTimeClock(msg) : undefined}
               />
@@ -1830,38 +1868,35 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         </View>
       </Modal>
 
-      {/* Extracted image text: selectable + copyable, RTL-aware for Persian */}
-      <Modal visible={!!ocr} transparent animationType="fade" onRequestClose={() => setOcr(null)}>
+      {/* Double-tap select: whole message preselected, adjustable, copyable. */}
+      <Modal visible={selectText !== null} transparent animationType="fade" onRequestClose={() => setSelectText(null)}>
         <View style={s.sheetOverlay}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setOcr(null)} />
-          <View style={s.ocrSheet}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setSelectText(null)} />
+          <View style={s.actionSheet}>
             <View style={s.sheetGrip} />
-            <Text style={s.ocrTitle}>Text in image</Text>
-            {ocr?.loading ? (
-              <View style={s.ocrBusy}>
-                <ActivityIndicator color={C.accent} />
-                <Text style={s.ocrBusyText}>Reading the image…</Text>
-              </View>
-            ) : ocr?.error ? (
-              <Text style={s.ocrError}>{ocr.error}</Text>
-            ) : !ocr?.text ? (
-              <Text style={s.ocrEmpty}>No text found in this image.</Text>
-            ) : (
-              <>
-                <ScrollView style={s.ocrScroll} contentContainerStyle={{ padding: 14 }}>
-                  {/* selectable makes the text long-press selectable/copyable */}
-                  <Text style={[s.ocrText, looksRTL(ocr.text) && s.ocrTextRTL]} selectable>
-                    {ocr.text}
-                  </Text>
-                </ScrollView>
-                <TouchableOpacity
-                  style={s.ocrCopyBtn}
-                  onPress={() => { copy(ocr.text, 'text'); setCopiedOcr(true); setTimeout(() => setCopiedOcr(false), 1500); }}>
-                  <Text style={s.ocrCopyText}>{copiedOcr ? '✓ Copied' : '📋  Copy all text'}</Text>
-                </TouchableOpacity>
-              </>
-            )}
-            <TouchableOpacity style={s.sheetCancel} onPress={() => setOcr(null)}>
+            <Text style={s.selectTitle}>Select text</Text>
+            <TextInput
+              style={[s.selectInput, looksRTLText(selectText || '') && s.selectInputRTL]}
+              value={selectText || ''}
+              // editable (so Android shows selection handles) but controlled with
+              // no onChangeText, so any keystroke is immediately reverted — the
+              // text can be selected and copied, never changed. The keyboard is
+              // suppressed since there is nothing to type.
+              editable
+              showSoftInputOnFocus={false}
+              multiline
+              scrollEnabled
+              autoFocus
+              // Start with EVERYTHING selected, then release control after a
+              // moment so the user can drag the handles to a narrower range.
+              selection={selectRange}
+              onSelectionChange={() => { if (selectRange) setSelectRange(undefined); }}
+              contextMenuHidden={false}
+            />
+            <TouchableOpacity style={s.ocrCopyBtnLike} onPress={() => { copy(selectText || '', 'message'); setSelectText(null); }}>
+              <Text style={s.ocrCopyTextLike}>📋  Copy all</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={s.sheetCancel} onPress={() => setSelectText(null)}>
               <Text style={s.sheetCancelText}>Close</Text>
             </TouchableOpacity>
           </View>
@@ -1928,6 +1963,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       {fabVisible && (
         <TouchableOpacity style={s.scrollFab} onPress={handleScrollFabPress}>
           <Text style={s.scrollFabIcon}>{fabIsBack ? '↩' : '↓'}</Text>
+          {!fabIsBack && missedCount > 0 && (
+            <View style={s.scrollFabBadge}>
+              <Text style={s.scrollFabBadgeText}>{missedCount > 99 ? '99+' : missedCount}</Text>
+            </View>
+          )}
         </TouchableOpacity>
       )}
 
@@ -2052,7 +2092,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               );
             }
 
-            const isImage = (m.type === 'image' || m.type === 'gallery') && !hidden && !m._uploading;
             return (
               <View style={s.actionSheet}>
                 <View style={s.sheetGrip} />
@@ -2074,9 +2113,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                   setReplyTo({ id: m.id, username: m.username, content: m.content, type: m.type });
                   composerRef.current?.focus();
                 }} />
-                {isImage && (
-                  <Row icon="🔎" label="Extract text from image" onPress={() => { close(); extractText(m); }} />
-                )}
                 {(m.type === 'text' || (m.file_path && !m.one_time_seconds)) && !hidden && (
                   <Row icon="📋" label="Copy" onPress={() => {
                     let fp = m.file_path || '';
@@ -2509,26 +2545,18 @@ const s = StyleSheet.create({
     borderRadius: 14, paddingVertical: 14, alignItems: 'center',
   },
   sheetCancelText: { color: C.muted, fontSize: 16, fontWeight: '600' },
-  ocrSheet: {
-    backgroundColor: C.sidebar, borderTopLeftRadius: 20, borderTopRightRadius: 20,
-    paddingTop: 8, paddingBottom: 24, maxHeight: '80%',
-  },
-  ocrTitle: { color: C.text, fontSize: 17, fontWeight: '800', textAlign: 'center', marginBottom: 10 },
-  ocrScroll: {
+  selectTitle: { color: C.text, fontSize: 16, fontWeight: '800', textAlign: 'center', marginBottom: 10 },
+  selectInput: {
     marginHorizontal: 16, backgroundColor: C.inputBg, borderRadius: 12,
-    borderWidth: 1, borderColor: C.border, maxHeight: 340,
+    borderWidth: 1, borderColor: C.border, color: C.text,
+    fontSize: 15.5, lineHeight: 24, padding: 14, maxHeight: 300,
   },
-  ocrText: { color: C.text, fontSize: 15.5, lineHeight: 26 },
-  ocrTextRTL: { textAlign: 'right', writingDirection: 'rtl' },
-  ocrBusy: { alignItems: 'center', gap: 10, paddingVertical: 30 },
-  ocrBusyText: { color: C.muted, fontSize: 13.5 },
-  ocrError: { color: '#f87171', fontSize: 14, textAlign: 'center', paddingVertical: 26, paddingHorizontal: 20 },
-  ocrEmpty: { color: C.muted, fontSize: 14, textAlign: 'center', paddingVertical: 26 },
-  ocrCopyBtn: {
+  selectInputRTL: { textAlign: 'right', writingDirection: 'rtl' },
+  ocrCopyBtnLike: {
     marginTop: 12, marginHorizontal: 16, backgroundColor: C.accent,
     borderRadius: 12, paddingVertical: 13, alignItems: 'center',
   },
-  ocrCopyText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  ocrCopyTextLike: { color: '#fff', fontSize: 15, fontWeight: '700' },
   tokenPreview: {
     color: C.text, fontSize: 15, fontWeight: '600', textAlign: 'center',
     paddingHorizontal: 22, paddingVertical: 4,
@@ -2617,6 +2645,13 @@ const s = StyleSheet.create({
     elevation: 4, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 6, shadowOffset: { width: 0, height: 2 },
   },
   scrollFabIcon: { color: '#fff', fontSize: 18, fontWeight: '700' },
+  scrollFabBadge: {
+    position: 'absolute', top: -5, right: -5, minWidth: 20, height: 20,
+    borderRadius: 10, paddingHorizontal: 5, backgroundColor: C.online,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 2, borderColor: C.bg,
+  },
+  scrollFabBadgeText: { color: '#fff', fontSize: 10.5, fontWeight: '800' },
   lightboxOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', alignItems: 'center', justifyContent: 'center' },
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   sheetHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: C.border, alignSelf: 'center', marginTop: 10, marginBottom: 6 },

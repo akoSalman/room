@@ -8,7 +8,6 @@ const path = require('path');
 const fs = require('fs');
 const cors = require('cors');
 const db = require('./db');
-const ocr = require('./ocr');
 
 const app = express();
 const server = http.createServer(app);
@@ -19,8 +18,40 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static('public'));
-app.use('/uploads', express.static('uploads'));
+
+// A fingerprint of the shipped front-end, recomputed at boot. Clients compare
+// it against the value they loaded with and reload when it changes, so a deploy
+// reaches people who have had the tab (or PWA) open for days.
+const APP_VERSION = (() => {
+  try {
+    const files = ['public/js/app.js', 'public/js/calls.js', 'public/js/e2e.js',
+                   'public/css/style.css', 'public/index.html'];
+    const h = require('crypto').createHash('sha1');
+    for (const f of files) {
+      const p = path.join(__dirname, f);
+      if (fs.existsSync(p)) h.update(fs.readFileSync(p));
+    }
+    return h.digest('hex').slice(0, 12);
+  } catch {
+    return String(Date.now());
+  }
+})();
+console.log('[web] app version', APP_VERSION);
+app.get('/version', (req, res) => res.json({ version: APP_VERSION }));
+
+// The front-end files must be REVALIDATED on every load, or a browser happily
+// serves a months-old app.js from disk cache and never sees a deploy. ETags
+// make that revalidation cheap (304, no body). Hashed/immutable assets like
+// uploads keep their long cache.
+app.use(express.static('public', {
+  etag: true,
+  setHeaders(res, filePath) {
+    if (/\.(html|js|css|json)$/i.test(filePath)) {
+      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+    }
+  },
+}));
+app.use('/uploads', express.static('uploads', { maxAge: '30d', immutable: true }));
 
 const storage = multer.diskStorage({
   destination: 'uploads/',
@@ -567,52 +598,6 @@ app.get('/messages/:roomId', authMiddleware, (req, res) => {
         ORDER BY m.created_at DESC LIMIT ?
       `).all(req.params.roomId, MESSAGES_PAGE_SIZE);
   res.json(messages.reverse());
-});
-
-// Extract text from an image message (OCR). Cached: recognition takes seconds
-// and the result never changes. `index` selects which picture of a gallery.
-app.post('/ocr/:messageId', authMiddleware, async (req, res) => {
-  const msg = db.prepare('SELECT * FROM messages WHERE id = ?').get(req.params.messageId);
-  if (!msg) return res.status(404).json({ error: 'Message not found' });
-  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(msg.room_id);
-  if (!room || !canAccessRoom(req.user.id, room)) return res.status(403).json({ error: 'Not allowed' });
-  if (msg.one_time_seconds) return res.status(403).json({ error: 'One-time media cannot be scanned' });
-  if (msg.type !== 'image' && msg.type !== 'gallery') {
-    return res.status(400).json({ error: 'Not an image' });
-  }
-
-  // Resolve which file to read.
-  let rel = msg.file_path;
-  if (msg.type === 'gallery') {
-    let urls = [];
-    try { urls = JSON.parse(msg.file_path || '[]'); } catch {}
-    const i = Math.max(0, Math.min(parseInt(req.body?.index, 10) || 0, urls.length - 1));
-    rel = urls[i];
-  }
-  if (!rel) return res.status(400).json({ error: 'No image on this message' });
-
-  const cached = db.prepare('SELECT * FROM ocr_results WHERE message_id = ? AND file_path = ?')
-    .get(msg.id, rel);
-  if (cached) {
-    return res.json({ text: cached.text || '', lang: cached.lang, confidence: cached.confidence, cached: true });
-  }
-
-  // Keep the path inside uploads/ — never let a crafted file_path escape it.
-  const uploadsDir = path.resolve(__dirname, 'uploads');
-  const abs = path.resolve(__dirname, '.' + rel);
-  if (!abs.startsWith(uploadsDir + path.sep) || !fs.existsSync(abs)) {
-    return res.status(404).json({ error: 'Image file not found' });
-  }
-
-  try {
-    const { text, lang, confidence } = await ocr.recognise(abs);
-    db.prepare(`INSERT OR REPLACE INTO ocr_results (message_id, file_path, text, lang, confidence)
-                VALUES (?, ?, ?, ?, ?)`).run(msg.id, rel, text, lang, confidence);
-    res.json({ text, lang, confidence, cached: false });
-  } catch (err) {
-    console.error('[ocr]', err.message);
-    res.status(500).json({ error: 'Could not read text from this image' });
-  }
 });
 
 // Every reaction in a room, keyed by message id. The client had no way to load

@@ -1,4 +1,6 @@
-const CACHE = 'chatroom-v2';
+// Bump this whenever the caching strategy changes — activate() deletes every
+// cache that isn't the current name, so an old worker's store can't linger.
+const CACHE = 'chatroom-v3';
 const STATIC = ['/css/style.css', '/js/app.js', '/manifest.json'];
 
 self.addEventListener('install', e => {

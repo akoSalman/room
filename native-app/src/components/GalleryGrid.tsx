@@ -7,14 +7,16 @@ import ImageWithSpinner from './ImageWithSpinner';
 const GAP = 3;
 const MAX = 250; // overall width of the mosaic
 
-export default function GalleryGrid({ uris, onOpen, onFirstLoaded }: {
+export default function GalleryGrid({ uris, onOpen, onFirstLoaded, onLongPress }: {
   uris: string[];
   onOpen: (index: number) => void;
+  onLongPress?: () => void;   // opens the message menu, like any other bubble
   onFirstLoaded?: () => void;
 }) {
   const n = uris.length;
   const cell = (idx: number, w: number, h: number, extra?: number) => (
-    <TouchableOpacity key={idx} activeOpacity={0.85} onPress={() => onOpen(idx)} style={{ width: w, height: h }}>
+    <TouchableOpacity key={idx} activeOpacity={0.85} onPress={() => onOpen(idx)}
+        onLongPress={onLongPress} delayLongPress={350} style={{ width: w, height: h }}>
       <ImageWithSpinner
         uri={uris[idx]}
         style={{ width: w, height: h, borderRadius: 10 }}

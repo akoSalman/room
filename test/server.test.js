@@ -97,7 +97,6 @@ async function main() {
   }
   sockets.forEach(s => s.close());
   server.close();
-  try { await require('../ocr').shutdown(); } catch {}
   console.log(`\n${passed} passed, ${failed} failed`);
   fs.rmSync(TMP, { recursive: true, force: true });
   process.exit(failed ? 1 : 0);
@@ -353,79 +352,19 @@ test('one-time message destruction reaches a sender who left the room channel', 
   assert.ok(!history.some(m => m.id === msg.id), 'destroyed one-time message still in history');
 }, 15000);
 
-// ── OCR ──────────────────────────────────────────────────────────────────────
-// These are slower (real recognition), so they run last.
+test('serves an app version fingerprint for client auto-update', async () => {
+  const v = await api('/version');
+  assert.ok(v.version && typeof v.version === 'string', `no version: ${JSON.stringify(v)}`);
+  const again = await api('/version');
+  assert.strictEqual(again.version, v.version, 'version must be stable between calls');
+});
 
-// Upload a fixture image and post it as an image message; returns the message.
-async function sendImage(sock, token, roomId, fixture) {
-  const buf = fs.readFileSync(path.join(__dirname, 'fixtures', fixture));
-  const form = new FormData();
-  form.append('file', new Blob([buf], { type: 'image/png' }), fixture);
-  const up = await fetch(baseUrl + '/upload', {
-    method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form,
-  }).then(r => r.json());
-  assert.ok(up.url, `upload failed: ${JSON.stringify(up)}`);
-  const got = waitFor(sock, 'message_received', m => m.room_id === roomId && m.type === 'image');
-  await emit(sock, 'send_message',
-    { roomId, type: 'image', filePath: up.url, fileName: fixture });
-  return got;
-}
-
-test('OCR reads English text from an image', async () => {
-  const u = await signUp('ocr20');
-  const sock = await connect(u.token);
-  const room = await api('/rooms', 'POST', { name: 'room-20' }, u.token);
-  const msg = await sendImage(sock, u.token, room.id, 'english.png');
-
-  const res = await api(`/ocr/${msg.id}`, 'POST', {}, u.token);
-  assert.ok(!res.error, `ocr failed: ${JSON.stringify(res)}`);
-  assert.match(res.text, /Hello World/, `expected "Hello World", got ${JSON.stringify(res.text)}`);
-  assert.match(res.text, /12345/);
-}, 60000);
-
-test('OCR reads PERSIAN text from an image', async () => {
-  const u = await signUp('ocr21');
-  const sock = await connect(u.token);
-  const room = await api('/rooms', 'POST', { name: 'room-21' }, u.token);
-  const msg = await sendImage(sock, u.token, room.id, 'persian.png');
-
-  const res = await api(`/ocr/${msg.id}`, 'POST', {}, u.token);
-  assert.ok(!res.error, `ocr failed: ${JSON.stringify(res)}`);
-  // The exact Persian sentence must come back intact.
-  assert.ok(res.text.includes('این یک متن آزمایشی است'),
-    `Persian not recognised, got ${JSON.stringify(res.text)}`);
-  assert.ok(res.text.includes('سلام'), `expected سلام in ${JSON.stringify(res.text)}`);
-  assert.strictEqual(res.lang, 'fas', `expected the Persian pass to win, got ${res.lang}`);
-}, 60000);
-
-test('OCR result is cached on the second call', async () => {
-  const u = await signUp('ocr22');
-  const sock = await connect(u.token);
-  const room = await api('/rooms', 'POST', { name: 'room-22' }, u.token);
-  const msg = await sendImage(sock, u.token, room.id, 'english.png');
-
-  const first = await api(`/ocr/${msg.id}`, 'POST', {}, u.token);
-  assert.strictEqual(first.cached, false);
-  const second = await api(`/ocr/${msg.id}`, 'POST', {}, u.token);
-  assert.strictEqual(second.cached, true, 'second call should hit the cache');
-  assert.strictEqual(second.text, first.text);
-}, 60000);
-
-test('OCR is access controlled and refuses non-images', async () => {
-  const owner = await signUp('ocr23');
-  const outsider = await signUp('outsider23');
-  const sock = await connect(owner.token);
-  const room = await api('/rooms', 'POST', { name: 'room-23', isPrivate: true }, owner.token);
-  const msg = await sendImage(sock, owner.token, room.id, 'english.png');
-
-  const denied = await api(`/ocr/${msg.id}`, 'POST', {}, outsider.token);
-  assert.ok(denied.error, 'outsider could OCR a private room image');
-
-  const got = waitFor(sock, 'message_received', m => m.type === 'text' && m.room_id === room.id);
-  await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: 'plain' });
-  const textMsg = await got;
-  const bad = await api(`/ocr/${textMsg.id}`, 'POST', {}, owner.token);
-  assert.ok(bad.error, 'OCR accepted a text message');
-}, 60000);
+test('front-end assets are sent with revalidation headers', async () => {
+  const res = await fetch(baseUrl + '/js/app.js');
+  assert.strictEqual(res.status, 200);
+  const cc = res.headers.get('cache-control') || '';
+  assert.match(cc, /no-cache/, `app.js must revalidate, got "${cc}"`);
+  assert.ok(res.headers.get('etag'), 'no ETag — revalidation would refetch the whole body');
+});
 
 main().catch(err => { console.error(err); process.exit(1); });
