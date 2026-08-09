@@ -323,6 +323,36 @@ test('room-reactions is access controlled', async () => {
   assert.ok(res.error, 'outsider could read reactions of a private room');
 });
 
+test('one-time message destruction reaches a sender who left the room channel', async () => {
+  const sender = await signUp('ot30');
+  const receiver = await signUp('ot31');
+  const sSock = await connect(sender.token);
+  const rSock = await connect(receiver.token);
+
+  const room = await api('/rooms', 'POST', { name: 'room-30' }, sender.token);
+  // Receiver is "in" the room; the SENDER never joins the presence channel —
+  // exactly the state after backgrounding the app (leave_room).
+  rSock.emit('join_room', room.id);
+
+  const got = waitFor(rSock, 'message_received', m => m.room_id === room.id);
+  await emit(sSock, 'send_message',
+    { roomId: room.id, type: 'text', content: 'burn after reading', oneTimeSeconds: 1 });
+  const msg = await got;
+
+  // The sender must be told the countdown started…
+  const viewed = waitFor(sSock, 'one_time_viewed', p => p.messageId === msg.id, 4000);
+  // …and that it was destroyed, or it stays on their screen forever.
+  const deleted = waitFor(sSock, 'message_deleted', p => p.messageId === msg.id, 6000);
+
+  rSock.emit('view_one_time', { messageId: msg.id });
+  await viewed;
+  await deleted;
+
+  // And it really is gone from history.
+  const history = await api(`/messages/${room.id}`, 'GET', null, sender.token);
+  assert.ok(!history.some(m => m.id === msg.id), 'destroyed one-time message still in history');
+}, 15000);
+
 // ── OCR ──────────────────────────────────────────────────────────────────────
 // These are slower (real recognition), so they run last.
 

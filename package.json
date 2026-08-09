@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node test/server.test.js && node test/mime.test.js"
+    "test": "node test/server.test.js && node test/mime.test.js && node test/tokens.test.js"
   },
   "repository": {
     "type": "git",
@@ -14,6 +14,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@tesseract.js-data/eng": "^1.0.0",
+    "@tesseract.js-data/fas": "^1.0.0",
     "bcrypt": "^6.0.0",
     "better-sqlite3": "^12.11.1",
     "cors": "^2.8.6",
@@ -21,9 +23,7 @@
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.2.0",
     "socket.io": "^4.8.3",
-    "tesseract.js": "^7.0.0",
-    "@tesseract.js-data/eng": "^1.0.0",
-    "@tesseract.js-data/fas": "^1.0.0"
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "socket.io-client": "^4.8.3"

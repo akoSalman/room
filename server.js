@@ -244,7 +244,15 @@ function destroyMessage(msg) {
       if (!shared) fs.unlink(path.join(__dirname, p), () => {});
     });
   }
-  io.to(String(msg.room_id)).emit('message_deleted', { messageId: msg.id });
+  // Deliver to every member's personal channel as well as the presence room.
+  // Sockets drop out of the presence channel whenever the app is backgrounded
+  // (leave_room), so a sender who stepped away never learned their one-time
+  // message had been opened and destroyed — it was still sitting in their chat
+  // when they came back.
+  const payload = { messageId: msg.id, roomId: msg.room_id };
+  io.to(String(msg.room_id)).emit('message_deleted', payload);
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(msg.room_id);
+  if (room) getRoomMemberIds(room).forEach(id => io.to('user:' + id).emit('message_deleted', payload));
 }
 
 // Sweep for one-time messages whose timer elapsed while the server was down
@@ -1170,9 +1178,11 @@ io.on('connection', (socket) => {
       db.prepare('UPDATE messages SET viewed_at = ? WHERE id = ?').run(now, msg.id);
       msg.viewed_at = now;
       // Let everyone (including the sender) see the countdown has started
-      io.to(String(msg.room_id)).emit('one_time_viewed', {
-        messageId: msg.id, viewedAt: now, seconds: msg.one_time_seconds,
-      });
+      const viewed = { messageId: msg.id, roomId: msg.room_id, viewedAt: now, seconds: msg.one_time_seconds };
+      io.to(String(msg.room_id)).emit('one_time_viewed', viewed);
+      // …and to every member directly, so a backgrounded sender still sees the
+      // countdown start (and the destruction that follows).
+      getRoomMemberIds(room).forEach(id => io.to('user:' + id).emit('one_time_viewed', viewed));
       setTimeout(() => {
         const still = db.prepare('SELECT * FROM messages WHERE id = ?').get(msg.id);
         if (still) destroyMessage(still);

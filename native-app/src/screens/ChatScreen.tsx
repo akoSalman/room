@@ -33,6 +33,8 @@ import MusicPlayer from '../components/MusicPlayer';
 import FullMusicPlayer from '../components/FullMusicPlayer';
 import type { Track } from '../audioManager';
 import { guessMime, messageTypeFor, fileIcon, extOf } from '../mime';
+import { tokenize, telHref, toAsciiDigits } from '../textTokens';
+import { toast } from '../components/Toast';
 import * as outbox from '../outbox';
 import EmojiBurst from '../components/EmojiBurst';
 
@@ -145,6 +147,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // Text extracted from an image (OCR), shown in a selectable popup.
   const [ocr, setOcr] = useState<{ loading: boolean; text: string; error: string | null } | null>(null);
   const [copiedOcr, setCopiedOcr] = useState(false);
+  // Tapped link / phone number → sheet offering both sensible actions.
+  const [tokenAction, setTokenAction] = useState<{ kind: 'url' | 'phone'; text: string } | null>(null);
   const [inviteName, setInviteName] = useState('');
   const [inviteSuggestions, setInviteSuggestions] = useState<any[]>([]);
   const [inviteSearching, setInviteSearching] = useState(false);
@@ -366,10 +370,21 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       setMessages(prev => {
         const have = new Set(prev.map(m => m.id));
         const fresh = msgs.filter((m: any) => !have.has(m.id));
-        if (!fresh.length) return prev;
+        // Reconcile DELETIONS too. A one-time message opened while we were in
+        // the background is destroyed server-side; if the socket event was
+        // missed the message would otherwise sit in the chat forever. Only
+        // messages inside the window this response covers can be judged
+        // missing — anything older simply wasn't returned.
+        const serverIds = new Set(msgs.map((m: any) => m.id));
+        const windowStart = msgs[0].id;
+        const survives = (m: any) =>
+          typeof m.id !== 'number' || m.id < windowStart || serverIds.has(m.id);
+        const dropped = prev.filter(m => !survives(m));
+        if (!fresh.length && !dropped.length) return prev;
         // Server messages (numeric ids) stay ordered; optimistic tmp-* stay last
-        const numeric = prev.filter(m => typeof m.id === 'number');
-        const temp = prev.filter(m => typeof m.id !== 'number');
+        const kept = prev.filter(survives);
+        const numeric = kept.filter(m => typeof m.id === 'number');
+        const temp = kept.filter(m => typeof m.id !== 'number');
         const merged = [...numeric, ...fresh].sort((a: any, b: any) => a.id - b.id);
         return [...merged, ...temp];
       });
@@ -545,7 +560,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       sock.on('message_edited', ({ messageId, content }: any) => {
         setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content, edited: 1 } : m));
       });
-      sock.on('message_deleted', ({ messageId }: any) => {
+      sock.on('message_deleted', ({ messageId, roomId }: any) => {
+        if (roomId != null && roomId !== room.id) return; // now also personal-channel
+
         // If the lightbox is showing an image that belongs to the message
         // being destroyed (e.g. a one-time image whose timer ran out), close
         // it so the picture vanishes from view too.
@@ -572,7 +589,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       sock.on('user_stopped_recording', ({ username: u }: any) => {
         setRecordingUsers(prev => prev.filter(x => x !== u));
       });
-      sock.on('one_time_viewed', ({ messageId, seconds }: any) => {
+      sock.on('one_time_viewed', ({ messageId, roomId, seconds }: any) => {
+        // Also delivered on our personal channel now, so ignore other rooms.
+        if (roomId != null && roomId !== room.id) return;
         setOneTimeExpiry(prev => ({ ...prev, [messageId]: Date.now() + seconds * 1000 }));
       });
 
@@ -1193,30 +1212,31 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   // URLs (with or without protocol), card numbers, and phone numbers.
-  const COPYABLE_RE = /(https?:\/\/[^\s]+|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:\/[^\s]*)?|(?:\d{4}[ -]?){3}\d{4}|\+?\d[\d ()-]{8,14}\d)/g;
-  const isUrlToken = (t: string) => /^https?:\/\//.test(t) || /^(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}/.test(t);
+  // Copy helper: always confirms, so the user knows it worked.
+  function copy(text: string, label?: string) {
+    Clipboard.setStringAsync(text);
+    toast(label ? `Copied ${label}` : 'Copied');
+  }
 
-  // Each copyable token (link / phone / card number) gets a small inline 📋
-  // right after it — no duplicated text below the message.
+  // Every number, phone number and link inside a message is tappable. Numbers
+  // copy straight away; phones and links open a small sheet offering both
+  // actions, since either could be what the user wanted. Persian and
+  // Arabic-Indic digits are recognised the same as ASCII ones.
   function renderTextWithLinks(content: string) {
-    const parts = content.split(COPYABLE_RE);
-    return parts.map((part, i) => {
-      if (!part) return null;
-      COPYABLE_RE.lastIndex = 0;
-      if (!COPYABLE_RE.test(part)) return <Text key={i}>{part}</Text>;
-      COPYABLE_RE.lastIndex = 0;
-      const url = isUrlToken(part);
+    return tokenize(content).map((tok, i) => {
+      if (tok.kind === 'text') return <Text key={i}>{tok.text}</Text>;
+      if (tok.kind === 'number') {
+        return (
+          <Text key={i} style={s.copyableNumber}
+            onPress={() => copy(tok.text, 'number')}>{tok.text}</Text>
+        );
+      }
       return (
-        <Text key={i}>
-          <Text
-            style={url ? s.link : s.copyableNumber}
-            onPress={url ? () => handleLinkPress(part) : () => {
-              Clipboard.setStringAsync(part.trim());
-              Alert.alert('Copied', part.trim());
-            }}
-          >{part}</Text>
-          <Text style={s.inlineCopy} onPress={() => Clipboard.setStringAsync(part.trim())}> 📋</Text>
-        </Text>
+        <Text
+          key={i}
+          style={tok.kind === 'url' ? s.link : s.copyablePhone}
+          onPress={() => setTokenAction({ kind: tok.kind as 'url' | 'phone', text: tok.text })}
+        >{tok.text}</Text>
       );
     });
   }
@@ -1446,7 +1466,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             </TouchableOpacity>
           )}
           {!hiddenOneTime && msg.type === 'text' && (
-            <Text style={s.msgText}>{renderTextWithLinks(msg.content || '')}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}{msg.one_time_seconds ? <Text style={s.oneTimeTag}> 🔥{msg.one_time_seconds}s</Text> : null}</Text>
+            <Text style={s.msgText} selectable>{renderTextWithLinks(msg.content || '')}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}{msg.one_time_seconds ? <Text style={s.oneTimeTag}> 🔥{msg.one_time_seconds}s</Text> : null}</Text>
           )}
           {msg.type === 'call' && (() => {
             let c: any = {};
@@ -1572,7 +1592,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             );
           })()}
           {!hiddenOneTime && msg.type !== 'text' && msg.type !== 'invite' && msg.type !== 'call' && msg.content ? (
-            <Text style={[s.msgText, s.caption]}>{renderTextWithLinks(msg.content)}</Text>
+            <Text style={[s.msgText, s.caption]} selectable>{renderTextWithLinks(msg.content)}</Text>
           ) : null}
           {msg.one_time_seconds && !hiddenOneTime && !msg._uploading ? (
             <TouchableOpacity onPress={() => hideOneTime(msg)}>
@@ -1769,6 +1789,47 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         </GestureHandlerRootView>
       </Modal>
 
+      {/* Tapped link or phone: copy vs open/call — one tap, both options. */}
+      <Modal visible={!!tokenAction} transparent animationType="fade" onRequestClose={() => setTokenAction(null)}>
+        <View style={s.sheetOverlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setTokenAction(null)} />
+          {tokenAction && (
+            <View style={s.actionSheet}>
+              <View style={s.sheetGrip} />
+              <Text style={s.tokenPreview} numberOfLines={2} selectable>{tokenAction.text}</Text>
+              <View style={s.sheetDivider} />
+              <TouchableOpacity style={s.sheetRow} onPress={() => {
+                const t = tokenAction; setTokenAction(null);
+                copy(t.text, t.kind === 'phone' ? 'number' : 'link');
+              }}>
+                <Text style={s.sheetRowIcon}>📋</Text>
+                <Text style={s.sheetRowText}>Copy</Text>
+              </TouchableOpacity>
+              {tokenAction.kind === 'phone' ? (
+                <TouchableOpacity style={s.sheetRow} onPress={() => {
+                  const t = tokenAction; setTokenAction(null);
+                  Linking.openURL(telHref(t.text)).catch(() => toast('No dialler available'));
+                }}>
+                  <Text style={s.sheetRowIcon}>📞</Text>
+                  <Text style={s.sheetRowText}>Call {toAsciiDigits(tokenAction.text)}</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity style={s.sheetRow} onPress={() => {
+                  const t = tokenAction; setTokenAction(null);
+                  handleLinkPress(t.text);
+                }}>
+                  <Text style={s.sheetRowIcon}>🌐</Text>
+                  <Text style={s.sheetRowText}>Open link</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity style={s.sheetCancel} onPress={() => setTokenAction(null)}>
+                <Text style={s.sheetCancelText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+        </View>
+      </Modal>
+
       {/* Extracted image text: selectable + copyable, RTL-aware for Persian */}
       <Modal visible={!!ocr} transparent animationType="fade" onRequestClose={() => setOcr(null)}>
         <View style={s.sheetOverlay}>
@@ -1795,7 +1856,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 </ScrollView>
                 <TouchableOpacity
                   style={s.ocrCopyBtn}
-                  onPress={() => { Clipboard.setStringAsync(ocr.text); setCopiedOcr(true); setTimeout(() => setCopiedOcr(false), 1500); }}>
+                  onPress={() => { copy(ocr.text, 'text'); setCopiedOcr(true); setTimeout(() => setCopiedOcr(false), 1500); }}>
                   <Text style={s.ocrCopyText}>{copiedOcr ? '✓ Copied' : '📋  Copy all text'}</Text>
                 </TouchableOpacity>
               </>
@@ -2021,7 +2082,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                     let fp = m.file_path || '';
                     if (m.type === 'gallery') { try { fp = JSON.parse(fp)[0] || ''; } catch {} }
                     const t = m.type === 'text' ? (m.content || '') : `${BASE_URL}${fp}`;
-                    if (t) Clipboard.setStringAsync(t);
+                    if (t) copy(t, m.type === 'text' ? 'message' : 'link');
                     close();
                   }} />
                 )}
@@ -2468,6 +2529,10 @@ const s = StyleSheet.create({
     borderRadius: 12, paddingVertical: 13, alignItems: 'center',
   },
   ocrCopyText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  tokenPreview: {
+    color: C.text, fontSize: 15, fontWeight: '600', textAlign: 'center',
+    paddingHorizontal: 22, paddingVertical: 4,
+  },
 
   pendingMediaBar: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
@@ -2484,6 +2549,7 @@ const s = StyleSheet.create({
   },
   pendingMediaRemoveText: { color: '#fff', fontSize: 10, fontWeight: '700', lineHeight: 12 },
   copyableNumber: { color: C.accent, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  copyablePhone: { color: C.accent, fontWeight: '700', textDecorationLine: 'underline' },
   inlineCopy: { fontSize: 13 },
   bubbleHighlight: { borderWidth: 2, borderColor: C.accent },
   mineBubble: { backgroundColor: C.mine, borderBottomRightRadius: 3 },

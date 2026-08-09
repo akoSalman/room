@@ -1577,16 +1577,49 @@ function sendRecording() {
 // ─── Links in messages ────────────────────────────────────────────────────────
 // URLs (with or without protocol), card numbers, and phone numbers each get a
 // small copy icon.
-const COPYABLE_RE = /(https?:\/\/[^\s]+|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:\/[^\s]*)?|(?:\d{4}[ -]?){3}\d{4}|\+?\d[\d ()-]{8,14}\d)/g;
+// Digits come in three flavours users type here: ASCII, Persian (۰-۹) and
+// Arabic-Indic (٠-٩). All are recognised; tel: links need ASCII.
+const DIGITS = '0-9۰-۹٠-٩';
+const TOKEN_RE = new RegExp(
+  '(https?:\\/\\/[^\\s]+|(?:[a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,}(?:\\/[^\\s]*)?' +
+  `|\\+?[${DIGITS}](?:[ \\-()\\u200f\\u200e.]?[${DIGITS}]){7,17}` +
+  `|[${DIGITS}]+(?:[.,\\u066B\\u066C][${DIGITS}]+)*)`, 'g');
 const URLISH_RE = /^(https?:\/\/|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,})/;
 
-function copyToClipboard(text, iconEl) {
-  const done = () => {
-    if (!iconEl) return;
-    const orig = iconEl.textContent;
-    iconEl.textContent = '✅';
-    setTimeout(() => { iconEl.textContent = orig; }, 1200);
-  };
+function toAsciiDigits(str) {
+  return String(str).replace(/[۰-۹٠-٩]/g, ch => {
+    const c = ch.charCodeAt(0);
+    return String(c - (c >= 0x06F0 ? 0x06F0 : 0x0660));
+  });
+}
+function countDigits(str) {
+  return (String(str).match(new RegExp('[' + DIGITS + ']', 'g')) || []).length;
+}
+function isPhoneToken(t) {
+  if (URLISH_RE.test(t)) return false;
+  const d = countDigits(t);
+  if (d < 8 || d > 15) return false;
+  return !/[.,٫]\d{1,2}$/.test(t);
+}
+
+// Non-blocking "Copied" confirmation, so the user always knows it worked.
+let toastTimer = null;
+function showToast(message) {
+  let el = document.getElementById('copy-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'copy-toast';
+    el.className = 'copy-toast';
+    document.body.appendChild(el);
+  }
+  el.textContent = message;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 1500);
+}
+
+function copyToClipboard(text, label) {
+  const done = () => showToast(label ? 'Copied ' + label : 'Copied');
   if (navigator.clipboard?.writeText) {
     navigator.clipboard.writeText(text).then(done, done);
   } else {
@@ -1597,45 +1630,91 @@ function copyToClipboard(text, iconEl) {
   }
 }
 
-function makeCopyBtn(text) {
-  const btn = document.createElement('button');
-  btn.className = 'copy-chip-btn';
-  btn.title = 'Copy';
-  btn.textContent = '📋';
-  btn.onclick = (e) => { e.stopPropagation(); e.preventDefault(); copyToClipboard(text.trim(), btn); };
-  return btn;
+// Tapping a link or phone number offers BOTH sensible actions rather than
+// guessing which one was meant.
+function openTokenMenu(kind, text) {
+  const back = document.createElement('div');
+  back.className = 'token-menu-backdrop';
+  const card = document.createElement('div');
+  card.className = 'token-menu';
+  const preview = document.createElement('div');
+  preview.className = 'token-menu-preview';
+  preview.textContent = text;
+  card.appendChild(preview);
+
+  const addRow = (icon, label, fn) => {
+    const b = document.createElement('button');
+    b.className = 'token-menu-row';
+    b.innerHTML = '<span>' + icon + '</span>';
+    b.appendChild(document.createTextNode(' ' + label));
+    b.onclick = (e) => { e.stopPropagation(); back.remove(); fn(); };
+    card.appendChild(b);
+  };
+  addRow('📋', 'Copy', () => copyToClipboard(text, kind === 'phone' ? 'number' : 'link'));
+  if (kind === 'phone') {
+    const ascii = toAsciiDigits(text);
+    const tel = 'tel:' + (ascii.trim().startsWith('+') ? '+' : '') + ascii.replace(/[^\d]/g, '');
+    addRow('📞', 'Call ' + ascii, () => { location.href = tel; });
+  } else {
+    const href = /^https?:\/\//.test(text) ? text : 'https://' + text;
+    addRow('🌐', 'Open link', () => {
+      const joinMatch = /\/join\/(\d+)/.exec(href);
+      if (joinMatch && href.startsWith(location.origin)) joinRoomById(joinMatch[1]);
+      else window.open(href, '_blank', 'noopener');
+    });
+  }
+  const cancel = document.createElement('button');
+  cancel.className = 'token-menu-cancel';
+  cancel.textContent = 'Cancel';
+  cancel.onclick = () => back.remove();
+  card.appendChild(cancel);
+
+  back.appendChild(card);
+  back.onclick = () => back.remove();
+  document.body.appendChild(back);
 }
 
 function appendLinkifiedText(container, content) {
-  const parts = content.split(COPYABLE_RE);
   let hasCopyable = false;
-  parts.forEach(part => {
-    if (!part) return;
-    if (URLISH_RE.test(part)) {
+  let last = 0;
+  const re = new RegExp(TOKEN_RE.source, 'g');
+  let m;
+  const src = String(content ?? '');
+  while ((m = re.exec(src))) {
+    if (m.index > last) container.appendChild(document.createTextNode(src.slice(last, m.index)));
+    const raw = m[0];
+    const tok = raw.replace(/[\s.,\-()]+$/, '');
+    const tail = raw.slice(tok.length);
+    if (!tok) {
+      container.appendChild(document.createTextNode(raw));
+    } else if (URLISH_RE.test(tok)) {
       hasCopyable = true;
-      const href = /^https?:\/\//.test(part) ? part : 'https://' + part;
       const a = document.createElement('a');
-      a.href = href; a.textContent = part; a.className = 'msg-link';
-      const joinMatch = /\/join\/(\d+)/.exec(href);
-      if (joinMatch && href.startsWith(location.origin)) {
-        a.onclick = (e) => { e.preventDefault(); joinRoomById(joinMatch[1]); };
-      } else {
-        a.target = '_blank'; a.rel = 'noopener';
-      }
+      a.href = '#'; a.textContent = tok; a.className = 'msg-link';
+      a.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openTokenMenu('url', tok); };
       container.appendChild(a);
-      container.appendChild(makeCopyBtn(part));
-    } else if (COPYABLE_RE.test(part) && /\d/.test(part)) {
+    } else if (isPhoneToken(tok)) {
+      hasCopyable = true;
+      const b = document.createElement('span');
+      b.className = 'copyable-phone';
+      b.textContent = tok;
+      b.onclick = (e) => { e.stopPropagation(); openTokenMenu('phone', tok); };
+      container.appendChild(b);
+    } else if (countDigits(tok) > 0) {
       hasCopyable = true;
       const span = document.createElement('span');
       span.className = 'copyable-number';
-      span.textContent = part;
+      span.title = 'Tap to copy';
+      span.textContent = tok;
+      span.onclick = (e) => { e.stopPropagation(); copyToClipboard(tok, 'number'); };
       container.appendChild(span);
-      container.appendChild(makeCopyBtn(part));
     } else {
-      container.appendChild(document.createTextNode(part));
+      container.appendChild(document.createTextNode(raw));
     }
-    COPYABLE_RE.lastIndex = 0; // reset global-regex state between .test() calls
-  });
+    if (tail) container.appendChild(document.createTextNode(tail));
+    last = m.index + raw.length;
+  }
+  if (last < src.length) container.appendChild(document.createTextNode(src.slice(last)));
   return hasCopyable;
 }
 

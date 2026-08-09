@@ -15,6 +15,7 @@ import ConnectionStatus from './src/components/ConnectionStatus';
 import { callManager } from './src/callManager';
 import ChatScreen from './src/screens/ChatScreen';
 import MiniPlayer from './src/components/MiniPlayer';
+import Toast from './src/components/Toast';
 import { disconnectSocket, getSocket, getUsername, apiFetch, ensureSocketAlive } from './src/api';
 import { audioManager } from './src/audioManager';
 import * as outbox from './src/outbox';
@@ -391,6 +392,8 @@ export default function App() {
             </View>
           </Modal>
           {/* Rendered last so the full-screen call UI sits above every screen */}
+          {/* App-wide copy confirmations */}
+          <Toast />
           {screen !== 'auth' && <CallOverlay />}
           {screen !== 'auth' && <ConnectionStatus />}
         </SafeAreaView>
