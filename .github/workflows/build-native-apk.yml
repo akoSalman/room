@@ -110,15 +110,30 @@ jobs:
       - name: Generate native Android project
         run: npx expo prebuild --platform android --no-install --clean
 
-      # The release APK was 117MB because it packed native libraries for all
-      # four ABIs. x86/x86_64 exist only for emulators, so dropping them halves
-      # the download for every real device and costs nothing. (Going arm64-only
-      # would shrink it further but drops pre-2017 32-bit phones.)
+      # The release APK packed native libraries for all four ABIs; x86/x86_64
+      # exist only for emulators. NOTE: setting `reactNativeArchitectures` alone
+      # does NOT do this — it only controls what React Native compiles from
+      # source, while prebuilt AARs (WebRTC especially) still contribute .so
+      # files for every ABI. Real packaging filtering needs ndk.abiFilters in
+      # the app module, injected here because prebuild regenerates the project.
       - name: Limit to real-device architectures
         run: |
           sed -i '/^reactNativeArchitectures=/d' android/gradle.properties
           echo 'reactNativeArchitectures=armeabi-v7a,arm64-v8a' >> android/gradle.properties
-          grep reactNativeArchitectures android/gradle.properties
+          node -e "
+            const fs = require('fs');
+            const p = 'android/app/build.gradle';
+            let g = fs.readFileSync(p, 'utf8');
+            if (g.includes('abiFilters')) { console.log('abiFilters already present'); process.exit(0); }
+            const marker = 'defaultConfig {';
+            const i = g.indexOf(marker);
+            if (i < 0) { console.error('defaultConfig not found in build.gradle'); process.exit(1); }
+            const inject = marker + '\n        ndk { abiFilters \'armeabi-v7a\', \'arm64-v8a\' }';
+            g = g.slice(0, i) + inject + g.slice(i + marker.length);
+            fs.writeFileSync(p, g);
+            console.log('injected ndk.abiFilters');
+          "
+          grep -A 2 'defaultConfig {' android/app/build.gradle | head -5
 
       - name: Make gradlew executable
         run: chmod +x android/gradlew
