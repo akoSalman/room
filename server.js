@@ -13,7 +13,18 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-const JWT_SECRET = process.env.JWT_SECRET || 'chat_secret_key_change_in_prod';
+// Fail closed: the server must NOT run on a missing or default signing secret.
+// A blank/default JWT_SECRET means anyone can forge a token for any account —
+// exactly the hole that was live on one server. Refuse to start instead of
+// silently falling back. (Set ALLOW_INSECURE_JWT=1 only for throwaway local
+// experiments where token forgery doesn't matter.)
+const DEFAULT_JWT = 'chat_secret_key_change_in_prod';
+const JWT_SECRET = process.env.JWT_SECRET;
+if ((!JWT_SECRET || JWT_SECRET === DEFAULT_JWT) && process.env.ALLOW_INSECURE_JWT !== '1') {
+  console.error('FATAL: JWT_SECRET is not set (or is the known default). Refusing to start — '
+    + 'set a strong random JWT_SECRET in the environment. Anyone could forge login tokens otherwise.');
+  process.exit(1);
+}
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
@@ -51,7 +62,20 @@ app.use(express.static('public', {
     }
   },
 }));
-app.use('/uploads', express.static('uploads', { maxAge: '30d', immutable: true }));
+// Uploads are USER-CONTROLLED content served from our own origin. Without
+// these headers, someone could upload an .html/.svg with JavaScript, send the
+// link, and have it run on our origin when opened — stealing the victim's token
+// from localStorage. `nosniff` stops content-type guessing, and forcing
+// `attachment` means a direct navigation downloads the file instead of
+// rendering it. Embedding still works: <img>/<video>/<audio> ignore
+// Content-Disposition, so media in the chat displays normally.
+app.use('/uploads', express.static('uploads', {
+  maxAge: '30d', immutable: true,
+  setHeaders(res) {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition', 'attachment');
+  },
+}));
 
 const storage = multer.diskStorage({
   destination: 'uploads/',
@@ -73,6 +97,26 @@ function authMiddleware(req, res, next) {
   }
 }
 
+// Simple in-memory rate limiter, keyed by IP+username, sized for one server
+// process. Not a substitute for a WAF, but it turns unlimited credential
+// stuffing against a known username into a few tries per minute.
+const MIN_PASSWORD_LEN = 8;
+const authAttempts = new Map(); // key -> { count, resetAt }
+const AUTH_WINDOW_MS = 60 * 1000;
+const AUTH_MAX = 10;
+function authRateLimited(key) {
+  const now = Date.now();
+  let e = authAttempts.get(key);
+  if (!e || now > e.resetAt) { e = { count: 0, resetAt: now + AUTH_WINDOW_MS }; authAttempts.set(key, e); }
+  e.count++;
+  return e.count > AUTH_MAX;
+}
+// Occasional cleanup so the map can't grow unbounded.
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, e] of authAttempts) if (now > e.resetAt) authAttempts.delete(k);
+}, 5 * 60 * 1000).unref?.();
+
 // Auth — usernames are unique identifiers. Login only signs in existing users;
 // creating an account requires an explicit register flag (clients confirm with
 // the user first), so a renamed account's old username is never silently
@@ -81,6 +125,10 @@ app.post('/auth/signin', async (req, res) => {
   const { username, password, register } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
   const uname = String(username).trim();
+  const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim();
+  if (authRateLimited(ip + '|' + uname.toLowerCase())) {
+    return res.status(429).json({ error: 'Too many attempts — please wait a minute and try again.' });
+  }
   const user = db.prepare('SELECT * FROM users WHERE username = ?').get(uname);
   if (user) {
     if (register) return res.status(409).json({ error: 'Username already taken' });
@@ -91,6 +139,10 @@ app.post('/auth/signin', async (req, res) => {
   }
   if (!register) {
     return res.status(404).json({ error: 'No account with this username', canRegister: true });
+  }
+  // New account: enforce a minimum password length.
+  if (String(password).length < MIN_PASSWORD_LEN) {
+    return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD_LEN} characters` });
   }
   try {
     const hash = await bcrypt.hash(password, 10);
@@ -745,14 +797,29 @@ io.on('connection', (socket) => {
     io.to(prev.roomId).emit('room_online', { users: oldOnline });
   });
 
+  // Message types a CLIENT is allowed to send. 'system'/'call'/'invite' are
+  // produced by the server only — letting clients set them would forge join
+  // notices, call logs and invitations.
+  const CLIENT_MSG_TYPES = new Set(['text', 'image', 'gallery', 'video', 'audio', 'music', 'file']);
+
   socket.on('send_message', (data, ack) => {
     const { roomId, type, content, filePath, fileName, replyToId, clientId, oneTimeSeconds } = data;
+    const reply = (r) => { if (typeof ack === 'function') ack(r); };
+
+    // Authorization: you may only post to a room you can access. Without this,
+    // any user could inject messages into a private room they're not in — or
+    // into a DM between two other people.
+    const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+    if (!room || !canAccessRoom(socket.user.id, room)) {
+      return reply({ error: 'Not allowed' });
+    }
+    const msgType = CLIENT_MSG_TYPES.has(type) ? type : 'text';
     const oneTime = Number.isInteger(oneTimeSeconds) && oneTimeSeconds >= 1 && oneTimeSeconds <= 3600
       ? oneTimeSeconds : null;
     const result = db.prepare(`
       INSERT INTO messages (room_id, user_id, type, content, file_path, file_name, reply_to_id, one_time_seconds)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(roomId, socket.user.id, type || 'text', content || null, filePath || null, fileName || null, replyToId || null, oneTime);
+    `).run(roomId, socket.user.id, msgType, content || null, filePath || null, fileName || null, replyToId || null, oneTime);
 
     const msg = db.prepare(`
       SELECT m.*, u.username, u.avatar,
@@ -766,8 +833,7 @@ io.on('connection', (socket) => {
     `).get(result.lastInsertRowid);
     if (clientId) msg.client_id = clientId; // lets the sender reconcile its optimistic local bubble
 
-    const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
-    const memberIds = room ? getRoomMemberIds(room) : [];
+    const memberIds = getRoomMemberIds(room);
     memberIds.forEach(id => io.to('user:' + id).emit('message_received', msg));
 
     // Users who have ANY socket actively viewing this room right now. Push is
@@ -1176,6 +1242,13 @@ io.on('connection', (socket) => {
   });
 
   socket.on('toggle_reaction', ({ messageId, emoji }) => {
+    if (!emoji || typeof emoji !== 'string' || emoji.length > 16) return;
+    // Authorization: you can only react to a message in a room you can access.
+    const target = db.prepare('SELECT room_id FROM messages WHERE id = ?').get(messageId);
+    if (!target) return;
+    const rRoom = db.prepare('SELECT * FROM rooms WHERE id = ?').get(target.room_id);
+    if (!canAccessRoom(socket.user.id, rRoom)) return;
+
     const existing = db.prepare(
       'SELECT id FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?'
     ).get(messageId, socket.user.id, emoji);

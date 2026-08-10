@@ -74,6 +74,18 @@ function waitFor(sock, event, match = () => true, ms = 3000) {
   });
 }
 
+// Raw fetch (status + headers), since api() only returns parsed JSON.
+async function raw(pathname, method = 'GET', body = null, token = null) {
+  return fetch(baseUrl + pathname, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+}
+
 // ── runner ───────────────────────────────────────────────────────────────────
 const tests = [];
 const test = (name, fn, timeoutMs) => tests.push({ name, fn, timeoutMs });
@@ -365,6 +377,111 @@ test('front-end assets are sent with revalidation headers', async () => {
   const cc = res.headers.get('cache-control') || '';
   assert.match(cc, /no-cache/, `app.js must revalidate, got "${cc}"`);
   assert.ok(res.headers.get('etag'), 'no ETag — revalidation would refetch the whole body');
+});
+
+// ── security regressions ─────────────────────────────────────────────────────
+
+test('SECURITY: cannot post a message into a private room you are not in', async () => {
+  const owner = await signUp('sec_owner1');
+  const outsider = await signUp('sec_out1');
+  const ownerSock = await connect(owner.token);
+  const outSock = await connect(outsider.token);
+
+  const room = await api('/rooms', 'POST', { name: 'sec-priv-1', isPrivate: true }, owner.token);
+  const res = await emit(outSock, 'send_message', { roomId: room.id, type: 'text', content: 'intrusion' });
+  assert.ok(res && res.error, `outsider was allowed to post: ${JSON.stringify(res)}`);
+
+  const history = await api(`/messages/${room.id}`, 'GET', null, owner.token);
+  assert.ok(!history.some(m => m.content === 'intrusion'), 'injected message reached the private room');
+});
+
+test('SECURITY: cannot inject a message into someone else\'s DM', async () => {
+  const a = await signUp('sec_a2');
+  const b = await signUp('sec_b2');
+  const c = await signUp('sec_c2');   // outsider
+  const aSock = await connect(a.token);
+  const cSock = await connect(c.token);
+
+  // signUp doesn't return the numeric id; resolve B's id the way the client does.
+  const users = await api('/users', 'GET', null, a.token);
+  const bId = users.find(u => u.username === 'sec_b2').id;
+  const dm = await api(`/dm/${bId}`, 'POST', null, a.token);
+  assert.ok(dm.id, `DM not created: ${JSON.stringify(dm)}`);
+  await emit(aSock, 'send_message', { roomId: dm.id, type: 'text', content: 'hi B' });
+
+  const res = await emit(cSock, 'send_message', { roomId: dm.id, type: 'text', content: 'C was here' });
+  assert.ok(res && res.error, `outsider injected into a DM: ${JSON.stringify(res)}`);
+  const history = await api(`/messages/${dm.id}`, 'GET', null, a.token);
+  assert.ok(!history.some(m => m.content === 'C was here'), 'DM injection persisted');
+});
+
+test('SECURITY: client cannot forge a server-only message type', async () => {
+  const u = await signUp('sec_type3');
+  const sock = await connect(u.token);
+  const room = await api('/rooms', 'POST', { name: 'sec-type-3' }, u.token);
+  const got = waitFor(sock, 'message_received', m => m.room_id === room.id);
+  // Try to forge a fake "system" join notice.
+  await emit(sock, 'send_message', { roomId: room.id, type: 'system', content: '{"kind":"joined"}' });
+  const msg = await got;
+  assert.strictEqual(msg.type, 'text', `server accepted a forged type: ${msg.type}`);
+});
+
+test('SECURITY: cannot react to a message in a room you cannot access', async () => {
+  const owner = await signUp('sec_owner4');
+  const outsider = await signUp('sec_out4');
+  const ownerSock = await connect(owner.token);
+  const outSock = await connect(outsider.token);
+
+  const room = await api('/rooms', 'POST', { name: 'sec-priv-4', isPrivate: true }, owner.token);
+  const posted = waitFor(ownerSock, 'message_received', m => m.room_id === room.id);
+  await emit(ownerSock, 'send_message', { roomId: room.id, type: 'text', content: 'secret' });
+  const msg = await posted;
+
+  outSock.emit('toggle_reaction', { messageId: msg.id, emoji: '👀' });
+  await new Promise(r => setTimeout(r, 300)); // let any (wrongful) write land
+  const all = await api(`/room-reactions/${room.id}`, 'GET', null, owner.token);
+  assert.ok(!all[msg.id], 'outsider managed to react in a private room');
+});
+
+test('SECURITY: uploads are served as attachments with nosniff', async () => {
+  const u = await signUp('sec_up5');
+  const buf = Buffer.from('<script>alert(1)</script>');
+  const form = new FormData();
+  form.append('file', new Blob([buf], { type: 'text/html' }), 'evil.html');
+  const up = await fetch(baseUrl + '/upload', {
+    method: 'POST', headers: { Authorization: `Bearer ${u.token}` }, body: form,
+  }).then(r => r.json());
+  assert.ok(up.url, 'upload failed');
+
+  const res = await fetch(baseUrl + up.url);
+  assert.strictEqual(res.headers.get('content-disposition'), 'attachment',
+    'uploaded file is not forced to download — stored XSS risk');
+  assert.strictEqual((res.headers.get('x-content-type-options') || '').toLowerCase(), 'nosniff');
+});
+
+test('SECURITY: server refuses to start without a real JWT_SECRET', async () => {
+  const { spawnSync } = require('child_process');
+  const r = spawnSync(process.execPath, [path.join(__dirname, '..', 'server.js')], {
+    env: { ...process.env, JWT_SECRET: '', ALLOW_INSECURE_JWT: '', PORT: '0', DB_PATH: path.join(TMP, 'boot.db') },
+    encoding: 'utf8', timeout: 10000,
+  });
+  assert.notStrictEqual(r.status, 0, 'server started with no JWT_SECRET (should fail closed)');
+  assert.match((r.stderr || '') + (r.stdout || ''), /JWT_SECRET/, 'no explanation on refusing to start');
+});
+
+test('SECURITY: signin is rate limited', async () => {
+  await signUp('sec_rl6');
+  let sawLimit = false;
+  for (let i = 0; i < 15; i++) {
+    const r = await raw('/auth/signin', 'POST', { username: 'sec_rl6', password: 'wrongpass' });
+    if (r.status === 429) { sawLimit = true; break; }
+  }
+  assert.ok(sawLimit, 'no rate limiting kicked in after many failed attempts');
+});
+
+test('SECURITY: new accounts require a minimum password length', async () => {
+  const r = await api('/auth/signin', 'POST', { username: 'sec_short7', password: 'abc', register: true });
+  assert.ok(r.error && /at least/i.test(r.error), `short password accepted: ${JSON.stringify(r)}`);
 });
 
 main().catch(err => { console.error(err); process.exit(1); });
