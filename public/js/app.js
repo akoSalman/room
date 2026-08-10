@@ -215,6 +215,10 @@ async function signin() {
   try {
     let res = await api('/auth/signin', 'POST', { username: user, password: pass });
     if (res.error && res.canRegister) {
+      // Catch the length rule before registering (the server enforces the same).
+      if (pass.length < 8) {
+        return showAuthError('Choose a password of at least 8 characters to create an account.');
+      }
       if (!confirm(`No account named "${user}" exists. The username is available — create a new account?`)) {
         return showAuthError('');
       }

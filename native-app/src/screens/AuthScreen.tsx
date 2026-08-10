@@ -28,7 +28,13 @@ export default function AuthScreen({ onLogin }: { onLogin: () => void }) {
       }).then(r => r.json());
 
       if (res.error && res.canRegister) {
-        // Username is free — confirm before creating a brand-new account
+        // Username is free — confirm before creating a brand-new account.
+        // Catch the password-length rule here so the user isn't bounced by the
+        // server after confirming (the server enforces the same minimum).
+        if (password.length < 8) {
+          Alert.alert('Password too short', 'Choose a password of at least 8 characters to create an account.');
+          return;
+        }
         Alert.alert(
           'Create account?',
           `No account named "${username.trim()}" exists. The username is available — create a new account?`,
@@ -74,6 +80,7 @@ export default function AuthScreen({ onLogin }: { onLogin: () => void }) {
             value={password} onChangeText={setPassword}
             secureTextEntry onSubmitEditing={() => signin()}
           />
+          <Text style={s.hint}>New accounts need at least 8 characters.</Text>
           <TouchableOpacity style={s.btn} onPress={() => signin()} disabled={loading}>
             {loading ? <ActivityIndicator color="#fff" /> : <Text style={s.btnText}>Continue →</Text>}
           </TouchableOpacity>
@@ -92,6 +99,7 @@ const s = StyleSheet.create({
   card: { width: '100%', maxWidth: 380, backgroundColor: C.sidebar, borderRadius: 20, padding: 24, borderWidth: 1, borderColor: C.border },
   label: { fontSize: 11, color: C.muted, fontWeight: '600', letterSpacing: 0.6, marginBottom: 6 },
   input: { backgroundColor: C.inputBg, borderRadius: 10, padding: 12, color: C.text, fontSize: 15, borderWidth: 1, borderColor: C.border, marginBottom: 4 },
+  hint: { color: C.muted, fontSize: 12, marginTop: 6, marginBottom: 2 },
   btn: { backgroundColor: C.accent, borderRadius: 10, padding: 14, alignItems: 'center', marginTop: 18 },
   btnText: { color: '#fff', fontWeight: '700', fontSize: 16 },
 });

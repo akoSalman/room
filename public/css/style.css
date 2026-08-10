@@ -100,6 +100,7 @@ html {
 .btn-primary:disabled { opacity: .6; cursor: default; }
 
 .error   { color: var(--danger);  font-size: 0.83rem; margin-top: 10px; min-height: 18px; }
+.auth-hint { display: block; color: var(--muted); font-size: 0.75rem; margin-top: 6px; }
 .success { color: var(--success); font-size: 0.83rem; margin-top: 10px; min-height: 18px; }
 .req { color: var(--muted); font-weight: 400; font-size: 0.75rem; }
 

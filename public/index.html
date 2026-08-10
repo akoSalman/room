@@ -36,6 +36,7 @@
       <label>Password</label>
       <input id="auth-pass" type="password" placeholder="Your password" autocomplete="current-password"
         onkeydown="if(event.key==='Enter')signin()" />
+      <small class="auth-hint">New accounts need at least 8 characters.</small>
     </div>
     <button id="auth-btn" class="btn-primary" onclick="signin()">Continue →</button>
     <p id="auth-error" class="error"></p>
