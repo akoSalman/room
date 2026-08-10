@@ -1,0 +1,56 @@
+name: Diagnose servers (post-rotation)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: akosalman
+            host_secret: DEPLOY_HOST_AKOSALMAN
+            service_secret: DEPLOY_SERVICE_AKOSALMAN
+          - name: bistbarg
+            host_secret: DEPLOY_HOST_BISTBARG
+            service_secret: DEPLOY_SERVICE_BISTBARG
+
+    steps:
+      - name: Diagnose ${{ matrix.name }}
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets[matrix.host_secret] }}
+          SERVICE: ${{ secrets[matrix.service_secret] }}
+        run: |
+          if [ -z "$HOST" ] || [ -z "$SERVICE" ] || [ -z "$SSH_KEY" ]; then
+            echo "Secrets not configured — skipping."; exit 0
+          fi
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "root@$HOST" \
+            SERVICE="$SERVICE" bash -s <<'EOF'
+          echo "=== service state ==="
+          systemctl is-active "$SERVICE"; systemctl is-failed "$SERVICE" || true
+          echo "=== what's listening (node processes) ==="
+          ss -ltnp 2>/dev/null | grep -i node || echo "(no node listener found)"
+          echo "=== drop-in present? ==="
+          ls -la "/etc/systemd/system/${SERVICE}.service.d/" 2>/dev/null || echo "(no drop-in dir)"
+          echo "=== does the effective process env have JWT_SECRET? (length only) ==="
+          PID=$(systemctl show "$SERVICE" -p MainPID --value)
+          if [ -n "$PID" ] && [ "$PID" != "0" ] && [ -r "/proc/$PID/environ" ]; then
+            L=$(tr '\0' '\n' < "/proc/$PID/environ" | sed -n 's/^JWT_SECRET=//p' | head -c 4096 | wc -c)
+            echo "effective JWT_SECRET length in running process: $L"
+          else
+            echo "(cannot read /proc/$PID/environ)"
+          fi
+          echo "=== health on the port it actually listens on ==="
+          PORT=$(ss -ltnp 2>/dev/null | grep -i node | grep -oE ':[0-9]+' | tr -d ':' | head -1)
+          PORT=${PORT:-3000}
+          echo "probing port $PORT"
+          curl -s -m 5 -o /dev/null -w "HTTP %{http_code}\n" "http://127.0.0.1:$PORT/" || echo "no response"
+          echo "=== last 12 journal lines ==="
+          journalctl -u "$SERVICE" -n 12 --no-pager 2>/dev/null | sed 's/JWT_SECRET=[^ ]*/JWT_SECRET=[redacted]/g'
+          EOF
