@@ -113,10 +113,18 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
         setUnread(prev => ({ ...prev, [msg.room_id]: (prev[msg.room_id] || 0) + 1 }));
       });
       sock.on('dm_activity', () => load());
+      // Membership changed elsewhere (joined by link, left, removed by an
+      // owner) — the room list is no longer accurate.
+      sock.on('room_created', () => load());
+      sock.on('left_room', () => load());
+      sock.on('removed_from_room', () => load());
     })();
     return () => {
       sock?.off('message_received');
       sock?.off('dm_activity');
+      sock?.off('room_created');
+      sock?.off('left_room');
+      sock?.off('removed_from_room');
     };
   }, [load]);
 

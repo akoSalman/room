@@ -401,6 +401,20 @@ function connectSocket() {
     });
     socket.on('room_online', ({ users }) => updateOnlineUsers(users));
     socket.on('room_created', (room) => addRoomToList(room));
+    // Membership ended elsewhere — drop the room from the sidebar, and bail
+    // out of it if it is the one on screen.
+    const dropRoom = ({ roomId }) => {
+      const li = document.querySelector(`[data-room-id="${roomId}"]`);
+      if (li) li.remove();
+      if (String(currentRoomId) === String(roomId)) {
+        currentRoomId = null;
+        document.getElementById('messages').innerHTML = '';
+        document.getElementById('room-title').textContent = 'Select a room';
+        document.getElementById('join-bar').classList.add('hidden');
+      }
+    };
+    socket.on('left_room', dropRoom);
+    socket.on('removed_from_room', dropRoom);
     socket.on('room_deleted', ({ roomId }) => removeRoomFromList(roomId));
     socket.on('room_updated', (room) => updateRoomInList(room));
     socket.on('user_typing', ({ username: u }) => showTyping(u));
@@ -571,6 +585,9 @@ async function openRoomInfo() {
   // member and announces you in the room.
   document.getElementById('room-info-join-section')
     .classList.toggle('hidden', !!(info.is_private || info.is_member));
+  // Leave is the counterpart to Join. The owner cannot leave their own room.
+  document.getElementById('room-info-leave-section')
+    .classList.toggle('hidden', !(info.is_member && !info.is_owner));
 
   // Link (public rooms only)
   const linkSection = document.getElementById('room-info-link-section');
@@ -606,13 +623,41 @@ async function openRoomInfo() {
 }
 function closeRoomInfo() { hide('room-info-modal'); }
 
+// Show the Join bar above the composer whenever the open room is one the user
+// has not joined. Public rooms are readable before joining, so this is the
+// prompt to actually become a member.
+async function refreshJoinBar(roomId, isDM) {
+  const bar = document.getElementById('join-bar');
+  if (isDM) { bar.classList.add('hidden'); return; }
+  const info = await api('/room-info/' + roomId);
+  if (String(roomId) !== String(currentRoomId)) return;   // room switched while loading
+  bar.classList.toggle('hidden', !!(info.error || info.is_member));
+}
+
 function joinCurrentRoom() {
   if (!currentRoomId) return;
   const roomId = currentRoomId;
   socket.emit('accept_invite', { roomId }, (res) => {
     if (res?.error) return alert(res.error);
     document.getElementById('room-info-join-section').classList.add('hidden');
+    document.getElementById('join-bar').classList.add('hidden');
     addRoomToList(res.room);
+  });
+}
+
+function leaveCurrentRoom() {
+  if (!currentRoomId) return;
+  if (!confirm('Leave this room? You will stop receiving its messages.')) return;
+  const roomId = currentRoomId;
+  socket.emit('leave_room_membership', { roomId }, (res) => {
+    if (res?.error) return alert(res.error);
+    closeRoomInfo();
+    const li = document.querySelector(`[data-room-id="${roomId}"]`);
+    if (li) li.remove();
+    currentRoomId = null;
+    document.getElementById('messages').innerHTML = '';
+    document.getElementById('room-title').textContent = 'Select a room';
+    document.getElementById('join-bar').classList.add('hidden');
   });
 }
 
@@ -898,6 +943,7 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   document.getElementById('messages').innerHTML = '';
   document.getElementById('online-indicator').classList.add('hidden');
   document.getElementById('room-link-btn').classList.toggle('hidden', isDM);
+  refreshJoinBar(roomId, isDM);
   jumpBackStack = [];
   document.getElementById('scroll-fab').classList.add('hidden');
   oldestLoadedMsgId = null;
@@ -1905,7 +1951,9 @@ function buildMessageElement(msg) {
   wrapper.dataset.msgId = msg.id;
   if (!msg._uploading) addLongPress(wrapper, () => openCtxMenu(msg.id, msg.type, isMine, wrapper, msg));
 
-  if (!isMine) {
+  // System notices carry their own centered text; they must not get a
+  // clickable sender header above them.
+  if (!isMine && msg.type !== 'system') {
     const sender = document.createElement('div');
     sender.className = 'msg-sender';
     const senderAvatar = document.createElement('span');
@@ -1986,8 +2034,9 @@ function buildMessageElement(msg) {
     el.textContent = `${c.kind === 'video' ? '🎥' : '📞'} ${label}`;
     bubble.appendChild(el);
   } else if (msg.type === 'system') {
-    // Room notice (someone joined, or was removed). Centered line, with the
-    // affected username clickable to open a DM with them.
+    // Room notice: someone joined, left, or was removed. A centered line. The
+    // name is NOT a link — these are announcements, not people to message, and
+    // a stray tap opening a DM was surprising.
     let d = {};
     try { d = JSON.parse(msg.content || '{}'); } catch {}
     const who = d.username || msg.username;
@@ -1995,15 +2044,14 @@ function buildMessageElement(msg) {
     const el = document.createElement('div');
     el.className = 'system-notice';
     const nameEl = document.createElement('span');
-    nameEl.className = 'system-name' + (isMe ? '' : ' system-name-link');
+    nameEl.className = 'system-name';
     nameEl.textContent = (d.avatar ? d.avatar + ' ' : '') + (isMe ? 'You' : who);
-    if (!isMe) {
-      nameEl.onclick = (e) => { e.stopPropagation(); openDM(who); };
-    }
     el.appendChild(nameEl);
     const rest = document.createElement('span');
     rest.textContent = d.kind === 'removed'
       ? ` ${isMe ? 'were' : 'was'} removed from the room${d.byUsername ? ' by ' + d.byUsername : ''}`
+      : d.kind === 'left'
+      ? ` left the room`
       : ' joined the room';
     el.appendChild(rest);
     bubble.appendChild(el);
@@ -2072,7 +2120,11 @@ function buildMessageElement(msg) {
     bubble.appendChild(a);
   }
 
-  if (!oneTimeHidden && msg.type !== 'text' && msg.type !== 'invite' && msg.type !== 'call' && msg.content) {
+  // Captions belong to media messages. Types whose content IS their payload
+  // must be excluded — 'system' was missing, so every join/leave notice also
+  // dumped its raw JSON underneath itself as a "caption".
+  const CAPTIONLESS = ['text', 'invite', 'call', 'system'];
+  if (!oneTimeHidden && !CAPTIONLESS.includes(msg.type) && msg.content) {
     const cap = document.createElement('div');
     cap.className = 'msg-caption';
     appendLinkifiedText(cap, msg.content);

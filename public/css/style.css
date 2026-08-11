@@ -474,6 +474,15 @@ html {
 #composer-strip button:hover { background: rgba(59,125,216,0.2); }
 #composer-strip button.one-time-armed { background: rgba(248,113,113,0.25); color: #f87171; }
 /* ── Quick emoji bar ───────────────────────────────── */
+#join-bar {
+  display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+  padding: 10px 14px; background: var(--sidebar, #1e293b);
+  border-top: 1px solid var(--border);
+}
+#join-bar.hidden { display: none; }
+#join-bar span { flex: 1; min-width: 0; color: var(--muted, #94a3b8); font-size: 0.85rem; }
+#join-bar button { width: auto; margin-top: 0; padding: 8px 20px; border-radius: 16px; }
+
 #quick-emoji-bar {
   display: flex; align-items: center; gap: 4px; flex-shrink: 0;
   padding: 4px 10px; background: transparent;
@@ -863,7 +872,6 @@ html {
   padding: 5px 12px; margin: 4px auto; display: inline-block; line-height: 1.5;
 }
 .system-name { font-weight: 700; color: var(--text, #e2e8f0); }
-.system-name-link { color: var(--accent, #3b7dd8); text-decoration: underline; cursor: pointer; }
 
 .invite-title { font-weight: 700; font-size: 0.88rem; }
 .invite-text { color: var(--muted); font-size: 0.84rem; }

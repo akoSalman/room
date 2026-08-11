@@ -1362,6 +1362,24 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     return m.type === 'text' || m.type === 'system' || m.type === 'call' || m.type === 'invite';
   }
 
+  // Membership drives the Join bar above the composer, so it must be known as
+  // soon as the room opens — not only when the info sheet is opened.
+  useEffect(() => { if (!room.is_dm) loadRoomInfo(); }, [room.id]);
+
+  function leaveRoom() {
+    Alert.alert('Leave this room?', 'You will stop receiving its messages.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Leave', style: 'destructive',
+        onPress: () => socketRef.current?.emit('leave_room_membership', { roomId: room.id }, (res: any) => {
+          if (res?.error) { Alert.alert('Cannot leave', res.error); return; }
+          setShowRoomInfo(false);
+          onBack();
+        }),
+      },
+    ]);
+  }
+
   async function loadRoomInfo() {
     try {
       const info = await apiFetch(`/room-info/${room.id}`);
@@ -1427,16 +1445,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       try { d = JSON.parse(msg.content || '{}'); } catch {}
       const who = d.username || msg.username;
       const isMe = who === me;
+      // The name is NOT pressable — these are announcements, not people to
+      // message, and a stray tap opening a DM was surprising.
       return (
         <View style={s.systemRow}>
           <Text style={s.systemText}>
-            <Text
-              style={[s.systemName, !isMe && s.systemNameLink]}
-              onPress={isMe ? undefined : () => openDM(who)}>
+            <Text style={s.systemName}>
               {d.avatar ? `${d.avatar} ` : ''}{isMe ? 'You' : who}
             </Text>
             {d.kind === 'removed'
               ? <Text>{' '}{isMe ? 'were' : 'was'} removed from the room{d.byUsername ? ` by ${d.byUsername}` : ''}</Text>
+              : d.kind === 'left'
+              ? <Text>{' '}left the room</Text>
               : <Text>{' '}joined the room</Text>}
           </Text>
         </View>
@@ -2404,12 +2424,35 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 </View>
               )}
             </ScrollView>
+            {/* Leave is the counterpart to Join. The owner cannot leave their
+                own room, so it is hidden for them. */}
+            {roomInfo && !roomInfo.is_owner && roomInfo.is_member && (
+              <TouchableOpacity style={s.leaveRoomBtn} onPress={leaveRoom}>
+                <Text style={s.leaveRoomText}>Leave room</Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity style={s.attachCancel} onPress={() => setShowRoomInfo(false)}>
               <Text style={s.attachCancelText}>Close</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
+
+      {/* Not a member yet: a Join bar sits right above the composer, where the
+          decision actually gets made — you can read the room first, then join. */}
+      {!room.is_dm && roomInfo && !roomInfo.is_member && (
+        <View style={s.joinBar}>
+          <Text style={s.joinBarText} numberOfLines={1}>
+            You are not a member of this room
+          </Text>
+          <TouchableOpacity
+            style={s.joinBarBtn}
+            onPress={() => joinRoomById(room.id, () => loadRoomInfo())}
+          >
+            <Text style={s.joinBarBtnText}>Join</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Voice recorder or input bar */}
       {recording ? (
@@ -2555,6 +2598,20 @@ const s = StyleSheet.create({
   // width:100% so the *whole row* — not just the bubble — is a press target.
   bubbleRow: { flexDirection: 'row', alignItems: 'center', width: '100%' },
   bubbleRowMine: { flexDirection: 'row-reverse' },
+  leaveRoomBtn: {
+    marginTop: 8, marginHorizontal: 16, borderRadius: 12,
+    paddingVertical: 13, alignItems: 'center',
+    borderWidth: 1, borderColor: '#f87171',
+  },
+  leaveRoomText: { color: '#f87171', fontSize: 15, fontWeight: '700' },
+  joinBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 14, paddingVertical: 10,
+    backgroundColor: C.sidebar, borderTopWidth: 1, borderTopColor: C.border,
+  },
+  joinBarText: { color: C.muted, fontSize: 13.5, flex: 1 },
+  joinBarBtn: { backgroundColor: C.accent, borderRadius: 16, paddingHorizontal: 20, paddingVertical: 8 },
+  joinBarBtnText: { color: '#fff', fontSize: 14, fontWeight: '700' },
   selectHintRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 },
   selectHint: { color: C.muted, fontSize: 11.5 },
   selectDone: { color: C.accent, fontSize: 11.5, fontWeight: '700' },
@@ -2625,7 +2682,6 @@ const s = StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 5, overflow: 'hidden',
   },
   systemName: { fontWeight: '700', color: C.text },
-  systemNameLink: { color: C.accent, textDecorationLine: 'underline' },
   fileCard: {
     flexDirection: 'row', alignItems: 'center', gap: 10, minWidth: 190,
     backgroundColor: 'rgba(148,163,184,0.12)', borderRadius: 10, padding: 10,

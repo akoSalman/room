@@ -245,6 +245,81 @@ test('anyone may join a public room, and it announces them', async () => {
   assert.ok(after.members.some(m => m.username === 'pvisitor8'), 'joiner missing from member list');
 });
 
+test('a brand-new account lands in the default room, not an empty list', async () => {
+  const u = await signUp('fresh13');
+  const rooms = await api('/rooms', 'GET', null, u.token);
+  assert.ok(Array.isArray(rooms) && rooms.length,
+    'new account has no rooms at all — nothing to land on');
+  assert.ok(rooms.some(r => r.name === 'General'), 'default room missing for a new account');
+});
+
+test('public rooms are NOT listed until joined; they are found by search', async () => {
+  const owner = await signUp('powner9');
+  const outsider = await signUp('poutsider9');
+  const room = await api('/rooms', 'POST', { name: 'findable-room-9' }, owner.token);
+
+  const before = await api('/rooms', 'GET', null, outsider.token);
+  assert.ok(!before.some(r => r.id === room.id),
+    'a public room must not appear in the list of someone who never joined it');
+
+  // ...but it is discoverable by name.
+  const found = await api('/search?q=findable-room-9', 'GET', null, outsider.token);
+  assert.ok(found.rooms.some(r => r.id === room.id), 'public room not findable by search');
+
+  const sock = await connect(outsider.token);
+  await emit(sock, 'accept_invite', { roomId: room.id });
+  const after = await api('/rooms', 'GET', null, outsider.token);
+  assert.ok(after.some(r => r.id === room.id), 'joined room missing from the list');
+});
+
+test('a member can leave a room, and it is announced', async () => {
+  const owner = await signUp('lowner10');
+  const member = await signUp('lmember10');
+  const ownerSock = await connect(owner.token);
+  const memberSock = await connect(member.token);
+
+  const room = await api('/rooms', 'POST', { name: 'leavable-room-10' }, owner.token);
+  await emit(memberSock, 'accept_invite', { roomId: room.id });
+
+  const announced = waitFor(ownerSock, 'message_received',
+    m => m.room_id === room.id && m.type === 'system' && String(m.content).includes('"left"'));
+  const res = await emit(memberSock, 'leave_room_membership', { roomId: room.id });
+  assert.ok(res.ok, `leave failed: ${JSON.stringify(res)}`);
+  await announced;
+
+  const rooms = await api('/rooms', 'GET', null, member.token);
+  assert.ok(!rooms.some(r => r.id === room.id), 'left room still listed');
+  const info = await api(`/room-info/${room.id}`, 'GET', null, member.token);
+  assert.strictEqual(!!info.is_member, false, 'still reported as a member after leaving');
+});
+
+test('the room owner cannot leave their own room', async () => {
+  const owner = await signUp('lowner11');
+  const sock = await connect(owner.token);
+  const room = await api('/rooms', 'POST', { name: 'owned-room-11' }, owner.token);
+
+  const res = await emit(sock, 'leave_room_membership', { roomId: room.id });
+  assert.ok(res.error, 'owner was allowed to leave their own room');
+  const rooms = await api('/rooms', 'GET', null, owner.token);
+  assert.ok(rooms.some(r => r.id === room.id), 'owner lost their own room');
+});
+
+test('a public room only broadcasts to its members', async () => {
+  const owner = await signUp('bowner12');
+  const outsider = await signUp('boutsider12');
+  const ownerSock = await connect(owner.token);
+  const outsiderSock = await connect(outsider.token);
+
+  const room = await api('/rooms', 'POST', { name: 'quiet-room-12' }, owner.token);
+
+  let leaked = false;
+  outsiderSock.on('message_received', (m) => { if (m.room_id === room.id) leaked = true; });
+  await emit(ownerSock, 'send_message', { roomId: room.id, type: 'text', content: 'members only' });
+  await new Promise(r => setTimeout(r, 300));
+  assert.strictEqual(leaked, false,
+    'a public room pushed its messages at an account that never joined it');
+});
+
 test('room list is ordered by most recent activity, not by name', async () => {
   const u = await signUp('sorter6');
   const sock = await connect(u.token);
@@ -326,6 +401,8 @@ test('reaction reaches a member who is NOT in the presence channel', async () =>
   const bSock = await connect(b.token);
 
   const room = await api('/rooms', 'POST', { name: 'room-11' }, a.token);
+  // Membership in a public room is explicit now, so B has to join it.
+  await emit(bSock, 'accept_invite', { roomId: room.id });
   const got = waitFor(bSock, 'message_received', m => m.room_id === room.id);
   await emit(aSock, 'send_message', { roomId: room.id, type: 'text', content: 'hello' });
   const msg = await got;
@@ -374,6 +451,8 @@ test('one-time message destruction reaches a sender who left the room channel', 
   const rSock = await connect(receiver.token);
 
   const room = await api('/rooms', 'POST', { name: 'room-30' }, sender.token);
+  // Membership in a public room is explicit now, so the receiver has to join.
+  await emit(rSock, 'accept_invite', { roomId: room.id });
   // Receiver is "in" the room; the SENDER never joins the presence channel —
   // exactly the state after backgrounding the app (leave_room).
   rSock.emit('join_room', room.id);

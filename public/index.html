@@ -101,6 +101,13 @@
       <button onclick="cancelReply()">✕</button>
     </div>
 
+    <!-- Not a member yet: Join sits right above the composer and emoji bar,
+         where the decision gets made after reading the room -->
+    <div id="join-bar" class="hidden">
+      <span>You are not a member of this room</span>
+      <button class="btn-primary" onclick="joinCurrentRoom()">Join</button>
+    </div>
+
     <!-- Floating quick-emoji bar: 10 handy emojis, closable -->
     <div id="quick-emoji-bar" class="hidden">
       <div id="quick-emoji-list"></div>
@@ -221,6 +228,9 @@
     </div>
     <div class="modal-section hidden" id="room-info-join-section">
       <button class="btn-primary" id="room-info-join-btn" onclick="joinCurrentRoom()">Join room</button>
+    </div>
+    <div class="modal-section hidden" id="room-info-leave-section">
+      <button class="btn-danger" onclick="leaveCurrentRoom()">Leave room</button>
     </div>
     <div class="modal-section" id="room-info-link-section">
       <div class="my-rooms-header">Room Link · Share to invite</div>

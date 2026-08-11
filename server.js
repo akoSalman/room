@@ -147,6 +147,13 @@ app.post('/auth/signin', async (req, res) => {
   try {
     const hash = await bcrypt.hash(password, 10);
     const result = db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(uname, hash);
+    // Rooms are joined explicitly now, so a brand-new account would otherwise
+    // land on an empty list. Put them in the default room to start.
+    const general = db.prepare('SELECT id FROM rooms WHERE name = ?').get('General');
+    if (general) {
+      db.prepare('INSERT OR IGNORE INTO room_members (room_id, user_id) VALUES (?, ?)')
+        .run(general.id, result.lastInsertRowid);
+    }
     const token = jwt.sign({ id: result.lastInsertRowid, username: uname }, JWT_SECRET);
     res.json({ token, username: uname, avatar: null, isNew: true });
   } catch {
@@ -188,7 +195,10 @@ app.put('/profile', authMiddleware, async (req, res) => {
   res.json({ token, username: updated.username, avatar: updated.avatar || null });
 });
 
-// Rooms: public ones + private ones the user owns or is a member of.
+// Rooms the user actually belongs to — ones they created or joined. Public
+// rooms used to be listed for everybody, which turned the sidebar into a
+// directory of every room on the server; they are now *found* by name search
+// or by link, and only appear here once joined.
 // Ordered by most recent activity (newest message first) so the busiest chats
 // float to the top; rooms with no messages yet fall back to their creation time.
 app.get('/rooms', authMiddleware, (req, res) => {
@@ -197,8 +207,7 @@ app.get('/rooms', authMiddleware, (req, res) => {
       (SELECT MAX(m.id) FROM messages m WHERE m.room_id = rooms.id) AS last_msg_id
     FROM rooms
     WHERE is_dm = 0 AND (
-      is_private = 0
-      OR created_by = ?
+      created_by = ?
       OR EXISTS (SELECT 1 FROM room_members rm WHERE rm.room_id = rooms.id AND rm.user_id = ?)
     )
     ORDER BY last_msg_id IS NULL, last_msg_id DESC, rooms.id DESC
@@ -214,7 +223,9 @@ app.post('/rooms', authMiddleware, (req, res) => {
       .run(name.trim(), req.user.id, isPrivate ? 1 : 0);
     const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(result.lastInsertRowid);
     db.prepare('INSERT OR IGNORE INTO room_members (room_id, user_id) VALUES (?, ?)').run(room.id, req.user.id);
-    if (!room.is_private) io.emit('room_created', room);
+    // Only the creator gets it in their sidebar — a new public room is not
+    // pushed at every user on the server any more.
+    io.to('user:' + req.user.id).emit('room_created', room);
     res.json(room);
   } catch {
     res.status(409).json({ error: 'Room already exists' });
@@ -758,12 +769,11 @@ function getRoomMemberIds(room) {
     if (parts.length !== 3) return [];
     return [parseInt(parts[1]), parseInt(parts[2])];
   }
-  if (room.is_private) {
-    const ids = db.prepare('SELECT user_id FROM room_members WHERE room_id = ?').all(room.id).map(r => r.user_id);
-    if (room.created_by && !ids.includes(room.created_by)) ids.push(room.created_by);
-    return ids;
-  }
-  return db.prepare('SELECT id FROM users').all().map(u => u.id);
+  // Public rooms have explicit membership too now, so a room's messages go to
+  // the people who joined it — not to every account on the server.
+  const ids = db.prepare('SELECT user_id FROM room_members WHERE room_id = ?').all(room.id).map(r => r.user_id);
+  if (room.created_by && !ids.includes(room.created_by)) ids.push(room.created_by);
+  return ids;
 }
 
 io.on('connection', (socket) => {
@@ -1111,6 +1121,37 @@ io.on('connection', (socket) => {
     } catch (err) {
       console.error('[remove_member]', err.message);
       reply({ error: 'Could not remove that member' });
+    }
+  });
+
+  // The counterpart to joining: a member leaves a room under their own steam.
+  // (Distinct from 'leave_room', which only clears the presence channel.)
+  socket.on('leave_room_membership', ({ roomId }, ack) => {
+    const reply = (r) => { if (typeof ack === 'function') ack(r); };
+    try {
+      const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+      if (!room || room.is_dm) return reply({ error: 'Room not found' });
+      if (room.created_by === socket.user.id) {
+        return reply({ error: 'You created this room, so you cannot leave it' });
+      }
+      const del = db.prepare('DELETE FROM room_members WHERE room_id = ? AND user_id = ?')
+        .run(room.id, socket.user.id);
+      if (!del.changes) return reply({ error: 'You are not a member of this room' });
+
+      // The leaver is already off the member list, so broadcastRoomMessage
+      // would skip them — send it to them explicitly as well.
+      const msg = insertSystemMessage(room.id, socket.user.id, 'left', {
+        userId: socket.user.id, username: socket.user.username, avatar: socket.user.avatar || null,
+      });
+      if (msg) {
+        broadcastRoomMessage(room, msg);
+        io.to('user:' + socket.user.id).emit('message_received', msg);
+      }
+      io.to('user:' + socket.user.id).emit('left_room', { roomId: room.id, roomName: room.name });
+      reply({ ok: true });
+    } catch (err) {
+      console.error('[leave_room_membership]', err.message);
+      reply({ error: 'Could not leave the room' });
     }
   });
 

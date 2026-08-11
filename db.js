@@ -93,10 +93,49 @@ db.exec(`
   );
 `);
 
+// Backfill membership for public rooms.
+//
+// Public rooms used to have no membership at all — every account implicitly
+// belonged to every one of them. Now that membership is explicit (so the room
+// list shows only your own rooms, and messages only reach members), anyone who
+// had already been using a public room would silently lose it. Treat having
+// posted in a room, or having created it, as membership.
+try {
+  db.exec(`
+    INSERT OR IGNORE INTO room_members (room_id, user_id)
+    SELECT DISTINCT m.room_id, m.user_id
+    FROM messages m
+    JOIN rooms r ON r.id = m.room_id
+    WHERE r.is_dm = 0 AND r.is_private = 0
+  `);
+  db.exec(`
+    INSERT OR IGNORE INTO room_members (room_id, user_id)
+    SELECT r.id, r.created_by FROM rooms r
+    WHERE r.is_dm = 0 AND r.created_by IS NOT NULL
+  `);
+} catch (err) {
+  console.error('[migration] public room membership backfill:', err.message);
+}
+
 // Seed a default room
 const existing = db.prepare('SELECT id FROM rooms WHERE name = ?').get('General');
 if (!existing) {
   db.prepare('INSERT INTO rooms (name) VALUES (?)').run('General');
+}
+
+// 'General' is the landing room and has no creator, so the backfill above
+// would leave it memberless and it would vanish from everybody's list. Every
+// existing account belongs to it; new accounts are added on sign-up.
+try {
+  const general = db.prepare('SELECT id FROM rooms WHERE name = ?').get('General');
+  if (general) {
+    db.exec(`
+      INSERT OR IGNORE INTO room_members (room_id, user_id)
+      SELECT ${general.id}, id FROM users
+    `);
+  }
+} catch (err) {
+  console.error('[migration] default room membership:', err.message);
 }
 
 module.exports = db;
