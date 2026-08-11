@@ -194,7 +194,7 @@ window.addEventListener('DOMContentLoaded', () => {
   // Shared room link: /?join=<roomId>
   const joinParam = new URLSearchParams(location.search).get('join');
   if (joinParam && token) {
-    setTimeout(() => joinRoomById(joinParam), 800);
+    setTimeout(() => openRoomById(joinParam), 800);
     history.replaceState(null, '', '/');
   }
 
@@ -580,11 +580,7 @@ async function openRoomInfo() {
   document.getElementById('room-info-created').textContent = created;
   document.getElementById('room-info-type').textContent = info.is_private ? 'Private room' : 'Public room';
 
-  // Join (public rooms the viewer hasn't joined yet). Public rooms are
-  // readable by anyone, but membership is explicit — joining lists you as a
-  // member and announces you in the room.
-  document.getElementById('room-info-join-section')
-    .classList.toggle('hidden', !!(info.is_private || info.is_member));
+  // (Joining is offered by the Join bar inside the room, not here.)
   // Leave is the counterpart to Join. The owner cannot leave their own room.
   document.getElementById('room-info-leave-section')
     .classList.toggle('hidden', !(info.is_member && !info.is_owner));
@@ -639,7 +635,6 @@ function joinCurrentRoom() {
   const roomId = currentRoomId;
   socket.emit('accept_invite', { roomId }, (res) => {
     if (res?.error) return alert(res.error);
-    document.getElementById('room-info-join-section').classList.add('hidden');
     document.getElementById('join-bar').classList.add('hidden');
     addRoomToList(res.room);
   });
@@ -697,9 +692,9 @@ function onSidebarSearch() {
     res.rooms.forEach(r => {
       const d = document.createElement('div');
       d.className = 'search-result';
-      d.innerHTML = `<span>#</span><b></b><em>Join</em>`;
+      d.innerHTML = `<span>#</span><b></b><em>Open</em>`;
       d.querySelector('b').textContent = r.name;
-      d.onclick = () => { clearSidebarSearch(); joinRoomById(r.id); };
+      d.onclick = () => { clearSidebarSearch(); openRoomById(r.id); };
       box.appendChild(d);
     });
     box.classList.remove('hidden');
@@ -1766,7 +1761,7 @@ function openTokenMenu(kind, text) {
     const href = /^https?:\/\//.test(text) ? text : 'https://' + text;
     addRow('🌐', 'Open link', () => {
       const joinMatch = /\/join\/(\d+)/.exec(href);
-      if (joinMatch && href.startsWith(location.origin)) joinRoomById(joinMatch[1]);
+      if (joinMatch && href.startsWith(location.origin)) openRoomById(joinMatch[1]);
       else window.open(href, '_blank', 'noopener');
     });
   }
@@ -1825,13 +1820,12 @@ function appendLinkifiedText(container, content) {
   return hasCopyable;
 }
 
-async function joinRoomById(roomId) {
+// Open a public room found by search or reached by link. This only OPENS it —
+// joining is a deliberate act, done with the Join bar inside the room once the
+// visitor has read it. (Following a link used to silently make you a member.)
+async function openRoomById(roomId) {
   const info = await api('/room-info/' + roomId);
   if (info.error) return alert(info.error);
-  // Opening a public room's link used to only *show* the room — the visitor
-  // never actually became a member, so they never appeared in the member list
-  // and the room never announced them. Register the membership first.
-  if (!info.is_member) return acceptInvite(info.id);
   let li = document.querySelector(`[data-room-id="${info.id}"]`);
   if (!li) { addRoomToList(info); li = document.querySelector(`[data-room-id="${info.id}"]`); }
   if (li) joinRoom(info.id, info.name, li, false);

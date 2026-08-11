@@ -1253,15 +1253,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
   async function handleLinkPress(url: string) {
     if (!/^https?:\/\//.test(url)) url = 'https://' + url;
-    // In-app room links join directly
+    // In-app room links OPEN the room. They do not join it: joining is a
+    // deliberate act, done with the Join bar inside the room once you have
+    // read it — following a link should never quietly make you a member.
     const m = /\/join\/(\d+)/.exec(url);
     if (m) {
       const info = await apiFetch(`/room-info/${m[1]}`);
-      if (info.error) { Alert.alert('Cannot join', info.error); return; }
-      // Following a room link used to only *open* the room — the visitor never
-      // became a member, so they were never listed and the room never
-      // announced them. Register the membership first.
-      if (!info.is_member) { joinRoomById(info.id); return; }
+      if (info.error) { Alert.alert('Cannot open room', info.error); return; }
       onOpenDM({ id: info.id, name: info.name, is_dm: 0 });
       return;
     }
@@ -1286,12 +1284,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     setForwardMsg(null);
   }
 
-  // Join a room by id (public-room link, or the Join button in room info).
-  function joinRoomById(roomId: number, then?: () => void) {
-    socketRef.current?.emit('accept_invite', { roomId }, (res: any) => {
+  // Become a member of the room already on screen (the Join bar above the
+  // composer). You are already here, so there is nothing to navigate to —
+  // just refresh membership so the bar goes away.
+  function joinThisRoom() {
+    socketRef.current?.emit('accept_invite', { roomId: room.id }, (res: any) => {
       if (res?.error) { Alert.alert('Cannot join', res.error); return; }
-      if (then) then();
-      else onOpenDM({ id: res.room.id, name: res.room.name, is_dm: 0 });
+      loadRoomInfo();
     });
   }
 
@@ -2354,19 +2353,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 </View>
               </View>
 
-              {/* Public rooms are readable by anyone, but membership is
-                  explicit — joining lists you as a member and announces you. */}
-              {roomInfo && !roomInfo.is_private && !roomInfo.is_member && (
-                <View style={s.roomLinkBox}>
-                  <TouchableOpacity
-                    style={s.shareBtn}
-                    onPress={() => joinRoomById(room.id, () => { setRoomInfo({ ...roomInfo, is_member: 1 }); loadRoomInfo(); })}
-                  >
-                    <Text style={s.shareBtnText}>Join room</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
-
               {!(roomInfo?.is_private ?? room.is_private) && (
                 <View style={s.roomLinkBox}>
                   <Text style={s.roomLinkLabel}>ROOM LINK · SHARE TO INVITE</Text>
@@ -2447,7 +2433,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           </Text>
           <TouchableOpacity
             style={s.joinBarBtn}
-            onPress={() => joinRoomById(room.id, () => loadRoomInfo())}
+            onPress={joinThisRoom}
           >
             <Text style={s.joinBarBtnText}>Join</Text>
           </TouchableOpacity>

@@ -321,7 +321,8 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
             <TouchableOpacity key={'r' + r.id} style={s.searchRow} onPress={() => openFoundRoom(r)}>
               <Text style={s.searchIcon}>#</Text>
               <Text style={s.searchName}>{r.name}</Text>
-              <Text style={s.searchAction}>Join</Text>
+              {/* Opens the room to read; the Join bar inside it does the joining. */}
+              <Text style={s.searchAction}>Open</Text>
             </TouchableOpacity>
           ))}
         </ScrollView>

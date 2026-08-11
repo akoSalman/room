@@ -760,7 +760,23 @@ function insertSystemMessage(roomId, userId, kind, data) {
 
 // Deliver a message to every member of a room over their personal channels.
 function broadcastRoomMessage(room, msg) {
-  getRoomMemberIds(room).forEach(id => io.to('user:' + id).emit('message_received', msg));
+  const ids = getRoomMemberIds(room);
+  ids.forEach(id => io.to('user:' + id).emit('message_received', msg));
+  previewerIds(room, ids).forEach(id => io.to('user:' + id).emit('message_received', msg));
+}
+
+// Public rooms can be read before joining, so someone may have the room open
+// without being a member. They are in the presence channel but not the member
+// list, and would otherwise see a frozen chat until they joined. Returns the
+// user ids actively viewing the room that `memberIds` does not already cover.
+function previewerIds(room, memberIds) {
+  if (room.is_dm || room.is_private) return [];
+  const covered = new Set(memberIds);
+  const out = new Set();
+  onlineUsers.forEach(u => {
+    if (u.roomId === String(room.id) && !covered.has(u.userId)) out.add(u.userId);
+  });
+  return [...out];
 }
 
 function getRoomMemberIds(room) {
@@ -850,6 +866,8 @@ io.on('connection', (socket) => {
 
     const memberIds = getRoomMemberIds(room);
     memberIds.forEach(id => io.to('user:' + id).emit('message_received', msg));
+    // …plus anyone reading this public room without having joined it yet.
+    previewerIds(room, memberIds).forEach(id => io.to('user:' + id).emit('message_received', msg));
 
     // Users who have ANY socket actively viewing this room right now. Push is
     // suppressed for them entirely (on all their devices) so a user reading the

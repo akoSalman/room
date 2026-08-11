@@ -320,6 +320,33 @@ test('a public room only broadcasts to its members', async () => {
     'a public room pushed its messages at an account that never joined it');
 });
 
+test('a public room can be read, and followed live, before joining it', async () => {
+  const owner = await signUp('preader10');
+  const visitor = await signUp('pguest10');
+  const ownerSock = await connect(owner.token);
+  const visitorSock = await connect(visitor.token);
+
+  const room = await api('/rooms', 'POST', { name: 'public-room-10' }, owner.token);
+  await emit(ownerSock, 'send_message', { roomId: room.id, type: 'text', content: 'before' });
+
+  // Not a member, so it is not in their room list…
+  const rooms = await api('/rooms', 'GET', null, visitor.token);
+  assert.ok(!rooms.some(r => r.id === room.id), 'unjoined public room must not be listed');
+
+  // …but they can still open it and read the history.
+  const history = await api(`/messages/${room.id}`, 'GET', null, visitor.token);
+  assert.ok(Array.isArray(history) && history.some(m => m.content === 'before'),
+    'a public room must be readable before joining');
+
+  // And while they sit there reading it, new messages must still arrive —
+  // otherwise the chat looks frozen until they join.
+  visitorSock.emit('join_room', room.id);
+  await new Promise(r => setTimeout(r, 100));   // let the presence join land
+  const live = waitFor(visitorSock, 'message_received', m => m.content === 'after');
+  await emit(ownerSock, 'send_message', { roomId: room.id, type: 'text', content: 'after' });
+  await live;
+});
+
 test('room list is ordered by most recent activity, not by name', async () => {
   const u = await signUp('sorter6');
   const sock = await connect(u.token);
