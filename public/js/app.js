@@ -623,11 +623,24 @@ function closeRoomInfo() { hide('room-info-modal'); }
 // has not joined. Public rooms are readable before joining, so this is the
 // prompt to actually become a member.
 async function refreshJoinBar(roomId, isDM) {
-  const bar = document.getElementById('join-bar');
-  if (isDM) { bar.classList.add('hidden'); return; }
+  if (isDM) { setMembership(true); return; }
   const info = await api('/room-info/' + roomId);
   if (String(roomId) !== String(currentRoomId)) return;   // room switched while loading
-  bar.classList.toggle('hidden', !!(info.error || info.is_member));
+  setMembership(!!(info.error || info.is_member));
+}
+
+// Non-members read only: the composer is replaced by the Join bar, so the room
+// cannot be posted into without joining (the server enforces the same rule).
+function setMembership(isMember) {
+  document.getElementById('join-bar').classList.toggle('hidden', isMember);
+  ['input-bar', 'composer-strip'].forEach(id => {
+    document.getElementById(id).classList.toggle('hidden', !isMember);
+  });
+  if (!isMember) {
+    document.getElementById('quick-emoji-bar').classList.add('hidden');
+    ['recording-bar', 'preview-bar', 'media-preview-bar', 'reply-bar', 'edit-banner']
+      .forEach(id => document.getElementById(id).classList.add('hidden'));
+  }
 }
 
 function joinCurrentRoom() {
@@ -635,7 +648,7 @@ function joinCurrentRoom() {
   const roomId = currentRoomId;
   socket.emit('accept_invite', { roomId }, (res) => {
     if (res?.error) return alert(res.error);
-    document.getElementById('join-bar').classList.add('hidden');
+    setMembership(true);
     addRoomToList(res.room);
   });
 }

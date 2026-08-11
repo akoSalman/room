@@ -1305,6 +1305,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   const roomLink = `${BASE_URL}/join/${room.id}`;
+  // Public rooms are readable by anyone but writable only by members.
+  const notMember = !room.is_dm && !!roomInfo && !roomInfo.is_member;
 
   // Live, case-insensitive username suggestions while typing an invite. The
   // /search endpoint matches with SQL LIKE, which is already case-insensitive
@@ -1361,8 +1363,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     return m.type === 'text' || m.type === 'system' || m.type === 'call' || m.type === 'invite';
   }
 
-  // Membership drives the Join bar above the composer, so it must be known as
-  // soon as the room opens — not only when the info sheet is opened.
+  // Membership gates posting, so it must be known as soon as the room opens —
+  // not only when the info sheet is opened.
   useEffect(() => { if (!room.is_dm) loadRoomInfo(); }, [room.id]);
 
   function leaveRoom() {
@@ -2424,24 +2426,19 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         </View>
       </Modal>
 
-      {/* Not a member yet: a Join bar sits right above the composer, where the
-          decision actually gets made — you can read the room first, then join. */}
-      {!room.is_dm && roomInfo && !roomInfo.is_member && (
+      {/* Not a member: the room is read-only, so the Join bar REPLACES the
+          composer rather than sitting above it. The server enforces the same
+          rule, so a stale screen cannot post either. */}
+      {notMember ? (
         <View style={s.joinBar}>
           <Text style={s.joinBarText} numberOfLines={1}>
-            You are not a member of this room
+            Join this room to post in it
           </Text>
-          <TouchableOpacity
-            style={s.joinBarBtn}
-            onPress={joinThisRoom}
-          >
+          <TouchableOpacity style={s.joinBarBtn} onPress={joinThisRoom}>
             <Text style={s.joinBarBtnText}>Join</Text>
           </TouchableOpacity>
         </View>
-      )}
-
-      {/* Voice recorder or input bar */}
-      {recording ? (
+      ) : recording ? (
         <VoiceRecorder
           onCancel={() => stopRecordingUI()}
           onSend={(uri, peaks) => { stopRecordingUI(); sendVoice(uri, peaks); }}

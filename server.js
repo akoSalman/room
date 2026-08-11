@@ -522,6 +522,16 @@ function canAccessRoom(userId, room) {
   return !!db.prepare('SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?').get(room.id, userId);
 }
 
+// Reading a public room is open to everyone; WRITING to it is not. Posting,
+// reacting and inviting all require membership, so a passer-by reading a room
+// they found by search or link cannot contribute to it until they join.
+function isRoomMember(userId, room) {
+  if (!room) return false;
+  if (room.is_dm) return canAccessRoom(userId, room);
+  if (room.created_by === userId) return true;
+  return !!db.prepare('SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?').get(room.id, userId);
+}
+
 // Search users and public rooms by name
 app.get('/search', authMiddleware, (req, res) => {
   const q = String(req.query.q || '').trim();
@@ -837,12 +847,17 @@ io.on('connection', (socket) => {
     const { roomId, type, content, filePath, fileName, replyToId, clientId, oneTimeSeconds } = data;
     const reply = (r) => { if (typeof ack === 'function') ack(r); };
 
-    // Authorization: you may only post to a room you can access. Without this,
-    // any user could inject messages into a private room they're not in — or
-    // into a DM between two other people.
+    // Authorization: you may only post to a room you are a MEMBER of. Without
+    // this, any user could inject messages into a private room they're not in
+    // — or into a DM between two other people. Membership (not mere access) is
+    // the bar, so someone reading a public room they found by search or link
+    // has to join before they can post to it.
     const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
     if (!room || !canAccessRoom(socket.user.id, room)) {
       return reply({ error: 'Not allowed' });
+    }
+    if (!isRoomMember(socket.user.id, room)) {
+      return reply({ error: 'Join this room to post in it' });
     }
     const msgType = CLIENT_MSG_TYPES.has(type) ? type : 'text';
     const oneTime = Number.isInteger(oneTimeSeconds) && oneTimeSeconds >= 1 && oneTimeSeconds <= 3600
@@ -1226,6 +1241,10 @@ io.on('connection', (socket) => {
     if (!src) return typeof ack === 'function' && ack({ error: 'Message not found' });
     const srcRoom = db.prepare('SELECT * FROM rooms WHERE id = ?').get(src.room_id);
     const dstRoom = db.prepare('SELECT * FROM rooms WHERE id = ?').get(toRoomId);
+    // Forwarding writes into the destination, so that end needs membership.
+    if (dstRoom && !isRoomMember(socket.user.id, dstRoom)) {
+      return typeof ack === 'function' && ack({ error: 'Join that room to forward into it' });
+    }
     if (!canAccessRoom(socket.user.id, srcRoom) || !canAccessRoom(socket.user.id, dstRoom)) {
       return typeof ack === 'function' && ack({ error: 'Not allowed' });
     }
@@ -1307,11 +1326,13 @@ io.on('connection', (socket) => {
 
   socket.on('toggle_reaction', ({ messageId, emoji }) => {
     if (!emoji || typeof emoji !== 'string' || emoji.length > 16) return;
-    // Authorization: you can only react to a message in a room you can access.
+    // Authorization: reacting is contributing, so it takes membership — the
+    // same bar as posting, not merely being able to read the room.
     const target = db.prepare('SELECT room_id FROM messages WHERE id = ?').get(messageId);
     if (!target) return;
     const rRoom = db.prepare('SELECT * FROM rooms WHERE id = ?').get(target.room_id);
     if (!canAccessRoom(socket.user.id, rRoom)) return;
+    if (!isRoomMember(socket.user.id, rRoom)) return;
 
     const existing = db.prepare(
       'SELECT id FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?'

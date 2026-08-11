@@ -347,6 +347,39 @@ test('a public room can be read, and followed live, before joining it', async ()
   await live;
 });
 
+test('SECURITY: a non-member cannot post to, or react in, a public room', async () => {
+  const owner = await signUp('powner11');
+  const outsider = await signUp('poutsider11');
+  const ownerSock = await connect(owner.token);
+  const outSock = await connect(outsider.token);
+
+  const room = await api('/rooms', 'POST', { name: 'public-room-11' }, owner.token);
+  await emit(ownerSock, 'send_message', { roomId: room.id, type: 'text', content: 'members only' });
+  // The send ack carries no id, so read the real message id back from history.
+  const seed = (await api(`/messages/${room.id}`, 'GET', null, owner.token))
+    .find(m => m.content === 'members only');
+  assert.ok(seed && seed.id, 'seed message not found');
+
+  // Reading is fine; writing is not.
+  const send = await emit(outSock, 'send_message', { roomId: room.id, type: 'text', content: 'sneaking in' });
+  assert.ok(send && send.error, `non-member was allowed to post: ${JSON.stringify(send)}`);
+
+  const history = await api(`/messages/${room.id}`, 'GET', null, owner.token);
+  assert.ok(!history.some(m => m.content === 'sneaking in'), 'non-member message reached the room');
+
+  // Reacting is contributing too, so it takes membership as well.
+  outSock.emit('toggle_reaction', { messageId: seed.id, emoji: '\u{1F44D}' });
+  await new Promise(r => setTimeout(r, 200));
+  const rx = await api(`/room-reactions/${room.id}`, 'GET', null, owner.token);
+  const all = Object.values(rx || {}).flat();
+  assert.ok(!all.some(r => r.username === 'poutsider11'), 'non-member reaction was recorded');
+
+  // …and once they join, posting works.
+  await emit(outSock, 'accept_invite', { roomId: room.id });
+  const ok = await emit(outSock, 'send_message', { roomId: room.id, type: 'text', content: 'now a member' });
+  assert.ok(!ok.error, `member was blocked from posting: ${JSON.stringify(ok)}`);
+});
+
 test('room list is ordered by most recent activity, not by name', async () => {
   const u = await signUp('sorter6');
   const sock = await connect(u.token);
