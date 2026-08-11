@@ -35,6 +35,28 @@ export async function getUserId(): Promise<number | null> {
   } catch { return null; }
 }
 
+// ── Session expiry ───────────────────────────────────────────────────────────
+// When the server's signing secret is rotated (or a token otherwise stops being
+// valid) every request starts coming back 401 and the socket refuses to
+// connect. Previously nothing noticed: the UI just rendered empty/broken
+// screens and the user had to work out for themselves that they should sign out
+// again. The app now detects that state once and signs the user out cleanly.
+type ExpiredHandler = () => void;
+let onSessionExpired: ExpiredHandler | null = null;
+let expiredFired = false;
+
+export function setSessionExpiredHandler(fn: ExpiredHandler | null) {
+  onSessionExpired = fn;
+}
+// Re-arm after a fresh sign-in, so a later expiry is detected again.
+export function resetSessionExpiry() { expiredFired = false; }
+
+function sessionExpired() {
+  if (expiredFired) return;      // one notification per session, not one per request
+  expiredFired = true;
+  onSessionExpired?.();
+}
+
 export async function apiFetch(path: string, method = 'GET', body?: object) {
   const token = await getToken();
   const res = await fetch(`${BASE_URL}${path}`, {
@@ -45,6 +67,9 @@ export async function apiFetch(path: string, method = 'GET', body?: object) {
     },
     body: body ? JSON.stringify(body) : undefined,
   });
+  // 401 means the token is no longer accepted — sign out rather than leaving
+  // the user staring at a screen that silently fails.
+  if (res.status === 401 && token) sessionExpired();
   return res.json();
 }
 
@@ -62,6 +87,12 @@ export async function getSocket(): Promise<Socket> {
     reconnectionDelay: 500,
     reconnectionDelayMax: 3000,
     timeout: 8000,
+  });
+  // The server rejects the handshake with "Unauthorized" for a stale token.
+  // Endless silent reconnect attempts look like "the app is just broken", so
+  // treat it as an expired session.
+  socket.on('connect_error', (err: any) => {
+    if (String(err?.message || '').toLowerCase().includes('unauthorized')) sessionExpired();
   });
   return socket;
 }

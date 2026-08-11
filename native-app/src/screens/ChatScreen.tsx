@@ -37,6 +37,8 @@ import { tokenize, telHref, toAsciiDigits } from '../textTokens';
 import { toast } from '../components/Toast';
 import * as outbox from '../outbox';
 import EmojiBurst from '../components/EmojiBurst';
+import EmojiEditor from '../components/EmojiEditor';
+import { useFavEmojis } from '../favEmojis';
 
 type Message = {
   id: number | string; room_id: number; user_id: number; username: string; avatar?: string | null;
@@ -53,7 +55,7 @@ type Message = {
 type Reaction = { emoji: string; username: string; user_id: number };
 type ReplyTo = { id: number | string; username: string; content: string | null; type: string };
 
-const EMOJIS = ['👍','❤️','😂','😮','😢','🔥','👏','🎉','🤔','😍','👎','😡'];
+// Reaction row = the user's own favourite set (editable via the ✏️ at the end).
 // Emoji-only messages of these play a full-screen burst effect. Keyed by the
 // first code point so ❤️ (heart + VS16) matches regardless of the selector.
 const BURST_EMOJIS = ['😂','❤️','👍','🙏','😍','🔥','🎉','😢','😮','👌','💯','😭','🥰','😎','👏','🙌','🤣'];
@@ -144,10 +146,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [showPlayer, setShowPlayer] = useState(false);
   // Tapped link / phone number → sheet offering both sensible actions.
   const [tokenAction, setTokenAction] = useState<{ kind: 'url' | 'phone'; text: string } | null>(null);
-  // Double-tap "select all" sheet: a read-only TextInput lets the selection be
-  // preset to the whole message and then adjusted by hand, which a <Text> can't.
-  const [selectText, setSelectText] = useState<string | null>(null);
-  const [selectRange, setSelectRange] = useState<{ start: number; end: number } | undefined>(undefined);
+  // Double-tap puts ONE bubble into selection mode: its own text becomes
+  // natively selectable right where it sits. (It used to pop a second copy of
+  // the message into a modal text box, which was jarring and slow.) While a
+  // bubble is in this mode it stops capturing taps so the OS selection handles
+  // and the copy menu work.
+  const [selectableId, setSelectableId] = useState<Message['id'] | null>(null);
+  const favEmojis = useFavEmojis();
+  const [editEmojis, setEditEmojis] = useState(false);
   // How many messages arrived while the user was scrolled up, shown as a badge
   // on the scroll-to-bottom button.
   const [missedCount, setMissedCount] = useState(0);
@@ -1252,6 +1258,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     if (m) {
       const info = await apiFetch(`/room-info/${m[1]}`);
       if (info.error) { Alert.alert('Cannot join', info.error); return; }
+      // Following a room link used to only *open* the room — the visitor never
+      // became a member, so they were never listed and the room never
+      // announced them. Register the membership first.
+      if (!info.is_member) { joinRoomById(info.id); return; }
       onOpenDM({ id: info.id, name: info.name, is_dm: 0 });
       return;
     }
@@ -1274,6 +1284,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       if (res?.error) Alert.alert('Cannot forward', res.error);
     });
     setForwardMsg(null);
+  }
+
+  // Join a room by id (public-room link, or the Join button in room info).
+  function joinRoomById(roomId: number, then?: () => void) {
+    socketRef.current?.emit('accept_invite', { roomId }, (res: any) => {
+      if (res?.error) { Alert.alert('Cannot join', res.error); return; }
+      if (then) then();
+      else onOpenDM({ id: res.room.id, name: res.room.name, is_dm: 0 });
+    });
   }
 
   function acceptInvite(inviteContent: string | null) {
@@ -1309,45 +1328,38 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     }, 250);
   }
 
-  // Message press routing.
-  //   • text bubbles      : single tap opens the menu, double tap selects all
-  //   • media bubbles     : single tap opens/plays, long press opens the menu
-  // A single tap on text is deferred briefly so a double tap can win instead.
-  const tapTimer = useRef<any>(null);
-  const lastTap = useRef(0);
-  const DOUBLE_MS = 260;
+  // Message press routing — identical for EVERY message type, and live across
+  // the whole row (not just the bubble), so there is no narrow target to hunt
+  // for:
+  //   • single tap  : opens the action menu, immediately
+  //   • double tap  : hands the text over for in-place selection (text-ish only)
+  //   • long press  : opens the action menu
+  // The single tap is NOT deferred waiting for a possible double tap — that
+  // deferral was the whole reason the menu felt sluggish. A second tap simply
+  // takes the menu back down and switches to selection instead.
+  const lastTap = useRef<{ id: Message['id'] | -1; t: number }>({ id: -1, t: 0 });
+  const DOUBLE_MS = 300;
 
   function openMenuFor(msg: Message, e?: any) {
+    setSelectableId(null);
     setActionsMsg({ msg, x: e?.nativeEvent?.pageX ?? 0, y: e?.nativeEvent?.pageY ?? 0 });
   }
 
   function onBubblePress(msg: Message, e: any) {
-    if (!isTextual(msg)) return;           // media handles its own tap
     const now = Date.now();
-    if (now - lastTap.current < DOUBLE_MS) {
-      clearTimeout(tapTimer.current);      // second tap: select the whole message
-      lastTap.current = 0;
-      openSelectText(msg);
+    const second = lastTap.current.id === msg.id && now - lastTap.current.t < DOUBLE_MS;
+    lastTap.current = { id: msg.id, t: now };
+    if (second && isTextual(msg) && (msg.content || '').trim()) {
+      setActionsMsg(null);       // the first tap opened the menu — take it back down
+      setSelectableId(msg.id);   // ...and make this bubble's text selectable in place
       return;
     }
-    lastTap.current = now;
-    const ev = { nativeEvent: { pageX: e?.nativeEvent?.pageX, pageY: e?.nativeEvent?.pageY } };
-    clearTimeout(tapTimer.current);
-    tapTimer.current = setTimeout(() => openMenuFor(msg, ev), DOUBLE_MS);
+    openMenuFor(msg, e);
   }
 
   // Bubbles whose primary content is text — everything else opens media on tap.
   function isTextual(m: Message) {
     return m.type === 'text' || m.type === 'system' || m.type === 'call' || m.type === 'invite';
-  }
-
-  function openSelectText(msg: Message) {
-    const t = (msg.content || '').trim();
-    if (!t) return;
-    setSelectText(t);
-    setSelectRange({ start: 0, end: t.length }); // whole message selected to begin with
-    // Release the controlled selection shortly after so the handles are draggable.
-    setTimeout(() => setSelectRange(undefined), 400);
   }
 
   async function loadRoomInfo() {
@@ -1471,16 +1483,35 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           )
         )}
         <View style={[s.bubbleRow, mine && s.bubbleRowMine]}>
+        {/* A press-catcher filling the row and sitting BEHIND the bubble, so
+            the empty space beside a bubble reacts exactly like the bubble does
+            — one big target instead of a narrow one. Because it is behind, the
+            bubble's own taps and the swipe-to-reply gesture are untouched. */}
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={(e) => onBubblePress(msg, e)}
+          onLongPress={(e) => openMenuFor(msg, e)}
+          delayLongPress={350}
+        />
         <SwipeableMessage
           onSwipeRight={() => { setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type }); composerRef.current?.focus(); }}
           onSwipeLeft={mine ? () => deleteMsg(msg.id) : undefined}
         >
-        <TouchableOpacity
+        {/* In selection mode the bubble must NOT capture touches, or the OS
+            selection handles and copy menu never get them. */}
+        {(() => {
+        const selecting = selectableId === msg.id;
+        const Bubble: any = selecting ? View : TouchableOpacity;
+        const bubbleProps: any = selecting ? {} : {
+          onPress: (e: any) => onBubblePress(msg, e),
+          onLongPress: (e: any) => openMenuFor(msg, e),
+          delayLongPress: 350,
+          activeOpacity: 0.85,
+        };
+        return (
+        <Bubble
+          {...bubbleProps}
           style={[s.bubble, mine ? s.mineBubble : s.theirsBubble, highlightId === msg.id && s.bubbleHighlight]}
-          onPress={(e) => onBubblePress(msg, e)}
-          onLongPress={(e) => openMenuFor(msg, e)}
-          delayLongPress={350}
-          activeOpacity={0.85}
         >
           {/* Reply quote */}
           {msg.reply_to_id && msg.reply_username && (
@@ -1649,7 +1680,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               </TouchableOpacity>
             </View>
           )}
-        </TouchableOpacity>
+          {selecting && (
+            <View style={s.selectHintRow}>
+              <Text style={s.selectHint}>Selecting — drag the handles, then</Text>
+              <Text style={s.selectDone} onPress={() => setSelectableId(null)}>Done</Text>
+            </View>
+          )}
+        </Bubble>
+        );
+        })()}
         </SwipeableMessage>
 
         </View>
@@ -1868,40 +1907,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         </View>
       </Modal>
 
-      {/* Double-tap select: whole message preselected, adjustable, copyable. */}
-      <Modal visible={selectText !== null} transparent animationType="fade" onRequestClose={() => setSelectText(null)}>
-        <View style={s.sheetOverlay}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setSelectText(null)} />
-          <View style={s.actionSheet}>
-            <View style={s.sheetGrip} />
-            <Text style={s.selectTitle}>Select text</Text>
-            <TextInput
-              style={[s.selectInput, looksRTLText(selectText || '') && s.selectInputRTL]}
-              value={selectText || ''}
-              // editable (so Android shows selection handles) but controlled with
-              // no onChangeText, so any keystroke is immediately reverted — the
-              // text can be selected and copied, never changed. The keyboard is
-              // suppressed since there is nothing to type.
-              editable
-              showSoftInputOnFocus={false}
-              multiline
-              scrollEnabled
-              autoFocus
-              // Start with EVERYTHING selected, then release control after a
-              // moment so the user can drag the handles to a narrower range.
-              selection={selectRange}
-              onSelectionChange={() => { if (selectRange) setSelectRange(undefined); }}
-              contextMenuHidden={false}
-            />
-            <TouchableOpacity style={s.ocrCopyBtnLike} onPress={() => { copy(selectText || '', 'message'); setSelectText(null); }}>
-              <Text style={s.ocrCopyTextLike}>📋  Copy all</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={s.sheetCancel} onPress={() => setSelectText(null)}>
-              <Text style={s.sheetCancelText}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+
+      <EmojiEditor visible={editEmojis} onClose={() => setEditEmojis(false)} />
 
       <FullMusicPlayer
         visible={showPlayer}
@@ -2044,11 +2051,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             return (
               <View style={[s.emojiPicker, { position: 'absolute', left, top, width: W }]} onStartShouldSetResponder={() => true}>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="always">
-                  {EMOJIS.map(e => (
+                  {favEmojis.map(e => (
                     <TouchableOpacity key={e} onPress={() => toggleReact(emojiPicker.id, e)} style={s.emojiBtn}>
                       <Text style={s.emoji}>{e}</Text>
                     </TouchableOpacity>
                   ))}
+                  <TouchableOpacity onPress={() => { setEmojiPicker(null); setEditEmojis(true); }} style={s.emojiBtn}>
+                    <Text style={s.emoji}>✏️</Text>
+                  </TouchableOpacity>
                 </ScrollView>
               </View>
             );
@@ -2060,7 +2070,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           the old cramped ⋮ button and tap-positioned popover — the whole bubble
           is now the target (long-press), the rows are full-width and finger
           sized, and reactions live in the same place as the actions. */}
-      <Modal visible={!!actionsMsg} transparent animationType="slide" onRequestClose={() => setActionsMsg(null)}>
+      {/* animationType="none": the slide-up took ~300ms on top of the modal's
+          own mount cost, which is what made the menu feel slow to appear. */}
+      <Modal visible={!!actionsMsg} transparent animationType="none" onRequestClose={() => setActionsMsg(null)}>
         <View style={s.sheetOverlay}>
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setActionsMsg(null)} />
           {actionsMsg && (() => {
@@ -2068,11 +2080,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             const mineMsg = m.username === me;
             const hidden = !!m.one_time_seconds && !mineMsg && !revealedOneTime.has(m.id);
             const close = () => setActionsMsg(null);
+            // Whole row is the button — the label used to be the only thing
+            // that reacted, so a tap an inch to its right did nothing.
             const Row = ({ icon, label, onPress, danger }: any) => (
-              <TouchableOpacity style={s.sheetRow} onPress={onPress} activeOpacity={0.6}>
+              <Pressable
+                style={({ pressed }) => [s.sheetRow, pressed && s.sheetRowPressed]}
+                android_ripple={{ color: 'rgba(128,128,128,0.18)' }}
+                onPress={onPress}
+              >
                 <Text style={s.sheetRowIcon}>{icon}</Text>
                 <Text style={[s.sheetRowText, danger && s.sheetRowDanger]}>{label}</Text>
-              </TouchableOpacity>
+              </Pressable>
             );
 
             // A failed (never-sent) message only supports local actions.
@@ -2099,12 +2117,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 {/* Quick reactions */}
                 <ScrollView horizontal showsHorizontalScrollIndicator={false}
                   contentContainerStyle={s.sheetReactRow} keyboardShouldPersistTaps="always">
-                  {EMOJIS.map(e => (
+                  {favEmojis.map(e => (
                     <TouchableOpacity key={e} style={s.sheetReactBtn}
                       onPress={() => { close(); toggleReact(m.id, e); }}>
                       <Text style={s.sheetReactEmoji}>{e}</Text>
                     </TouchableOpacity>
                   ))}
+                  {/* Edit button at the end of the list. */}
+                  <TouchableOpacity style={s.sheetReactBtn} onPress={() => { close(); setEditEmojis(true); }}>
+                    <Text style={s.sheetReactEdit}>✏️</Text>
+                  </TouchableOpacity>
                 </ScrollView>
                 <View style={s.sheetDivider} />
 
@@ -2312,6 +2334,19 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 </View>
               </View>
 
+              {/* Public rooms are readable by anyone, but membership is
+                  explicit — joining lists you as a member and announces you. */}
+              {roomInfo && !roomInfo.is_private && !roomInfo.is_member && (
+                <View style={s.roomLinkBox}>
+                  <TouchableOpacity
+                    style={s.shareBtn}
+                    onPress={() => joinRoomById(room.id, () => { setRoomInfo({ ...roomInfo, is_member: 1 }); loadRoomInfo(); })}
+                  >
+                    <Text style={s.shareBtnText}>Join room</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
               {!(roomInfo?.is_private ?? room.is_private) && (
                 <View style={s.roomLinkBox}>
                   <Text style={s.roomLinkLabel}>ROOM LINK · SHARE TO INVITE</Text>
@@ -2517,8 +2552,12 @@ const s = StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 11, borderRadius: 10,
   },
   actionText: { color: C.text, fontSize: 14.5, fontWeight: '600' },
-  bubbleRow: { flexDirection: 'row', alignItems: 'center', maxWidth: '100%' },
+  // width:100% so the *whole row* — not just the bubble — is a press target.
+  bubbleRow: { flexDirection: 'row', alignItems: 'center', width: '100%' },
   bubbleRowMine: { flexDirection: 'row-reverse' },
+  selectHintRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 },
+  selectHint: { color: C.muted, fontSize: 11.5 },
+  selectDone: { color: C.accent, fontSize: 11.5, fontWeight: '700' },
   sheetOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   actionSheet: {
     backgroundColor: C.sidebar, borderTopLeftRadius: 20, borderTopRightRadius: 20,
@@ -2535,28 +2574,22 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(128,128,128,0.10)',
   },
   sheetReactEmoji: { fontSize: 25 },
+  sheetReactEdit: { fontSize: 20, opacity: 0.75 },
   sheetDivider: { height: StyleSheet.hairlineWidth, backgroundColor: C.border, marginVertical: 8 },
-  sheetRow: { flexDirection: 'row', alignItems: 'center', gap: 16, paddingHorizontal: 22, paddingVertical: 15 },
+  sheetRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 16,
+    paddingHorizontal: 22, paddingVertical: 16, width: '100%', minHeight: 54,
+  },
+  sheetRowPressed: { backgroundColor: 'rgba(128,128,128,0.14)' },
   sheetRowIcon: { fontSize: 19, width: 26, textAlign: 'center' },
-  sheetRowText: { color: C.text, fontSize: 16, fontWeight: '500' },
+  // flex:1 so the label fills the row — nothing dead to the right of the text.
+  sheetRowText: { color: C.text, fontSize: 16, fontWeight: '500', flex: 1 },
   sheetRowDanger: { color: '#f87171' },
   sheetCancel: {
     marginTop: 8, marginHorizontal: 16, backgroundColor: C.inputBg,
     borderRadius: 14, paddingVertical: 14, alignItems: 'center',
   },
   sheetCancelText: { color: C.muted, fontSize: 16, fontWeight: '600' },
-  selectTitle: { color: C.text, fontSize: 16, fontWeight: '800', textAlign: 'center', marginBottom: 10 },
-  selectInput: {
-    marginHorizontal: 16, backgroundColor: C.inputBg, borderRadius: 12,
-    borderWidth: 1, borderColor: C.border, color: C.text,
-    fontSize: 15.5, lineHeight: 24, padding: 14, maxHeight: 300,
-  },
-  selectInputRTL: { textAlign: 'right', writingDirection: 'rtl' },
-  ocrCopyBtnLike: {
-    marginTop: 12, marginHorizontal: 16, backgroundColor: C.accent,
-    borderRadius: 12, paddingVertical: 13, alignItems: 'center',
-  },
-  ocrCopyTextLike: { color: '#fff', fontSize: 15, fontWeight: '700' },
   tokenPreview: {
     color: C.text, fontSize: 15, fontWeight: '600', textAlign: 'center',
     paddingHorizontal: 22, paddingVertical: 4,

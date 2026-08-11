@@ -16,7 +16,7 @@ import { callManager } from './src/callManager';
 import ChatScreen from './src/screens/ChatScreen';
 import MiniPlayer from './src/components/MiniPlayer';
 import Toast from './src/components/Toast';
-import { disconnectSocket, getSocket, getUsername, apiFetch, ensureSocketAlive } from './src/api';
+import { disconnectSocket, getSocket, getUsername, apiFetch, ensureSocketAlive, setSessionExpiredHandler, resetSessionExpiry } from './src/api';
 import { audioManager } from './src/audioManager';
 import * as outbox from './src/outbox';
 import * as mediaNotification from './src/mediaNotification';
@@ -341,6 +341,17 @@ export default function App() {
     if (screen !== 'auth') callManager.init().catch(() => {});
   }, [screen]);
 
+  // A token the server no longer accepts (secret rotated, account removed)
+  // used to leave the app in a half-dead state the user had to escape by
+  // signing out by hand. Detect it once and do the sign-out for them.
+  useEffect(() => {
+    setSessionExpiredHandler(() => {
+      logout().catch(() => {});
+      Alert.alert('Signed out', 'Your session expired. Please sign in again.');
+    });
+    return () => setSessionExpiredHandler(null);
+  }, []);
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
@@ -353,7 +364,7 @@ export default function App() {
             />
           )}
           {screen === 'auth' && (
-            <AuthScreen onLogin={() => setScreen('rooms')} />
+            <AuthScreen onLogin={() => { resetSessionExpiry(); setScreen('rooms'); }} />
           )}
           {screen === 'rooms' && (
             <RoomsScreen

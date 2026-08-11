@@ -559,6 +559,11 @@ app.get('/room-info/:roomId', authMiddleware, (req, res) => {
     owner_username: owner ? owner.username : null,
     owner_avatar: owner ? owner.avatar : null,
     is_owner: room.created_by === req.user.id,
+    // Public rooms are readable by anyone, but membership is still explicit —
+    // the client shows a Join button while this is false.
+    is_member: room.created_by === req.user.id || !!db.prepare(
+      'SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?'
+    ).get(room.id, req.user.id),
     members,
   });
 });

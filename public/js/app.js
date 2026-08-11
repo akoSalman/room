@@ -234,6 +234,7 @@ async function signin() {
 
 function saveSession(t, u, avatar) {
   token = t; username = u;
+  expiredFired = false;   // re-arm expiry detection for the new session
   localStorage.setItem('token', t);
   localStorage.setItem('username', u);
   if (avatar !== undefined) {
@@ -351,7 +352,7 @@ function connectSocket() {
     socket.on('reconnect', () => { socketReady = true; setConnStatus('online'); });
     socket.on('connect_error', (err) => {
       setConnStatus(navigator.onLine ? 'reconnecting' : 'offline');
-      if (err.message === 'Unauthorized') logout();
+      if (err.message === 'Unauthorized') sessionExpired();
     });
     window.addEventListener('offline', () => setConnStatus('offline'));
     window.addEventListener('online', () => { if (!socketReady) setConnStatus('reconnecting'); });
@@ -565,6 +566,12 @@ async function openRoomInfo() {
   document.getElementById('room-info-created').textContent = created;
   document.getElementById('room-info-type').textContent = info.is_private ? 'Private room' : 'Public room';
 
+  // Join (public rooms the viewer hasn't joined yet). Public rooms are
+  // readable by anyone, but membership is explicit — joining lists you as a
+  // member and announces you in the room.
+  document.getElementById('room-info-join-section')
+    .classList.toggle('hidden', !!(info.is_private || info.is_member));
+
   // Link (public rooms only)
   const linkSection = document.getElementById('room-info-link-section');
   if (info.is_private) linkSection.classList.add('hidden');
@@ -598,6 +605,16 @@ async function openRoomInfo() {
   show('room-info-modal');
 }
 function closeRoomInfo() { hide('room-info-modal'); }
+
+function joinCurrentRoom() {
+  if (!currentRoomId) return;
+  const roomId = currentRoomId;
+  socket.emit('accept_invite', { roomId }, (res) => {
+    if (res?.error) return alert(res.error);
+    document.getElementById('room-info-join-section').classList.add('hidden');
+    addRoomToList(res.room);
+  });
+}
 
 function sendRoomInvite() {
   const name = document.getElementById('room-invite-input').value.trim();
@@ -1765,6 +1782,10 @@ function appendLinkifiedText(container, content) {
 async function joinRoomById(roomId) {
   const info = await api('/room-info/' + roomId);
   if (info.error) return alert(info.error);
+  // Opening a public room's link used to only *show* the room — the visitor
+  // never actually became a member, so they never appeared in the member list
+  // and the room never announced them. Register the membership first.
+  if (!info.is_member) return acceptInvite(info.id);
   let li = document.querySelector(`[data-room-id="${info.id}"]`);
   if (!li) { addRoomToList(info); li = document.querySelector(`[data-room-id="${info.id}"]`); }
   if (li) joinRoom(info.id, info.name, li, false);
@@ -2723,5 +2744,19 @@ async function api(path, method = 'GET', body = null) {
   const opts = { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) } };
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch(path, opts);
+  // A token the server no longer accepts (signing secret rotated, account
+  // removed) used to leave the page rendering empty, failing screens until the
+  // user worked out they had to sign out by hand. Do it for them.
+  if (res.status === 401 && token) sessionExpired();
   return res.json();
+}
+
+// Fires once per session — otherwise a burst of parallel 401s would stack a
+// dozen alerts on top of each other.
+let expiredFired = false;
+function sessionExpired() {
+  if (expiredFired) return;
+  expiredFired = true;
+  logout();
+  showAuthError('Your session expired. Please sign in again.');
 }

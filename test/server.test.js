@@ -212,6 +212,39 @@ test('room-info exposes member ids and owner id', async () => {
   assert.strictEqual(info.is_owner, true);
 });
 
+test('room-info reports membership so the client can offer a Join button', async () => {
+  const owner = await signUp('powner7');
+  const visitor = await signUp('pvisitor7');
+  const room = await api('/rooms', 'POST', { name: 'public-room-7' }, owner.token);
+
+  // Owner is a member; a passer-by who has never joined is not.
+  const asOwner = await api(`/room-info/${room.id}`, 'GET', null, owner.token);
+  assert.strictEqual(!!asOwner.is_member, true, 'owner must count as a member');
+  const before = await api(`/room-info/${room.id}`, 'GET', null, visitor.token);
+  assert.strictEqual(!!before.is_member, false, 'visitor must not start out a member');
+});
+
+test('anyone may join a public room, and it announces them', async () => {
+  const owner = await signUp('powner8');
+  const visitor = await signUp('pvisitor8');
+  const ownerSock = await connect(owner.token);
+  const visitorSock = await connect(visitor.token);
+
+  const room = await api('/rooms', 'POST', { name: 'public-room-8' }, owner.token);
+  ownerSock.emit('join_room', room.id);   // no ack on this handler
+  const announced = waitFor(ownerSock, 'message_received', m => m.room_id === room.id && m.type === 'system');
+
+  const acc = await emit(visitorSock, 'accept_invite', { roomId: room.id });
+  assert.ok(acc.ok, `public join failed: ${JSON.stringify(acc)}`);
+
+  const sys = await announced;
+  assert.ok(String(sys.content).includes('pvisitor8'), `join not announced: ${sys.content}`);
+
+  const after = await api(`/room-info/${room.id}`, 'GET', null, visitor.token);
+  assert.strictEqual(!!after.is_member, true, 'visitor is not a member after joining');
+  assert.ok(after.members.some(m => m.username === 'pvisitor8'), 'joiner missing from member list');
+});
+
 test('room list is ordered by most recent activity, not by name', async () => {
   const u = await signUp('sorter6');
   const sock = await connect(u.token);

@@ -10,8 +10,8 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { C, isRTL } from '../theme';
-
-const QUICK_EMOJIS = ['😂', '❤️', '👍', '🙏', '😍', '🔥', '🎉', '😢', '😮', '👌'];
+import { useFavEmojis } from '../favEmojis';
+import EmojiEditor from './EmojiEditor';
 
 export type ComposerHandle = {
   setText: (v: string) => void;
@@ -45,6 +45,8 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
   } = props;
 
   const [text, setText] = useState('');
+  const favEmojis = useFavEmojis();
+  const [editEmojis, setEditEmojis] = useState(false);
   const textRef = useRef('');
   const inputRef = useRef<TextInput>(null);
   const set = useCallback((v: string) => {
@@ -89,11 +91,15 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
       {quickEmoji && (
         <View style={s.quickEmojiBar}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="always" contentContainerStyle={{ alignItems: 'center' }} style={{ flex: 1 }}>
-            {QUICK_EMOJIS.map(em => (
+            {favEmojis.map(em => (
               <TouchableOpacity key={em} style={s.quickEmojiBtn} onPress={() => set(textRef.current + em)}>
                 <Text style={s.quickEmojiText}>{em}</Text>
               </TouchableOpacity>
             ))}
+            {/* Edit button at the end of the list — pick your own favourites. */}
+            <TouchableOpacity style={s.quickEmojiBtn} onPress={() => setEditEmojis(true)}>
+              <Text style={s.quickEmojiEdit}>✏️</Text>
+            </TouchableOpacity>
           </ScrollView>
           <TouchableOpacity style={s.quickEmojiClose} hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
             onPress={() => { onToggleQuickEmoji(false); AsyncStorage.setItem('quickEmojiClosed', '1'); }}>
@@ -169,6 +175,8 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
           </TouchableOpacity>
         )}
       </View>
+
+      <EmojiEditor visible={editEmojis} onClose={() => setEditEmojis(false)} />
     </View>
   );
 }
@@ -185,6 +193,7 @@ const s = StyleSheet.create({
   },
   quickEmojiBtn: { paddingHorizontal: 6, paddingVertical: 4 },
   quickEmojiText: { fontSize: 22 },
+  quickEmojiEdit: { fontSize: 18, opacity: 0.75 },
   quickEmojiClose: {
     width: 24, height: 24, borderRadius: 12, marginLeft: 6,
     backgroundColor: 'rgba(239,68,68,0.9)', alignItems: 'center', justifyContent: 'center',
