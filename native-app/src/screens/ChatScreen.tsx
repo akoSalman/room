@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   View, Text, TextInput, FlatList, TouchableOpacity,
   StyleSheet, KeyboardAvoidingView, Platform, Alert, Dimensions,
-  ActivityIndicator, Modal, ScrollView, Image, Linking, Share, Pressable, AppState,
+  ActivityIndicator, Modal, ScrollView, Image, Linking, Share, Pressable, AppState, BackHandler,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as DocumentPicker from 'expo-document-picker';
@@ -147,6 +147,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [revealedOneTime, setRevealedOneTime] = useState<Set<number | string>>(new Set());
   const [showOneTimeMenu, setShowOneTimeMenu] = useState(false);
   const [actionsMsg, setActionsMsg] = useState<{ msg: Message; x: number; y: number } | null>(null); // tap menu for a message
+  // Long press puts the chat into multi-select: pick several messages and
+  // forward or delete them in one go.
+  const [selectedIds, setSelectedIds] = useState<Set<Message['id']>>(new Set());
+  // The one message whose text is currently being selected in place.
+  const [textSelectId, setTextSelectId] = useState<Message['id'] | null>(null);
+  // Controlled selection range, used only to preselect the whole message the
+  // instant double-tap turns it into a selectable field; released a moment
+  // later so the handles become draggable.
+  const [textSelectRange, setTextSelectRange] = useState<{ start: number; end: number } | undefined>(undefined);
   const [pendingMedia, setPendingMedia] = useState<{ uri: string; name: string; mime: string }[]>([]);
   const dmPeerPk = useRef<Uint8Array | null>(null); // DM partner's public key (E2E)
   const dmPeerId = useRef<number | null>(null); // DM partner's user id (calls)
@@ -162,6 +171,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const mediaScrollY = useRef(0);
   const [forwardMsg, setForwardMsg] = useState<Message | null>(null);
   const [forwardTargets, setForwardTargets] = useState<any[]>([]);
+  // Separate from forwardMsg: the picker is also opened for a multi-selection,
+  // where there is no single message to hang visibility off.
+  const [forwardOpen, setForwardOpen] = useState(false);
   const [showRoomInfo, setShowRoomInfo] = useState(false);
   const [roomInfo, setRoomInfo] = useState<any>(null);
   const [showPlayer, setShowPlayer] = useState(false);
@@ -1319,14 +1331,54 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     ];
     setForwardTargets(targets);
     setForwardMsg(msg);
+    setForwardOpen(true);
   }
 
   function doForward(target: any) {
-    if (!forwardMsg) return;
-    socketRef.current?.emit('forward_message', { messageId: forwardMsg.id, toRoomId: target.id }, (res: any) => {
-      if (res?.error) Alert.alert('Cannot forward', res.error);
+    // In multi-select the sheet forwards every picked message, oldest first,
+    // so they arrive in the order they were written.
+    const ids = forwardMsg
+      ? [forwardMsg.id]
+      : messagesRef.current.filter(m => selectedIds.has(m.id)).map(m => m.id);
+    if (!ids.length) return;
+    let failed = 0;
+    ids.forEach(id => {
+      socketRef.current?.emit('forward_message', { messageId: id, toRoomId: target.id }, (res: any) => {
+        if (res?.error && !failed++) Alert.alert('Cannot forward', res.error);
+      });
     });
     setForwardMsg(null);
+    setForwardOpen(false);
+    exitSelectMode();
+  }
+
+  // Forward picker opened for the current multi-selection rather than one message.
+  async function openForwardPickerForSelection() {
+    const [rooms, dms] = await Promise.all([apiFetch('/rooms'), apiFetch('/dm-rooms')]);
+    setForwardTargets([
+      ...(Array.isArray(rooms) ? rooms.map((r: any) => ({ ...r, _label: `# ${r.name}` })) : []),
+      ...(Array.isArray(dms) ? dms.map((d: any) => ({ ...d, _label: `💬 ${d.other_username}` })) : []),
+    ]);
+    setForwardMsg(null);   // signals "use the selection"
+    setForwardOpen(true);
+  }
+
+  function deleteSelected() {
+    const ids = [...selectedIds];
+    if (!ids.length) return;
+    Alert.alert(
+      `Delete ${ids.length} message${ids.length > 1 ? 's' : ''}?`, '',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete', style: 'destructive',
+          onPress: () => {
+            ids.forEach(id => socketRef.current?.emit('delete_message', { messageId: id }));
+            exitSelectMode();
+          },
+        },
+      ],
+    );
   }
 
   // Become a member of the room already on screen (the Join bar above the
@@ -1378,13 +1430,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   // Message press routing.
-  //   • text bubbles  : single tap opens the menu; LONG PRESS is left alone so
-  //                     the OS's own text selection takes it, which is how
-  //                     selecting a phrase works everywhere else on the phone.
-  //   • media bubbles : the media itself only opens/plays — a tap there must
-  //                     never pop the menu. The menu comes from the empty
-  //                     space beside the bubble, or from a long press.
-  //   • empty space   : tap or long press opens the menu, across the full row.
+  //   • long press    : enters multi-select (forward/delete several at once)
+  //   • tap on text   : opens the menu — but DEFERRED, so a second tap can
+  //                     cancel it. Opening instantly made the menu flash up
+  //                     and vanish again on every double tap.
+  //   • double tap    : selects the whole text in place, for copying
+  //   • tap on media  : opens the media; never the menu
+  //   • tap on space  : opens the menu, anywhere across the row
+  //   • any tap while multi-selecting toggles that message instead
+  const tapTimer = useRef<any>(null);
+  const lastTap = useRef<{ id: Message['id'] | -1; t: number }>({ id: -1, t: 0 });
+  const DOUBLE_MS = 280;
+
   function openMenuFor(msg: Message, e?: any) {
     setActionsMsg({ msg, x: e?.nativeEvent?.pageX ?? 0, y: e?.nativeEvent?.pageY ?? 0 });
   }
@@ -1393,6 +1450,69 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   function isTextual(m: Message) {
     return m.type === 'text' || m.type === 'system' || m.type === 'call' || m.type === 'invite';
   }
+  function canSelectText(m: Message) {
+    return isTextual(m) && !!(m.content || '').trim() && m.type !== 'invite' && m.type !== 'call';
+  }
+
+  // ── Multi-select ───────────────────────────────────────────────────────────
+  function toggleSelected(msg: Message) {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(msg.id)) next.delete(msg.id); else next.add(msg.id);
+      return next;
+    });
+  }
+  function enterSelectMode(msg: Message) {
+    setTextSelectId(null);
+    clearTimeout(tapTimer.current);
+    setSelectedIds(new Set([msg.id]));
+  }
+  function exitSelectMode() { setSelectedIds(new Set()); }
+
+  function onMessageLongPress(msg: Message) {
+    if (textSelectId != null) return;   // busy selecting text in that bubble
+    enterSelectMode(msg);
+  }
+
+  // Tap on a text bubble, or on the empty space beside any message.
+  function onMessageTap(msg: Message, e: any, fromText: boolean) {
+    if (selectedIds.size) { toggleSelected(msg); return; }
+    if (textSelectId != null) { setTextSelectId(null); return; }  // tap away = done selecting
+
+    if (!fromText || !canSelectText(msg)) { openMenuFor(msg, e); return; }
+
+    const now = Date.now();
+    const second = lastTap.current.id === msg.id && now - lastTap.current.t < DOUBLE_MS;
+    lastTap.current = { id: msg.id, t: now };
+    if (second) {
+      clearTimeout(tapTimer.current);   // kill the pending menu so it never shows
+      lastTap.current = { id: -1, t: 0 };
+      setTextSelectRange({ start: 0, end: (msg.content || '').length });
+      setTextSelectId(msg.id);
+      // Hand control back shortly after, or the range stays pinned and the
+      // handles cannot be dragged to a narrower selection.
+      setTimeout(() => setTextSelectRange(undefined), 350);
+      return;
+    }
+    // Defer: if a second tap follows, the menu must never have appeared.
+    const ev = { nativeEvent: { pageX: e?.nativeEvent?.pageX, pageY: e?.nativeEvent?.pageY } };
+    clearTimeout(tapTimer.current);
+    tapTimer.current = setTimeout(() => openMenuFor(msg, ev), DOUBLE_MS);
+  }
+
+  useEffect(() => () => clearTimeout(tapTimer.current), []);
+
+  // Hardware back gets out of a selection first, rather than leaving the chat
+  // with messages still picked.
+  useEffect(() => {
+    if (!selectedIds.size && textSelectId == null) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (textSelectId != null) { setTextSelectId(null); return true; }
+      if (selectedIds.size) { exitSelectMode(); return true; }
+      return false;
+    });
+    return () => sub.remove();
+  }, [selectedIds.size, textSelectId]);
 
   // Membership gates posting, so it must be known as soon as the room opens —
   // not only when the info sheet is opened.
@@ -1514,8 +1634,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           bubble's own column. */}
       <Pressable
         style={StyleSheet.absoluteFill}
-        onPress={(e) => openMenuFor(msg, e)}
-        onLongPress={(e) => openMenuFor(msg, e)}
+        onPress={(e) => onMessageTap(msg, e, false)}
+        onLongPress={() => onMessageLongPress(msg)}
         delayLongPress={350}
       />
       <View
@@ -1548,23 +1668,32 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         )}
         <View style={[s.bubbleRow, mine && s.bubbleRowMine]}>
         <SwipeableMessage
+          enabled={textSelectId !== msg.id && !selectedIds.size}
           onSwipeRight={() => { setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type }); composerRef.current?.focus(); }}
           onSwipeLeft={mine ? () => deleteMsg(msg.id) : undefined}
         >
         {(() => {
         const textual = isTextual(msg);
-        // Text: tap opens the menu, and NO onLongPress — leaving the long
-        // press unclaimed is what lets the selectable <Text> below start the
-        // OS selection, handles and all, on the first press.
-        // Media: no tap handler at all, so a tap reaches the image/video and
-        // only opens it; the menu comes from a long press or the empty space.
-        const bubbleProps: any = textual
-          ? { onPress: (e: any) => openMenuFor(msg, e), activeOpacity: 0.85 }
-          : { onLongPress: (e: any) => openMenuFor(msg, e), delayLongPress: 350, activeOpacity: 1 };
+        const selecting = textSelectId === msg.id;
+        const picked = selectedIds.has(msg.id);
+        // While the text is being selected the bubble must not capture
+        // touches at all, or the OS selection handles never get them.
+        // Text: tap is routed for the double-tap check. Media: no tap handler,
+        // so a tap reaches the image/video and only opens it.
+        const bubbleProps: any = selecting ? {} : (textual
+          ? { onPress: (e: any) => onMessageTap(msg, e, true), activeOpacity: 0.85 }
+          : { onPress: selectedIds.size ? () => toggleSelected(msg) : undefined, activeOpacity: 1 });
+        if (!selecting) {
+          bubbleProps.onLongPress = () => onMessageLongPress(msg);
+          bubbleProps.delayLongPress = 350;
+        }
+        const Bubble: any = selecting ? View : TouchableOpacity;
         return (
-        <TouchableOpacity
+        <Bubble
           {...bubbleProps}
-          style={[s.bubble, mine ? s.mineBubble : s.theirsBubble, highlightId === msg.id && s.bubbleHighlight]}
+          style={[s.bubble, mine ? s.mineBubble : s.theirsBubble,
+                  highlightId === msg.id && s.bubbleHighlight,
+                  picked && s.bubblePicked]}
         >
           {/* Reply quote */}
           {msg.reply_to_id && msg.reply_username && (
@@ -1583,7 +1712,27 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             </TouchableOpacity>
           )}
           {!hiddenOneTime && msg.type === 'text' && (
+            selecting ? (
+              // A <Text> cannot have its selection set programmatically, so
+              // "select the whole message by default" needs a TextInput. It is
+              // editable (Android only shows selection handles on an editable
+              // field) but controlled with no onChangeText, so any keystroke is
+              // reverted immediately — selectable and copyable, never editable.
+              // The keyboard is suppressed since there is nothing to type.
+              <TextInput
+                style={[s.msgText, s.msgTextInput, looksRTLText(msg.content || '') && s.msgTextRTL]}
+                value={msg.content || ''}
+                editable
+                showSoftInputOnFocus={false}
+                multiline
+                autoFocus
+                selection={textSelectRange}
+                onSelectionChange={() => { if (textSelectRange) setTextSelectRange(undefined); }}
+                contextMenuHidden={false}
+              />
+            ) : (
             <Text style={s.msgText} selectable>{renderTextWithLinks(msg.content || '')}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}{msg.one_time_seconds ? <Text style={s.oneTimeTag}> 🔥{msg.one_time_seconds}s</Text> : null}</Text>
+            )
           )}
           {msg.type === 'call' && (() => {
             let c: any = {};
@@ -1624,8 +1773,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             const onLoaded = msg.one_time_seconds && !mine ? () => startOneTimeClock(msg) : undefined;
             return (
               <TouchableOpacity
-                onPress={() => !msg._uploading && openViewer(uri)}
-                onLongPress={(e) => openMenuFor(msg, e)}
+                onPress={() => {
+                  if (selectedIds.size) { toggleSelected(msg); return; }
+                  if (!msg._uploading) openViewer(uri);
+                }}
+                onLongPress={() => onMessageLongPress(msg)}
                 delayLongPress={350}
                 disabled={msg._uploading}>
                 {msg._uploading
@@ -1651,8 +1803,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             return (
               <GalleryGrid
                 uris={full}
-                onLongPress={() => openMenuFor(msg)}
-                onOpen={(i) => openViewer(full[i])}
+                onLongPress={() => onMessageLongPress(msg)}
+                onOpen={(i) => { if (selectedIds.size) toggleSelected(msg); else openViewer(full[i]); }}
                 onFirstLoaded={msg.one_time_seconds && !mine ? () => startOneTimeClock(msg) : undefined}
               />
             );
@@ -1682,10 +1834,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             return (
               <TouchableOpacity
                 onPress={() => {
+                  if (selectedIds.size) { toggleSelected(msg); return; }
                   if (msg._uploading) return;
                   setVideoUrl(uri);
                   if (msg.one_time_seconds && !mine) startOneTimeClock(msg);
                 }}
+                onLongPress={() => onMessageLongPress(msg)}
+                delayLongPress={350}
                 disabled={msg._uploading}
               >
                 <View style={s.videoThumb}>
@@ -1733,7 +1888,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               </TouchableOpacity>
             </View>
           )}
-        </TouchableOpacity>
+        </Bubble>
         );
         })()}
         </SwipeableMessage>
@@ -1781,7 +1936,26 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
   return (
     <KeyboardAvoidingView style={s.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      {/* Multi-select action bar. Replaces the header while messages are
+          picked, the way every chat app does it, so the count and the actions
+          sit where the user is already looking. */}
+      {selectedIds.size > 0 && (
+        <View style={s.selBar}>
+          <TouchableOpacity onPress={exitSelectMode} style={s.selBarBtn} hitSlop={hitSlop10}>
+            <Ionicons name="close" size={24} color={C.text} />
+          </TouchableOpacity>
+          <Text style={s.selBarCount}>{selectedIds.size} selected</Text>
+          <TouchableOpacity onPress={openForwardPickerForSelection} style={s.selBarBtn} hitSlop={hitSlop10}>
+            <Ionicons name="arrow-redo-outline" size={23} color={C.accent} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={deleteSelected} style={s.selBarBtn} hitSlop={hitSlop10}>
+            <Ionicons name="trash-outline" size={22} color="#f87171" />
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Header */}
+      {selectedIds.size === 0 && (
       <View style={s.header}>
         <TouchableOpacity onPress={onBack} style={s.backBtn} activeOpacity={0.6}
           hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}>
@@ -1844,6 +2018,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             : <Text style={s.headerAvatarText}>{(me || '?').slice(0, 2).toUpperCase()}</Text>}
         </TouchableOpacity>
       </View>
+      )}
 
       {/* Online users modal */}
       <Modal visible={showOnline} transparent animationType="slide" onRequestClose={() => setShowOnline(false)}>
@@ -2375,12 +2550,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       </Modal>
 
       {/* Forward picker */}
-      <Modal visible={!!forwardMsg} transparent animationType="slide" onRequestClose={() => setForwardMsg(null)}>
+      <Modal visible={forwardOpen} transparent animationType="slide" onRequestClose={() => { setForwardOpen(false); setForwardMsg(null); }}>
         <View style={s.overlay}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setForwardMsg(null)} />
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => { setForwardOpen(false); setForwardMsg(null); }} />
           <View style={s.attachSheet}>
             <View style={s.sheetHandle} />
-            <Text style={s.forwardTitle}>Forward to…</Text>
+            <Text style={s.forwardTitle}>{forwardMsg ? 'Forward to…' : `Forward ${selectedIds.size} message${selectedIds.size > 1 ? 's' : ''} to…`}</Text>
             <ScrollView style={{ maxHeight: 380 }} nestedScrollEnabled>
               {forwardTargets.map(t => (
                 <TouchableOpacity key={`${t.is_dm ? 'd' : 'r'}${t.id}`} style={s.attachOption} onPress={() => doForward(t)}>
@@ -2388,7 +2563,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 </TouchableOpacity>
               ))}
             </ScrollView>
-            <TouchableOpacity style={s.attachCancel} onPress={() => setForwardMsg(null)}>
+            <TouchableOpacity style={s.attachCancel} onPress={() => { setForwardOpen(false); setForwardMsg(null); }}>
               <Text style={s.attachCancelText}>Cancel</Text>
             </TouchableOpacity>
           </View>
@@ -2537,6 +2712,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   );
 }
 
+const hitSlop10 = { top: 10, bottom: 10, left: 10, right: 10 };
+
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: C.bg },
   header: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.header, padding: 12, paddingTop: 14, borderBottomWidth: 1, borderBottomColor: C.border, gap: 8 },
@@ -2648,6 +2825,16 @@ const s = StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 11, borderRadius: 10,
   },
   actionText: { color: C.text, fontSize: 14.5, fontWeight: '600' },
+  selBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: C.header, padding: 12, paddingTop: 14,
+    borderBottomWidth: 1, borderBottomColor: C.border,
+  },
+  selBarBtn: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center' },
+  selBarCount: { flex: 1, color: C.text, fontSize: 16.5, fontWeight: '700', marginLeft: 4 },
+  bubblePicked: { borderWidth: 2, borderColor: C.accent, backgroundColor: 'rgba(59,125,216,0.28)' },
+  msgTextInput: { padding: 0, margin: 0, textAlignVertical: 'top' },
+  msgTextRTL: { textAlign: 'right', writingDirection: 'rtl' },
   bubbleRow: { flexDirection: 'row', alignItems: 'center', maxWidth: '100%' },
   bubbleRowMine: { flexDirection: 'row-reverse' },
   leaveRoomBtn: {

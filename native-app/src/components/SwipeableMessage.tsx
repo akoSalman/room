@@ -6,10 +6,14 @@ import { C } from '../theme';
 const SWIPE_THRESHOLD = 64;
 const MAX_SWIPE = 90;
 
-export default function SwipeableMessage({ children, onSwipeRight, onSwipeLeft }: {
+export default function SwipeableMessage({ children, onSwipeRight, onSwipeLeft, enabled = true }: {
   children: React.ReactNode;
   onSwipeRight?: () => void;
   onSwipeLeft?: () => void;
+  // Suspended while the message's text is being selected: dragging a
+  // selection handle sideways is the same gesture as a swipe, so the swipe
+  // would steal it and the user could never adjust their selection.
+  enabled?: boolean;
 }) {
   const translateX = useRef(new Animated.Value(0)).current;
   const replyOpacity = translateX.interpolate({
@@ -58,6 +62,7 @@ export default function SwipeableMessage({ children, onSwipeRight, onSwipeLeft }
         </View>
       )}
       <PanGestureHandler
+        enabled={enabled}
         onGestureEvent={onGestureEvent}
         onHandlerStateChange={onHandlerStateChange}
         activeOffsetX={[-10, 10]}
