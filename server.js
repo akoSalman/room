@@ -77,6 +77,51 @@ app.use('/uploads', express.static('uploads', {
   },
 }));
 
+// ── Thumbnails ───────────────────────────────────────────────────────────────
+// The media gallery rendered its grid from the ORIGINAL uploads: opening a
+// chat's photos meant downloading every full-size image just to draw 100px
+// cells, which is why a gallery page took so long to fill in. This serves a
+// small re-encoded JPEG instead, generated once and cached on disk.
+//
+// Re-encoding through sharp also means the bytes we return are ours, not the
+// uploader's, so unlike /uploads these can safely be served inline as images.
+const sharp = require('sharp');
+const THUMB_DIR = path.join('uploads', '.thumbs');
+const THUMB_WIDTHS = [96, 200, 400];   // fixed set: an attacker can't ask for 10000 renders
+
+app.get('/thumb/:name', async (req, res) => {
+  // Only ever a bare filename inside uploads/ — no traversal, no subpaths.
+  const name = path.basename(String(req.params.name || ''));
+  if (!name || name.startsWith('.') || name !== req.params.name) {
+    return res.status(400).end();
+  }
+  const src = path.join('uploads', name);
+  if (!fs.existsSync(src)) return res.status(404).end();
+
+  const asked = parseInt(req.query.w, 10) || 200;
+  const width = THUMB_WIDTHS.includes(asked) ? asked : 200;
+  const out = path.join(THUMB_DIR, `${name}_${width}.jpg`);
+
+  try {
+    if (!fs.existsSync(out)) {
+      fs.mkdirSync(THUMB_DIR, { recursive: true });
+      await sharp(src)
+        .rotate()                       // honour EXIF orientation
+        .resize(width, width, { fit: 'cover', position: 'centre' })
+        .jpeg({ quality: 72 })
+        .toFile(out);
+    }
+    res.setHeader('Content-Type', 'image/jpeg');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'public, max-age=2592000, immutable');
+    fs.createReadStream(out).pipe(res);
+  } catch {
+    // Not an image, or a format sharp can't read — say so rather than
+    // pretending, so the client can fall back to the original.
+    res.status(415).end();
+  }
+});
+
 const storage = multer.diskStorage({
   destination: 'uploads/',
   filename: (req, file, cb) => {

@@ -191,6 +191,17 @@ export default function CameraScreen({ onClose, onDone, initialMode = 'photo' }:
     setShots(prev => prev.filter((_, j) => j !== i));
   }
 
+  // Quick zoom stops beside the shutter. expo-camera's `zoom` is 0..1 across
+  // whatever range the device has, not an optical factor, so these are evenly
+  // spaced approximations of 1x/2x/3x rather than exact focal lengths.
+  const ZOOM_STOPS = [
+    { label: '1x', value: 0 },
+    { label: '2x', value: 0.25 },
+    { label: '3x', value: 0.5 },
+  ];
+  const activeStop = ZOOM_STOPS.reduce((best, st) =>
+    Math.abs(st.value - zoom) < Math.abs(best.value - zoom) ? st : best, ZOOM_STOPS[0]);
+
   const fmt = (n: number) => `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`;
   const flashIcon = flash === 'on' ? 'flash' : flash === 'auto' ? 'flash-outline' : 'flash-off';
   const zoomLabel = `${(1 + zoom * 4).toFixed(1)}x`;
@@ -349,6 +360,24 @@ export default function CameraScreen({ onClose, onDone, initialMode = 'photo' }:
           </ScrollView>
         )}
 
+        {/* Quick zoom stops, right above the shutter */}
+        {!recording && (
+          <View style={s.zoomRow}>
+            {ZOOM_STOPS.map(st => {
+              const on = activeStop.label === st.label && Math.abs(zoom - st.value) < 0.02;
+              return (
+                <TouchableOpacity
+                  key={st.label}
+                  style={[s.zoomStop, on && s.zoomStopOn]}
+                  onPress={() => setZoom(st.value)}
+                >
+                  <Text style={[s.zoomStopText, on && s.zoomStopTextOn]}>{st.label}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        )}
+
         {/* Photo / Video switch */}
         {!recording && (
           <View style={s.modeRow}>
@@ -480,6 +509,15 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.85)', alignItems: 'center', justifyContent: 'center',
   },
 
+  zoomRow: { flexDirection: 'row', alignSelf: 'center', gap: 8, marginBottom: 12 },
+  zoomStop: {
+    minWidth: 38, height: 38, borderRadius: 19, paddingHorizontal: 8,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.42)',
+  },
+  zoomStopOn: { backgroundColor: 'rgba(255,255,255,0.92)' },
+  zoomStopText: { color: '#fff', fontSize: 12.5, fontWeight: '700' },
+  zoomStopTextOn: { color: '#0f172a' },
   modeRow: { flexDirection: 'row', alignSelf: 'center', gap: 6, marginBottom: 12 },
   modeBtn: { paddingHorizontal: 18, paddingVertical: 6, borderRadius: 15 },
   modeBtnActive: { backgroundColor: 'rgba(255,255,255,0.16)' },

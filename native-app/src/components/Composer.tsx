@@ -96,9 +96,12 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
                 <Text style={s.quickEmojiText}>{em}</Text>
               </TouchableOpacity>
             ))}
-            {/* Edit button at the end of the list — pick your own favourites. */}
-            <TouchableOpacity style={s.quickEmojiBtn} onPress={() => setEditEmojis(true)}>
-              <Text style={s.quickEmojiEdit}>✏️</Text>
+            {/* Edit button at the end of the list. Deliberately NOT another
+                emoji glyph — a divider, a tinted pill and a line icon so it
+                reads as a control rather than one more emoji to send. */}
+            <View style={s.quickEmojiDivider} />
+            <TouchableOpacity style={s.quickEmojiEditBtn} onPress={() => setEditEmojis(true)}>
+              <Ionicons name="options-outline" size={16} color={C.accent} />
             </TouchableOpacity>
           </ScrollView>
           <TouchableOpacity style={s.quickEmojiClose} hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
@@ -193,7 +196,16 @@ const s = StyleSheet.create({
   },
   quickEmojiBtn: { paddingHorizontal: 6, paddingVertical: 4 },
   quickEmojiText: { fontSize: 22 },
-  quickEmojiEdit: { fontSize: 18, opacity: 0.75 },
+  quickEmojiDivider: {
+    width: StyleSheet.hairlineWidth, height: 22, marginHorizontal: 6,
+    backgroundColor: C.border, alignSelf: 'center',
+  },
+  quickEmojiEditBtn: {
+    width: 30, height: 30, borderRadius: 15, marginLeft: 2,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(59,125,216,0.14)',
+    borderWidth: StyleSheet.hairlineWidth, borderColor: C.accent,
+  },
   quickEmojiClose: {
     width: 24, height: 24, borderRadius: 12, marginLeft: 6,
     backgroundColor: 'rgba(239,68,68,0.9)', alignItems: 'center', justifyContent: 'center',

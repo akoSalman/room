@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   StatusBar, View, Text, I18nManager, BackHandler, AppState,
-  Modal, TouchableOpacity, FlatList, StyleSheet, Linking, Alert,
+  Modal, TouchableOpacity, FlatList, StyleSheet, Linking, Alert, ActivityIndicator,
 } from 'react-native';
 import { useShareIntent } from 'expo-share-intent';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -81,6 +81,12 @@ const sh = StyleSheet.create({
   rowText: { color: C.text, fontSize: 15.5, fontWeight: '600', flex: 1 },
   cancel: { marginTop: 12, alignSelf: 'center', paddingHorizontal: 22, paddingVertical: 10, borderRadius: 12, backgroundColor: 'rgba(239,68,68,0.15)' },
   cancelText: { color: '#ef4444', fontWeight: '700' },
+  busyOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', alignItems: 'center', justifyContent: 'center' },
+  busyCard: {
+    backgroundColor: C.header, borderRadius: 16, paddingHorizontal: 30, paddingVertical: 26,
+    alignItems: 'center', gap: 14,
+  },
+  busyText: { color: C.text, fontSize: 14.5, fontWeight: '600' },
 });
 type Screen = 'auth' | 'rooms' | 'chat';
 
@@ -388,6 +394,19 @@ export default function App() {
           )}
 
           {/* Share-target chat picker */}
+          {/* A share has arrived but the chat picker isn't ready yet (the room
+              list is still loading, and a heavy file is still being copied out
+              of the sending app). Without this the app just sat there looking
+              frozen after "Share to ChatRoom". */}
+          <Modal visible={hasShareIntent && !shareRooms && screen !== 'auth'} transparent animationType="fade">
+            <View style={sh.busyOverlay}>
+              <View style={sh.busyCard}>
+                <ActivityIndicator size="large" color={C.accent} />
+                <Text style={sh.busyText}>Preparing shared content…</Text>
+              </View>
+            </View>
+          </Modal>
+
           <Modal visible={hasShareIntent && !!shareRooms && screen !== 'auth'} transparent animationType="slide" onRequestClose={cancelShare}>
             <View style={sh.overlay}>
               <View style={sh.sheet}>

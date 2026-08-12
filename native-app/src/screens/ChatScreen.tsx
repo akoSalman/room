@@ -30,6 +30,7 @@ import GalleryGrid from '../components/GalleryGrid';
 import ImageWithSpinner from '../components/ImageWithSpinner';
 import GalleryImage from '../components/GalleryImage';
 import CameraScreen from './CameraScreen';
+import * as Sharing from 'expo-sharing';
 import SwipeableMessage from '../components/SwipeableMessage';
 import MusicPlayer from '../components/MusicPlayer';
 import FullMusicPlayer from '../components/FullMusicPlayer';
@@ -133,6 +134,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   // Which mode the in-app camera is open in; null = closed.
   const [cameraMode, setCameraMode] = useState<'photo' | 'video' | null>(null);
+  // Preparing a file for the OS share sheet (download happens first).
+  const [sharingOut, setSharingOut] = useState(false);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [maxOtherReadMsgId, setMaxOtherReadMsgId] = useState(0);
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
@@ -155,6 +158,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [showMedia, setShowMedia] = useState(false);
   const [mediaTab, setMediaTab] = useState<'images' | 'files' | 'music' | 'links'>('images');
   const [mediaData, setMediaData] = useState<any>(null);
+  const mediaScrollRef = useRef<ScrollView>(null);
+  const mediaScrollY = useRef(0);
   const [forwardMsg, setForwardMsg] = useState<Message | null>(null);
   const [forwardTargets, setForwardTargets] = useState<any[]>([]);
   const [showRoomInfo, setShowRoomInfo] = useState(false);
@@ -505,9 +510,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               !prev.some(p => p.id === f.id) && !delivered(f) && !outbox.isInFlight(f.id));
             failed.filter((f: any) => delivered(f)).forEach((f: any) => removeFailedMsg(f.id));
             // Whatever is genuinely stalled (the process died mid-send) resumes
-            // automatically, since a JS upload cannot outlive the process.
+            // automatically, since a JS upload cannot outlive the process —
+            // but only a bounded number of times. A send that can never
+            // succeed used to retry on EVERY open and re-persist itself on
+            // every failure, looping forever with no way out.
             const resumable = keep.filter((f: any) =>
-              f.type === 'text' || (f.file_path && /^(file|content):\/\//.test(String(f.file_path))));
+              (f._attempts || 0) < outbox.MAX_AUTO_RETRIES &&
+              (f.type === 'text' || (f.file_path && /^(file|content):\/\//.test(String(f.file_path)))));
             if (resumable.length) {
               setTimeout(() => resumable.forEach((f: any) => {
                 if (!outbox.isInFlight(f.id)) retryUpload({ ...f, _uploadFailed: true });
@@ -539,10 +548,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
       sock.on('message_received', (msg: Message) => {
         if (msg.room_id !== room.id) {
-          if (msg.username !== me) setOtherUnread(true);
+          // meRef, not the `me` state: this listener is bound once, and on the
+          // first render `me` is still ''. Every message from another room —
+          // including the echo of a message YOU just forwarded there — then
+          // looked like someone else's and lit the dot on the back button.
+          if (msg.username !== meRef.current) setOtherUnread(true);
           return;
         }
-        if (msg.type === 'text' && msg.username !== me) {
+        // meRef for the same reason as above — bound once, `me` is '' then.
+        if (msg.type === 'text' && msg.username !== meRef.current) {
           let c: any = msg.content;
           if (e2eIsEncrypted(c)) c = e2eDecrypt(c, dmPeerPk.current);
           const em = burstEmojiOf(c);
@@ -1083,6 +1097,39 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     }
   }
 
+  // Send a received file out to any other app (WhatsApp, Drive, Gmail, …).
+  // Download first: the OS share sheet needs a real local file, not a URL.
+  async function shareOut(msg: Message) {
+    if (!msg.file_path) return;
+    if (msg.one_time_seconds) { Alert.alert('Not allowed', 'One-time media cannot be shared.'); return; }
+    // A gallery is several files; the share sheet takes one, so share the first.
+    let remote = msg.file_path;
+    if (msg.type === 'gallery') {
+      try { remote = JSON.parse(msg.file_path)[0]; } catch {}
+    }
+    if (!remote) return;
+    try {
+      if (!(await Sharing.isAvailableAsync())) {
+        Alert.alert('Not available', 'Sharing is not available on this device.');
+        return;
+      }
+      setSharingOut(true);
+      const name = msg.file_name && msg.type !== 'gallery' && msg.type !== 'audio'
+        ? msg.file_name
+        : (String(remote).split('/').pop() || 'file');
+      const local = FileSystem.cacheDirectory + name;
+      const { uri } = await FileSystem.downloadAsync(`${BASE_URL}${remote}`, local);
+      await Sharing.shareAsync(uri, {
+        mimeType: guessMime(name, 'application/octet-stream') || undefined,
+        dialogTitle: name,
+      });
+    } catch {
+      Alert.alert('Error', 'Could not share that file.');
+    } finally {
+      setSharingOut(false);
+    }
+  }
+
   async function downloadMedia(msg: Message) {
     if (!msg.file_path) return;
     if (msg.one_time_seconds) { Alert.alert('Not allowed', 'One-time media cannot be downloaded.'); return; }
@@ -1121,9 +1168,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     }
   }
 
-  function retryUpload(msg: Message) {
+  // `manual` = the user pressed Retry, which forgives the attempt count; the
+  // automatic resume on chat open does not.
+  function retryUpload(msg: Message, manual = false) {
     if (!msg.client_id && typeof msg.id !== 'string') return;
     const clientId = String(msg.id);
+    // Carry the stable identity into the new dispatch so attempts keep
+    // counting and a later delete can still tombstone this lineage.
+    const m: any = msg;
+    outbox.setNextOrigin(String(m._originId || clientId), manual ? 0 : (m._attempts || 0) + 1);
     removeFailedMsg(clientId);
     setMessages(prev => prev.filter(m => m.id !== clientId));
     if (msg.type === 'text') {
@@ -1151,10 +1204,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     }
   }
 
-  // Remove a failed message for good (from the list and persisted storage).
+  // Remove a failed message for good. outbox.discard tombstones it, so a retry
+  // still in flight cannot re-persist it under its new clientId when it fails.
   function discardFailed(msg: Message) {
     const clientId = String(msg.id);
-    removeFailedMsg(clientId);
+    outbox.discard(room.id, msg);
     setMessages(prev => prev.filter(m => m.id !== clientId));
   }
 
@@ -1302,6 +1356,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   const roomLink = `${BASE_URL}/join/${room.id}`;
+  // Server-rendered, disk-cached thumbnail for an /uploads path.
+  const thumbUrl = (uploadPath: string, w: number) =>
+    `${BASE_URL}/thumb/${encodeURIComponent(String(uploadPath).replace(/^\/uploads\//, ''))}?w=${w}`;
   // Public rooms are readable by anyone but writable only by members.
   const notMember = !room.is_dm && !!roomInfo && !roomInfo.is_member;
 
@@ -1338,8 +1395,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const lastTap = useRef<{ id: Message['id'] | -1; t: number }>({ id: -1, t: 0 });
   const DOUBLE_MS = 300;
 
+  // When the action menu last appeared. A tap on its backdrop this soon after
+  // is really the second half of a double tap (see the backdrop handler).
+  const menuOpenedAt = useRef(0);
+  const DOUBLE_TAP_ON_MENU_MS = 450;
+
   function openMenuFor(msg: Message, e?: any) {
     setSelectableId(null);
+    menuOpenedAt.current = Date.now();
     setActionsMsg({ msg, x: e?.nativeEvent?.pageX ?? 0, y: e?.nativeEvent?.pageY ?? 0 });
   }
 
@@ -1472,6 +1535,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
     return (
       <View style={s.msgRow}>
+      {/* Press-catcher across the WHOLE row, behind the bubble: the empty
+          space beside a message reacts exactly like the message does. It sits
+          behind, so the bubble's own taps, media taps and swipe-to-reply all
+          keep priority. It must live here rather than inside msgWrapper —
+          that is capped at 80% width, so a catcher in there covered only the
+          bubble's own column. */}
+      <Pressable
+        style={StyleSheet.absoluteFill}
+        onPress={(e) => onBubblePress(msg, e)}
+        onLongPress={(e) => openMenuFor(msg, e)}
+        delayLongPress={350}
+      />
       <View
         style={[s.msgWrapper, mine ? s.mine : s.theirs]}
       >
@@ -1501,16 +1576,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           )
         )}
         <View style={[s.bubbleRow, mine && s.bubbleRowMine]}>
-        {/* A press-catcher filling the row and sitting BEHIND the bubble, so
-            the empty space beside a bubble reacts exactly like the bubble does
-            — one big target instead of a narrow one. Because it is behind, the
-            bubble's own taps and the swipe-to-reply gesture are untouched. */}
-        <Pressable
-          style={StyleSheet.absoluteFill}
-          onPress={(e) => onBubblePress(msg, e)}
-          onLongPress={(e) => openMenuFor(msg, e)}
-          delayLongPress={350}
-        />
         <SwipeableMessage
           onSwipeRight={() => { setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type }); composerRef.current?.focus(); }}
           onSwipeLeft={mine ? () => deleteMsg(msg.id) : undefined}
@@ -1693,7 +1758,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           )}
           {msg._uploadFailed && (
             <View style={s.failedRow}>
-              <TouchableOpacity onPress={() => retryUpload(msg)}>
+              <TouchableOpacity onPress={() => retryUpload(msg, true)}>
                 <Text style={s.uploadRetryText}>⚠️ Failed — tap to retry</Text>
               </TouchableOpacity>
             </View>
@@ -1931,6 +1996,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       </Modal>
 
 
+      {/* Preparing a file for the OS share sheet: it has to be downloaded
+          first, which is not instant for a large file. */}
+      <Modal visible={sharingOut} transparent animationType="fade">
+        <View style={s.busyOverlay}>
+          <View style={s.busyCard}>
+            <ActivityIndicator size="large" color={C.accent} />
+            <Text style={s.busyText}>Preparing file…</Text>
+          </View>
+        </View>
+      </Modal>
+
       {/* In-app camera, fullscreen */}
       <Modal visible={!!cameraMode} animationType="slide" onRequestClose={() => setCameraMode(null)} statusBarTranslucent>
         {cameraMode && (
@@ -2093,8 +2169,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                       <Text style={s.emoji}>{e}</Text>
                     </TouchableOpacity>
                   ))}
-                  <TouchableOpacity onPress={() => { setEmojiPicker(null); setEditEmojis(true); }} style={s.emojiBtn}>
-                    <Text style={s.emoji}>✏️</Text>
+                  <View style={s.sheetReactDivider} />
+                  <TouchableOpacity onPress={() => { setEmojiPicker(null); setEditEmojis(true); }} style={s.emojiEditBtn}>
+                    <Ionicons name="options-outline" size={17} color={C.accent} />
                   </TouchableOpacity>
                 </ScrollView>
               </View>
@@ -2111,7 +2188,25 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           own mount cost, which is what made the menu feel slow to appear. */}
       <Modal visible={!!actionsMsg} transparent animationType="none" onRequestClose={() => setActionsMsg(null)}>
         <View style={s.sheetOverlay}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setActionsMsg(null)} />
+          {/* Double tap has to be completed HERE. The first tap opens this
+              menu, which covers the screen — so the user's second tap never
+              reaches the message, it lands on this backdrop. A backdrop tap
+              that arrives within the double-tap window is therefore that
+              second tap: take the menu away and hand the text over for
+              selection. Later taps just dismiss, as expected. */}
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => {
+              const m = actionsMsg?.msg;
+              const quick = Date.now() - menuOpenedAt.current < DOUBLE_TAP_ON_MENU_MS;
+              if (m && quick && isTextual(m) && (m.content || '').trim()) {
+                setActionsMsg(null);
+                setSelectableId(m.id);
+                return;
+              }
+              setActionsMsg(null);
+            }}
+          />
           {actionsMsg && (() => {
             const m = actionsMsg.msg;
             const mineMsg = m.username === me;
@@ -2135,7 +2230,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               return (
                 <View style={s.actionSheet}>
                   <View style={s.sheetGrip} />
-                  <Row icon="🔄" label="Retry" onPress={() => { close(); retryUpload(m); }} />
+                  <Row icon="🔄" label="Retry" onPress={() => { close(); retryUpload(m, true); }} />
                   <Row icon="🗑" label="Delete" danger onPress={() => {
                     close();
                     Alert.alert('Delete message?', '', [
@@ -2160,9 +2255,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                       <Text style={s.sheetReactEmoji}>{e}</Text>
                     </TouchableOpacity>
                   ))}
-                  {/* Edit button at the end of the list. */}
-                  <TouchableOpacity style={s.sheetReactBtn} onPress={() => { close(); setEditEmojis(true); }}>
-                    <Text style={s.sheetReactEdit}>✏️</Text>
+                  {/* Edit button at the end of the list — styled as a
+                      control, not as one more emoji to react with. */}
+                  <View style={s.sheetReactDivider} />
+                  <TouchableOpacity style={s.sheetReactEditBtn} onPress={() => { close(); setEditEmojis(true); }}>
+                    <Ionicons name="options-outline" size={18} color={C.accent} />
                   </TouchableOpacity>
                 </ScrollView>
                 <View style={s.sheetDivider} />
@@ -2186,6 +2283,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 )}
                 {m.file_path && !hidden && !m.one_time_seconds && (
                   <Row icon="⬇" label="Download" onPress={() => { close(); downloadMedia(m); }} />
+                )}
+                {m.file_path && !hidden && !m.one_time_seconds && (
+                  <Row icon="📤" label="Share to another app" onPress={() => { close(); shareOut(m); }} />
                 )}
                 {mineMsg && m.type === 'text' && (
                   <Row icon="✏️" label="Edit" onPress={() => {
@@ -2222,7 +2322,21 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             {!mediaData ? (
               <ActivityIndicator color={C.accent} style={{ marginVertical: 30 }} />
             ) : (
-              <ScrollView style={{ maxHeight: 380 }} nestedScrollEnabled>
+              <ScrollView
+                style={{ maxHeight: 380 }}
+                nestedScrollEnabled
+                ref={mediaScrollRef}
+                // Closing an image reopens this sheet; without restoring the
+                // offset it always came back at the very top, losing the
+                // user's place in a long gallery.
+                onScroll={(e) => { mediaScrollY.current = e.nativeEvent.contentOffset.y; }}
+                scrollEventThrottle={64}
+                onContentSizeChange={() => {
+                  if (mediaScrollY.current > 0) {
+                    mediaScrollRef.current?.scrollTo({ y: mediaScrollY.current, animated: false });
+                  }
+                }}
+              >
                 {mediaTab === 'images' && (
                   <View style={s.mediaGrid}>
                     {mediaData.images.map((u: string, i: number) => (
@@ -2232,7 +2346,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                         setViewerFromMedia(true);
                         openViewer(full[i], full);
                       }}>
-                        <Image source={{ uri: `${BASE_URL}${u}` }} style={s.mediaThumb} />
+                        {/* A 200px thumbnail, not the original. The grid used
+                            to download every full-size photo just to draw
+                            100px cells, so a gallery page took forever. */}
+                        <Image source={{ uri: thumbUrl(u, 200) }} style={s.mediaThumb} />
                       </TouchableOpacity>
                     ))}
                     {!mediaData.images.length && <Text style={s.mediaEmpty}>No photos yet</Text>}
@@ -2599,8 +2716,7 @@ const s = StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 11, borderRadius: 10,
   },
   actionText: { color: C.text, fontSize: 14.5, fontWeight: '600' },
-  // width:100% so the *whole row* — not just the bubble — is a press target.
-  bubbleRow: { flexDirection: 'row', alignItems: 'center', width: '100%' },
+  bubbleRow: { flexDirection: 'row', alignItems: 'center', maxWidth: '100%' },
   bubbleRowMine: { flexDirection: 'row-reverse' },
   leaveRoomBtn: {
     marginTop: 8, marginHorizontal: 16, borderRadius: 12,
@@ -2613,6 +2729,12 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(59,125,216,0.14)',
     alignItems: 'center', justifyContent: 'center',
   },
+  busyOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', alignItems: 'center', justifyContent: 'center' },
+  busyCard: {
+    backgroundColor: C.header, borderRadius: 16, paddingHorizontal: 30, paddingVertical: 26,
+    alignItems: 'center', gap: 14,
+  },
+  busyText: { color: C.text, fontSize: 14.5, fontWeight: '600' },
   joinBar: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     paddingHorizontal: 14, paddingVertical: 10,
@@ -2640,7 +2762,22 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(128,128,128,0.10)',
   },
   sheetReactEmoji: { fontSize: 25 },
-  sheetReactEdit: { fontSize: 20, opacity: 0.75 },
+  emojiEditBtn: {
+    width: 38, height: 38, borderRadius: 19, marginHorizontal: 2,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(59,125,216,0.14)',
+    borderWidth: StyleSheet.hairlineWidth, borderColor: C.accent,
+  },
+  sheetReactDivider: {
+    width: StyleSheet.hairlineWidth, height: 26, marginHorizontal: 7,
+    backgroundColor: C.border, alignSelf: 'center',
+  },
+  sheetReactEditBtn: {
+    width: 46, height: 46, borderRadius: 23, marginHorizontal: 3,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(59,125,216,0.14)',
+    borderWidth: StyleSheet.hairlineWidth, borderColor: C.accent,
+  },
   sheetDivider: { height: StyleSheet.hairlineWidth, backgroundColor: C.border, marginVertical: 8 },
   sheetRow: {
     flexDirection: 'row', alignItems: 'center', gap: 16,

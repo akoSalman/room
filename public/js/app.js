@@ -625,6 +625,11 @@ function closeRoomInfo() { hide('room-info-modal'); }
 let mediaData = null;
 let mediaTab = 'images';
 
+// Server-rendered, disk-cached thumbnail for an /uploads path.
+function thumbUrl(uploadPath, w) {
+  return '/thumb/' + encodeURIComponent(String(uploadPath).replace(/^\/uploads\//, '')) + '?w=' + w;
+}
+
 async function openMedia() {
   if (!currentRoomId) return;
   mediaData = null;
@@ -672,7 +677,10 @@ function renderMedia() {
     const full = mediaData.images.map(u => location.origin + u);
     full.forEach((src, i) => {
       const img = document.createElement('img');
-      img.src = src;
+      // Grid cells load a small server-rendered thumbnail; the full image is
+      // only fetched when one is actually opened.
+      img.src = thumbUrl(mediaData.images[i], 200);
+      img.onerror = () => { img.onerror = null; img.src = src; };  // non-image or old upload
       img.loading = 'lazy';
       img.onclick = () => { lightboxList = full; lightboxIdx = i; showLightboxAt(i); show('lightbox'); };
       grid.appendChild(img);

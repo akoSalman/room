@@ -17,15 +17,39 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getSocket } from './api';
 
 const failedKeyFor = (roomId: number | string) => `failed-msgs-${roomId}`;
+const discardKeyFor = (roomId: number | string) => `discarded-msgs-${roomId}`;
+
+// How many times a stalled send is resumed automatically when the chat is
+// opened. Without a cap, a send that can never succeed (the local file is
+// gone, the room rejects it) retried on EVERY open, re-persisted itself on
+// every failure, and looped forever.
+export const MAX_AUTO_RETRIES = 3;
+
+// Each retry dispatches a brand-new clientId, so the identity the user sees
+// would change on every attempt. `originId` is the stable identity across
+// retries: it is what the attempt counter counts, and what a delete
+// tombstones. Set immediately before a retry dispatch; the next markStart()
+// claims it.
+let pendingOrigin: { originId: string; attempts: number } | null = null;
+const origins = new Map<string, { originId: string; attempts: number }>();
+
+export function setNextOrigin(originId: string, attempts: number) {
+  pendingOrigin = { originId: String(originId), attempts };
+}
+export function originOf(clientId: string | number) {
+  return origins.get(String(clientId)) || { originId: String(clientId), attempts: 0 };
+}
 
 // clientId -> roomId, for every send whose upload/emit is still running.
 const inFlight = new Map<string, number | string>();
 
 export function markStart(clientId: string, roomId: number | string) {
   inFlight.set(String(clientId), roomId);
+  if (pendingOrigin) { origins.set(String(clientId), pendingOrigin); pendingOrigin = null; }
 }
 export function markDone(clientId: string) {
   inFlight.delete(String(clientId));
+  origins.delete(String(clientId));
 }
 export function isInFlight(clientId: string | number): boolean {
   return inFlight.has(String(clientId));
@@ -44,13 +68,43 @@ export async function forget(roomId: number | string, clientId: string | number)
   } catch {}
 }
 
+// Tombstone a send the user deleted. A retry already in flight will fail
+// later and try to persist itself again — under a NEW clientId, which is why
+// deleting the visible copy never stopped it coming back. The tombstone is
+// keyed on the stable originId, so any descendant of a deleted send is
+// refused by remember() no matter what id it now carries.
+export async function discard(roomId: number | string, msg: any) {
+  const originId = String(msg?._originId || msg?.id);
+  try {
+    const key = discardKeyFor(roomId);
+    const arr = JSON.parse((await AsyncStorage.getItem(key)) || '[]')
+      .filter((x: string) => x !== originId);
+    arr.push(originId);
+    await AsyncStorage.setItem(key, JSON.stringify(arr.slice(-50)));
+  } catch {}
+  await forget(roomId, msg?.id);
+  if (msg?._originId) await forget(roomId, msg._originId);
+}
+
+async function isDiscarded(roomId: number | string, originId: string) {
+  try {
+    const arr = JSON.parse((await AsyncStorage.getItem(discardKeyFor(roomId))) || '[]');
+    return Array.isArray(arr) && arr.includes(String(originId));
+  } catch { return false; }
+}
+
 // Persist a pending send so it survives the process being killed.
 export async function remember(roomId: number | string, msg: any) {
   const key = failedKeyFor(roomId);
+  const { originId, attempts } = originOf(msg.id);
+  // Deleted by the user — it must never reappear, however it got here.
+  if (await isDiscarded(roomId, originId)) return;
   try {
     const arr = JSON.parse((await AsyncStorage.getItem(key)) || '[]')
-      .filter((x: any) => String(x.id) !== String(msg.id));
-    arr.push({ ...msg, _uploading: false, _uploadFailed: true });
+      // Replace any earlier generation of this same send, not just this id.
+      .filter((x: any) => String(x.id) !== String(msg.id)
+        && String(x._originId || x.id) !== String(originId));
+    arr.push({ ...msg, _originId: originId, _attempts: attempts, _uploading: false, _uploadFailed: true });
     await AsyncStorage.setItem(key, JSON.stringify(arr.slice(-20)));
   } catch {}
 }

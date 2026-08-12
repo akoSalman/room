@@ -380,6 +380,42 @@ test('SECURITY: a non-member cannot post to, or react in, a public room', async 
   assert.ok(!ok.error, `member was blocked from posting: ${JSON.stringify(ok)}`);
 });
 
+test('thumbnails are generated, cached, and path-traversal safe', async () => {
+  const u = await signUp('thumbuser12');
+  // A real 1x1 PNG upload would need multipart; instead drop a file straight
+  // into uploads/ and ask the endpoint for it, which is what it serves from.
+  const sharpLib = require('sharp');
+  const name = `test-thumb-${Date.now()}.jpg`;
+  const fsMod = require('fs');
+  fsMod.mkdirSync('uploads', { recursive: true });
+  await sharpLib({
+    create: { width: 900, height: 600, channels: 3, background: { r: 10, g: 120, b: 200 } },
+  }).jpeg().toFile(require('path').join('uploads', name));
+
+  const res = await raw(`/thumb/${name}?w=200`, 'GET', null, u.token);
+  assert.strictEqual(res.status, 200, `thumb request failed: ${res.status}`);
+  assert.strictEqual(res.headers.get('content-type'), 'image/jpeg');
+  assert.strictEqual(res.headers.get('x-content-type-options'), 'nosniff');
+
+  const full = fsMod.statSync(require('path').join('uploads', name)).size;
+  const body = Buffer.from(await res.arrayBuffer());
+  assert.ok(body.length > 0, 'empty thumbnail');
+  assert.ok(body.length < full, `thumbnail (${body.length}) not smaller than original (${full})`);
+
+  // Cached to disk, so the second request is served from the cache.
+  assert.ok(fsMod.existsSync(require('path').join('uploads', '.thumbs', `${name}_200.jpg`)),
+    'thumbnail was not cached');
+
+  // Traversal must be rejected by the name guard itself — 400, specifically.
+  // (Asserting merely ">= 400" would pass even with the guard removed, since
+  // sharp fails on a non-image anyway and returns 415.)
+  const bad = await raw('/thumb/..%2F..%2Fserver.js', 'GET', null, u.token);
+  assert.strictEqual(bad.status, 400, `traversal not rejected by the name guard: ${bad.status}`);
+
+  fsMod.rmSync(require('path').join('uploads', name), { force: true });
+  fsMod.rmSync(require('path').join('uploads', '.thumbs', `${name}_200.jpg`), { force: true });
+});
+
 test('room list is ordered by most recent activity, not by name', async () => {
   const u = await signUp('sorter6');
   const sock = await connect(u.token);

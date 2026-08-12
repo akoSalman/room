@@ -20,14 +20,22 @@ type Props = {
 export default function GalleryImage({ uri, setImageDimensions }: Props) {
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
-  // Bumped by Retry to force a fresh request for the same url.
+  // Bumped to force a fresh request for the same url: once automatically on
+  // the first error, and again whenever the user presses Retry.
   const [attempt, setAttempt] = useState(0);
+  const autoRetried = useRef(false);
   const opacity = useRef(new Animated.Value(0)).current;
 
-  // A new url (recycled row) starts over.
+  // A new url (recycled row) starts over. Runs on mount too, which is exactly
+  // when a fast cache hit can have already fired onLoad — so this must not
+  // clobber a load that already succeeded, or the spinner sticks forever.
+  const settled = useRef(false);
   useEffect(() => {
+    settled.current = false;
+    autoRetried.current = false;
     setLoaded(false);
     setFailed(false);
+    setAttempt(0);
     opacity.setValue(0);
   }, [uri]);
 
@@ -42,10 +50,24 @@ export default function GalleryImage({ uri, setImageDimensions }: Props) {
         onLoad={(e) => {
           const src: any = e.nativeEvent?.source || {};
           if (src.width && src.height) setImageDimensions({ width: src.width, height: src.height });
+          settled.current = true;
+          setFailed(false);
           setLoaded(true);
-          Animated.timing(opacity, { toValue: 1, duration: 200, useNativeDriver: true }).start();
+          Animated.timing(opacity, { toValue: 1, duration: 220, useNativeDriver: true }).start();
         }}
-        onError={() => setFailed(true)}
+        onError={() => {
+          // The first error is very often transient — a connection still
+          // warming up as the viewer opens. Retry once silently before
+          // telling the user anything went wrong; showing the failure
+          // immediately made a perfectly good image look broken on first tap.
+          if (!autoRetried.current) {
+            autoRetried.current = true;
+            setTimeout(() => setAttempt(a => a + 1), 350);
+            return;
+          }
+          settled.current = true;
+          setFailed(true);
+        }}
       />
 
       {!loaded && !failed && (
