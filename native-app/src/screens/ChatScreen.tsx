@@ -5,7 +5,6 @@ import {
   ActivityIndicator, Modal, ScrollView, Image, Linking, Share, Pressable, AppState,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Audio, Video, ResizeMode } from 'expo-av';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
@@ -29,6 +28,7 @@ import AwesomeGallery from 'react-native-awesome-gallery';
 import GalleryGrid from '../components/GalleryGrid';
 import ImageWithSpinner from '../components/ImageWithSpinner';
 import GalleryImage from '../components/GalleryImage';
+import VideoPlayerModal from '../components/VideoPlayerModal';
 import CameraScreen from './CameraScreen';
 import * as Sharing from 'expo-sharing';
 import SwipeableMessage from '../components/SwipeableMessage';
@@ -167,12 +167,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [showPlayer, setShowPlayer] = useState(false);
   // Tapped link / phone number → sheet offering both sensible actions.
   const [tokenAction, setTokenAction] = useState<{ kind: 'url' | 'phone'; text: string } | null>(null);
-  // Double-tap puts ONE bubble into selection mode: its own text becomes
-  // natively selectable right where it sits. (It used to pop a second copy of
-  // the message into a modal text box, which was jarring and slow.) While a
-  // bubble is in this mode it stops capturing taps so the OS selection handles
-  // and the copy menu work.
-  const [selectableId, setSelectableId] = useState<Message['id'] | null>(null);
   const favEmojis = useFavEmojis();
   const [editEmojis, setEditEmojis] = useState(false);
   // How many messages arrived while the user was scrolled up, shown as a badge
@@ -1383,39 +1377,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     }, 250);
   }
 
-  // Message press routing — identical for EVERY message type, and live across
-  // the whole row (not just the bubble), so there is no narrow target to hunt
-  // for:
-  //   • single tap  : opens the action menu, immediately
-  //   • double tap  : hands the text over for in-place selection (text-ish only)
-  //   • long press  : opens the action menu
-  // The single tap is NOT deferred waiting for a possible double tap — that
-  // deferral was the whole reason the menu felt sluggish. A second tap simply
-  // takes the menu back down and switches to selection instead.
-  const lastTap = useRef<{ id: Message['id'] | -1; t: number }>({ id: -1, t: 0 });
-  const DOUBLE_MS = 300;
-
-  // When the action menu last appeared. A tap on its backdrop this soon after
-  // is really the second half of a double tap (see the backdrop handler).
-  const menuOpenedAt = useRef(0);
-  const DOUBLE_TAP_ON_MENU_MS = 450;
-
+  // Message press routing.
+  //   • text bubbles  : single tap opens the menu; LONG PRESS is left alone so
+  //                     the OS's own text selection takes it, which is how
+  //                     selecting a phrase works everywhere else on the phone.
+  //   • media bubbles : the media itself only opens/plays — a tap there must
+  //                     never pop the menu. The menu comes from the empty
+  //                     space beside the bubble, or from a long press.
+  //   • empty space   : tap or long press opens the menu, across the full row.
   function openMenuFor(msg: Message, e?: any) {
-    setSelectableId(null);
-    menuOpenedAt.current = Date.now();
     setActionsMsg({ msg, x: e?.nativeEvent?.pageX ?? 0, y: e?.nativeEvent?.pageY ?? 0 });
-  }
-
-  function onBubblePress(msg: Message, e: any) {
-    const now = Date.now();
-    const second = lastTap.current.id === msg.id && now - lastTap.current.t < DOUBLE_MS;
-    lastTap.current = { id: msg.id, t: now };
-    if (second && isTextual(msg) && (msg.content || '').trim()) {
-      setActionsMsg(null);       // the first tap opened the menu — take it back down
-      setSelectableId(msg.id);   // ...and make this bubble's text selectable in place
-      return;
-    }
-    openMenuFor(msg, e);
   }
 
   // Bubbles whose primary content is text — everything else opens media on tap.
@@ -1543,7 +1514,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           bubble's own column. */}
       <Pressable
         style={StyleSheet.absoluteFill}
-        onPress={(e) => onBubblePress(msg, e)}
+        onPress={(e) => openMenuFor(msg, e)}
         onLongPress={(e) => openMenuFor(msg, e)}
         delayLongPress={350}
       />
@@ -1580,19 +1551,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           onSwipeRight={() => { setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type }); composerRef.current?.focus(); }}
           onSwipeLeft={mine ? () => deleteMsg(msg.id) : undefined}
         >
-        {/* In selection mode the bubble must NOT capture touches, or the OS
-            selection handles and copy menu never get them. */}
         {(() => {
-        const selecting = selectableId === msg.id;
-        const Bubble: any = selecting ? View : TouchableOpacity;
-        const bubbleProps: any = selecting ? {} : {
-          onPress: (e: any) => onBubblePress(msg, e),
-          onLongPress: (e: any) => openMenuFor(msg, e),
-          delayLongPress: 350,
-          activeOpacity: 0.85,
-        };
+        const textual = isTextual(msg);
+        // Text: tap opens the menu, and NO onLongPress — leaving the long
+        // press unclaimed is what lets the selectable <Text> below start the
+        // OS selection, handles and all, on the first press.
+        // Media: no tap handler at all, so a tap reaches the image/video and
+        // only opens it; the menu comes from a long press or the empty space.
+        const bubbleProps: any = textual
+          ? { onPress: (e: any) => openMenuFor(msg, e), activeOpacity: 0.85 }
+          : { onLongPress: (e: any) => openMenuFor(msg, e), delayLongPress: 350, activeOpacity: 1 };
         return (
-        <Bubble
+        <TouchableOpacity
           {...bubbleProps}
           style={[s.bubble, mine ? s.mineBubble : s.theirsBubble, highlightId === msg.id && s.bubbleHighlight]}
         >
@@ -1763,13 +1733,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               </TouchableOpacity>
             </View>
           )}
-          {selecting && (
-            <View style={s.selectHintRow}>
-              <Text style={s.selectHint}>Selecting — drag the handles, then</Text>
-              <Text style={s.selectDone} onPress={() => setSelectableId(null)}>Done</Text>
-            </View>
-          )}
-        </Bubble>
+        </TouchableOpacity>
         );
         })()}
         </SwipeableMessage>
@@ -2031,23 +1995,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         roomMeta={room}
       />
 
-      {/* Video player */}
-      <Modal visible={!!videoUrl} transparent animationType="fade" onRequestClose={() => setVideoUrl(null)}>
-        <View style={s.lightboxOverlay}>
-          <TouchableOpacity onPress={() => setVideoUrl(null)} style={s.lightboxClose}>
-            <Text style={s.lightboxCloseText}>✕</Text>
-          </TouchableOpacity>
-          {videoUrl && (
-            <Video
-              source={{ uri: videoUrl }}
-              style={s.videoFullscreen}
-              useNativeControls
-              resizeMode={ResizeMode.CONTAIN}
-              shouldPlay
-            />
-          )}
-        </View>
-      </Modal>
+      {/* Video player — reports buffering/download progress and failures
+          instead of sitting on a black rectangle. */}
+      <VideoPlayerModal url={videoUrl} onClose={() => setVideoUrl(null)} />
 
       {/* Messages */}
       {loading ? (
@@ -2188,25 +2138,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           own mount cost, which is what made the menu feel slow to appear. */}
       <Modal visible={!!actionsMsg} transparent animationType="none" onRequestClose={() => setActionsMsg(null)}>
         <View style={s.sheetOverlay}>
-          {/* Double tap has to be completed HERE. The first tap opens this
-              menu, which covers the screen — so the user's second tap never
-              reaches the message, it lands on this backdrop. A backdrop tap
-              that arrives within the double-tap window is therefore that
-              second tap: take the menu away and hand the text over for
-              selection. Later taps just dismiss, as expected. */}
-          <Pressable
-            style={StyleSheet.absoluteFill}
-            onPress={() => {
-              const m = actionsMsg?.msg;
-              const quick = Date.now() - menuOpenedAt.current < DOUBLE_TAP_ON_MENU_MS;
-              if (m && quick && isTextual(m) && (m.content || '').trim()) {
-                setActionsMsg(null);
-                setSelectableId(m.id);
-                return;
-              }
-              setActionsMsg(null);
-            }}
-          />
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setActionsMsg(null)} />
           {actionsMsg && (() => {
             const m = actionsMsg.msg;
             const mineMsg = m.username === me;
@@ -2743,9 +2675,6 @@ const s = StyleSheet.create({
   joinBarText: { color: C.muted, fontSize: 13.5, flex: 1 },
   joinBarBtn: { backgroundColor: C.accent, borderRadius: 16, paddingHorizontal: 20, paddingVertical: 8 },
   joinBarBtnText: { color: '#fff', fontSize: 14, fontWeight: '700' },
-  selectHintRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 },
-  selectHint: { color: C.muted, fontSize: 11.5 },
-  selectDone: { color: C.accent, fontSize: 11.5, fontWeight: '700' },
   sheetOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   actionSheet: {
     backgroundColor: C.sidebar, borderTopLeftRadius: 20, borderTopRightRadius: 20,
@@ -2841,7 +2770,6 @@ const s = StyleSheet.create({
   galleryImg: { width: 120, height: 120, borderRadius: 8 },
   videoThumb: { width: 200, height: 140, borderRadius: 10, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center' },
   videoPlayIcon: { color: '#fff', fontSize: 30 },
-  videoFullscreen: { width: '100%', height: '70%' },
   footer: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3, paddingHorizontal: 4 },
   time: { color: C.muted, fontSize: 11 },
   ticks: { color: C.muted, fontSize: 12, letterSpacing: -2, marginRight: -2 },
