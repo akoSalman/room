@@ -29,6 +29,7 @@ import AwesomeGallery from 'react-native-awesome-gallery';
 import GalleryGrid from '../components/GalleryGrid';
 import ImageWithSpinner from '../components/ImageWithSpinner';
 import GalleryImage from '../components/GalleryImage';
+import CameraScreen from './CameraScreen';
 import SwipeableMessage from '../components/SwipeableMessage';
 import MusicPlayer from '../components/MusicPlayer';
 import FullMusicPlayer from '../components/FullMusicPlayer';
@@ -130,6 +131,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [replyTo, setReplyTo] = useState<ReplyTo | null>(null);
   const [showOnline, setShowOnline] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
+  // Which mode the in-app camera is open in; null = closed.
+  const [cameraMode, setCameraMode] = useState<'photo' | 'video' | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [maxOtherReadMsgId, setMaxOtherReadMsgId] = useState(0);
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
@@ -880,39 +883,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     })]);
   }
 
-  async function pickFromCamera(mode: 'photo' | 'video') {
+  // Opens the in-app camera. The old path fired an intent into the system
+  // camera app, which meant a cold app start on every open and a shutter
+  // round-trip through another process — that, not the file size, was where
+  // the latency was. CameraScreen owns the preview, so opening is a mount.
+  function pickFromCamera(mode: 'photo' | 'video') {
     setShowAttachMenu(false);
-    // Check before asking: requestCameraPermissionsAsync() always makes a
-    // round trip to the native module even when permission was granted long
-    // ago, and that happens before the camera intent is fired — so it was
-    // padding every single "open camera" with avoidable latency.
-    let granted = (await ImagePicker.getCameraPermissionsAsync()).granted;
-    if (!granted) granted = (await ImagePicker.requestCameraPermissionsAsync()).granted;
-    if (!granted) {
-      Alert.alert('Permission Required', 'Please allow camera access in Settings to use this feature.');
-      return;
-    }
-    const res = mode === 'photo'
-      // quality below 1 makes the native picker hand back a re-encoded JPEG
-      // instead of the sensor's full-resolution original. A modern phone camera
-      // produces 8–15 MB frames; at 0.6 they're a few hundred KB, which is what
-      // was making "open camera → shoot → appears in chat" feel so slow (the
-      // delay was the huge file being copied, read and then uploaded).
-      // exif:false skips parsing/copying the metadata block as well.
-      ? await ImagePicker.launchCameraAsync({
-          mediaTypes: ImagePicker.MediaTypeOptions.Images,
-          quality: 0.6,
-          exif: false,
-        })
-      : await ImagePicker.launchCameraAsync({
-          mediaTypes: ImagePicker.MediaTypeOptions.Videos,
-          videoMaxDuration: 60,
-          videoQuality: ImagePicker.UIImagePickerControllerQualityType.Medium,
-        });
-    if (res.canceled) return;
-    const asset = res.assets[0];
-    if (mode === 'photo') setPendingMedia(prev => [...prev, { uri: asset.uri, name: `photo-${Date.now()}.jpg`, mime: 'image/jpeg' }]);
-    else setPendingMedia(prev => [...prev, { uri: asset.uri, name: `video-${Date.now()}.mp4`, mime: 'video/mp4' }]);
+    setCameraMode(mode);
   }
 
   // FileSystem.createUploadTask (unlike fetch) reports real progress events.
@@ -1954,6 +1931,20 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       </Modal>
 
 
+      {/* In-app camera, fullscreen */}
+      <Modal visible={!!cameraMode} animationType="slide" onRequestClose={() => setCameraMode(null)} statusBarTranslucent>
+        {cameraMode && (
+          <CameraScreen
+            initialMode={cameraMode}
+            onClose={() => setCameraMode(null)}
+            onDone={(shots) => {
+              setCameraMode(null);
+              setPendingMedia(prev => [...prev, ...shots]);
+            }}
+          />
+        )}
+      </Modal>
+
       <EmojiEditor visible={editEmojis} onClose={() => setEditEmojis(false)} />
 
       <FullMusicPlayer
@@ -2064,11 +2055,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           <View style={s.attachSheet}>
             <View style={s.sheetHandle} />
             <TouchableOpacity style={s.attachOption} onPress={() => pickFromCamera('photo')}>
-              <Text style={s.attachOptionIcon}>📷</Text>
-              <Text style={s.attachOptionText}>Take Photo</Text>
+              <View style={s.attachIconWrap}><Ionicons name="camera" size={20} color={C.accent} /></View>
+              <Text style={s.attachOptionText}>Camera</Text>
             </TouchableOpacity>
             <TouchableOpacity style={s.attachOption} onPress={() => pickFromCamera('video')}>
-              <Text style={s.attachOptionIcon}>🎥</Text>
+              <View style={s.attachIconWrap}><Ionicons name="videocam" size={20} color={C.accent} /></View>
               <Text style={s.attachOptionText}>Record Video</Text>
             </TouchableOpacity>
             <TouchableOpacity style={s.attachOption} onPress={pickFromGallery}>
@@ -2617,6 +2608,11 @@ const s = StyleSheet.create({
     borderWidth: 1, borderColor: '#f87171',
   },
   leaveRoomText: { color: '#f87171', fontSize: 15, fontWeight: '700' },
+  attachIconWrap: {
+    width: 34, height: 34, borderRadius: 17,
+    backgroundColor: 'rgba(59,125,216,0.14)',
+    alignItems: 'center', justifyContent: 'center',
+  },
   joinBar: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     paddingHorizontal: 14, paddingVertical: 10,

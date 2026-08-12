@@ -40,6 +40,14 @@
         }
       ],
       [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow ChatRoom to take photos and videos.",
+          "microphonePermission": "Allow ChatRoom to record audio with videos.",
+          "recordAudioAndroid": true
+        }
+      ],
+      [
         "expo-image-picker",
         {
           "photosPermission": "Allow ChatRoom to attach photos."
