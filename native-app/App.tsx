@@ -19,7 +19,6 @@ import Toast from './src/components/Toast';
 import { disconnectSocket, getSocket, getUsername, apiFetch, ensureSocketAlive, setSessionExpiredHandler, resetSessionExpiry } from './src/api';
 import { audioManager } from './src/audioManager';
 import * as outbox from './src/outbox';
-import * as mediaNotification from './src/mediaNotification';
 import { C } from './src/theme';
 
 // Keep the app layout LTR even on RTL locales (Persian/Arabic): mirroring the
@@ -32,16 +31,10 @@ I18nManager.forceRTL(false);
 // in-app unread badges do the signalling. Background pushes are shown by the
 // system tray as usual.
 Notifications.setNotificationHandler({
-  handleNotification: async (notification) => {
-    // The playback-controls notification MUST be shown — it is the media
-    // player in the shade, not an alert. Everything else stays suppressed
-    // while the app is foregrounded (in-app badges do the signalling).
-    const data: any = notification?.request?.content?.data || {};
-    if (data.mediaControls) {
-      return { shouldShowAlert: true, shouldPlaySound: false, shouldSetBadge: false };
-    }
-    return { shouldShowAlert: false, shouldPlaySound: false, shouldSetBadge: false };
-  },
+  // Playback controls are no longer a notification we draw — the media session
+  // owns that now — so nothing here needs an exception.
+  handleNotification: async () =>
+    ({ shouldShowAlert: false, shouldPlaySound: false, shouldSetBadge: false }),
 });
 // 'messages-v2': Android caches channel settings forever, so shipping the new
 // custom sound requires a fresh channel id.
@@ -186,8 +179,6 @@ export default function App() {
     // App-wide ack listener: clears pending-send copies even when the chat
     // that created them is closed.
     outbox.init().catch(() => {});
-    // Playback controls in the notification shade while the app is backgrounded.
-    mediaNotification.setup().catch(() => {});
     Notifications.requestPermissionsAsync().catch(() => {});
     // Old notifications lingering in the tray are stale the moment the app
     // is opened — clear them on launch and every return to the foreground.

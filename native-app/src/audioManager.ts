@@ -1,37 +1,48 @@
-import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av';
+// Global playback owner: only one thing plays at a time, playback survives
+// screen changes so the mini player can control it from anywhere, and — the
+// point of this rewrite — it keeps playing with real transport controls in the
+// notification shade and on the lock screen when the app is not in front.
+//
+// The engine is react-native-track-player, which runs an Android foreground
+// service with a MediaSession. The three previous attempts at this drew a
+// notification from JS with expo-notifications; that could never work properly,
+// because nothing kept the process alive or connected those buttons to the OS
+// media session. This does both.
+//
+// The PUBLIC API below is unchanged from the expo-av implementation on purpose:
+// MiniPlayer, FullMusicPlayer, MusicPlayer, VoicePlayer, ChatScreen, callManager
+// and App all talk to this singleton, and none of them needed to change.
+import TrackPlayer, {
+  AppKilledPlaybackBehavior, Capability, Event, State,
+} from 'react-native-track-player';
 
 type Listener = () => void;
 type FinishHandler = (finishedId: number | string) => void;
 export type Track = { id: number | string; uri: string; title: string };
 
-// Global playback owner: only one sound plays at a time (in the app AND on the
-// device — audio focus is requested with DoNotMix), and playback survives
-// screen changes so a mini player can control it from anywhere.
 class AudioManager {
-  sound: Audio.Sound | null = null;
   currentId: number | string | null = null;
   roomId: number | null = null;
   roomMeta: any = null; // full room object, for navigating back to the chat
   label = '';
   playing = false;
-  loading = false; // true from play() request until the sound finishes buffering enough to report status
+  loading = false;
   progress = 0; // 0..1
   duration = 0; // seconds
   rate = 1;
 
-  // Bumped on every play() call so overlapping calls (e.g. rapid re-taps
-  // while a previous load is still in flight) can detect they've been
-  // superseded and unload themselves instead of playing alongside the winner.
+  // Bumped on every play() so an overlapping call (rapid re-taps while a load
+  // is still in flight) can tell it has been superseded and bail out.
   private playToken = 0;
 
   // ── Playlist ────────────────────────────────────────────────────────────────
-  // The music player plays through every audio file in a chat, so a track that
-  // ends advances to the next one and the UI can offer next/previous.
   queue: Track[] = [];
   queueIndex = -1;
 
   private listeners = new Set<Listener>();
   private finishHandler: FinishHandler | null = null;
+  private setupPromise: Promise<void> | null = null;
+  private ready = false;
 
   subscribe(fn: Listener) {
     this.listeners.add(fn);
@@ -41,38 +52,100 @@ class AudioManager {
 
   setFinishHandler(cb: FinishHandler | null) { this.finishHandler = cb; }
 
-  async play(id: number | string, uri: string, label: string, roomId: number | null = null, roomMeta: any = null, keepQueue = false) {
-    // Claim this play request immediately so any call already in flight
-    // (e.g. from a prior tap) knows it's been superseded once it resolves.
-    const token = ++this.playToken;
-    // A one-off play (e.g. a voice message) leaves any music playlist behind.
-    if (!keepQueue) { this.queue = []; this.queueIndex = -1; }
-
-    try {
-      await Audio.setAudioModeAsync({
-        staysActiveInBackground: true,
-        playsInSilentModeIOS: true,
-        // DoNotMix means we take audio focus from other apps when we start.
-        // NOTE: the reverse (pausing US when another app starts playing) is not
-        // reliable here — staysActiveInBackground keeps the sound alive and
-        // expo-av does not surface Android's AUDIOFOCUS_LOSS to JS, so there is
-        // nothing to react to. Handling that properly needs a native media
-        // session, which is also what would give us lock-screen/notification
-        // transport controls. Tracked as a follow-up; do not assume this config
-        // alone yields "pause when another app plays".
-        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-        shouldDuckAndroid: false,
-        allowsRecordingIOS: false,
+  // Idempotent: every entry point awaits this, and setupPlayer() must run
+  // exactly once for the lifetime of the process.
+  private ensureSetup(): Promise<void> {
+    if (this.setupPromise) return this.setupPromise;
+    this.setupPromise = (async () => {
+      try {
+        await TrackPlayer.setupPlayer({ autoHandleInterruptions: true });
+      } catch (e: any) {
+        // "player already initialized" is fine — a hot reload or a second
+        // caller racing us. Anything else leaves us un-ready.
+        const msg = String(e?.message || e || '');
+        if (!/already been initialized|already initialized/i.test(msg)) {
+          this.setupPromise = null;
+          throw e;
+        }
+      }
+      await TrackPlayer.updateOptions({
+        android: {
+          // Playback ends when the app is swiped away, and the notification
+          // goes with it — a stranded, dead player in the shade is worse than
+          // no player.
+          appKilledPlaybackBehavior: AppKilledPlaybackBehavior.StopPlaybackAndRemoveNotification,
+        },
+        capabilities: [
+          Capability.Play, Capability.Pause, Capability.Stop,
+          Capability.SeekTo, Capability.SkipToNext, Capability.SkipToPrevious,
+        ],
+        // What fits in the collapsed shade row.
+        compactCapabilities: [Capability.Play, Capability.Pause, Capability.SkipToNext],
+        notificationCapabilities: [
+          Capability.Play, Capability.Pause, Capability.Stop,
+          Capability.SeekTo, Capability.SkipToNext, Capability.SkipToPrevious,
+        ],
+        progressUpdateEventInterval: 0.5,
       });
-    } catch {}
-    if (token !== this.playToken) return; // superseded while awaiting audio mode
+      this.bindEvents();
+      this.ready = true;
+    })();
+    return this.setupPromise;
+  }
 
-    if (this.sound) {
-      try { await this.sound.unloadAsync(); } catch {}
-      this.sound = null;
-    }
-    if (token !== this.playToken) return; // superseded while unloading previous sound
+  private bound = false;
+  private bindEvents() {
+    if (this.bound) return;
+    this.bound = true;
+
+    TrackPlayer.addEventListener(Event.PlaybackState, ({ state }) => {
+      this.loading = state === State.Loading || state === State.Buffering;
+      this.playing = state === State.Playing;
+      this.emit();
+    });
+
+    TrackPlayer.addEventListener(Event.PlaybackProgressUpdated, ({ position, duration }) => {
+      this.duration = duration || 0;
+      this.progress = duration ? position / duration : 0;
+      this.emit();
+    });
+
+    // Advancing through a playlist: keep our mirrored index and label in step
+    // with whatever the player (or the shade's Next button) actually did.
+    TrackPlayer.addEventListener(Event.PlaybackActiveTrackChanged, ({ index, track }) => {
+      if (typeof index === 'number' && index >= 0) {
+        this.queueIndex = this.queue.length ? index : -1;
+        const q = this.queue[index];
+        if (q) { this.currentId = q.id; this.label = q.title; }
+        else if (track?.title) this.label = track.title;
+      }
+      this.progress = 0;
+      this.emit();
+    });
+
+    // Nothing left to play. For a single item (a voice message) this is where
+    // the auto-advance-to-the-next-voice-message handler runs.
+    TrackPlayer.addEventListener(Event.PlaybackQueueEnded, () => {
+      const finishedId = this.currentId;
+      this.playing = false;
+      this.progress = 0;
+      this.emit();
+      if (this.queue.length) return;   // playlists advance on their own
+      if (this.finishHandler && finishedId != null) this.finishHandler(finishedId);
+    });
+  }
+
+  private toRNTrack(t: Track) {
+    return { id: String(t.id), url: t.uri, title: t.title, artist: 'ChatRoom' };
+  }
+
+  async play(
+    id: number | string, uri: string, label: string,
+    roomId: number | null = null, roomMeta: any = null, keepQueue = false,
+  ) {
+    const token = ++this.playToken;
+    // A one-off play (a voice message) leaves any music playlist behind.
+    if (!keepQueue) { this.queue = []; this.queueIndex = -1; }
 
     this.currentId = id;
     this.roomId = roomId;
@@ -85,39 +158,23 @@ class AudioManager {
     this.emit();
 
     try {
-      const { sound } = await Audio.Sound.createAsync(
-        { uri },
-        { shouldPlay: true, rate: this.rate, shouldCorrectPitch: true },
-        status => {
-          if (token !== this.playToken) return; // stale sound's status updates — ignore
-          if (!status.isLoaded) return;
-          this.loading = false;
-          this.progress = status.positionMillis / (status.durationMillis || 1);
-          this.duration = (status.durationMillis || 0) / 1000;
-          if (status.didJustFinish) {
-            this.playing = false;
-            this.progress = 0;
-            sound.stopAsync().catch(() => {});
-            const finishedId = this.currentId;
-            this.emit();
-            // Playlist: roll straight into the next track. Otherwise hand off
-            // to the finish handler (voice-message auto-advance).
-            if (this.hasNext()) { this.next(); return; }
-            if (this.finishHandler && finishedId != null) this.finishHandler(finishedId);
-            return;
-          }
-          this.playing = status.isPlaying;
-          this.emit();
-        }
-      );
-      if (token !== this.playToken) {
-        // A newer play() call won the race while this one was loading —
-        // don't let this sound become (or keep playing as) an orphan.
-        try { await sound.unloadAsync(); } catch {}
-        return;
+      await this.ensureSetup();
+      if (token !== this.playToken) return;   // superseded while setting up
+
+      await TrackPlayer.reset();
+      if (token !== this.playToken) return;
+
+      if (keepQueue && this.queue.length) {
+        await TrackPlayer.add(this.queue.map(t => this.toRNTrack(t)));
+        if (token !== this.playToken) return;
+        if (this.queueIndex > 0) await TrackPlayer.skip(this.queueIndex);
+      } else {
+        await TrackPlayer.add(this.toRNTrack({ id, uri, title: label }));
       }
-      this.sound = sound;
-      this.emit();
+      if (token !== this.playToken) return;
+
+      await TrackPlayer.setRate(this.rate);
+      await TrackPlayer.play();
     } catch {
       if (token !== this.playToken) return;
       this.currentId = null;
@@ -127,8 +184,8 @@ class AudioManager {
     }
   }
 
-  // Start a playlist at `index`. Everything else (single voice messages) keeps
-  // using play() directly, which clears the queue so the two never interfere.
+  // Start a playlist at `index`. Single voice messages keep using play(),
+  // which clears the queue so the two never interfere.
   async playQueue(tracks: Track[], index: number, roomId: number | null = null, roomMeta: any = null) {
     if (!tracks.length) return;
     const i = Math.max(0, Math.min(index, tracks.length - 1));
@@ -143,38 +200,37 @@ class AudioManager {
 
   async next() {
     if (!this.hasNext()) return;
-    await this.playQueue(this.queue, this.queueIndex + 1, this.roomId, this.roomMeta);
+    try { await TrackPlayer.skipToNext(); } catch {}
   }
+
   async prev() {
     // Standard behaviour: restart the track if we're past the first seconds.
     if (this.progress * this.duration > 3) return this.seek(0);
     if (!this.hasPrev()) return this.seek(0);
-    await this.playQueue(this.queue, this.queueIndex - 1, this.roomId, this.roomMeta);
+    try { await TrackPlayer.skipToPrevious(); } catch {}
   }
 
   async toggle() {
-    if (!this.sound) return;
-    const st = await this.sound.getStatusAsync();
-    if (!st.isLoaded) return;
-    if (st.isPlaying) {
-      await this.sound.pauseAsync();
-      this.playing = false;
-    } else {
-      if (st.positionMillis >= (st.durationMillis || 0)) {
-        await this.sound.setPositionAsync(0);
+    if (this.currentId == null) return;
+    try {
+      await this.ensureSetup();
+      const state = await TrackPlayer.getPlaybackState();
+      if (state.state === State.Playing) {
+        await TrackPlayer.pause();
+        this.playing = false;
+      } else {
+        // Finished tracks restart rather than sitting at the end doing nothing.
+        if (state.state === State.Ended) await TrackPlayer.seekTo(0);
+        await TrackPlayer.play();
+        this.playing = true;
       }
-      await this.sound.playAsync();
-      this.playing = true;
-    }
-    this.emit();
+      this.emit();
+    } catch {}
   }
 
   async stop() {
-    ++this.playToken; // invalidate any in-flight play() so it unloads itself instead of taking over
-    if (this.sound) {
-      try { await this.sound.unloadAsync(); } catch {}
-      this.sound = null;
-    }
+    ++this.playToken; // invalidate any in-flight play()
+    try { if (this.ready) await TrackPlayer.reset(); } catch {}
     this.currentId = null;
     this.roomId = null;
     this.roomMeta = null;
@@ -188,19 +244,17 @@ class AudioManager {
 
   async setRate(rate: number) {
     this.rate = rate;
-    if (this.sound) {
-      try { await this.sound.setRateAsync(rate, true); } catch {}
-    }
+    try { if (this.ready) await TrackPlayer.setRate(rate); } catch {}
     this.emit();
   }
 
-  // Seek to a fraction (0..1) of the current sound — lets the user scrub a
+  // Seek to a fraction (0..1) of the current track — lets the user scrub a
   // voice message by dragging across its waveform.
   async seek(fraction: number) {
-    if (!this.sound || !this.duration) return;
+    if (!this.duration) return;
     const f = Math.max(0, Math.min(1, fraction));
     try {
-      await this.sound.setPositionAsync(Math.round(f * this.duration * 1000));
+      await TrackPlayer.seekTo(f * this.duration);
       this.progress = f;
       this.emit();
     } catch {}

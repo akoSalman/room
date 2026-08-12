@@ -39,6 +39,13 @@ export default function VoiceRecorder({ onCancel, onSend }: {
       stopTimers();
       recordingRef.current?.stopAndUnloadAsync().catch(() => {});
       previewSoundRef.current?.unloadAsync().catch(() => {});
+      // Cancelling unmounts us mid-recording; hand the audio session back here
+      // too, or the session stays in record mode after a discarded recording.
+      Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+      }).catch(() => {});
     };
   }, []);
 
@@ -107,6 +114,15 @@ export default function VoiceRecorder({ onCancel, onSend }: {
     stopTimers();
     if (!recordingRef.current) return;
     await recordingRef.current.stopAndUnloadAsync();
+    // Hand the audio session back. audioManager used to reset the mode on
+    // every play(), which quietly covered for this; the media-session player
+    // does not touch expo-av's mode at all, so leaving the session in
+    // record mode would linger.
+    await Audio.setAudioModeAsync({
+      allowsRecordingIOS: false,
+      playsInSilentModeIOS: true,
+      staysActiveInBackground: false,
+    }).catch(() => {});
     const recordedUri = recordingRef.current.getURI() || '';
     setUri(recordedUri);
     setPhase('preview');
