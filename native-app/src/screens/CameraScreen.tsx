@@ -80,11 +80,16 @@ export default function CameraScreen({ onClose, onDone, initialMode = 'photo' }:
     if (mode === 'video' && !micPerm?.granted) requestMicPerm();
   }, [mode, micPerm?.granted]);
 
+  // Zoom at the moment the current pinch began. e.scale is relative to that
+  // same instant, so the two belong together — deriving the new zoom from the
+  // live `zoom` state instead made a single pinch fight its own updates.
+  const zoomStart = useRef(0);
   const pinch = Gesture.Pinch()
+    .onStart(() => { zoomStart.current = zoom; })
     .onUpdate(e => {
-      // Pinch scale is relative to gesture start; map it onto the 0..1 zoom
-      // range gently so a normal pinch doesn't slam to maximum.
-      const next = zoom + (e.scale - 1) * 0.06;
+      // Damped so a normal pinch travels the range smoothly rather than
+      // slamming to maximum.
+      const next = zoomStart.current + (e.scale - 1) * 0.35;
       setZoom(Math.min(1, Math.max(0, next)));
     })
     .runOnJS(true);
@@ -235,7 +240,10 @@ export default function CameraScreen({ onClose, onDone, initialMode = 'photo' }:
             ratio={ratio}
             // The system shutter animation would double up with ours.
             animateShutter={false}
-            autofocus="on"
+            // Counter-intuitive but correct: in expo-camera 'on' autofocuses
+            // once and then LOCKS focus, while 'off' keeps refocusing as the
+            // scene changes — which is what a camera should do.
+            autofocus="off"
             onCameraReady={() => setReady(true)}
           />
 
