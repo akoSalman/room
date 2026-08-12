@@ -410,6 +410,7 @@ function connectSocket() {
         currentRoomId = null;
         document.getElementById('messages').innerHTML = '';
         document.getElementById('room-title').textContent = 'Select a room';
+        document.getElementById('room-media-btn').classList.add('hidden');
         document.getElementById('join-bar').classList.add('hidden');
       }
     };
@@ -618,6 +619,124 @@ async function openRoomInfo() {
   show('room-info-modal');
 }
 function closeRoomInfo() { hide('room-info-modal'); }
+// ─── Shared content of the open chat ─────────────────────────────────────────
+// The app has had a Photos/Files/Music/Links browser for a while; the web had
+// no way to see a chat's media at all, only whatever was scrolled into view.
+let mediaData = null;
+let mediaTab = 'images';
+
+async function openMedia() {
+  if (!currentRoomId) return;
+  mediaData = null;
+  mediaTab = 'images';
+  syncMediaTabs();
+  document.getElementById('media-body').innerHTML = '<div class="media-empty">Loading…</div>';
+  show('media-modal');
+  const roomId = currentRoomId;
+  const res = await api('/room-media/' + roomId);
+  if (String(roomId) !== String(currentRoomId)) return;  // switched chats meanwhile
+  mediaData = (res && !res.error) ? res : { images: [], files: [], music: [], links: [] };
+  renderMedia();
+}
+function closeMedia() { hide('media-modal'); }
+
+function setMediaTab(tab) {
+  mediaTab = tab;
+  syncMediaTabs();
+  renderMedia();
+}
+function syncMediaTabs() {
+  document.querySelectorAll('#media-tabs .media-tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === mediaTab);
+  });
+}
+
+function renderMedia() {
+  const body = document.getElementById('media-body');
+  body.innerHTML = '';
+  if (!mediaData) { body.innerHTML = '<div class="media-empty">Loading…</div>'; return; }
+
+  const empty = (what) => {
+    const d = document.createElement('div');
+    d.className = 'media-empty';
+    d.textContent = `No ${what} yet`;
+    body.appendChild(d);
+  };
+
+  if (mediaTab === 'images') {
+    if (!mediaData.images.length) return empty('photos');
+    const grid = document.createElement('div');
+    grid.className = 'media-grid';
+    // Absolute urls, in the order shown, so the lightbox swipes through the
+    // gallery itself rather than through whatever the chat has rendered.
+    const full = mediaData.images.map(u => location.origin + u);
+    full.forEach((src, i) => {
+      const img = document.createElement('img');
+      img.src = src;
+      img.loading = 'lazy';
+      img.onclick = () => { lightboxList = full; lightboxIdx = i; showLightboxAt(i); show('lightbox'); };
+      grid.appendChild(img);
+    });
+    body.appendChild(grid);
+    return;
+  }
+
+  if (mediaTab === 'links') {
+    if (!mediaData.links.length) return empty('links');
+    const list = document.createElement('div');
+    list.className = 'media-list';
+    mediaData.links.forEach(l => {
+      const a = document.createElement('a');
+      a.className = 'media-row';
+      a.href = /^https?:\/\//.test(l) ? l : 'https://' + l;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      const icon = document.createElement('span'); icon.textContent = '🌐';
+      const text = document.createElement('span'); text.textContent = l;
+      a.appendChild(icon); a.appendChild(text);
+      list.appendChild(a);
+    });
+    body.appendChild(list);
+    return;
+  }
+
+  if (mediaTab === 'music') {
+    if (!mediaData.music.length) return empty('music');
+    const list = document.createElement('div');
+    list.className = 'media-list';
+    mediaData.music.forEach(f => {
+      const row = document.createElement('div');
+      row.className = 'media-row';
+      const name = document.createElement('span');
+      name.textContent = '🎵 ' + (f.name || 'Audio');
+      const audio = document.createElement('audio');
+      audio.src = f.url; audio.controls = true; audio.preload = 'none';
+      audio.onplay = () => claimPlayback(audio, () => audio.pause());
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'flex:1;min-width:0';
+      wrap.appendChild(name); wrap.appendChild(audio);
+      row.appendChild(wrap);
+      list.appendChild(row);
+    });
+    body.appendChild(list);
+    return;
+  }
+
+  if (!mediaData.files.length) return empty('files');
+  const list = document.createElement('div');
+  list.className = 'media-list';
+  mediaData.files.forEach(f => {
+    const a = document.createElement('a');
+    a.className = 'media-row';
+    a.href = f.url; a.target = '_blank'; a.download = f.name || 'file';
+    const icon = document.createElement('span'); icon.textContent = '📄';
+    const text = document.createElement('span'); text.textContent = f.name || 'File';
+    a.appendChild(icon); a.appendChild(text);
+    list.appendChild(a);
+  });
+  body.appendChild(list);
+}
+
 
 // Show the Join bar above the composer whenever the open room is one the user
 // has not joined. Public rooms are readable before joining, so this is the
@@ -665,6 +784,7 @@ function leaveCurrentRoom() {
     currentRoomId = null;
     document.getElementById('messages').innerHTML = '';
     document.getElementById('room-title').textContent = 'Select a room';
+    document.getElementById('room-media-btn').classList.add('hidden');
     document.getElementById('join-bar').classList.add('hidden');
   });
 }
@@ -848,6 +968,7 @@ function removeRoomFromList(roomId) {
   if (currentRoomId === roomId) {
     currentRoomId = null;
     document.getElementById('room-title').textContent = 'Select a room';
+    document.getElementById('room-media-btn').classList.add('hidden');
     document.getElementById('messages').innerHTML = '';
   }
 }
@@ -951,6 +1072,8 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   document.getElementById('messages').innerHTML = '';
   document.getElementById('online-indicator').classList.add('hidden');
   document.getElementById('room-link-btn').classList.toggle('hidden', isDM);
+  // Shared content works for DMs too — that's where most media lives.
+  document.getElementById('room-media-btn').classList.remove('hidden');
   refreshJoinBar(roomId, isDM);
   jumpBackStack = [];
   document.getElementById('scroll-fab').classList.add('hidden');

@@ -91,10 +91,13 @@ function sync() {
       sound: null,
       priority: Notifications.AndroidNotificationPriority.LOW,
     },
-    // A channelId can only be attached to a SCHEDULABLE trigger — with
-    // `trigger: null` the notification silently lands on the default channel
-    // (wrong importance, and it could buzz). A date trigger 1ms out is
-    // effectively immediate and does carry the channel.
-    trigger: { channelId: CHANNEL_ID, date: Date.now() + 1 },
+    // A bare { channelId } is expo-notifications' CHANNEL trigger: posted
+    // immediately, on our channel. The previous version passed a date 1ms out
+    // to carry the channelId, which made it a DATE trigger — routed through
+    // Android's alarm scheduler instead of being posted directly. An alarm
+    // that close is unreliable at the best of times, and this fires exactly
+    // when the app is being backgrounded, so it frequently never arrived —
+    // which is why the controls kept not showing up.
+    trigger: { channelId: CHANNEL_ID },
   }).catch(() => {});
 }

@@ -28,6 +28,7 @@ import Composer, { ComposerHandle } from '../components/Composer';
 import AwesomeGallery from 'react-native-awesome-gallery';
 import GalleryGrid from '../components/GalleryGrid';
 import ImageWithSpinner from '../components/ImageWithSpinner';
+import GalleryImage from '../components/GalleryImage';
 import SwipeableMessage from '../components/SwipeableMessage';
 import MusicPlayer from '../components/MusicPlayer';
 import FullMusicPlayer from '../components/FullMusicPlayer';
@@ -104,16 +105,28 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // current image for the counter / save / screenshot-guard.
   const [viewer, setViewer] = useState<{ images: string[]; index: number } | null>(null);
   const [viewerIdx, setViewerIdx] = useState(0);
+  // Opened from the media gallery? Then closing the image must put the gallery
+  // back, not dump the user in the chat. (Two RN Modals stacked on Android is
+  // unreliable, so the gallery is closed on the way in and restored on the way
+  // out rather than left open underneath.)
+  const [viewerFromMedia, setViewerFromMedia] = useState(false);
   const viewerUrl = viewer ? viewer.images[viewerIdx] ?? null : null;
-  function openViewer(url: string) {
-    const list = allImages.includes(url) ? allImages : chatImageUrls();
-    let idx = list.indexOf(url);
-    let images = list;
-    if (idx < 0) { images = [url, ...list]; idx = 0; }
+  // `list` lets a caller supply the exact set being browsed (the media
+  // gallery's own images, in its own order). Without it the media gallery's
+  // urls often weren't found in the chat's list, so the viewer opened at
+  // index 0 — the wrong image — and swiping went somewhere unrelated.
+  function openViewer(url: string, list?: string[]) {
+    const base = list ?? (allImages.includes(url) ? allImages : chatImageUrls());
+    let idx = base.indexOf(url);
+    let images = base;
+    if (idx < 0) { images = [url, ...base]; idx = 0; }
     setViewerIdx(idx);
     setViewer({ images, index: idx });
   }
-  function closeViewer() { setViewer(null); }
+  function closeViewer() {
+    setViewer(null);
+    if (viewerFromMedia) { setViewerFromMedia(false); setShowMedia(true); }
+  }
   const [replyTo, setReplyTo] = useState<ReplyTo | null>(null);
   const [showOnline, setShowOnline] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
@@ -846,8 +859,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
   async function pickFromGallery() {
     setShowAttachMenu(false);
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
+    // Same as the camera: only ask when we don't already have it.
+    let allowed = (await ImagePicker.getMediaLibraryPermissionsAsync()).granted;
+    if (!allowed) allowed = (await ImagePicker.requestMediaLibraryPermissionsAsync()).granted;
+    if (!allowed) {
       Alert.alert('Permission Required', 'Please allow access to your photo library.');
       return;
     }
@@ -867,8 +882,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
   async function pickFromCamera(mode: 'photo' | 'video') {
     setShowAttachMenu(false);
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== 'granted') {
+    // Check before asking: requestCameraPermissionsAsync() always makes a
+    // round trip to the native module even when permission was granted long
+    // ago, and that happens before the camera intent is fired — so it was
+    // padding every single "open camera" with avoidable latency.
+    let granted = (await ImagePicker.getCameraPermissionsAsync()).granted;
+    if (!granted) granted = (await ImagePicker.requestCameraPermissionsAsync()).granted;
+    if (!granted) {
       Alert.alert('Permission Required', 'Please allow camera access in Settings to use this feature.');
       return;
     }
@@ -1870,6 +1890,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 onIndexChange={(i: number) => setViewerIdx(i)}
                 onSwipeToClose={closeViewer}
                 loop={false}
+                // Replaces the library's bare <Image>, which shows nothing but
+                // black while loading and stays black forever on failure.
+                renderItem={({ item, setImageDimensions }: any) => (
+                  <GalleryImage uri={item} setImageDimensions={setImageDimensions} />
+                )}
               />
               <TouchableOpacity onPress={closeViewer} style={s.lightboxClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                 <Text style={s.lightboxCloseText}>✕</Text>
@@ -2210,7 +2235,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 {mediaTab === 'images' && (
                   <View style={s.mediaGrid}>
                     {mediaData.images.map((u: string, i: number) => (
-                      <TouchableOpacity key={i} onPress={() => { setShowMedia(false); openViewer(`${BASE_URL}${u}`); }}>
+                      <TouchableOpacity key={i} onPress={() => {
+                        const full = mediaData.images.map((x: string) => `${BASE_URL}${x}`);
+                        setShowMedia(false);
+                        setViewerFromMedia(true);
+                        openViewer(full[i], full);
+                      }}>
                         <Image source={{ uri: `${BASE_URL}${u}` }} style={s.mediaThumb} />
                       </TouchableOpacity>
                     ))}

@@ -70,6 +70,7 @@
       <button id="call-voice-btn" class="icon-btn hidden" title="Voice call" onclick="Calls.startDM('voice')">📞</button>
       <button id="call-video-btn" class="icon-btn hidden" title="Video call" onclick="Calls.startDM('video')">🎥</button>
       <button id="room-voice-btn" class="icon-btn hidden" title="Join voice chat" onclick="Calls.toggleRoomVoice()">📞</button>
+      <button id="room-media-btn" class="icon-btn hidden" title="Media, files & links" onclick="openMedia()">🖼</button>
       <button id="room-link-btn" class="icon-btn hidden" title="Room info" onclick="openRoomInfo()">ℹ️</button>
       <button id="online-indicator" class="online-badge hidden" onclick="toggleOnlinePanel()"></button>
     </header>
@@ -215,6 +216,23 @@
 </div>
 
 <!-- ── Room dashboard ─────────────────────────────── -->
+<!-- ── Media / files / music / links of the open chat ── -->
+<div id="media-modal" class="modal-overlay hidden" onclick="closeMedia()">
+  <div class="modal-card" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h2>Shared content</h2>
+      <button class="icon-btn" onclick="closeMedia()">✕</button>
+    </div>
+    <div id="media-tabs" class="media-tabs">
+      <button class="media-tab active" data-tab="images" onclick="setMediaTab('images')">Photos</button>
+      <button class="media-tab" data-tab="files" onclick="setMediaTab('files')">Files</button>
+      <button class="media-tab" data-tab="music" onclick="setMediaTab('music')">Music</button>
+      <button class="media-tab" data-tab="links" onclick="setMediaTab('links')">Links</button>
+    </div>
+    <div id="media-body" class="modal-section"></div>
+  </div>
+</div>
+
 <div id="room-info-modal" class="modal-overlay hidden" onclick="closeRoomInfo()">
   <div class="modal-card" onclick="event.stopPropagation()">
     <div class="modal-header">

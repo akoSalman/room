@@ -898,3 +898,28 @@ html {
 .room-invite-row { display: flex; gap: 8px; }
 .room-invite-row input { flex: 1; min-width: 0; padding: 10px 12px; background: var(--input-bg); border: 1px solid var(--border); border-radius: 10px; color: var(--text); font-size: 0.9rem; }
 .room-invite-row .invite-send-btn { width: auto; margin-top: 0; padding: 10px 18px; }
+
+/* ── Shared content (photos / files / music / links of a chat) ─────────────── */
+.media-tabs { display: flex; gap: 4px; padding: 12px 20px 0; }
+.media-tab {
+  flex: 1; padding: 8px 6px; background: none; border: none; cursor: pointer;
+  color: var(--muted, #94a3b8); font-size: 0.85rem; font-weight: 600;
+  border-bottom: 2px solid transparent;
+}
+.media-tab.active { color: var(--accent, #3b7dd8); border-bottom-color: var(--accent, #3b7dd8); }
+#media-body { max-height: 60vh; overflow-y: auto; }
+.media-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
+.media-grid img {
+  width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px;
+  cursor: pointer; background: var(--input-bg, #1e293b);
+}
+.media-list { display: flex; flex-direction: column; gap: 2px; }
+.media-row {
+  display: flex; align-items: center; gap: 10px; padding: 10px 8px;
+  border-radius: 8px; color: var(--text, #e2e8f0); text-decoration: none;
+  font-size: 0.88rem; min-width: 0;
+}
+.media-row:hover { background: rgba(128, 128, 128, 0.1); }
+.media-row span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.media-row audio { width: 100%; height: 34px; }
+.media-empty { color: var(--muted, #94a3b8); font-size: 0.88rem; text-align: center; padding: 28px 0; }
