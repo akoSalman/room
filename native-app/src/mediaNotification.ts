@@ -54,8 +54,13 @@ export async function setup() {
 
   // Re-render whenever playback state changes, and whenever the app moves
   // between foreground and background.
-  audioManager.subscribe(sync);
-  AppState.addEventListener('change', sync);
+  audioManager.subscribe(() => sync());
+  // Pass the state the event carries. sync() used to read
+  // AppState.currentState itself, which has NOT necessarily been updated yet
+  // at the moment the change event fires — so the one call that matters, the
+  // transition to background, could still read 'active', dismiss, and never
+  // post the controls at all.
+  AppState.addEventListener('change', (next) => sync(next));
   sync();
 }
 
@@ -66,12 +71,13 @@ async function dismiss() {
   await Notifications.dismissNotificationAsync(NOTIF_ID).catch(() => {});
 }
 
-function sync() {
+function sync(stateOverride?: string) {
   if (Platform.OS !== 'android') return;
   const { currentId, label, playing, queue, queueIndex } = audioManager;
+  const appState = stateOverride || AppState.currentState;
 
   // Nothing loaded, or the user is looking at the app anyway — no notification.
-  if (currentId === null || AppState.currentState === 'active') { dismiss(); return; }
+  if (currentId === null || appState === 'active') { dismiss(); return; }
 
   const position = queue.length > 1 ? `  ·  ${queueIndex + 1}/${queue.length}` : '';
   const key = `${currentId}|${playing}|${position}`;

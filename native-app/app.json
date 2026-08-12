@@ -101,7 +101,12 @@
             "image/*",
             "video/*",
             "application/*"
-          ]
+          ],
+          "androidMainActivityAttributes": {
+            "android:launchMode": "singleTask",
+            "android:documentLaunchMode": "never",
+            "android:excludeFromRecents": "false"
+          }
         }
       ]
     ],

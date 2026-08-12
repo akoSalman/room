@@ -114,6 +114,8 @@ export default function App() {
   useEffect(() => {
     if (!hasShareIntent) { sharePickerBuiltRef.current = false; return; } // armed for the next share
     if (screen === 'auth' || sharePickerBuiltRef.current) return;
+    // A picker is already on screen — never build a second one on top of it.
+    if (shareRooms) return;
     sharePickerBuiltRef.current = true;
     (async () => {
       try {
@@ -125,7 +127,22 @@ export default function App() {
         setShareRooms(list);
       } catch { setShareRooms([]); }
     })();
-  }, [hasShareIntent, screen]);
+  }, [hasShareIntent, screen, shareRooms]);
+
+  // Only used when the sending app gave us no display name at all.
+  function readableShareName(f: any) {
+    const path = String(f?.path || f?.contentUri || '');
+    const ext = (path.match(/\.([a-zA-Z0-9]{1,5})(?:\?|$)/) || [])[1] || '';
+    const mime = String(f?.mimeType || '');
+    const kind = mime.startsWith('image/') ? 'Photo'
+      : mime.startsWith('video/') ? 'Video'
+      : mime.startsWith('audio/') ? 'Audio'
+      : 'File';
+    const d = new Date();
+    const p2 = (n: number) => String(n).padStart(2, '0');
+    const stamp = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}.${p2(d.getMinutes())}.${p2(d.getSeconds())}`;
+    return `${kind} ${stamp}${ext ? '.' + ext.toLowerCase() : ''}`;
+  }
 
   function chooseShareTarget(r: any) {
     const si: any = shareIntent || {};
@@ -141,7 +158,11 @@ export default function App() {
       files: (si.files || []).map((f: any) => ({
         path: f.path || f.contentUri || '',
         mimeType: f.mimeType,
-        fileName: f.fileName || f.name || null,
+        // Keep the sender's display name. When there isn't one, the path is a
+        // cache copy called something like "1739283746123.jpg" — a raw number
+        // is a terrible thing to show, so synthesise a readable name from the
+        // kind of file and the date instead.
+        fileName: f.fileName || readableShareName(f),
       })),
       text: caption || null,
     });
