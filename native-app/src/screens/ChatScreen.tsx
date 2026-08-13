@@ -28,7 +28,7 @@ import AwesomeGallery from 'react-native-awesome-gallery';
 import GalleryGrid from '../components/GalleryGrid';
 import ImageWithSpinner from '../components/ImageWithSpinner';
 import GalleryImage from '../components/GalleryImage';
-import VideoPlayerModal from '../components/VideoPlayerModal';
+import VideoPlayer, { VideoItem } from '../components/VideoPlayer';
 import CameraScreen from './CameraScreen';
 import * as Sharing from 'expo-sharing';
 import SwipeableMessage from '../components/SwipeableMessage';
@@ -136,7 +136,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [cameraMode, setCameraMode] = useState<'photo' | 'video' | null>(null);
   // Preparing a file for the OS share sheet (download happens first).
   const [sharingOut, setSharingOut] = useState(false);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  // The open video, plus whether it is shrunk to the floating window. The
+  // player is NOT a Modal — see VideoPlayer — so minimising keeps it playing.
+  const [videoItem, setVideoItem] = useState<VideoItem | null>(null);
+  const [videoMini, setVideoMini] = useState(false);
+  // Snapshotted when a video is opened, so next/previous stays stable even if
+  // new messages arrive while watching.
+  const [videoPlaylist, setVideoPlaylist] = useState<VideoItem[]>([]);
   const [maxOtherReadMsgId, setMaxOtherReadMsgId] = useState(0);
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
   // clientId -> uploaded file URL, so the server's echo can be matched back to
@@ -841,6 +847,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       }));
   }
 
+  // Every playable video in the chat, so the player can offer next/previous.
+  function chatVideos(): VideoItem[] {
+    return messagesRef.current
+      .filter((m: any) => m.type === 'video' && m.file_path && !m._uploading && !m.one_time_seconds)
+      .map((m: any) => ({
+        id: m.id,
+        url: `${BASE_URL}${m.file_path}`,
+        name: m.file_name || 'Video',
+      }));
+  }
+
   function chatImageUrls(): string[] {
     const urls: string[] = [];
     messagesRef.current.forEach((m: any) => {
@@ -1512,6 +1529,19 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
   useEffect(() => () => clearTimeout(tapTimer.current), []);
 
+  // Hardware back on the video: shrink first, close from the floating window.
+  // Leaving the chat outright would be a surprise while something is playing.
+  useEffect(() => {
+    if (!videoItem) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (!videoMini) { setVideoMini(true); return true; }
+      setVideoItem(null);
+      setVideoMini(false);
+      return true;
+    });
+    return () => sub.remove();
+  }, [videoItem, videoMini]);
+
   // Hardware back gets out of a selection first, rather than leaving the chat
   // with messages still picked.
   useEffect(() => {
@@ -1846,7 +1876,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 onPress={() => {
                   if (selectedIds.size) { toggleSelected(msg); return; }
                   if (msg._uploading) return;
-                  setVideoUrl(uri);
+                  setVideoPlaylist(chatVideos());
+                  setVideoItem({ id: msg.id, url: uri, name: msg.file_name || 'Video' });
+                  setVideoMini(false);
                   if (msg.one_time_seconds && !mine) startOneTimeClock(msg);
                 }}
                 onLongPress={() => onMessageLongPress(msg)}
@@ -2180,9 +2212,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         roomMeta={room}
       />
 
-      {/* Video player — reports buffering/download progress and failures
-          instead of sitting on a black rectangle. */}
-      <VideoPlayerModal url={videoUrl} onClose={() => setVideoUrl(null)} />
+      {/* Video player. Rendered in-tree (not in a Modal) so minimising to the
+          floating window keeps the same <Video> alive and playing. */}
+      <VideoPlayer
+        item={videoItem}
+        playlist={videoPlaylist}
+        minimized={videoMini}
+        onMinimize={() => setVideoMini(true)}
+        onExpand={() => setVideoMini(false)}
+        onClose={() => { setVideoItem(null); setVideoMini(false); }}
+        onSelect={(it) => setVideoItem(it)}
+      />
 
       {/* Messages */}
       {loading ? (
