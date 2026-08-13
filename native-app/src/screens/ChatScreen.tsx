@@ -1402,9 +1402,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   const roomLink = `${BASE_URL}/join/${room.id}`;
-  // Server-rendered, disk-cached thumbnail for an /uploads path.
-  const thumbUrl = (uploadPath: string, w: number) =>
-    `${BASE_URL}/thumb/${encodeURIComponent(String(uploadPath).replace(/^\/uploads\//, ''))}?w=${w}`;
+  // Server-rendered, disk-cached thumbnail for an /uploads path. Media paths
+  // now carry a signature (?e=&s=); /thumb checks the same one, so it has to
+  // be carried across rather than dropped with the rest of the path.
+  const thumbUrl = (uploadPath: string, w: number) => {
+    const [bare, query] = String(uploadPath).split('?');
+    const name = encodeURIComponent(bare.replace(/^\/uploads\//, ''));
+    return `${BASE_URL}/thumb/${name}?w=${w}${query ? '&' + query : ''}`;
+  };
   // Public rooms are readable by anyone but writable only by members.
   const notMember = !room.is_dm && !!roomInfo && !roomInfo.is_member;
 

@@ -95,6 +95,30 @@ test('multiple tokens in one message are all found', () => {
   assert.deepStrictEqual(got.map(g => g[0]), ['number', 'phone', 'url']);
 });
 
+test('a long account number stays ONE token (regression: split at 18 digits)', () => {
+  // PHONE could match at most 18 digits, so a 24-digit number was chopped into
+  // 18 + 6 and tapping either half copied only that half.
+  const iban = 'IR100560611828005461905601';
+  const toks = kindsOf(iban);
+  assert.deepStrictEqual(toks, [['number', iban]],
+    'IBAN was not a single copyable token: ' + JSON.stringify(toks));
+});
+
+test('a bare long digit run is one token too', () => {
+  const n = '100560611828005461905601';
+  assert.deepStrictEqual(kindsOf(n), [['number', n]]);
+});
+
+test('a letter-prefixed code is never treated as a phone number', () => {
+  assert.strictEqual(T.classify('IR12345678'), 'number');
+  assert.strictEqual(T.isPhone('IR12345678'), false);
+});
+
+test('real phone numbers still classify as phones', () => {
+  assert.strictEqual(T.classify('09123456789'), 'phone');
+  assert.strictEqual(T.classify('+98 912 345 6789'), 'phone');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

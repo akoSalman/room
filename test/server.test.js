@@ -74,6 +74,16 @@ function waitFor(sock, event, match = () => true, ms = 3000) {
   });
 }
 
+// Media URLs are signed by the server (see signPath in server.js). Tests that
+// fetch an upload directly need a valid signature; this mirrors the server's,
+// using the same JWT_SECRET set at the top of this file.
+function signUpload(name, ttlMs = 60000) {
+  const exp = Date.now() + ttlMs;
+  const sig = require('crypto').createHmac('sha256', process.env.JWT_SECRET)
+    .update(`${name}:${exp}`).digest('base64url').slice(0, 32);
+  return `?e=${exp}&s=${sig}`;
+}
+
 // Raw fetch (status + headers), since api() only returns parsed JSON.
 async function raw(pathname, method = 'GET', body = null, token = null) {
   return fetch(baseUrl + pathname, {
@@ -392,7 +402,7 @@ test('thumbnails are generated, cached, and path-traversal safe', async () => {
     create: { width: 900, height: 600, channels: 3, background: { r: 10, g: 120, b: 200 } },
   }).jpeg().toFile(require('path').join('uploads', name));
 
-  const res = await raw(`/thumb/${name}?w=200`, 'GET', null, u.token);
+  const res = await raw(`/thumb/${name}?w=200&${signUpload(name).slice(1)}`, 'GET', null, u.token);
   assert.strictEqual(res.status, 200, `thumb request failed: ${res.status}`);
   assert.strictEqual(res.headers.get('content-type'), 'image/jpeg');
   assert.strictEqual(res.headers.get('x-content-type-options'), 'nosniff');
@@ -409,11 +419,48 @@ test('thumbnails are generated, cached, and path-traversal safe', async () => {
   // Traversal must be rejected by the name guard itself — 400, specifically.
   // (Asserting merely ">= 400" would pass even with the guard removed, since
   // sharp fails on a non-image anyway and returns 415.)
-  const bad = await raw('/thumb/..%2F..%2Fserver.js', 'GET', null, u.token);
+  const bad = await raw(`/thumb/..%2F..%2Fserver.js${signUpload('server.js')}`, 'GET', null, u.token);
   assert.strictEqual(bad.status, 400, `traversal not rejected by the name guard: ${bad.status}`);
 
   fsMod.rmSync(require('path').join('uploads', name), { force: true });
   fsMod.rmSync(require('path').join('uploads', '.thumbs', `${name}_200.jpg`), { force: true });
+});
+
+test('SECURITY: uploads need a valid, unexpired signature', async () => {
+  const u = await signUp('mediauser13');
+  const sock = await connect(u.token);
+  const room = await api('/rooms', 'POST', { name: 'media-room-13' }, u.token);
+
+  const fsMod = require('fs');
+  const name = `sig-test-${Date.now()}.txt`;
+  fsMod.mkdirSync('uploads', { recursive: true });
+  fsMod.writeFileSync(require('path').join('uploads', name), 'secret audio bytes');
+
+  // Bare URL — this is exactly what used to work for anyone who had the link.
+  const bare = await raw(`/uploads/${name}`, 'GET', null, u.token);
+  assert.strictEqual(bare.status, 403, `unsigned upload was served: ${bare.status}`);
+
+  // The server hands out signed paths with the message, so fetch one back.
+  await emit(sock, 'send_message',
+    { roomId: room.id, type: 'file', content: '', filePath: `/uploads/${name}`, fileName: name });
+  const history = await api(`/messages/${room.id}`, 'GET', null, u.token);
+  const msg = history.find(m => m.file_name === name);
+  assert.ok(msg, 'message not found');
+  assert.ok(/\?e=\d+&s=/.test(msg.file_path), `path was not signed: ${msg.file_path}`);
+
+  // …and the raw path is what got stored, so signatures never reach the DB.
+  assert.ok(!msg.file_path.split('?')[0].includes('&'), 'stored path looks malformed');
+
+  const signed = await raw(msg.file_path, 'GET', null, u.token);
+  assert.strictEqual(signed.status, 200, `signed upload was refused: ${signed.status}`);
+
+  // A tampered signature, and an expired one, are both refused.
+  const tampered = msg.file_path.replace(/s=(.)/, (m, c) => 's=' + (c === 'A' ? 'B' : 'A'));
+  assert.strictEqual((await raw(tampered, 'GET', null, u.token)).status, 403, 'tampered signature accepted');
+  const stale = `/uploads/${name}?e=${Date.now() - 1000}&s=${msg.file_path.split('s=')[1]}`;
+  assert.strictEqual((await raw(stale, 'GET', null, u.token)).status, 403, 'expired signature accepted');
+
+  fsMod.rmSync(require('path').join('uploads', name), { force: true });
 });
 
 test('room list is ordered by most recent activity, not by name', async () => {
@@ -661,7 +708,9 @@ test('SECURITY: uploads are served as attachments with nosniff', async () => {
   }).then(r => r.json());
   assert.ok(up.url, 'upload failed');
 
-  const res = await fetch(baseUrl + up.url);
+  // /upload returns the raw path (signatures must never reach the database),
+  // so sign it here the way the server does when it hands the path to a client.
+  const res = await fetch(baseUrl + up.url + signUpload(up.url.split('/').pop()));
   assert.strictEqual(res.headers.get('content-disposition'), 'attachment',
     'uploaded file is not forced to download — stored XSS risk');
   assert.strictEqual((res.headers.get('x-content-type-options') || '').toLowerCase(), 'nosniff');

@@ -627,7 +627,10 @@ let mediaTab = 'images';
 
 // Server-rendered, disk-cached thumbnail for an /uploads path.
 function thumbUrl(uploadPath, w) {
-  return '/thumb/' + encodeURIComponent(String(uploadPath).replace(/^\/uploads\//, '')) + '?w=' + w;
+  // Carry the media signature (?e=&s=) across — /thumb checks the same one.
+  const [bare, query] = String(uploadPath).split('?');
+  const name = encodeURIComponent(bare.replace(/^\/uploads\//, ''));
+  return '/thumb/' + name + '?w=' + w + (query ? '&' + query : '');
 }
 
 async function openMedia() {

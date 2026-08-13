@@ -6,6 +6,7 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const cors = require('cors');
 const db = require('./db');
 
@@ -69,6 +70,80 @@ app.use(express.static('public', {
 // `attachment` means a direct navigation downloads the file instead of
 // rendering it. Embedding still works: <img>/<video>/<audio> ignore
 // Content-Disposition, so media in the chat displays normally.
+// ── Signed media URLs ────────────────────────────────────────────────────────
+// /uploads was served with NO authentication: anyone holding a URL could
+// download any voice message, photo or file, forever, without an account —
+// including someone who had since been removed from the private room it came
+// from. The only protection was that filenames are hard to guess.
+//
+// Image/video/audio tags cannot send an Authorization header, so per-request
+// identity is not available here. Instead every media path handed to a client
+// is signed with a short expiry (the same approach as S3 presigned URLs), and
+// the static route refuses anything without a valid, unexpired signature.
+// Access is therefore decided when the message is DELIVERED — which already
+// only happens for rooms the user can see — and the link stops working soon
+// after, rather than never.
+const MEDIA_URL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function mediaSig(name, exp) {
+  return crypto.createHmac('sha256', JWT_SECRET)
+    .update(`${name}:${exp}`).digest('base64url').slice(0, 32);
+}
+
+// '/uploads/x.jpg' -> '/uploads/x.jpg?e=...&s=...'   (anything else untouched)
+function signPath(p) {
+  if (typeof p !== 'string' || !p.startsWith('/uploads/')) return p;
+  const name = p.slice('/uploads/'.length).split('?')[0];
+  if (!name) return p;
+  const exp = Date.now() + MEDIA_URL_TTL_MS;
+  return `/uploads/${name}?e=${exp}&s=${mediaSig(name, exp)}`;
+}
+
+// Sign a message's media in place. file_path is either one path or, for a
+// gallery, a JSON array of them.
+function signMessage(msg) {
+  if (!msg || typeof msg.file_path !== 'string') return msg;
+  if (msg.file_path.startsWith('[')) {
+    try {
+      const arr = JSON.parse(msg.file_path);
+      if (Array.isArray(arr)) return { ...msg, file_path: JSON.stringify(arr.map(signPath)) };
+    } catch {}
+    return msg;
+  }
+  return { ...msg, file_path: signPath(msg.file_path) };
+}
+
+// Store raw paths, never signed ones: a signature baked into the database
+// would expire and strand the file. Gallery paths arrive as a JSON array.
+function stripSig(p) {
+  if (typeof p !== 'string' || !p) return p || null;
+  const bare = (x) => (typeof x === 'string' ? x.split('?')[0] : x);
+  if (p.startsWith('[')) {
+    try {
+      const arr = JSON.parse(p);
+      if (Array.isArray(arr)) return JSON.stringify(arr.map(bare));
+    } catch {}
+    return p;
+  }
+  return bare(p);
+}
+
+function validMediaSig(name, req) {
+  const exp = parseInt(req.query.e, 10);
+  const sig = String(req.query.s || '');
+  if (!exp || !sig || Date.now() > exp) return false;
+  const expected = mediaSig(name, exp);
+  // Constant-time compare so the signature can't be probed byte by byte.
+  const a = Buffer.from(sig), b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+app.use('/uploads', (req, res, next) => {
+  const name = path.basename(decodeURIComponent(req.path));
+  if (!validMediaSig(name, req)) return res.status(403).end();
+  next();
+});
+
 app.use('/uploads', express.static('uploads', {
   maxAge: '30d', immutable: true,
   setHeaders(res) {
@@ -95,6 +170,9 @@ app.get('/thumb/:name', async (req, res) => {
   if (!name || name.startsWith('.') || name !== req.params.name) {
     return res.status(400).end();
   }
+  // Same signature gate as /uploads — otherwise /thumb would be an
+  // unauthenticated way to read every image on the server.
+  if (!validMediaSig(name, req)) return res.status(403).end();
   const src = path.join('uploads', name);
   if (!fs.existsSync(src)) return res.status(404).end();
 
@@ -528,12 +606,12 @@ app.get('/room-media/:roomId', authMiddleware, (req, res) => {
   const media = { images: [], files: [], music: [], links: [] };
   const LINK_RE = /(https?:\/\/[^\s]+|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:\/[^\s]*)?)/g;
   rows.forEach(m => {
-    if (m.type === 'image' && m.file_path) media.images.push(m.file_path);
+    if (m.type === 'image' && m.file_path) media.images.push(signPath(m.file_path));
     else if (m.type === 'gallery' && m.file_path) {
-      try { JSON.parse(m.file_path).forEach(u => media.images.push(u)); } catch {}
-    } else if (m.type === 'video' && m.file_path) media.files.push({ url: m.file_path, name: m.file_name || 'Video' });
-    else if (m.type === 'file' && m.file_path) media.files.push({ url: m.file_path, name: m.file_name || 'File' });
-    else if (m.type === 'music' && m.file_path) media.music.push({ url: m.file_path, name: m.file_name || 'Audio' });
+      try { JSON.parse(m.file_path).forEach(u => media.images.push(signPath(u))); } catch {}
+    } else if (m.type === 'video' && m.file_path) media.files.push({ url: signPath(m.file_path), name: m.file_name || 'Video' });
+    else if (m.type === 'file' && m.file_path) media.files.push({ url: signPath(m.file_path), name: m.file_name || 'File' });
+    else if (m.type === 'music' && m.file_path) media.music.push({ url: signPath(m.file_path), name: m.file_name || 'Audio' });
     if (m.type === 'text' && m.content && !m.content.startsWith('e2e:')) {
       (m.content.match(LINK_RE) || []).forEach(l => {
         if (media.links.length < 200 && !media.links.includes(l)) media.links.push(l);
@@ -720,7 +798,7 @@ app.get('/messages/:roomId', authMiddleware, (req, res) => {
         WHERE m.room_id = ?
         ORDER BY m.created_at DESC LIMIT ?
       `).all(req.params.roomId, MESSAGES_PAGE_SIZE);
-  res.json(messages.reverse());
+  res.json(messages.reverse().map(signMessage));
 });
 
 // Every reaction in a room, keyed by message id. The client had no way to load
@@ -815,9 +893,10 @@ function insertSystemMessage(roomId, userId, kind, data) {
 
 // Deliver a message to every member of a room over their personal channels.
 function broadcastRoomMessage(room, msg) {
+  const out = signMessage(msg);
   const ids = getRoomMemberIds(room);
-  ids.forEach(id => io.to('user:' + id).emit('message_received', msg));
-  previewerIds(room, ids).forEach(id => io.to('user:' + id).emit('message_received', msg));
+  ids.forEach(id => io.to('user:' + id).emit('message_received', out));
+  previewerIds(room, ids).forEach(id => io.to('user:' + id).emit('message_received', out));
 }
 
 // Public rooms can be read before joining, so someone may have the room open
@@ -910,7 +989,7 @@ io.on('connection', (socket) => {
     const result = db.prepare(`
       INSERT INTO messages (room_id, user_id, type, content, file_path, file_name, reply_to_id, one_time_seconds)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(roomId, socket.user.id, msgType, content || null, filePath || null, fileName || null, replyToId || null, oneTime);
+    `).run(roomId, socket.user.id, msgType, content || null, stripSig(filePath), fileName || null, replyToId || null, oneTime);
 
     const msg = db.prepare(`
       SELECT m.*, u.username, u.avatar,
@@ -925,9 +1004,10 @@ io.on('connection', (socket) => {
     if (clientId) msg.client_id = clientId; // lets the sender reconcile its optimistic local bubble
 
     const memberIds = getRoomMemberIds(room);
-    memberIds.forEach(id => io.to('user:' + id).emit('message_received', msg));
+    const outMsg = signMessage(msg);
+    memberIds.forEach(id => io.to('user:' + id).emit('message_received', outMsg));
     // …plus anyone reading this public room without having joined it yet.
-    previewerIds(room, memberIds).forEach(id => io.to('user:' + id).emit('message_received', msg));
+    previewerIds(room, memberIds).forEach(id => io.to('user:' + id).emit('message_received', outMsg));
 
     // Users who have ANY socket actively viewing this room right now. Push is
     // suppressed for them entirely (on all their devices) so a user reading the
@@ -1004,7 +1084,7 @@ io.on('connection', (socket) => {
     const msg = db.prepare(`
       SELECT m.*, u.username, u.avatar FROM messages m JOIN users u ON m.user_id = u.id WHERE m.id = ?
     `).get(result.lastInsertRowid);
-    [socket.user.id, peer].forEach(id => io.to('user:' + id).emit('message_received', msg));
+    [socket.user.id, peer].forEach(id => io.to('user:' + id).emit('message_received', signMessage(msg)));
     io.emit('dm_activity', { room: dm });
   });
   socket.on('call_answer', ({ toUserId, sdp }) => {
@@ -1154,7 +1234,7 @@ io.on('connection', (socket) => {
     const msg = db.prepare(`
       SELECT m.*, u.username, u.avatar FROM messages m JOIN users u ON m.user_id = u.id WHERE m.id = ?
     `).get(result.lastInsertRowid);
-    [socket.user.id, target.id].forEach(id => io.to('user:' + id).emit('message_received', msg));
+    [socket.user.id, target.id].forEach(id => io.to('user:' + id).emit('message_received', signMessage(msg)));
     io.emit('dm_activity', { room: dm });
 
     // An invitation is a real message, so it gets a real push — previously it
@@ -1318,7 +1398,7 @@ io.on('connection', (socket) => {
       WHERE m.id = ?
     `).get(result.lastInsertRowid);
     const dstMembers = getRoomMemberIds(dstRoom);
-    dstMembers.forEach(id => io.to('user:' + id).emit('message_received', msg));
+    dstMembers.forEach(id => io.to('user:' + id).emit('message_received', signMessage(msg)));
     sendPushToUsers(
       dstMembers.filter(id => id !== socket.user.id),
       (msg.avatar ? msg.avatar + ' ' : '') + msg.username + (dstRoom.is_dm ? '' : ` · ${dstRoom.name}`),

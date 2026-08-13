@@ -16,12 +16,23 @@ export const ARABIC_ZERO = 0x0660;
 const D = '0-9\u06F0-\u06F9\u0660-\u0669';           // any digit
 const SEP = ' \\-()\u200f\u200e.'; // separators allowed inside a phone number
 
-// Order matters: URLs first, then phone-shaped runs, then any bare number.
+// Order matters: URLs first, then reference codes, then phone-shaped runs,
+// then any bare number.
 const URL = 'https?:\\/\\/[^\\s]+|(?:[a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,}(?:\\/[^\\s]*)?';
-const PHONE = `\\+?[${D}](?:[${SEP}]?[${D}]){7,17}`;
+// IBANs, tracking numbers and the like: a short letter prefix glued to a long
+// digit run. Without this, "IR100560611828005461905601" lost its "IR" and the
+// digits were split in two (see the trailing guard below).
+const CODE = `[A-Za-z]{1,4}[${D}]{8,}(?![${D}])`;
+// The trailing (?![D]) is what stops a phone match from eating the FIRST 18
+// digits of a longer run: a 24-digit account number used to match PHONE for
+// its first 18 digits, leaving the remaining 6 as a separate token — so
+// tapping one half copied 18 digits and the other half copied 6. With the
+// guard, no repetition count can satisfy PHONE inside a longer run, and the
+// whole run falls through to NUMBER as a single token.
+const PHONE = `\\+?[${D}](?:[${SEP}]?[${D}]){7,17}(?![${D}])`;
 const NUMBER = `[${D}]+(?:[.,\u066B\u066C][${D}]+)*`;   // 1,234.56 / ۱۲۳٫۴۵
 
-export const TOKEN_RE = new RegExp(`(${URL}|${PHONE}|${NUMBER})`, 'g');
+export const TOKEN_RE = new RegExp(`(${URL}|${CODE}|${PHONE}|${NUMBER})`, 'g');
 
 export type TokenKind = 'url' | 'phone' | 'number' | 'text';
 
@@ -46,6 +57,7 @@ export function isUrl(t: string): boolean {
 // decimal amount. Card numbers (16 digits) are deliberately NOT phones.
 export function isPhone(t: string): boolean {
   if (isUrl(t)) return false;
+  if (/[A-Za-z]/.test(t)) return false;   // reference codes are not phone numbers
   const digits = countDigits(t);
   if (digits < 8 || digits > 15) return false;
   if (/[.,\u066B]\d{1,2}$/.test(t)) return false; // looks like an amount

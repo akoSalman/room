@@ -406,11 +406,13 @@ export default function App() {
           )}
 
           {/* Share-target chat picker */}
-          {/* A share has arrived but the chat picker isn't ready yet (the room
-              list is still loading, and a heavy file is still being copied out
-              of the sending app). Without this the app just sat there looking
-              frozen after "Share to ChatRoom". */}
-          <Modal visible={hasShareIntent && !shareRooms && screen !== 'auth'} transparent animationType="fade">
+          {/* Feedback for the whole share hand-off, with no gap in the middle:
+              from the intent arriving, through the chat picker loading, and on
+              until the chat has actually staged the file in its composer
+              (pendingShare is cleared by onShareConsumed). Previously it
+              stopped at the picker, so after choosing a chat the user watched
+              an empty composer with no idea anything was still happening. */}
+          <Modal visible={(hasShareIntent && !shareRooms && screen !== 'auth') || !!pendingShare} transparent animationType="fade">
             <View style={sh.busyOverlay}>
               <View style={sh.busyCard}>
                 <ActivityIndicator size="large" color={C.accent} />
