@@ -766,7 +766,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         roomId: room.id, type: 'text', content: wire, replyToId,
         clientId, oneTimeSeconds: oneTime ?? undefined,
       }, (err: any, res: any) => {
-        if (err || !res?.ok) markUploadFailed(clientId);
+        if (err || !res?.ok) { markUploadFailed(clientId); return; }
+        // The server has it. Clear the crash-safety copy here rather than
+        // waiting for the echo — leaving the chat right after sending used to
+        // race the two and could leave a stale copy behind to be resent.
+        outbox.markDone(clientId);
+        outbox.forget(room.id, clientId);
       });
     }, 0);
   }

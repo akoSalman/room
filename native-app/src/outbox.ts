@@ -43,6 +43,26 @@ export function originOf(clientId: string | number) {
 // clientId -> roomId, for every send whose upload/emit is still running.
 const inFlight = new Map<string, number | string>();
 
+// Client ids the server has confirmed. remember() refuses to persist these.
+//
+// Without it there is a race that duplicates messages: remember() and forget()
+// each do a read-modify-write on AsyncStorage, so when a send is acked almost
+// immediately (send, then straight out of the chat) forget() can read, remove
+// and write BEFORE remember()'s own write lands — and remember() then puts the
+// entry back. Nothing ever cleared it again, so re-entering the chat resumed a
+// message that had already been delivered, and it sent twice.
+const delivered = new Set<string>();
+
+// Every storage mutation for a room runs in a chain, so two read-modify-write
+// cycles can never interleave in the first place.
+const chains = new Map<string, Promise<void>>();
+function serialize(key: string, fn: () => Promise<void>): Promise<void> {
+  const prev = chains.get(key) || Promise.resolve();
+  const next = prev.then(fn, fn);
+  chains.set(key, next.catch(() => {}));
+  return next;
+}
+
 export function markStart(clientId: string, roomId: number | string) {
   inFlight.set(String(clientId), roomId);
   if (pendingOrigin) { origins.set(String(clientId), pendingOrigin); pendingOrigin = null; }
@@ -50,6 +70,9 @@ export function markStart(clientId: string, roomId: number | string) {
 export function markDone(clientId: string) {
   inFlight.delete(String(clientId));
   origins.delete(String(clientId));
+  delivered.add(String(clientId));
+  // Bounded: this only needs to outlive an in-flight remember().
+  if (delivered.size > 200) delivered.delete(delivered.values().next().value as string);
 }
 export function isInFlight(clientId: string | number): boolean {
   return inFlight.has(String(clientId));
@@ -61,11 +84,14 @@ export function inFlightCount(): number {
 // Drop a persisted pending copy — the send is confirmed or abandoned.
 export async function forget(roomId: number | string, clientId: string | number) {
   const key = failedKeyFor(roomId);
-  try {
-    const arr = JSON.parse((await AsyncStorage.getItem(key)) || '[]')
-      .filter((x: any) => String(x.id) !== String(clientId));
-    await AsyncStorage.setItem(key, JSON.stringify(arr));
-  } catch {}
+  delivered.add(String(clientId));
+  return serialize(key, async () => {
+    try {
+      const arr = JSON.parse((await AsyncStorage.getItem(key)) || '[]')
+        .filter((x: any) => String(x.id) !== String(clientId));
+      await AsyncStorage.setItem(key, JSON.stringify(arr));
+    } catch {}
+  });
 }
 
 // Tombstone a send the user deleted. A retry already in flight will fail
@@ -99,14 +125,20 @@ export async function remember(roomId: number | string, msg: any) {
   const { originId, attempts } = originOf(msg.id);
   // Deleted by the user — it must never reappear, however it got here.
   if (await isDiscarded(roomId, originId)) return;
-  try {
-    const arr = JSON.parse((await AsyncStorage.getItem(key)) || '[]')
-      // Replace any earlier generation of this same send, not just this id.
-      .filter((x: any) => String(x.id) !== String(msg.id)
-        && String(x._originId || x.id) !== String(originId));
-    arr.push({ ...msg, _originId: originId, _attempts: attempts, _uploading: false, _uploadFailed: true });
-    await AsyncStorage.setItem(key, JSON.stringify(arr.slice(-20)));
-  } catch {}
+  return serialize(key, async () => {
+    // Re-checked INSIDE the chain: the ack may have arrived while this call
+    // was waiting its turn, and persisting now would resurrect a delivered
+    // message for the next visit to resend.
+    if (delivered.has(String(msg.id)) || delivered.has(String(originId))) return;
+    try {
+      const arr = JSON.parse((await AsyncStorage.getItem(key)) || '[]')
+        // Replace any earlier generation of this same send, not just this id.
+        .filter((x: any) => String(x.id) !== String(msg.id)
+          && String(x._originId || x.id) !== String(originId));
+      arr.push({ ...msg, _originId: originId, _attempts: attempts, _uploading: false, _uploadFailed: true });
+      await AsyncStorage.setItem(key, JSON.stringify(arr.slice(-20)));
+    } catch {}
+  });
 }
 
 // App-wide: whenever the server echoes a message back carrying the client_id we

@@ -101,6 +101,17 @@ class AudioManager {
     TrackPlayer.addEventListener(Event.PlaybackState, ({ state }) => {
       this.loading = state === State.Loading || state === State.Buffering;
       this.playing = state === State.Playing;
+      // Stop pressed in the shade or on the lock screen: the service clears
+      // itself, so the in-app mini player has to go too, or it sits there
+      // claiming to be playing something that no longer exists.
+      if (state === State.Stopped || state === State.None) {
+        this.currentId = null;
+        this.roomId = null;
+        this.roomMeta = null;
+        this.queue = [];
+        this.queueIndex = -1;
+        this.progress = 0;
+      }
       this.emit();
     });
 
@@ -131,7 +142,19 @@ class AudioManager {
       this.progress = 0;
       this.emit();
       if (this.queue.length) return;   // playlists advance on their own
+
+      const tokenBefore = this.playToken;
       if (this.finishHandler && finishedId != null) this.finishHandler(finishedId);
+
+      // Nothing followed it. Clear the player out rather than leaving a
+      // finished track loaded: a loaded track keeps the media session alive,
+      // so its notification reappears every time the app is reopened — even
+      // after the user has swiped it away. Deferred a tick so an auto-advance
+      // started by the handler above wins.
+      setTimeout(() => {
+        if (this.playToken !== tokenBefore || this.playing) return;
+        this.stop().catch(() => {});
+      }, 300);
     });
   }
 
