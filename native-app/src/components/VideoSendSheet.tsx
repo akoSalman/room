@@ -13,6 +13,7 @@ import { C } from '../theme';
 import { fmtBytes } from '../download';
 import {
   VideoQuality, VIDEO_PRESETS, videoTarget, trimmedDuration, estimateBytes, fmtDuration,
+  shouldTranscode,
 } from '../videoQuality';
 import { trimVideo } from '../compressVideo';
 
@@ -21,6 +22,8 @@ export type VideoChoice = {
   /** The file to send — the trimmed copy when the user trimmed it. */
   uri: string;
   size: { width: number; height: number } | null;
+  /** Length of what is being sent, so a pointless re-encode can be skipped. */
+  seconds: number;
 };
 
 export default function VideoSendSheet({
@@ -119,7 +122,10 @@ export default function VideoSendSheet({
             const target = size ? videoTarget(size.width, size.height, p.id) : null;
             // "Original" for a clip that is already smaller than the preset:
             // saying "480p" when nothing will change would be a lie.
-            const noChange = p.id !== 'original' && size && !target;
+            // Either already small enough, or re-encoding would not shrink it
+            // enough to be worth the wait — both send the file untouched.
+            const noChange = p.id !== 'original'
+              && !shouldTranscode(p.id, originalBytes, seconds, size);
             const bytes = estimateBytes(
               noChange ? 'original' : p.id, seconds, originalBytes, originalSeconds,
             );
@@ -141,7 +147,7 @@ export default function VideoSendSheet({
                     {p.id === 'original' ? '  ·  full quality' : ''}
                   </Text>
                   <Text style={s.optMeta} numberOfLines={1}>
-                    {target ? `${target.width}×${target.height}` : 'unchanged'}
+                    {noChange ? 'sent as-is — already small' : target ? `${target.width}×${target.height}` : 'unchanged'}
                     {bytes ? `  ·  about ${fmtBytes(bytes)}` : ''}
                   </Text>
                 </View>
@@ -155,7 +161,7 @@ export default function VideoSendSheet({
             </TouchableOpacity>
             <TouchableOpacity
               style={s.send}
-              onPress={() => onConfirm({ quality, uri: workUri, size })}
+              onPress={() => onConfirm({ quality, uri: workUri, size, seconds })}
             >
               <Ionicons name="send" size={16} color="#fff" />
               <Text style={s.sendText}>Send</Text>

@@ -8,7 +8,7 @@
 import { NativeEventEmitter, NativeModules } from 'react-native';
 import { Video as VideoCompressor } from 'react-native-compressor';
 import { showEditor } from 'react-native-video-trim';
-import { VideoQuality, presetFor, videoTarget } from './videoQuality';
+import { VideoQuality, presetFor, videoTarget, shouldTranscode } from './videoQuality';
 
 export type TrimRange = { startSec: number; endSec: number } | null;
 
@@ -68,13 +68,17 @@ export async function compressVideo(
   quality: VideoQuality,
   size: { width: number; height: number } | null,
   onProgress?: (p: number) => void,
+  originalBytes = 0,
+  seconds = 0,
 ): Promise<string> {
   if (quality === 'original') return uri;
   const preset = presetFor(quality);
 
-  // Nothing to gain: the source is already at or below the target.
-  const target = size ? videoTarget(size.width, size.height, quality) : null;
-  if (size && !target) return uri;
+  // Skip work that would not pay for itself. Transcoding takes tens of seconds
+  // on a phone, and for a clip that is already small it produces a file no
+  // smaller — slower to send AND worse quality. Sending the original then wins
+  // on both counts.
+  if (!shouldTranscode(quality, originalBytes, seconds, size)) return uri;
 
   try {
     const out = await VideoCompressor.compress(

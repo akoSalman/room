@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { C } from '../theme';
+import { BASE_URL } from '../api';
 import {
   LatLng, TILE_SIZE, MIN_ZOOM, MAX_ZOOM,
   tilesForViewport, pointToScreen, panCenter, tileUrl,
@@ -64,7 +65,7 @@ export default function TileMap({
         {tiles.map(t => (
           <Image
             key={`${t.z}/${t.x}/${t.y}`}
-            source={{ uri: tileUrl(t.x, t.y, t.z) }}
+            source={{ uri: tileUrl(t.x, t.y, t.z, BASE_URL) }}
             style={{
               position: 'absolute',
               left: t.left + dragOffset.x,

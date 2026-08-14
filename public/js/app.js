@@ -2191,14 +2191,39 @@ function buildLocationCard(msg) {
   const live = !!(p.liveUntil && p.liveUntil > Date.now());
   const url = `https://www.openstreetmap.org/?mlat=${p.lat}&mlon=${p.lng}#map=16/${p.lat}/${p.lng}`;
 
-  const frame = document.createElement('iframe');
-  frame.className = 'loc-map';
-  frame.loading = 'lazy';
-  const d = 0.006;
-  frame.src = 'https://www.openstreetmap.org/export/embed.html?bbox='
-    + [p.lng - d, p.lat - d / 2, p.lng + d, p.lat + d / 2].join('%2C')
-    + `&layer=mapnik&marker=${p.lat}%2C${p.lng}`;
-  wrap.appendChild(frame);
+  // Tiles come from OUR server, not openstreetmap.org: foreign map services
+  // are blocked for users in Iran, so the embedded OSM frame this used to
+  // render just showed nothing. Three tiles wide is enough to give the pin
+  // some context without needing a map library.
+  const Z = 15, TILE = 256;
+  const n = Math.pow(2, Z);
+  const cx = ((p.lng + 180) / 360) * n;
+  const latRad = (p.lat * Math.PI) / 180;
+  const cy = ((1 - Math.asinh(Math.tan(latRad)) / Math.PI) / 2) * n;
+  const x0 = Math.floor(cx), y0 = Math.floor(cy);
+
+  const map = document.createElement('a');
+  map.className = 'loc-map';
+  map.href = url; map.target = '_blank'; map.rel = 'noopener';
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const tx = x0 + dx, ty = y0 + dy;
+      if (tx < 0 || ty < 0 || tx >= n || ty >= n) continue;
+      const img = document.createElement('img');
+      img.className = 'loc-tile';
+      img.loading = 'lazy';
+      img.src = `/tiles/${Z}/${tx}/${ty}.png`;
+      // Positioned so the exact point sits in the middle of the frame.
+      img.style.left = `${(tx - cx) * TILE + 130}px`;
+      img.style.top = `${(ty - cy) * TILE + 75}px`;
+      map.appendChild(img);
+    }
+  }
+  const marker = document.createElement('div');
+  marker.className = 'loc-pin';
+  marker.textContent = live ? '🟢' : '📍';
+  map.appendChild(marker);
+  wrap.appendChild(map);
 
   const foot = document.createElement('a');
   foot.className = 'loc-foot';

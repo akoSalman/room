@@ -94,3 +94,30 @@ export function fmtDuration(sec: number): string {
   const m = Math.floor(sec / 60);
   return `${m}:${String(s).padStart(2, '0')}`;
 }
+
+/**
+ * Whether re-encoding is actually worth the wait.
+ *
+ * Transcoding is slow — tens of seconds for a long clip — and it is pure loss
+ * when the result would be no smaller than the original. That happens more
+ * often than it sounds: a short clip, an already-compressed one, or a source
+ * whose bitrate is below the preset's. Sending it untouched is then both
+ * faster AND better quality.
+ */
+export function shouldTranscode(
+  quality: VideoQuality,
+  originalBytes: number,
+  seconds: number,
+  size: { width: number; height: number } | null,
+): boolean {
+  if (quality === 'original') return false;
+  if (seconds <= 0) return false;
+  // Already at or below the target resolution and nothing to shrink.
+  if (size && !videoTarget(size.width, size.height, quality)) return false;
+  // Unknown size: no evidence it is wasteful, so go ahead.
+  if (originalBytes <= 0) return true;
+  const estimated = estimateBytes(quality, seconds);
+  // Only worth it if it saves a meaningful amount — a 10% gain is not worth
+  // half a minute of the user staring at a progress bar.
+  return estimated > 0 && estimated < originalBytes * 0.9;
+}

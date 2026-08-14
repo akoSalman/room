@@ -972,3 +972,11 @@ html {
 .loc-foot { display: block; padding: 8px 10px; text-decoration: none; }
 .loc-title { font-size: 13px; font-weight: 700; color: var(--text); }
 .loc-sub { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+
+/* Location map built from proxied tiles (foreign map hosts are blocked in Iran) */
+.loc-map { display: block; position: relative; width: 100%; height: 150px; overflow: hidden; }
+.loc-tile { position: absolute; width: 256px; height: 256px; max-width: none; }
+.loc-pin {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -100%);
+  font-size: 22px; line-height: 1; filter: drop-shadow(0 1px 2px rgba(0,0,0,.5));
+}

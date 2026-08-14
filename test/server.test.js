@@ -439,6 +439,50 @@ test('thumbnails are generated, cached, and path-traversal safe', async () => {
   fsMod.rmSync(require('path').join('uploads', '.thumbs', `${name}_200.jpg`), { force: true });
 });
 
+test('the tile proxy is strictly bounded and never an open proxy', async () => {
+  // This endpoint fetches a URL on request, so the coordinates that build that
+  // URL must be validated hard. Anything out of range is refused BEFORE any
+  // network call is made.
+  for (const bad of [
+    '/tiles/2/9/0.png',        // x beyond 2^2-1
+    '/tiles/2/0/9.png',        // y beyond 2^2-1
+    '/tiles/99/0/0.png',       // zoom past the maximum
+    '/tiles/-1/0/0.png',
+    '/tiles/2/-1/0.png',
+    '/tiles/abc/0/0.png',
+  ]) {
+    const r = await raw(bad);
+    assert.ok(r.status === 400 || r.status === 404,
+      `${bad} was not refused (status ${r.status})`);
+  }
+});
+
+test('thumbnails fall back to the original instead of a blank grid', async () => {
+  // A server whose image library cannot load must still show the gallery. It
+  // used to answer 415, which no client handles — the grid rendered white,
+  // which is exactly what users saw on a server where sharp had no binary.
+  //
+  // A file sharp cannot turn into a JPEG exercises the same fallback path.
+  const u = await signUp('thumbfall');
+  const fsMod = require('fs');
+  const name = `not-an-image-${Date.now()}.jpg`;
+  fsMod.mkdirSync('uploads', { recursive: true });
+  fsMod.writeFileSync(require('path').join('uploads', name), 'this is definitely not a JPEG');
+
+  const res = await fetch(`${baseUrl}/thumb/${name}?w=200&${signUpload(name).slice(1)}`, {
+    redirect: 'manual',
+    headers: { Authorization: `Bearer ${u.token}` },
+  });
+  assert.notStrictEqual(res.status, 415,
+    'the gallery was told 415, which renders as a blank tile');
+  assert.strictEqual(res.status, 302, `expected a redirect to the original, got ${res.status}`);
+  const loc = res.headers.get('location') || '';
+  assert.ok(loc.includes('/uploads/') && loc.includes(name),
+    `the fallback did not point at the original file: ${loc}`);
+  // Still signed — the fallback must not become a way around the signature.
+  assert.ok(/[?&]s=/.test(loc), 'the fallback URL was not signed');
+});
+
 test('SECURITY: uploads need a valid, unexpired signature', async () => {
   const u = await signUp('mediauser13');
   const sock = await connect(u.token);

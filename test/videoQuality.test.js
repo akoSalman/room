@@ -114,6 +114,24 @@ test('the original\'s estimate uses its REAL size, scaled by the trim', () => {
   assert.strictEqual(V.estimateBytes('original', 30, 0, 60), 0, 'invented a size for an unknown file');
 });
 
+test('re-encoding is skipped when it would not actually help', () => {
+  // Transcoding is slow; doing it for no size gain is the worst outcome.
+  const size = { width: 1920, height: 1080 };
+  // A 30s clip already compressed to 2 MB — 720p would not beat that by much.
+  assert.strictEqual(V.shouldTranscode('medium', 2_000_000, 30, size), false,
+    'a clip that is already small was re-encoded anyway');
+  // A 30s clip straight off a camera at 60 MB is well worth shrinking.
+  assert.strictEqual(V.shouldTranscode('medium', 60_000_000, 30, size), true);
+  // Original never transcodes.
+  assert.strictEqual(V.shouldTranscode('original', 60_000_000, 30, size), false);
+  // Already below the target resolution: nothing to gain.
+  assert.strictEqual(V.shouldTranscode('high', 60_000_000, 30, { width: 640, height: 480 }), false,
+    'a clip smaller than the preset was re-encoded');
+  // Unknown size is not a reason to skip.
+  assert.strictEqual(V.shouldTranscode('medium', 0, 30, size), true);
+  assert.strictEqual(V.shouldTranscode('medium', 60_000_000, 0, size), false);
+});
+
 test('durations read as mm:ss', () => {
   assert.strictEqual(V.fmtDuration(0), '0:00');
   assert.strictEqual(V.fmtDuration(9), '0:09');

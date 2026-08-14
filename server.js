@@ -156,6 +156,62 @@ app.use('/uploads', express.static('uploads', {
   },
 }));
 
+// ── Map tiles, proxied ───────────────────────────────────────────────────────
+//
+// The app drew its maps straight from tile.openstreetmap.org, which is
+// unreachable for users in Iran — so location messages showed an empty grey
+// grid. Every device can already reach THIS server (it is where the chat
+// lives), so tiles are fetched here and passed on.
+//
+// Tiles are also cached on disk: the same few are requested over and over as
+// people pan, and OpenStreetMap's usage policy expects a proxy to cache rather
+// than forward every request.
+//
+// TILE_UPSTREAM can point somewhere else entirely (an Iranian provider, a
+// mirror) without touching the app: {z}/{x}/{y} are substituted.
+const TILE_UPSTREAM = process.env.TILE_UPSTREAM
+  || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+const TILE_DIR = path.join('uploads', '.tiles');
+const TILE_MAX_ZOOM = 19;
+
+app.get('/tiles/:z/:x/:y.png', async (req, res) => {
+  const z = parseInt(req.params.z, 10);
+  const x = parseInt(req.params.x, 10);
+  const y = parseInt(req.params.y, 10);
+  // Strictly bounded: this endpoint must never become an open proxy that will
+  // fetch an arbitrary URL on request.
+  if (!Number.isInteger(z) || !Number.isInteger(x) || !Number.isInteger(y)) return res.status(400).end();
+  if (z < 0 || z > TILE_MAX_ZOOM) return res.status(400).end();
+  const n = Math.pow(2, z);
+  if (x < 0 || x >= n || y < 0 || y >= n) return res.status(400).end();
+
+  const file = path.join(TILE_DIR, `${z}_${x}_${y}.png`);
+  const serve = () => {
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'public, max-age=2592000');
+    fs.createReadStream(file).pipe(res);
+  };
+  if (fs.existsSync(file)) return serve();
+
+  try {
+    const url = TILE_UPSTREAM.replace('{z}', z).replace('{x}', x).replace('{y}', y);
+    // OSM refuses requests without a real User-Agent identifying the app.
+    const upstream = await fetch(url, { headers: { 'User-Agent': 'ChatRoom/1.0 (self-hosted chat)' } });
+    if (!upstream.ok) return res.status(502).end();
+    const buf = Buffer.from(await upstream.arrayBuffer());
+    fs.mkdirSync(TILE_DIR, { recursive: true });
+    // Written via a temp name so a half-downloaded tile is never cached: a
+    // truncated PNG would be served from disk forever afterwards.
+    const tmp = `${file}.${Date.now()}.part`;
+    fs.writeFileSync(tmp, buf);
+    fs.renameSync(tmp, file);
+    serve();
+  } catch {
+    res.status(502).end();
+  }
+});
+
 // ── Thumbnails ───────────────────────────────────────────────────────────────
 // The media gallery rendered its grid from the ORIGINAL uploads: opening a
 // chat's photos meant downloading every full-size image just to draw 100px
@@ -221,12 +277,22 @@ app.get('/thumb/:name', async (req, res) => {
   const width = THUMB_WIDTHS.includes(asked) ? asked : 200;
   const out = path.join(THUMB_DIR, `${name}_${width}.jpg`);
 
+  // No thumbnailer on this machine: hand back the ORIGINAL image instead.
+  //
+  // This used to answer 415 "so the client can fall back to the original" —
+  // but no client does that; <Image> just fails and the gallery renders as a
+  // blank white grid. That is exactly what happened on a server where sharp
+  // could not load. A redirect to the signed original keeps every existing
+  // protection (the signature check, nosniff, attachment) and costs only
+  // bandwidth, which is far better than showing nothing.
+  // signPath expects a full /uploads/ path, not a bare filename — handed the
+  // latter it returns it untouched, producing a useless relative redirect.
+  const original = () => res.redirect(302, signPath('/uploads/' + name));
+
   try {
     if (!fs.existsSync(out)) {
       const sharp = getSharp();
-      // No thumbnailer: 415 makes the client use the full-size original,
-      // which is slower but works.
-      if (!sharp) return res.status(415).end();
+      if (!sharp) return original();
       fs.mkdirSync(THUMB_DIR, { recursive: true });
       await sharp(src)
         .rotate()                       // honour EXIF orientation
@@ -239,9 +305,9 @@ app.get('/thumb/:name', async (req, res) => {
     res.setHeader('Cache-Control', 'public, max-age=2592000, immutable');
     fs.createReadStream(out).pipe(res);
   } catch {
-    // Not an image, or a format sharp can't read — say so rather than
-    // pretending, so the client can fall back to the original.
-    res.status(415).end();
+    // A format sharp cannot read. It may still be something the device can
+    // display, so let it try the original rather than guaranteeing a blank.
+    original();
   }
 });
 

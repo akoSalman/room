@@ -149,6 +149,13 @@ test('zoomToFit keeps both points on screen', () => {
   }
 });
 
+test('tiles are requested from our own server, not a foreign one', () => {
+  // Foreign tile hosts are blocked for users in Iran; the chat server is not.
+  const u = G.tileUrl(3, 4, 5, 'https://chat.example.com');
+  assert.strictEqual(u, 'https://chat.example.com/tiles/5/3/4.png');
+  assert.ok(!/openstreetmap\.org/.test(u), 'the tile URL still points straight at OSM');
+});
+
 test('location payloads are parsed, and rubbish is rejected', () => {
   assert.deepStrictEqual(G.parseLocation('{"lat":35.1,"lng":51.2}'), { lat: 35.1, lng: 51.2 });
   assert.strictEqual(G.parseLocation('not json'), null);

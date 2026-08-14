@@ -26,6 +26,7 @@ import { Ionicons } from '@expo/vector-icons';
 import Composer, { ComposerHandle } from '../components/Composer';
 import AwesomeGallery from 'react-native-awesome-gallery';
 import GalleryGrid from '../components/GalleryGrid';
+import MediaBrowser from '../components/MediaBrowser';
 import ImageWithSpinner from '../components/ImageWithSpinner';
 import GalleryImage from '../components/GalleryImage';
 import VideoPlayer, { VideoItem } from '../components/VideoPlayer';
@@ -50,6 +51,7 @@ import { compressVideo } from '../compressVideo';
 import { VideoQuality } from '../videoQuality';
 import { Quality } from '../imageQuality';
 import { tokenize, telHref, toAsciiDigits } from '../textTokens';
+import { charIndexAt, wordRangeAt, TextLine } from '../textSelect';
 import { toast } from '../components/Toast';
 import * as outbox from '../outbox';
 import EmojiBurst from '../components/EmojiBurst';
@@ -139,6 +141,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     setViewer({ images, index: idx });
   }
   function closeViewer() {
+    // Remember the image being looked at, not the scroll offset — the grid
+    // scrolls to this index when it reappears.
+    setMediaFocusIndex(viewerIdx);
     setViewer(null);
     if (viewerFromMedia) { setViewerFromMedia(false); setShowMedia(true); }
   }
@@ -184,6 +189,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // instant double-tap turns it into a selectable field; released a moment
   // later so the handles become draggable.
   const [textSelectRange, setTextSelectRange] = useState<{ start: number; end: number } | undefined>(undefined);
+  // The selection we ASKED for, held until the field reports it back.
+  //
+  // Focusing a TextInput fires onSelectionChange with a collapsed caret, and
+  // that overwrote the range we had just set — so the highlight was wiped a
+  // frame after appearing and the text looked unselected. This re-asserts our
+  // range until the field agrees, then hands control back to the user's drags.
+  const wantSelection = useRef<{ start: number; end: number } | null>(null);
+  // Rendered line boxes per message, reported by <Text onTextLayout>. They are
+  // what turns a tap position into a character offset, and so into a word.
+  const textLines = useRef<Record<string, TextLine[]>>({});
+  const tapCharIndex = useRef(-1);
   const [pendingMedia, setPendingMedia] = useState<{ uri: string; name: string; mime: string }[]>([]);
   // Photos are sent re-encoded by default — a phone camera's 8 MB original is
   // what makes sending "take a couple of seconds". HD sends the file untouched.
@@ -213,8 +229,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [showMedia, setShowMedia] = useState(false);
   const [mediaTab, setMediaTab] = useState<'images' | 'files' | 'music' | 'links'>('images');
   const [mediaData, setMediaData] = useState<any>(null);
-  const mediaScrollRef = useRef<ScrollView>(null);
-  const mediaScrollY = useRef(0);
+  // The photo the media grid should return to. Set when the viewer closes,
+  // so dismissing an image from the middle of a long gallery puts you back
+  // where you were rather than at the top.
+  const [mediaFocusIndex, setMediaFocusIndex] = useState(0);
   const [forwardMsg, setForwardMsg] = useState<Message | null>(null);
   const [forwardTargets, setForwardTargets] = useState<any[]>([]);
   // Separate from forwardMsg: the picker is also opened for a multi-selection,
@@ -1602,13 +1620,23 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
     if (!fromText || !canSelectText(msg)) { openMenuFor(msg, e); return; }
 
+    // Where in the text this tap landed. The bubble's padding offsets the
+    // coordinates slightly; charIndexAt snaps to a line and wordRangeAt then
+    // widens to word boundaries, so a few points of error changes nothing.
+    const lines = textLines.current[String(msg.id)];
+    tapCharIndex.current = charIndexAt(
+      lines, (e?.nativeEvent?.locationX ?? 0) - BUBBLE_PAD, (e?.nativeEvent?.locationY ?? 0) - BUBBLE_PAD,
+    );
+
     const now = Date.now();
     const second = lastTap.current.id === msg.id && now - lastTap.current.t < DOUBLE_MS;
     lastTap.current = { id: msg.id, t: now };
     if (second) {
       clearTimeout(tapTimer.current);   // kill the pending menu so it never shows
       lastTap.current = { id: -1, t: 0 };
-      setTextSelectRange({ start: 0, end: (msg.content || '').length });
+      const range = wordRangeAt(msg.content || '', tapCharIndex.current);
+      wantSelection.current = range;
+      setTextSelectRange(range);
       setTextSelectId(msg.id);
       return;
     }
@@ -1724,7 +1752,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     let name = pending.item.name;
     if (choice.quality !== 'original') {
       setVideoWorking(0.001);   // a non-zero value is what shows the bar
-      uri = await compressVideo(choice.uri, choice.quality, choice.size, p => setVideoWorking(p || 0.001));
+      uri = await compressVideo(
+        choice.uri, choice.quality, choice.size, p => setVideoWorking(p || 0.001),
+        pending.bytes, choice.seconds,
+      );
       setVideoWorking(0);
       // Re-encoding always produces an mp4, whatever the source container was.
       if (uri !== choice.uri) name = name.replace(/\.[^.]+$/, '') + '.mp4';
@@ -1943,7 +1974,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           {...bubbleProps}
           style={[s.bubble, mine ? s.mineBubble : s.theirsBubble,
                   highlightId === msg.id && s.bubbleHighlight,
-                  picked && s.bubblePicked]}
+                  ]}
         >
           {/* Reply quote */}
           {msg.reply_to_id && msg.reply_username && (
@@ -1980,11 +2011,28 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 // Mirror the user's drags rather than releasing control. The
                 // previous version cleared `selection` on a timer, which made
                 // the highlight appear for a moment and then disappear.
-                onSelectionChange={(e) => setTextSelectRange(e.nativeEvent.selection)}
+                onSelectionChange={(e) => {
+                  const sel = e.nativeEvent.selection;
+                  const want = wantSelection.current;
+                  if (want) {
+                    // Not what we asked for yet — this is the focus event
+                    // collapsing the caret. Put our range back.
+                    if (sel.start !== want.start || sel.end !== want.end) {
+                      setTextSelectRange({ ...want });
+                      return;
+                    }
+                    wantSelection.current = null;   // landed; the user drives now
+                  }
+                  setTextSelectRange(sel);
+                }}
                 contextMenuHidden={false}
               />
             ) : (
-            <Text style={s.msgText} selectable>{renderTextWithLinks(msg.content || '')}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}{msg.one_time_seconds ? <Text style={s.oneTimeTag}> 🔥{msg.one_time_seconds}s</Text> : null}</Text>
+            <Text
+              style={s.msgText}
+              selectable
+              onTextLayout={(e) => { textLines.current[String(msg.id)] = e.nativeEvent.lines as any; }}
+            >{renderTextWithLinks(msg.content || '')}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}{msg.one_time_seconds ? <Text style={s.oneTimeTag}> 🔥{msg.one_time_seconds}s</Text> : null}</Text>
             )
           )}
           {msg.type === 'call' && (() => {
@@ -2745,142 +2793,23 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         </View>
       </Modal>
 
-      {/* Shared media browser (DM profile) */}
-      <Modal visible={showMedia} transparent animationType="slide" onRequestClose={() => setShowMedia(false)}>
-        <View style={s.overlay}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowMedia(false)} />
-          <View style={[s.attachSheet, { maxHeight: '75%' }]}>
-            <View style={s.sheetHandle} />
-            <Text style={s.forwardTitle}>{room.other_username || room.name}</Text>
-            <View style={s.mediaTabs}>
-              {([['images', '🖼 Photos'], ['files', '📄 Files'], ['music', '🎵 Music'], ['links', '🔗 Links']] as const).map(([key, label]) => (
-                <TouchableOpacity key={key} style={[s.mediaTab, mediaTab === key && s.mediaTabActive]} onPress={() => setMediaTab(key)}>
-                  <Text style={[s.mediaTabText, mediaTab === key && s.mediaTabTextActive]}>{label}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            {!mediaData ? (
-              <ActivityIndicator color={C.accent} style={{ marginVertical: 30 }} />
-            ) : (
-              <ScrollView
-                style={{ maxHeight: 380 }}
-                nestedScrollEnabled
-                ref={mediaScrollRef}
-                // Closing an image reopens this sheet; without restoring the
-                // offset it always came back at the very top, losing the
-                // user's place in a long gallery.
-                onScroll={(e) => { mediaScrollY.current = e.nativeEvent.contentOffset.y; }}
-                scrollEventThrottle={64}
-                onContentSizeChange={() => {
-                  if (mediaScrollY.current > 0) {
-                    mediaScrollRef.current?.scrollTo({ y: mediaScrollY.current, animated: false });
-                  }
-                }}
-              >
-                {mediaTab === 'images' && (
-                  <View style={s.mediaGrid}>
-                    {mediaData.images.map((u: string, i: number) => (
-                      <TouchableOpacity key={i} onPress={() => {
-                        const full = mediaData.images.map((x: string) => `${BASE_URL}${x}`);
-                        setShowMedia(false);
-                        setViewerFromMedia(true);
-                        openViewer(full[i], full);
-                      }}>
-                        {/* A 200px thumbnail, not the original. The grid used
-                            to download every full-size photo just to draw
-                            100px cells, so a gallery page took forever. */}
-                        <Image source={{ uri: thumbUrl(u, 200) }} style={s.mediaThumb} />
-                      </TouchableOpacity>
-                    ))}
-                    {!mediaData.images.length && <Text style={s.mediaEmpty}>No photos yet</Text>}
-                  </View>
-                )}
-                {mediaTab === 'files' && (
-                  <>
-                    {mediaData.files.map((f: any, i: number) => (
-                      <TouchableOpacity key={i} style={s.attachOption} onPress={() => Linking.openURL(`${BASE_URL}${f.url}`)}>
-                        <Text style={s.attachOptionText} numberOfLines={1}>📄 {f.name}</Text>
-                      </TouchableOpacity>
-                    ))}
-                    {!mediaData.files.length && <Text style={s.mediaEmpty}>No files yet</Text>}
-                  </>
-                )}
-                {mediaTab === 'music' && (
-                  <>
-                    {mediaData.music.map((f: any, i: number) => (
-                      <TouchableOpacity key={i} style={s.attachOption}
-                        onPress={() => audioManager.play(`media-${i}`, `${BASE_URL}${f.url}`, `🎵 ${f.name}`, room.id, room)}>
-                        <Text style={s.attachOptionText} numberOfLines={1}>🎵 {f.name}</Text>
-                      </TouchableOpacity>
-                    ))}
-                    {!mediaData.music.length && <Text style={s.mediaEmpty}>No music yet</Text>}
-                  </>
-                )}
-                {mediaTab === 'links' && (
-                  <>
-                    {mediaData.links.map((l: string, i: number) => (
-                      <TouchableOpacity key={i} style={s.attachOption}
-                        onPress={() => Linking.openURL(/^https?:/.test(l) ? l : 'https://' + l)}>
-                        <Text style={[s.attachOptionText, { color: C.accent }]} numberOfLines={1}>🔗 {l}</Text>
-                      </TouchableOpacity>
-                    ))}
-                    {!mediaData.links.length && <Text style={s.mediaEmpty}>No links yet</Text>}
-                  </>
-                )}
-              </ScrollView>
-            )}
-          </View>
-        </View>
-      </Modal>
-
-      {/* E2E unlock (sessions that logged in before encryption existed) */}
-      <Modal visible={showE2EUnlock} transparent animationType="fade" onRequestClose={() => setShowE2EUnlock(false)}>
-        <View style={s.overlay}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowE2EUnlock(false)} />
-          <View style={[s.attachSheet, { paddingHorizontal: 16 }]}>
-            <View style={s.sheetHandle} />
-            <Text style={s.forwardTitle}>🔒 Unlock encrypted messages</Text>
-            <Text style={s.oneTimeHint}>
-              Enter your account password once to unlock end-to-end encryption on this device.
-            </Text>
-            <TextInput
-              style={s.unlockInput} secureTextEntry placeholder="Password" placeholderTextColor={C.muted}
-              value={e2ePass} onChangeText={setE2ePass} onSubmitEditing={unlockE2E}
-            />
-            <TouchableOpacity style={s.unlockBtn} onPress={unlockE2E}>
-              <Text style={s.unlockBtnText}>Unlock</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={s.attachCancel} onPress={() => setShowE2EUnlock(false)}>
-              <Text style={s.attachCancelText}>Not now</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      {/* One-time message duration picker */}
-      <Modal visible={showOneTimeMenu} transparent animationType="slide" onRequestClose={() => setShowOneTimeMenu(false)}>
-        <View style={s.overlay}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowOneTimeMenu(false)} />
-          <View style={s.attachSheet}>
-            <View style={s.sheetHandle} />
-            <Text style={s.forwardTitle}>🔥 One-time message</Text>
-            <Text style={s.oneTimeHint}>The next message disappears this many seconds after being opened:</Text>
-            {[5, 30, 60].map(secs => (
-              <TouchableOpacity key={secs} style={s.attachOption} onPress={() => chooseOneTime(secs)}>
-                <Text style={s.attachOptionText}>{secs} seconds{oneTimeSecs === secs ? '  ✓' : ''}</Text>
-              </TouchableOpacity>
-            ))}
-            {oneTimeSecs ? (
-              <TouchableOpacity style={s.attachOption} onPress={() => chooseOneTime(null)}>
-                <Text style={[s.attachOptionText, { color: '#f87171' }]}>Turn off</Text>
-              </TouchableOpacity>
-            ) : null}
-            <TouchableOpacity style={s.attachCancel} onPress={() => setShowOneTimeMenu(false)}>
-              <Text style={s.attachCancelText}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+      {/* Shared media browser — fullscreen, and it keeps your place. */}
+      <MediaBrowser
+        visible={showMedia}
+        title={room.other_username || room.name}
+        data={mediaData}
+        tab={mediaTab}
+        onTab={setMediaTab}
+        onClose={() => setShowMedia(false)}
+        thumbUrl={thumbUrl}
+        baseUrl={BASE_URL}
+        focusIndex={mediaFocusIndex}
+        onOpenImage={(i, all) => {
+          setShowMedia(false);
+          setViewerFromMedia(true);
+          openViewer(all[i], all);
+        }}
+      />
 
       {/* How to send a video: resolution, and trimming. */}
       {videoChoice && (
@@ -3127,6 +3056,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 }
 
 const hitSlop10 = { top: 10, bottom: 10, left: 10, right: 10 };
+// Bubble padding, subtracted from a tap so it lines up with the text box.
+const BUBBLE_PAD = 10;
 
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: C.bg },
@@ -3239,7 +3170,9 @@ const s = StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 11, borderRadius: 10,
   },
   actionText: { color: C.text, fontSize: 14.5, fontWeight: '600' },
-  msgRowPicked: { backgroundColor: 'rgba(59,125,216,0.18)' },
+  // The ONLY selection indicator. The bubble used to be tinted as well,
+  // which read as two different colours stacked on each other.
+  msgRowPicked: { backgroundColor: 'rgba(59,125,216,0.22)' },
   selBar: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     backgroundColor: C.header, padding: 12, paddingTop: 14,
@@ -3247,7 +3180,6 @@ const s = StyleSheet.create({
   },
   selBarBtn: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center' },
   selBarCount: { flex: 1, color: C.text, fontSize: 16.5, fontWeight: '700', marginLeft: 4 },
-  bubblePicked: { borderWidth: 2, borderColor: C.accent, backgroundColor: 'rgba(59,125,216,0.28)' },
   msgTextInput: { padding: 0, margin: 0, textAlignVertical: 'top' },
   msgTextRTL: { textAlign: 'right', writingDirection: 'rtl' },
   bubbleRow: { flexDirection: 'row', alignItems: 'center', maxWidth: '100%' },

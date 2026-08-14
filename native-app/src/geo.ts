@@ -120,8 +120,15 @@ export function panCenter(
   };
 }
 
-export function tileUrl(x: number, y: number, z: number): string {
-  return `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
+/**
+ * Tiles come from OUR server, not from tile.openstreetmap.org directly.
+ *
+ * Foreign map services are blocked or throttled for users in Iran, so drawing
+ * straight from OSM left the map an empty grey grid. Every device can already
+ * reach the chat server, so it fetches and caches the tiles instead.
+ */
+export function tileUrl(x: number, y: number, z: number, baseUrl = ''): string {
+  return `${baseUrl}/tiles/${z}/${x}/${y}.png`;
 }
 
 /** A zoom that fits every point, with a little padding. */
