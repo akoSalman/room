@@ -91,22 +91,33 @@ jobs:
           # uploaded file. reset --hard only touches TRACKED files, so user data
           # is untouched.
           git reset --hard "origin/$BRANCH"
-          # "ci" installs exactly what the lock says and never rewrites it,
-          # which is what stopped the tree from being dirtied again. It insists
-          # the lock matches package.json, so fall back rather than blocking a
-          # deploy on that.
-          npm ci --omit=dev || npm install --omit=dev
-          # "ci" DELETES node_modules and reinstalls. better-sqlite3 and sharp
-          # are native modules compiled against one Node ABI, so a cached
-          # prebuild for the wrong ABI loads fine on one server and throws
-          # ERR_DLOPEN_FAILED on another. Both are required at the top of
-          # server.js, so that failure kills the process at startup — which is
-          # a 502/503 for every user, from a deploy that reported success.
-          # Prove they load, and rebuild from source if they don't.
-          if ! node -e "require('better-sqlite3'); require('sharp')"; then
-            echo "Native modules failed to load — rebuilding from source."
-            npm rebuild better-sqlite3 sharp --build-from-source
-            node -e "require('better-sqlite3'); require('sharp')"
+          # "install", NOT "ci". `npm ci` deletes node_modules and reinstalls
+          # strictly from the lock — and that is what took bistbarg down.
+          # sharp's actual binary is an OPTIONAL platform dependency
+          # (@img/sharp-linux-x64) whose engines field requires node >=20.9.0.
+          # npm silently SKIPS an optional dep whose engine does not match, so
+          # on a server with older node the wipe removed a working sharp and
+          # installed nothing in its place. `npm install` leaves the existing,
+          # working tree alone. The lock churn that "ci" was meant to prevent
+          # no longer matters, because `git reset --hard` above cleans it.
+          npm install --omit=dev
+          # better-sqlite3 IS the database — if it cannot load, refuse to
+          # pretend the deploy worked.
+          if ! node -e "require('better-sqlite3')"; then
+            echo "::error::better-sqlite3 cannot load — not restarting onto a broken build."
+            exit 1
+          fi
+          # sharp only makes thumbnails, and server.js now loads it lazily, so
+          # the app runs fine without it. Try to repair it, but NEVER fail the
+          # deploy over it, and never --build-from-source: better-sqlite3 needs
+          # C++20 and the g++ on at least one of these servers is too old for
+          # that, so a source build turns a cosmetic problem into a failed
+          # deploy.
+          if ! node -e "require('sharp')" 2>/dev/null; then
+            echo "sharp has no usable binary for this platform — trying to reinstall it."
+            npm install --omit=dev --os=linux --cpu=x64 sharp || true
+            node -e "require('sharp')" 2>/dev/null \
+              || echo "::warning::sharp is unavailable, so thumbnails are disabled and full-size images are served instead. The app is otherwise fine. Node must be >=20.9.0 for sharp 0.35's prebuilt binary."
           fi
           systemctl restart "$SERVICE"
           # NOT "is-active" on its own: run straight after a restart it reports
