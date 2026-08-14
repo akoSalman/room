@@ -989,3 +989,4 @@ html {
 body.disappearing-on #messages { background: #141a24; }
 body.disappearing-on .msg-bubble { background: #1e2836; color: #dbe6f5; }
 body.disappearing-on .msg-caption, body.disappearing-on .msg-time { color: #8fa3c0; }
+.room-disappearing { margin-left: auto; font-size: 13px; opacity: .85; }

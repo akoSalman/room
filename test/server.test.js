@@ -808,6 +808,50 @@ test('an arbitrary disappearing duration is refused', async () => {
   assert.ok((await emit(sock, 'set_disappearing', { roomId: room.id, seconds: -5 })).error);
 });
 
+test('disappearing messages reach the OTHER side of a DM, live', async () => {
+  // The mode is only meaningful if both people know about it and both are
+  // affected. A DM has no room_members rows, so anything that assumes explicit
+  // membership silently only works for the person who switched it on.
+  const a = await signUp('bothsidea');
+  const b = await signUp('bothsideb');
+  const bId = (await api('/search?q=bothsideb', 'GET', null, a.token)).users[0].id;
+  const dm = await api(`/dm/${bId}`, 'POST', null, a.token);
+  const dmId = dm.id || dm.room?.id;
+
+  const sa = await connect(a.token);
+  const sb = await connect(b.token);
+
+  // B is told, without having to reopen anything.
+  const bNotified = waitFor(sb, 'disappearing_changed', e => String(e.roomId) === String(dmId));
+  const bAnnounced = waitFor(sb, 'message_received',
+    m => m.type === 'system' && JSON.parse(m.content || '{}').kind === 'disappearing_on');
+
+  const res = await emit(sa, 'set_disappearing', { roomId: dmId, seconds: 300 });
+  assert.ok(res.ok, `a DM participant could not enable it: ${JSON.stringify(res)}`);
+
+  const evt = await bNotified;
+  assert.strictEqual(evt.seconds, 300, 'the other side was not told the new timer');
+  const sys = JSON.parse((await bAnnounced).content);
+  assert.strictEqual(sys.username, 'bothsidea', 'the notice did not name who changed it');
+
+  // And it is the state B reads when opening the chat fresh.
+  assert.strictEqual((await api(`/room-settings/${dmId}`, 'GET', null, b.token)).disappearingSeconds, 300);
+
+  // B's OWN messages expire too — not just the messages of whoever set it.
+  await emit(sb, 'send_message', { roomId: dmId, type: 'text', content: 'from the other side' });
+  await new Promise(r => setTimeout(r, 150));
+  const mine = (await api(`/messages/${dmId}`, 'GET', null, b.token))
+    .find(m => m.content === 'from the other side');
+  assert.ok(mine?.expires_at > Date.now(),
+    "the other side's own message was not given an expiry");
+
+  // Either side can turn it off again.
+  const aNotified = waitFor(sa, 'disappearing_changed', e => e.seconds === 0);
+  assert.ok((await emit(sb, 'set_disappearing', { roomId: dmId, seconds: 0 })).ok,
+    'the other side could not turn it off');
+  await aNotified;
+});
+
 test('room list is ordered by most recent activity, not by name', async () => {
   const u = await signUp('sorter6');
   const sock = await connect(u.token);

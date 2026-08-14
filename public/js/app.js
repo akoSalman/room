@@ -490,6 +490,16 @@ function connectSocket() {
     socket.on('message_deleted', ({ messageId }) => applyDelete(messageId));
     // Disappearing mode changed: re-skin the chat so it is obvious here too.
     socket.on('disappearing_changed', ({ roomId, seconds }) => {
+      // The sidebar marker updates for BOTH people, whichever chat they are
+      // looking at; the skin only applies to the chat actually on screen.
+      const li = document.querySelector(`[data-room-id="${roomId}"]`);
+      if (li) {
+        const existing = li.querySelector('.room-disappearing');
+        if (seconds > 0 && !existing) {
+          const m = disappearingMarker({ disappearing_seconds: seconds });
+          if (m) li.appendChild(m);
+        } else if (!seconds && existing) existing.remove();
+      }
       if (roomId != null && String(roomId) !== String(currentRoomId)) return;
       applyDisappearingSkin(seconds || 0);
     });
@@ -1055,6 +1065,17 @@ async function loadRooms() {
   if (isMobile()) openSidebar();
 }
 
+// Both people see that a chat destroys its messages without having to open it:
+// the mode belongs to the chat, not to whoever switched it on.
+function disappearingMarker(room) {
+  if (!room || !room.disappearing_seconds) return null;
+  const m = document.createElement('span');
+  m.className = 'room-disappearing';
+  m.textContent = '\u23F3';
+  m.title = 'Disappearing messages are on in this chat';
+  return m;
+}
+
 function addRoomToList(room) {
   if (document.querySelector(`[data-room-id="${room.id}"]`)) return;
   const li = document.createElement('li');
@@ -1069,6 +1090,8 @@ function addRoomToList(room) {
 
   li.appendChild(icon);
   li.appendChild(label);
+  const mark = disappearingMarker(room);
+  if (mark) li.appendChild(mark);
 
   li.onclick = () => { joinRoom(room.id, room.name, li); isMobile() ? closeSidebar() : collapseSidebar(); };
   document.getElementById('room-list').appendChild(li);
@@ -1151,6 +1174,8 @@ function addDMToSidebar(room, otherUsername) {
   const icon = document.createElement('span'); icon.className = 'room-icon'; icon.textContent = '👤';
   const label = document.createElement('span'); label.className = 'room-label'; label.textContent = otherUsername;
   li.appendChild(icon); li.appendChild(label);
+  const mark = disappearingMarker(room);
+  if (mark) li.appendChild(mark);
   li.onclick = () => { joinRoom(room.id, otherUsername, li, true); isMobile() ? closeSidebar() : collapseSidebar(); };
   document.getElementById('room-list').appendChild(li);
 }

@@ -14,7 +14,7 @@ const AVATAR_EMOJIS = ['🦄','🐉','🧙‍♂️','🧚‍♀️','🧛‍♂
 const LATEST_APK_URL = `https://github.com/akoSalman/room-releases/releases/download/${RELEASE_TAG}/${RELEASE_FILE}`;
 const LATEST_RELEASE_API = `https://api.github.com/repos/akoSalman/room-releases/releases/tags/${RELEASE_TAG}`;
 
-type Room = { id: number; name: string; is_dm: number; other_username?: string; created_by?: number };
+type Room = { id: number; name: string; is_dm: number; other_username?: string; created_by?: number; disappearing_seconds?: number };
 
 export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount, onProfileOpened }: {
   onSelectRoom: (room: Room) => void;
@@ -117,6 +117,9 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
       // owner) — the room list is no longer accurate.
       sock.on('room_created', () => load());
       sock.on('left_room', () => load());
+      // The mode changed in some chat — refresh so its marker appears or goes,
+      // for whichever of the two people is looking at this list.
+      sock.on('disappearing_changed', () => load());
       sock.on('removed_from_room', () => load());
     })();
     return () => {
@@ -124,6 +127,7 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
       sock?.off('dm_activity');
       sock?.off('room_created');
       sock?.off('left_room');
+      sock?.off('disappearing_changed');
       sock?.off('removed_from_room');
     };
   }, [load]);
@@ -348,6 +352,12 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
               <TouchableOpacity style={s.roomItem} onPress={() => selectRoom(item)}>
                 <Text style={s.roomIcon}>{item.is_dm ? '💬' : item.is_private ? '🔒' : '#'}</Text>
                 <Text style={s.roomName}>{label}</Text>
+                {/* Both people see that a chat destroys its messages without
+                    having to open it — the mode belongs to the chat, not to
+                    whoever switched it on. */}
+                {item.disappearing_seconds > 0 && (
+                  <Text style={s.roomDisappearing}>⏳</Text>
+                )}
                 {count > 0 && (
                   <View style={s.unreadBadge}>
                     <Text style={s.unreadBadgeText}>{count > 99 ? '99+' : count}</Text>
@@ -602,6 +612,7 @@ const s = StyleSheet.create({
   roomItem: { flexDirection: 'row', alignItems: 'center', padding: 14, borderBottomWidth: 1, borderBottomColor: C.border, gap: 10 },
   roomIcon: { fontSize: 16, color: C.muted },
   roomName: { flex: 1, color: C.text, fontSize: 15 },
+  roomDisappearing: { fontSize: 13, marginRight: 6, opacity: 0.85 },
   unreadBadge: { backgroundColor: C.online, borderRadius: 10, minWidth: 20, height: 20, paddingHorizontal: 5, alignItems: 'center', justifyContent: 'center' },
   unreadBadgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
   divider: { color: C.muted, fontSize: 11, fontWeight: '600', padding: 10, paddingTop: 14, letterSpacing: 0.5 },
