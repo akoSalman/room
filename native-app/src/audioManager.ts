@@ -13,8 +13,10 @@
 // MiniPlayer, FullMusicPlayer, MusicPlayer, VoicePlayer, ChatScreen, callManager
 // and App all talk to this singleton, and none of them needed to change.
 import TrackPlayer, {
-  AppKilledPlaybackBehavior, Capability, Event, State,
+  AppKilledPlaybackBehavior, Capability, Event, RepeatMode, State,
 } from 'react-native-track-player';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { orderFor, nextRepeat, Repeat } from './playlist';
 
 type Listener = () => void;
 type FinishHandler = (finishedId: number | string) => void;
@@ -36,8 +38,14 @@ class AudioManager {
   private playToken = 0;
 
   // ── Playlist ────────────────────────────────────────────────────────────────
+  // `queue` is the PLAY order — what the player actually holds, so it changes
+  // when shuffle is toggled. `baseQueue` is the chat's own order, kept so that
+  // turning shuffle off can restore it.
   queue: Track[] = [];
+  baseQueue: Track[] = [];
   queueIndex = -1;
+  shuffle = false;
+  repeat: Repeat = 'off';
 
   private listeners = new Set<Listener>();
   private finishHandler: FinishHandler | null = null;
@@ -89,6 +97,17 @@ class AudioManager {
       });
       this.bindEvents();
       this.ready = true;
+      // Restore the user's shuffle/repeat choice from the last session — a
+      // player that forgets these every launch is irritating.
+      try {
+        const saved = await AsyncStorage.getItem('playerModes');
+        if (saved) {
+          const m = JSON.parse(saved);
+          if (typeof m.shuffle === 'boolean') this.shuffle = m.shuffle;
+          if (m.repeat === 'off' || m.repeat === 'all' || m.repeat === 'one') this.repeat = m.repeat;
+        }
+      } catch {}
+      await this.applyRepeat();
     })();
     return this.setupPromise;
   }
@@ -109,6 +128,7 @@ class AudioManager {
         this.roomId = null;
         this.roomMeta = null;
         this.queue = [];
+        this.baseQueue = [];
         this.queueIndex = -1;
         this.progress = 0;
       }
@@ -168,7 +188,7 @@ class AudioManager {
   ) {
     const token = ++this.playToken;
     // A one-off play (a voice message) leaves any music playlist behind.
-    if (!keepQueue) { this.queue = []; this.queueIndex = -1; }
+    if (!keepQueue) { this.queue = []; this.baseQueue = []; this.queueIndex = -1; }
 
     this.currentId = id;
     this.roomId = roomId;
@@ -212,25 +232,118 @@ class AudioManager {
   async playQueue(tracks: Track[], index: number, roomId: number | null = null, roomMeta: any = null) {
     if (!tracks.length) return;
     const i = Math.max(0, Math.min(index, tracks.length - 1));
-    this.queue = tracks;
-    this.queueIndex = i;
-    const t = tracks[i];
-    await this.play(t.id, t.uri, t.title, roomId, roomMeta, true);
+    const picked = tracks[i];
+
+    // The chat's own order is remembered so shuffle can be undone later.
+    this.baseQueue = tracks;
+    // Starting a shuffled playlist shuffles it around whatever was tapped —
+    // that track still plays first, which is what tapping it meant.
+    const { order, index: at } = orderFor(tracks, picked.id, this.shuffle);
+    this.queue = order;
+    this.queueIndex = at;
+
+    await this.play(picked.id, picked.uri, picked.title, roomId, roomMeta, true);
   }
 
-  hasNext() { return this.queueIndex >= 0 && this.queueIndex < this.queue.length - 1; }
-  hasPrev() { return this.queueIndex > 0; }
+  hasNext() {
+    if (this.queueIndex < 0) return false;
+    // Repeating the whole list means Next always has somewhere to go.
+    if (this.repeat === 'all' && this.queue.length > 1) return true;
+    return this.queueIndex < this.queue.length - 1;
+  }
+  hasPrev() {
+    if (this.queueIndex < 0) return false;
+    if (this.repeat === 'all' && this.queue.length > 1) return true;
+    return this.queueIndex > 0;
+  }
 
   async next() {
     if (!this.hasNext()) return;
-    try { await TrackPlayer.skipToNext(); } catch {}
+    try {
+      // Repeat-one still means "give me the next track" when Next is pressed
+      // deliberately — it only repeats when a track ends on its own. The
+      // player's own repeat mode would swallow the skip, so step around it.
+      if (this.repeat === 'one') {
+        const to = (this.queueIndex + 1) % this.queue.length;
+        await TrackPlayer.skip(to);
+        await TrackPlayer.play();
+        return;
+      }
+      await TrackPlayer.skipToNext();
+    } catch {}
+  }
+
+  // ── Shuffle and repeat ──────────────────────────────────────────────────────
+
+  private async persistModes() {
+    try {
+      await AsyncStorage.setItem('playerModes',
+        JSON.stringify({ shuffle: this.shuffle, repeat: this.repeat }));
+    } catch {}
+  }
+
+  private async applyRepeat() {
+    try {
+      await TrackPlayer.setRepeatMode(
+        this.repeat === 'one' ? RepeatMode.Track
+          : this.repeat === 'all' ? RepeatMode.Queue
+          : RepeatMode.Off,
+      );
+    } catch {}
+  }
+
+  async toggleRepeat() {
+    this.repeat = nextRepeat(this.repeat);
+    this.emit();
+    await this.applyRepeat();
+    this.persistModes();
+  }
+
+  async toggleShuffle() {
+    this.shuffle = !this.shuffle;
+    this.emit();
+    this.persistModes();
+    if (!this.queue.length) return;
+
+    const base = this.baseQueue.length ? this.baseQueue : this.queue;
+    const { order, index } = orderFor(base, this.currentId, this.shuffle);
+    this.queue = order;
+    this.queueIndex = index;
+    this.emit();
+
+    // Re-order the player WITHOUT touching the playing track: remove every
+    // other track, then add them back around it. Rebuilding the queue from
+    // scratch would stop the music, which is not what pressing shuffle means.
+    try {
+      if (!this.ready) return;
+      const rnQueue = await TrackPlayer.getQueue();
+      const active = await TrackPlayer.getActiveTrackIndex();
+      if (typeof active !== 'number' || active < 0) return;
+
+      const others = rnQueue.map((_, i) => i).filter(i => i !== active);
+      if (others.length) await TrackPlayer.remove(others);
+      // The playing track is now the only one left, at position 0.
+      const before = order.slice(0, index).map(t => this.toRNTrack(t));
+      const after = order.slice(index + 1).map(t => this.toRNTrack(t));
+      if (after.length) await TrackPlayer.add(after);
+      if (before.length) await TrackPlayer.add(before, 0);
+    } catch {}
   }
 
   async prev() {
     // Standard behaviour: restart the track if we're past the first seconds.
     if (this.progress * this.duration > 3) return this.seek(0);
     if (!this.hasPrev()) return this.seek(0);
-    try { await TrackPlayer.skipToPrevious(); } catch {}
+    try {
+      // At the top of a repeating list, Previous wraps to the end rather than
+      // doing nothing.
+      if (this.queueIndex <= 0 && this.repeat === 'all' && this.queue.length > 1) {
+        await TrackPlayer.skip(this.queue.length - 1);
+        await TrackPlayer.play();
+        return;
+      }
+      await TrackPlayer.skipToPrevious();
+    } catch {}
   }
 
   async toggle() {
@@ -258,6 +371,7 @@ class AudioManager {
     this.roomId = null;
     this.roomMeta = null;
     this.queue = [];
+    this.baseQueue = [];
     this.queueIndex = -1;
     this.playing = false;
     this.loading = false;

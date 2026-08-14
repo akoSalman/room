@@ -3,6 +3,7 @@ import {
   View, Text, TouchableOpacity, StyleSheet, Modal, FlatList,
   PanResponder, ActivityIndicator, Pressable,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { C } from '../theme';
 import { audioManager, Track } from '../audioManager';
 import { trackTitle } from './MusicPlayer';
@@ -27,7 +28,7 @@ export default function FullMusicPlayer({ visible, onClose, tracks, roomId, room
   const [, forceUpdate] = useReducer(x => x + 1, 0);
   useEffect(() => audioManager.subscribe(forceUpdate), []);
 
-  const { currentId, playing, loading, progress, duration, rate } = audioManager;
+  const { currentId, playing, loading, progress, duration, rate, shuffle, repeat } = audioManager;
   const current = tracks.find(t => String(t.id) === String(currentId));
   const meta = current ? trackTitle(current.title.replace(/^🎵\s*/, '')) : null;
 
@@ -78,6 +79,36 @@ export default function FullMusicPlayer({ visible, onClose, tracks, roomId, room
           <View style={s.timeRow}>
             <Text style={s.time}>{fmtTime(duration * progress)}</Text>
             <Text style={s.time}>{fmtTime(duration)}</Text>
+          </View>
+
+          {/* Shuffle / repeat — above the transport row so the main controls
+              keep their size and position. */}
+          <View style={s.modes}>
+            <TouchableOpacity
+              style={[s.modeBtn, shuffle && s.modeOn]}
+              onPress={() => audioManager.toggleShuffle()}
+              accessibilityLabel={shuffle ? 'Shuffle on' : 'Shuffle off'}
+            >
+              <Ionicons name="shuffle" size={19} color={shuffle ? C.accent : C.muted} />
+              <Text style={[s.modeText, shuffle && s.modeTextOn]}>Shuffle</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[s.modeBtn, repeat !== 'off' && s.modeOn]}
+              onPress={() => audioManager.toggleRepeat()}
+              accessibilityLabel={`Repeat ${repeat}`}
+            >
+              {/* One button, three states — the icon changes for repeat-one so
+                  the difference is visible, not just a colour. */}
+              <Ionicons
+                name={repeat === 'one' ? 'repeat-outline' : 'repeat'}
+                size={19}
+                color={repeat !== 'off' ? C.accent : C.muted}
+              />
+              <Text style={[s.modeText, repeat !== 'off' && s.modeTextOn]}>
+                {repeat === 'one' ? 'Repeat 1' : repeat === 'all' ? 'Repeat all' : 'Repeat'}
+              </Text>
+            </TouchableOpacity>
           </View>
 
           {/* Transport */}
@@ -152,6 +183,17 @@ const s = StyleSheet.create({
   barKnob: { position: 'absolute', width: 13, height: 13, borderRadius: 7, backgroundColor: C.accent, marginLeft: -6.5 },
   timeRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 },
   time: { color: C.muted, fontSize: 11.5, fontVariant: ['tabular-nums'] },
+  modes: {
+    flexDirection: 'row', justifyContent: 'center', gap: 10, marginTop: 10,
+  },
+  modeBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 12, paddingVertical: 7, borderRadius: 16,
+    borderWidth: 1, borderColor: C.border,
+  },
+  modeOn: { borderColor: C.accent, backgroundColor: 'rgba(59,125,216,0.12)' },
+  modeText: { color: C.muted, fontSize: 12, fontWeight: '700' },
+  modeTextOn: { color: C.accent },
   controls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 16, marginTop: 14, marginBottom: 6 },
   ctrlBtn: { padding: 8 },
   ctrlIcon: { color: C.text, fontSize: 26 },
