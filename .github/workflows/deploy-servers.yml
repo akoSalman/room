@@ -101,10 +101,24 @@ jobs:
           # working tree alone. The lock churn that "ci" was meant to prevent
           # no longer matters, because `git reset --hard` above cleans it.
           npm install --omit=dev
-          # better-sqlite3 IS the database — if it cannot load, refuse to
-          # pretend the deploy worked.
-          if ! node -e "require('better-sqlite3')"; then
-            echo "::error::better-sqlite3 cannot load — not restarting onto a broken build."
+          # better-sqlite3 IS the database. Note the check OPENS a database:
+          # `require('better-sqlite3')` alone proves nothing, because the
+          # native binding is not loaded until `new Database()`. A require-only
+          # check passed here while the service died on the next line.
+          check_sqlite() { node -e "const D=require('better-sqlite3'); new D(':memory:').close()"; }
+          if ! check_sqlite 2>/dev/null; then
+            echo "Reinstalling better-sqlite3 to fetch its prebuilt binary."
+            # Deleting the package makes `npm install` run its install script
+            # again, which fetches a PREBUILT binary. Never --build-from-source:
+            # better-sqlite3 needs C++20 and the g++ on at least one of these
+            # servers is older than that, so a source build both fails AND
+            # deletes the working binary it was meant to replace. That is
+            # exactly how this server ended up crash-looping.
+            rm -rf node_modules/better-sqlite3
+            npm install --omit=dev
+          fi
+          if ! check_sqlite; then
+            echo "::error::better-sqlite3 still cannot open a database — not restarting onto a broken build."
             exit 1
           fi
           # sharp only makes thumbnails, and server.js now loads it lazily, so
