@@ -485,14 +485,51 @@ test('room list is ordered by most recent activity, not by name', async () => {
 });
 
 test('user search is case-insensitive and excludes self', async () => {
-  await signUp('CaseSensitiveBob');
+  // New accounts are stored normalised (lowercase), so signing up with capitals
+  // yields the lowercase handle — asserted here so the normalisation is pinned.
+  const bob = await signUp('CaseSensitiveBob');
+  assert.strictEqual(bob.username, 'casesensitivebob', 'username was not normalised');
   const me = await signUp('searcher7');
   const lower = await api('/search?q=casesensitive', 'GET', null, me.token);
   const upper = await api('/search?q=CASESENSITIVE', 'GET', null, me.token);
-  assert.ok(lower.users.some(u => u.username === 'CaseSensitiveBob'), 'lowercase query found nothing');
-  assert.ok(upper.users.some(u => u.username === 'CaseSensitiveBob'), 'uppercase query found nothing');
+  assert.ok(lower.users.some(u => u.username === 'casesensitivebob'), 'lowercase query found nothing');
+  assert.ok(upper.users.some(u => u.username === 'casesensitivebob'), 'uppercase query found nothing');
   const self = await api('/search?q=searcher7', 'GET', null, me.token);
   assert.ok(!self.users.some(u => u.username === 'searcher7'), 'search returned the caller');
+});
+
+test('SECURITY: the server enforces the credential rules itself', async () => {
+  // A client is a convenience; these must be refused regardless of it.
+  const bad = async (username, password) =>
+    (await api('/auth/signin', 'POST', { username, password, register: true })).error;
+
+  assert.ok(await bad('ab', 'goodpassword1'), 'too-short username accepted');
+  assert.ok(await bad('1startsnum', 'goodpassword1'), 'username starting with a digit accepted');
+  assert.ok(await bad('has space', 'goodpassword1'), 'username with a space accepted');
+  assert.ok(await bad('trailing_', 'goodpassword1'), 'username ending in underscore accepted');
+  assert.ok(await bad('double__dot', 'goodpassword1'), 'username with a doubled separator accepted');
+  assert.ok(await bad('admin', 'goodpassword1'), 'reserved username accepted');
+  assert.ok(await bad('validname9', 'short'), 'too-short password accepted');
+  assert.ok(await bad('validname9', 'password'), 'a top-common password accepted');
+  assert.ok(await bad('validname9', '12345678'), 'a simple sequence accepted');
+  assert.ok(await bad('validname9', 'validname9x'), 'password containing the username accepted');
+
+  // …and a sound pair is still accepted.
+  const ok = await api('/auth/signin', 'POST',
+    { username: 'good.name_9', password: 'correct horse battery', register: true });
+  assert.ok(ok.token, `a valid signup was rejected: ${JSON.stringify(ok)}`);
+});
+
+test('a username differing only in case cannot become a second account', async () => {
+  const first = await signUp('uniquecase14');
+  const clash = await api('/auth/signin', 'POST',
+    { username: 'UniqueCase14', password: 'another good one', register: true });
+  assert.ok(clash.error, 'a case-variant duplicate account was created');
+
+  // …and signing in with the wrong case still reaches the real account.
+  const back = await api('/auth/signin', 'POST', { username: 'UNIQUECASE14', password: 'pw123456' });
+  assert.strictEqual(back.username, 'uniquecase14', `case-insensitive login failed: ${JSON.stringify(back)}`);
+  assert.ok(back.token && first.token);
 });
 
 test('send_message echoes client_id so the outbox can clear pending copies', async () => {

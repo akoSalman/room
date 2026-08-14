@@ -153,6 +153,7 @@ function showNotif(msg) {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
+  setAuthMode('signin');
   buildEmojiPicker();
   initQuickEmoji();
 
@@ -205,31 +206,119 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+// Rules come from /js/credentials.js — the same file the server requires, so
+// what the form allows and what the server accepts cannot drift apart.
+let authMode = 'signin';
+let authTouched = { u: false, p: false };
+
+function setAuthMode(mode) {
+  authMode = mode;
+  document.querySelectorAll('.auth-tab').forEach(b =>
+    b.classList.toggle('active', b.dataset.mode === mode));
+  document.getElementById('auth-btn').textContent =
+    mode === 'register' ? 'Create account' : 'Sign in';
+  document.getElementById('auth-pass').setAttribute(
+    'autocomplete', mode === 'register' ? 'new-password' : 'current-password');
+  showAuthError('');
+  renderAuthValidation();
+}
+
+function toggleAuthPw() {
+  const inp = document.getElementById('auth-pass');
+  const on = inp.type === 'password';
+  inp.type = on ? 'text' : 'password';
+  document.getElementById('auth-pw-toggle').textContent = on ? '🙈' : '👁';
+}
+
+function onAuthBlur(which) {
+  authTouched[which] = true;
+  renderAuthValidation();
+}
+function onAuthInput() {
+  showAuthError('');
+  renderAuthValidation();
+}
+
+function renderAuthValidation() {
+  const C = window.Credentials;
+  const user = document.getElementById('auth-user').value;
+  const pass = document.getElementById('auth-pass').value;
+  const registering = authMode === 'register';
+
+  // The warning belongs wherever a password is being CHOSEN.
+  const warn = document.getElementById('auth-warning');
+  warn.classList.toggle('hidden', !registering);
+  if (registering) {
+    document.getElementById('auth-warning-en').textContent = C.PASSWORD_WARNING.en;
+    document.getElementById('auth-warning-fa').textContent = C.PASSWORD_WARNING.fa;
+  }
+
+  document.getElementById('auth-user-hint').textContent = registering
+    ? '3–20 characters · letters, numbers, dot, underscore · starts with a letter'
+    : '';
+
+  // Signing in is never blocked by the rules: an existing account may predate
+  // them, and refusing someone their own working password would be absurd.
+  const uErr = registering && authTouched.u ? C.validateUsername(user) : null;
+  const pErr = registering && authTouched.p ? C.validatePassword(pass, user) : null;
+  document.getElementById('auth-user-err').textContent = uErr ? uErr.en : '';
+  document.getElementById('auth-user-err-fa').textContent = uErr ? uErr.fa : '';
+  document.getElementById('auth-pass-err').textContent = pErr ? pErr.en : '';
+  document.getElementById('auth-pass-err-fa').textContent = pErr ? pErr.fa : '';
+  document.getElementById('auth-user').classList.toggle('bad', !!uErr);
+  document.getElementById('auth-pass').classList.toggle('bad', !!pErr);
+
+  const strengthBox = document.getElementById('auth-strength');
+  if (registering && pass) {
+    strengthBox.classList.remove('hidden');
+    const score = C.passwordStrength(pass);
+    const colors = ['#ef4444', '#ef4444', '#f59e0b', '#84cc16', '#22c55e'];
+    const fill = document.getElementById('auth-strength-fill');
+    fill.style.width = `${(score / 4) * 100}%`;
+    fill.style.background = colors[score];
+    const label = document.getElementById('auth-strength-label');
+    label.textContent = C.STRENGTH_LABELS[score].en;
+    label.style.color = colors[score];
+  } else {
+    strengthBox.classList.add('hidden');
+  }
+}
+
 async function signin() {
+  const Cr = window.Credentials;
   const user = document.getElementById('auth-user').value.trim();
   const pass = document.getElementById('auth-pass').value;
-  if (!user || !pass) return showAuthError('Please enter username and password');
+  authTouched = { u: true, p: true };
+  if (!user || !pass) { renderAuthValidation(); return showAuthError('Please enter username and password'); }
+
+  if (authMode === 'register') {
+    const uErr = Cr.validateUsername(user);
+    const pErr = Cr.validatePassword(pass, user);
+    renderAuthValidation();
+    if (uErr || pErr) return;
+  }
+
   const btn = document.getElementById('auth-btn');
+  const label = btn.textContent;
   btn.disabled = true; btn.textContent = 'Please wait…';
-  document.getElementById('auth-error').textContent = '';
+  showAuthError('');
   try {
-    let res = await api('/auth/signin', 'POST', { username: user, password: pass });
+    const res = await api('/auth/signin', 'POST',
+      { username: user, password: pass, register: authMode === 'register' });
+
+    // Signing in to a name that does not exist: offer the other tab rather
+    // than silently creating an account from a typo.
     if (res.error && res.canRegister) {
-      // Catch the length rule before registering (the server enforces the same).
-      if (pass.length < 8) {
-        return showAuthError('Choose a password of at least 8 characters to create an account.');
-      }
-      if (!confirm(`No account named "${user}" exists. The username is available — create a new account?`)) {
-        return showAuthError('');
-      }
-      res = await api('/auth/signin', 'POST', { username: user, password: pass, register: true });
+      setAuthMode('register');
+      return showAuthError(`No account named "${Cr.normalizeUsername(user)}". Check the spelling, or create it as a new account.`);
     }
     if (res.error) return showAuthError(res.error);
     saveSession(res.token, res.username, res.avatar);
     E2E.setup(pass, api).catch(() => {});
     enterApp();
   } catch { showAuthError('Connection error — is the server running?'); }
-  finally { btn.disabled = false; btn.textContent = 'Continue →'; }
+  finally { btn.disabled = false; btn.textContent = label; }
 }
 
 function saveSession(t, u, avatar) {

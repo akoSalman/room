@@ -26,19 +26,44 @@
   <div class="auth-card">
     <div class="auth-logo">💬</div>
     <h1>ChatRoom</h1>
-    <p class="auth-sub">Enter your username and password to sign in or create an account</p>
+    <div class="auth-tabs">
+      <button class="auth-tab active" data-mode="signin" onclick="setAuthMode('signin')">Sign in</button>
+      <button class="auth-tab" data-mode="register" onclick="setAuthMode('register')">Create account</button>
+    </div>
     <div class="field">
       <label>Username</label>
-      <input id="auth-user" type="text" placeholder="Your username" autocomplete="username"
+      <input id="auth-user" type="text" placeholder="yourname" autocomplete="username"
+        maxlength="20" oninput="onAuthInput()" onblur="onAuthBlur('u')"
         onkeydown="if(event.key==='Enter')document.getElementById('auth-pass').focus()" />
+      <small class="auth-hint" id="auth-user-hint"></small>
+      <small class="auth-err" id="auth-user-err"></small>
+      <small class="auth-err auth-fa" id="auth-user-err-fa"></small>
     </div>
     <div class="field">
       <label>Password</label>
-      <input id="auth-pass" type="password" placeholder="Your password" autocomplete="current-password"
-        onkeydown="if(event.key==='Enter')signin()" />
-      <small class="auth-hint">New accounts need at least 8 characters.</small>
+      <div class="pw-row">
+        <input id="auth-pass" type="password" placeholder="Your password" autocomplete="current-password"
+          oninput="onAuthInput()" onblur="onAuthBlur('p')"
+          onkeydown="if(event.key==='Enter')signin()" />
+        <button type="button" id="auth-pw-toggle" class="pw-toggle" onclick="toggleAuthPw()" title="Show password">👁</button>
+      </div>
+      <div id="auth-strength" class="strength hidden">
+        <div class="strength-track"><div id="auth-strength-fill" class="strength-fill"></div></div>
+        <span id="auth-strength-label" class="strength-label"></span>
+      </div>
+      <small class="auth-err" id="auth-pass-err"></small>
+      <small class="auth-err auth-fa" id="auth-pass-err-fa"></small>
     </div>
-    <button id="auth-btn" class="btn-primary" onclick="signin()">Continue →</button>
+
+    <!-- Losing the password is unrecoverable by design: the E2E private key is
+         unwrapped with it. Shown in both languages, wherever one is chosen. -->
+    <div id="auth-warning" class="auth-warning hidden">
+      <div class="auth-warning-head">⚠️ <b>Keep your password safe</b></div>
+      <p id="auth-warning-en"></p>
+      <p id="auth-warning-fa" class="auth-fa"></p>
+    </div>
+
+    <button id="auth-btn" class="btn-primary" onclick="signin()">Sign in</button>
     <p id="auth-error" class="error"></p>
   </div>
 </div>
@@ -362,6 +387,7 @@
   </div>
 </div>
 
+<script src="/js/credentials.js"></script>
 <script src="/js/nacl-fast.min.js"></script>
 <script src="/js/e2e.js"></script>
 <script src="/js/app.js"></script>

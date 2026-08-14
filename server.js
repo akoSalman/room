@@ -7,6 +7,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const credentials = require('./credentials');
 const cors = require('cors');
 const db = require('./db');
 
@@ -37,7 +38,7 @@ app.use(express.json());
 const APP_VERSION = (() => {
   try {
     const files = ['public/js/app.js', 'public/js/calls.js', 'public/js/e2e.js',
-                   'public/css/style.css', 'public/index.html'];
+                   'public/js/credentials.js', 'public/css/style.css', 'public/index.html'];
     const h = require('crypto').createHash('sha1');
     for (const f of files) {
       const p = path.join(__dirname, f);
@@ -252,24 +253,40 @@ app.post('/auth/signin', async (req, res) => {
   if (authRateLimited(ip + '|' + uname.toLowerCase())) {
     return res.status(429).json({ error: 'Too many attempts — please wait a minute and try again.' });
   }
-  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(uname);
+  // Look up exactly first, then case-insensitively. Usernames are conceptually
+  // case-insensitive, but older accounts were stored as typed and two of them
+  // could differ only by case — so a fuzzy match is only trusted when it is
+  // unambiguous, rather than picking one of them arbitrarily.
+  let user = db.prepare('SELECT * FROM users WHERE username = ?').get(uname);
+  if (!user) {
+    const near = db.prepare('SELECT * FROM users WHERE lower(username) = ?').all(uname.toLowerCase());
+    if (near.length === 1) user = near[0];
+  }
   if (user) {
     if (register) return res.status(409).json({ error: 'Username already taken' });
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) return res.status(401).json({ error: 'Wrong password' });
-    const token = jwt.sign({ id: user.id, username: uname }, JWT_SECRET);
-    return res.json({ token, username: uname, avatar: user.avatar || null, isNew: false });
+    const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET);
+    return res.json({ token, username: user.username, avatar: user.avatar || null, isNew: false });
   }
   if (!register) {
     return res.status(404).json({ error: 'No account with this username', canRegister: true });
   }
-  // New account: enforce a minimum password length.
-  if (String(password).length < MIN_PASSWORD_LEN) {
-    return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD_LEN} characters` });
-  }
+  // New account: the same rules the clients show, enforced here too — a client
+  // is only a convenience, it is never the check that counts.
+  const normalized = credentials.normalizeUsername(uname);
+  const badName = credentials.validateUsername(normalized);
+  if (badName) return res.status(400).json({ error: badName.en, field: 'username', code: badName.code });
+  const badPass = credentials.validatePassword(password, normalized);
+  if (badPass) return res.status(400).json({ error: badPass.en, field: 'password', code: badPass.code });
+  // Case-insensitive uniqueness: "Ako" must not become a second account
+  // alongside "ako". That kind of near-duplicate gets reported as a forgotten
+  // password when the user is really signing in to the wrong account.
+  const clash = db.prepare('SELECT 1 FROM users WHERE lower(username) = ?').get(normalized);
+  if (clash) return res.status(409).json({ error: 'Username already taken' });
   try {
     const hash = await bcrypt.hash(password, 10);
-    const result = db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(uname, hash);
+    const result = db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(normalized, hash);
     // Rooms are joined explicitly now, so a brand-new account would otherwise
     // land on an empty list. Put them in the default room to start.
     const general = db.prepare('SELECT id FROM rooms WHERE name = ?').get('General');
@@ -277,8 +294,8 @@ app.post('/auth/signin', async (req, res) => {
       db.prepare('INSERT OR IGNORE INTO room_members (room_id, user_id) VALUES (?, ?)')
         .run(general.id, result.lastInsertRowid);
     }
-    const token = jwt.sign({ id: result.lastInsertRowid, username: uname }, JWT_SECRET);
-    res.json({ token, username: uname, avatar: null, isNew: true });
+    const token = jwt.sign({ id: result.lastInsertRowid, username: normalized }, JWT_SECRET);
+    res.json({ token, username: normalized, avatar: null, isNew: true });
   } catch {
     res.status(409).json({ error: 'Something went wrong, try again' });
   }
