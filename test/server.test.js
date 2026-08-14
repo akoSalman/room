@@ -646,6 +646,85 @@ test('a backgrounded device stops counting as reading the chat', async () => {
     'an unfocused device still counted as reading the chat, silencing the others');
 });
 
+test('unread counts cover your rooms and DMs, and nothing else', async () => {
+  const a = await signUp('unreada');
+  const b = await signUp('unreadb');
+  const sa = await connect(a.token);
+  const sb = await connect(b.token);
+
+  // A room B joins then leaves.
+  const room = await api('/rooms', 'POST', { name: 'unread-room' }, a.token);
+  await emit(sb, 'accept_invite', { roomId: room.id });
+  await emit(sa, 'send_message', { roomId: room.id, type: 'text', content: 'while a member' });
+  await new Promise(r => setTimeout(r, 120));
+  let counts = await api('/unread-counts', 'GET', null, b.token);
+  assert.ok(counts[room.id] > 0, 'a member got no unread count for a new message');
+
+  await emit(sb, 'leave_room_membership', { roomId: room.id });
+  await emit(sa, 'send_message', { roomId: room.id, type: 'text', content: 'after leaving' });
+  await new Promise(r => setTimeout(r, 120));
+  counts = await api('/unread-counts', 'GET', null, b.token);
+  assert.ok(!counts[room.id],
+    `a room that was left still reports ${counts[room.id]} unread`);
+
+  // DMs have no membership rows, so they must be matched another way — this
+  // is the case a naive "members only" filter silently breaks.
+  const bId = (await api(`/search?q=unreadb`, 'GET', null, a.token)).users[0].id;
+  const dm = await api(`/dm/${bId}`, 'POST', null, a.token);
+  const dmId = dm.id || dm.room?.id;
+  assert.ok(dmId, `could not open a DM: ${JSON.stringify(dm)}`);
+  await emit(sa, 'send_message', { roomId: dmId, type: 'text', content: 'hello there' });
+  await new Promise(r => setTimeout(r, 120));
+  counts = await api('/unread-counts', 'GET', null, b.token);
+  assert.ok(counts[dmId] > 0, 'a direct message produced no unread count');
+
+  // And NOT other people's conversations. DM rooms are matched by name, where
+  // an unescaped '_' is a wildcard: '__2__' would also match '__12__' and
+  // '__1x2__', leaking the unread counts of chats this user is not in.
+  const c = await signUp('unreadc');
+  const d = await signUp('unreadd');
+  const sc = await connect(c.token);
+  const found = await api(`/search?q=unreadd`, 'GET', null, c.token);
+  assert.ok(found?.users?.length, `search found nothing: ${JSON.stringify(found)}`);
+  const dId = found.users[0].id;
+  const theirDm = await api(`/dm/${dId}`, 'POST', null, c.token);
+  const theirId = theirDm.id || theirDm.room?.id;
+  await emit(sc, 'send_message', { roomId: theirId, type: 'text', content: 'private chat' });
+  await new Promise(r => setTimeout(r, 120));
+  counts = await api('/unread-counts', 'GET', null, b.token);
+  assert.ok(!counts[theirId],
+    'unread counts leaked from a DM between two other people');
+});
+
+test('the DM name match is escaped, so it cannot cross-match another chat', () => {
+  // Whether the leak above can even ARISE depends on which ids happen to be
+  // allocated, so the predicate itself is checked directly — read out of
+  // server.js so this cannot drift away from the code it is guarding.
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'server.js'), 'utf8');
+  const line = /OR r\.name LIKE ([^\n]+)$/m.exec(src.slice(src.indexOf("'/unread-counts'")));
+  assert.ok(line, 'could not find the DM name predicate in server.js');
+  const pattern = line[1].trim();
+
+  const mem = new (require('better-sqlite3'))(':memory:');
+  mem.exec("CREATE TABLE rooms(name TEXT)");
+  const ins = mem.prepare('INSERT INTO rooms (name) VALUES (?)');
+  ins.run('__dm__1__2__');     // users 1 and 2
+  ins.run('__dm__12__3__');    // users 12 and 3 — nothing to do with user 2
+  ins.run('__dm__4__12__');    // users 4 and 12
+
+  const q = mem.prepare(`SELECT name FROM rooms WHERE name LIKE ${pattern}`);
+  const forUser = id => q.all(String(id)).map(r => r.name);
+
+  // User 2 is in exactly one of these.
+  assert.deepStrictEqual(forUser(2), ['__dm__1__2__'],
+    `user 2 matched the wrong conversations: ${JSON.stringify(forUser(2))}`);
+  // User 12 is the second participant of one of them, and must not pick up
+  // the '__1x2__' shaped names.
+  assert.deepStrictEqual(forUser(12), ['__dm__4__12__'],
+    `user 12 matched the wrong conversations: ${JSON.stringify(forUser(12))}`);
+  mem.close();
+});
+
 test('room list is ordered by most recent activity, not by name', async () => {
   const u = await signUp('sorter6');
   const sock = await connect(u.token);

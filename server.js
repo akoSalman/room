@@ -643,13 +643,36 @@ app.delete('/push-token', authMiddleware, (req, res) => {
 
 // Per-room unread counts based on server-side read positions
 app.get('/unread-counts', authMiddleware, (req, res) => {
+  // Scoped to rooms the user is actually in. It used to count EVERY room in
+  // the database, so a room they had left still showed an unread badge — and
+  // it quietly reported how busy rooms they had never been near were.
   const rows = db.prepare(`
     SELECT m.room_id, COUNT(*) AS cnt
     FROM messages m
     LEFT JOIN room_reads rr ON rr.room_id = m.room_id AND rr.user_id = ?
+    JOIN rooms r ON r.id = m.room_id
     WHERE m.user_id != ? AND m.id > COALESCE(rr.last_read_msg_id, 0)
+      AND (
+        EXISTS (SELECT 1 FROM room_members rm WHERE rm.room_id = m.room_id AND rm.user_id = ?)
+        -- DMs carry no membership rows; they are identified by their name,
+        -- '__dm__<a>__<b>__'. The underscores MUST be escaped: '_' is a
+        -- single-character wildcard in LIKE, so an unescaped '__12__' also
+        -- matches '__1x2__' — which would hand user 12 the unread counts of a
+        -- conversation between two other people.
+        --
+        -- '#' is the escape character rather than the usual backslash purely
+        -- so this survives being written inside a JS template literal, where a
+        -- backslash is itself an escape and silently disappears.
+        OR (r.is_dm = 1 AND (
+             r.name LIKE '#_#_dm#_#_' || ? || '#_#_%' ESCAPE '#'
+             OR r.name LIKE '%#_#_' || ? || '#_#_' ESCAPE '#'
+        ))
+      )
     GROUP BY m.room_id
-  `).all(req.user.id, req.user.id);
+    -- The two LIKE ids are bound as STRINGS on purpose. A JS number binds as
+    -- a REAL, and SQLite's || then renders it '2.0', so the pattern became
+    -- '%__2.0__' and matched no DM at all.
+  `).all(req.user.id, req.user.id, req.user.id, String(req.user.id), String(req.user.id));
   const counts = {};
   rows.forEach(r => { counts[r.room_id] = r.cnt; });
   res.json(counts);

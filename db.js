@@ -93,6 +93,25 @@ db.exec(`
   );
 `);
 
+// ── One-time migrations ──────────────────────────────────────────────────────
+//
+// A "backfill" that runs on every boot is not a backfill, it is a policy. The
+// two below re-added people to rooms every single time the process started, so
+// leaving a room worked until the next restart — and with deploys restarting
+// the service, a user who left a room found themselves back in it, its last
+// message being their own "left the room" notice.
+//
+// They are now recorded as done, so they fix existing accounts exactly once and
+// never touch anyone again.
+db.exec(`CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT)`);
+function once(key, fn) {
+  const done = db.prepare('SELECT 1 FROM schema_meta WHERE key = ?').get(key);
+  if (done) return;
+  fn();
+  db.prepare('INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)')
+    .run(key, new Date().toISOString());
+}
+
 // Backfill membership for public rooms.
 //
 // Public rooms used to have no membership at all — every account implicitly
@@ -101,18 +120,20 @@ db.exec(`
 // had already been using a public room would silently lose it. Treat having
 // posted in a room, or having created it, as membership.
 try {
-  db.exec(`
-    INSERT OR IGNORE INTO room_members (room_id, user_id)
-    SELECT DISTINCT m.room_id, m.user_id
-    FROM messages m
-    JOIN rooms r ON r.id = m.room_id
-    WHERE r.is_dm = 0 AND r.is_private = 0
-  `);
-  db.exec(`
-    INSERT OR IGNORE INTO room_members (room_id, user_id)
-    SELECT r.id, r.created_by FROM rooms r
-    WHERE r.is_dm = 0 AND r.created_by IS NOT NULL
-  `);
+  once('public_room_membership_backfill_v1', () => {
+    db.exec(`
+      INSERT OR IGNORE INTO room_members (room_id, user_id)
+      SELECT DISTINCT m.room_id, m.user_id
+      FROM messages m
+      JOIN rooms r ON r.id = m.room_id
+      WHERE r.is_dm = 0 AND r.is_private = 0
+    `);
+    db.exec(`
+      INSERT OR IGNORE INTO room_members (room_id, user_id)
+      SELECT r.id, r.created_by FROM rooms r
+      WHERE r.is_dm = 0 AND r.created_by IS NOT NULL
+    `);
+  });
 } catch (err) {
   console.error('[migration] public room membership backfill:', err.message);
 }
@@ -127,13 +148,15 @@ if (!existing) {
 // would leave it memberless and it would vanish from everybody's list. Every
 // existing account belongs to it; new accounts are added on sign-up.
 try {
-  const general = db.prepare('SELECT id FROM rooms WHERE name = ?').get('General');
-  if (general) {
-    db.exec(`
-      INSERT OR IGNORE INTO room_members (room_id, user_id)
-      SELECT ${general.id}, id FROM users
-    `);
-  }
+  once('default_room_membership_v1', () => {
+    const general = db.prepare('SELECT id FROM rooms WHERE name = ?').get('General');
+    if (general) {
+      db.exec(`
+        INSERT OR IGNORE INTO room_members (room_id, user_id)
+        SELECT ${general.id}, id FROM users
+      `);
+    }
+  });
 } catch (err) {
   console.error('[migration] default room membership:', err.message);
 }
