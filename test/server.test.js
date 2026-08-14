@@ -416,6 +416,19 @@ test('thumbnails are generated, cached, and path-traversal safe', async () => {
   assert.ok(fsMod.existsSync(require('path').join('uploads', '.thumbs', `${name}_200.jpg`)),
     'thumbnail was not cached');
 
+  // An older client builds the thumb url by stripping "/uploads/" off the
+  // signed message path, so the signature lands INSIDE the encoded name.
+  // Those builds are already installed; they must keep working.
+  const legacy = `/thumb/${encodeURIComponent(name + signUpload(name))}?w=200`;
+  const legacyRes = await raw(legacy, 'GET', null, u.token);
+  assert.strictEqual(legacyRes.status, 200,
+    `a pre-signing client's thumbnail url was refused: ${legacyRes.status}`);
+
+  // …but a legacy-shaped url with a BAD signature is still refused.
+  const legacyBad = `/thumb/${encodeURIComponent(name + '?e=' + (Date.now() + 60000) + '&s=nope')}?w=200`;
+  assert.strictEqual((await raw(legacyBad, 'GET', null, u.token)).status, 403,
+    'a legacy url with an invalid signature was served');
+
   // Traversal must be rejected by the name guard itself — 400, specifically.
   // (Asserting merely ">= 400" would pass even with the guard removed, since
   // sharp fails on a non-image anyway and returns 415.)

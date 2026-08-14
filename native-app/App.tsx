@@ -377,7 +377,11 @@ export default function App() {
         <SafeAreaView style={{ flex: 1, backgroundColor: C.bg }} edges={['top']}>
           {screen !== 'auth' && (
             <MiniPlayer
-              hideForRoomId={screen === 'chat' && room ? room.id : null}
+              // Always shown, even in the chat the track came from. It used to
+              // be suppressed there, so starting a track gave no visible player
+              // at all and there was nothing to hint that tapping it opens the
+              // full player and the chat's playlist.
+              hideForRoomId={null}
               onNavigate={(r, msgId) => { setRoom(r); setPendingJumpMsgId(msgId); setScreen('chat'); }}
             />
           )}

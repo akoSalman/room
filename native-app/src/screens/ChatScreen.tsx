@@ -1363,12 +1363,19 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       ? [forwardMsg.id]
       : messagesRef.current.filter(m => selectedIds.has(m.id)).map(m => m.id);
     if (!ids.length) return;
-    let failed = 0;
-    ids.forEach(id => {
-      socketRef.current?.emit('forward_message', { messageId: id, toRoomId: target.id }, (res: any) => {
-        if (res?.error && !failed++) Alert.alert('Cannot forward', res.error);
-      });
-    });
+    // Sequentially, waiting for each ack: firing them all at once let the
+    // server insert them in whatever order they happened to arrive, so a
+    // forwarded conversation could land shuffled in the destination chat.
+    (async () => {
+      for (const id of ids) {
+        const err = await new Promise<string | null>(resolve => {
+          socketRef.current?.emit('forward_message', { messageId: id, toRoomId: target.id },
+            (res: any) => resolve(res?.error || null));
+          setTimeout(() => resolve(null), 6000);   // never hang the loop
+        });
+        if (err) { Alert.alert('Cannot forward', err); break; }
+      }
+    })();
     setForwardMsg(null);
     setForwardOpen(false);
     exitSelectMode();
@@ -1516,9 +1523,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       lastTap.current = { id: -1, t: 0 };
       setTextSelectRange({ start: 0, end: (msg.content || '').length });
       setTextSelectId(msg.id);
-      // Hand control back shortly after, or the range stays pinned and the
-      // handles cannot be dragged to a narrower selection.
-      setTimeout(() => setTextSelectRange(undefined), 350);
       return;
     }
     // Defer: if a second tap follows, the menu must never have appeared.
@@ -1664,8 +1668,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       if (r.username === me) grouped[r.emoji].mine = true;
     });
 
+    const picked = selectedIds.has(msg.id);
     return (
-      <View style={s.msgRow}>
+      <View style={[s.msgRow, picked && s.msgRowPicked]}>
       {/* Press-catcher across the WHOLE row, behind the bubble: the empty
           space beside a message reacts exactly like the message does. It sits
           behind, so the bubble's own taps, media taps and swipe-to-reply all
@@ -1715,7 +1720,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         {(() => {
         const textual = isTextual(msg);
         const selecting = textSelectId === msg.id;
-        const picked = selectedIds.has(msg.id);
         // While the text is being selected the bubble must not capture
         // touches at all, or the OS selection handles never get them.
         // Text: tap is routed for the double-tap check. Media: no tap handler,
@@ -1767,7 +1771,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 multiline
                 autoFocus
                 selection={textSelectRange}
-                onSelectionChange={() => { if (textSelectRange) setTextSelectRange(undefined); }}
+                // Mirror the user's drags rather than releasing control. The
+                // previous version cleared `selection` on a timer, which made
+                // the highlight appear for a moment and then disappear.
+                onSelectionChange={(e) => setTextSelectRange(e.nativeEvent.selection)}
                 contextMenuHidden={false}
               />
             ) : (
@@ -2256,7 +2263,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       )}
 
       {fabVisible && (
-        <TouchableOpacity style={s.scrollFab} onPress={handleScrollFabPress}>
+        <TouchableOpacity
+          style={[s.scrollFab, (replyTo || editingId) && s.scrollFabRaised]}
+          onPress={handleScrollFabPress}
+        >
           <Text style={s.scrollFabIcon}>{fabIsBack ? '↩' : '↓'}</Text>
           {!fabIsBack && missedCount > 0 && (
             <View style={s.scrollFabBadge}>
@@ -2875,6 +2885,7 @@ const s = StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 11, borderRadius: 10,
   },
   actionText: { color: C.text, fontSize: 14.5, fontWeight: '600' },
+  msgRowPicked: { backgroundColor: 'rgba(59,125,216,0.18)' },
   selBar: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     backgroundColor: C.header, padding: 12, paddingTop: 14,
@@ -3044,6 +3055,9 @@ const s = StyleSheet.create({
     backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center',
     elevation: 4, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 6, shadowOffset: { width: 0, height: 2 },
   },
+  // The reply/edit banner adds a row above the composer; without this the FAB
+  // sat right on top of the banner's ✕.
+  scrollFabRaised: { bottom: 214 },
   scrollFabIcon: { color: '#fff', fontSize: 18, fontWeight: '700' },
   scrollFabBadge: {
     position: 'absolute', top: -5, right: -5, minWidth: 20, height: 20,

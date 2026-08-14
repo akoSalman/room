@@ -129,9 +129,12 @@ function stripSig(p) {
   return bare(p);
 }
 
-function validMediaSig(name, req) {
-  const exp = parseInt(req.query.e, 10);
-  const sig = String(req.query.s || '');
+// Takes exp/sig explicitly rather than reading req.query: Express re-parses
+// that getter, so values written onto it (as the legacy /thumb path needs to
+// do) do not survive to the next read.
+function validMediaSig(name, exp, sig) {
+  exp = parseInt(exp, 10);
+  sig = String(sig || '');
   if (!exp || !sig || Date.now() > exp) return false;
   const expected = mediaSig(name, exp);
   // Constant-time compare so the signature can't be probed byte by byte.
@@ -141,7 +144,7 @@ function validMediaSig(name, req) {
 
 app.use('/uploads', (req, res, next) => {
   const name = path.basename(decodeURIComponent(req.path));
-  if (!validMediaSig(name, req)) return res.status(403).end();
+  if (!validMediaSig(name, req.query.e, req.query.s)) return res.status(403).end();
   next();
 });
 
@@ -166,14 +169,30 @@ const THUMB_DIR = path.join('uploads', '.thumbs');
 const THUMB_WIDTHS = [96, 200, 400];   // fixed set: an attacker can't ask for 10000 renders
 
 app.get('/thumb/:name', async (req, res) => {
+  // Already-installed clients build this url by stripping "/uploads/" from the
+  // message path — which now carries the signature — so the whole
+  // "file.jpg?e=..&s=.." ends up URL-ENCODED as the name. Signing the media
+  // paths therefore 403'd every thumbnail on builds that shipped before it.
+  // Pull the query back out of the name so those clients keep working; the
+  // signature is still verified either way.
+  let raw = String(req.params.name || '');
+  let exp = req.query.e;
+  let sig = req.query.s;
+  if (raw.includes('?')) {
+    const [namePart, embedded] = raw.split('?');
+    raw = namePart;
+    const inner = new URLSearchParams(embedded);
+    exp = exp || inner.get('e');
+    sig = sig || inner.get('s');
+  }
   // Only ever a bare filename inside uploads/ — no traversal, no subpaths.
-  const name = path.basename(String(req.params.name || ''));
-  if (!name || name.startsWith('.') || name !== req.params.name) {
+  const name = path.basename(raw);
+  if (!name || name.startsWith('.') || name !== raw) {
     return res.status(400).end();
   }
   // Same signature gate as /uploads — otherwise /thumb would be an
   // unauthenticated way to read every image on the server.
-  if (!validMediaSig(name, req)) return res.status(403).end();
+  if (!validMediaSig(name, exp, sig)) return res.status(403).end();
   const src = path.join('uploads', name);
   if (!fs.existsSync(src)) return res.status(404).end();
 

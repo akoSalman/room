@@ -149,8 +149,6 @@ export default function VideoPlayer({
     }),
   ).current;
 
-  if (!item) return null;
-
   const progressFrac = duration ? (scrubbing ? scrubMs : position) / duration : 0;
   const bufferedFrac = duration ? Math.min(1, playableMs / duration) : 0;
   // Bytes are inferred from how much of the DURATION is buffered — expo-av
@@ -159,6 +157,10 @@ export default function VideoPlayer({
 
   // ── Seek bar ──────────────────────────────────────────────────────────────
   const barW = useRef(0);
+  // Declared before the PanResponder: its release handler reads the live value,
+  // since the responder closes over the first render's state.
+  const scrubMsRef = useRef(0);
+  scrubMsRef.current = scrubMs;
   const seekResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
@@ -180,10 +182,11 @@ export default function VideoPlayer({
       },
     }),
   ).current;
-  // PanResponder closes over the first render's state, so the release handler
-  // needs the live value.
-  const scrubMsRef = useRef(0);
-  scrubMsRef.current = scrubMs;
+  // Every hook above must run on every render. The early return used to sit
+  // in the middle of them, so opening a video (item: null -> set) changed the
+  // hook count between renders and React threw — which is the crash on tapping
+  // a video in the chat.
+  if (!item) return null;
 
   const videoEl = (
     <Video
