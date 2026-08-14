@@ -21,6 +21,7 @@ import { Video, ResizeMode, AVPlaybackStatus } from 'expo-av';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import { C } from '../theme';
+import { fmtBytes } from '../download';
 
 export type VideoItem = { id: number | string; url: string; name: string };
 
@@ -36,13 +37,6 @@ type Props = {
 
 const MINI_W = 190;
 const MINI_H = 112;
-
-function fmtBytes(b: number): string {
-  if (!b || b < 0) return '';
-  if (b < 1024) return `${b} B`;
-  if (b < 1024 * 1024) return `${Math.round(b / 1024)} KB`;
-  return `${(b / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function fmtTime(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -77,10 +71,13 @@ export default function VideoPlayer({
   const hasPrev = index > 0;
 
   // ── Total size, once per video ────────────────────────────────────────────
+  const isLocal = !!item?.url?.startsWith('file://');
   useEffect(() => {
     if (!item?.url) return;
     let alive = true;
     setTotalBytes(0);
+    // A downloaded copy is already whole — HEAD on a file:// URL means nothing.
+    if (isLocal) return () => { alive = false; };
     fetch(item.url, { method: 'HEAD' })
       .then(r => {
         const len = parseInt(r.headers.get('content-length') || '0', 10);
@@ -255,7 +252,9 @@ export default function VideoPlayer({
         <View style={s.centre} pointerEvents="none">
           <ActivityIndicator size="large" color="#fff" />
           <Text style={s.centreText}>
-            {totalBytes
+            {isLocal
+              ? 'Opening…'
+              : totalBytes
               ? `${fmtBytes(downloadedBytes)} of ${fmtBytes(totalBytes)}`
               : ready ? 'Buffering…' : 'Loading…'}
           </Text>
@@ -285,10 +284,10 @@ export default function VideoPlayer({
             <View style={{ flex: 1, minWidth: 0 }}>
               <Text style={s.title} numberOfLines={1}>{item.name}</Text>
               <Text style={s.sub} numberOfLines={1}>
-                {totalBytes ? fmtBytes(totalBytes) : '…'}
-                {totalBytes && bufferedFrac < 0.999
+                {isLocal ? 'Saved on this device' : totalBytes ? fmtBytes(totalBytes) : '…'}
+                {!isLocal && totalBytes && bufferedFrac < 0.999
                   ? `  ·  ${fmtBytes(downloadedBytes)} downloaded`
-                  : totalBytes ? '  ·  downloaded' : ''}
+                  : !isLocal && totalBytes ? '  ·  downloaded' : ''}
                 {zoom > 1.01 ? `  ·  ${zoom.toFixed(1)}x` : ''}
               </Text>
             </View>

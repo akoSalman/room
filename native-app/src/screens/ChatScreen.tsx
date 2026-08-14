@@ -29,6 +29,7 @@ import GalleryGrid from '../components/GalleryGrid';
 import ImageWithSpinner from '../components/ImageWithSpinner';
 import GalleryImage from '../components/GalleryImage';
 import VideoPlayer, { VideoItem } from '../components/VideoPlayer';
+import VideoBubble from '../components/VideoBubble';
 import TileMap from '../components/TileMap';
 import LocationView, { LocationPin } from '../components/LocationView';
 import * as locationManager from '../locationManager';
@@ -1999,23 +2000,20 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           {!hiddenOneTime && msg.type === 'video' && (() => {
             const uri = msg._uploading ? msg.file_path! : `${BASE_URL}${msg.file_path}`;
             return (
-              <TouchableOpacity
-                onPress={() => {
+              <VideoBubble
+                url={uri}
+                uploading={!!msg._uploading}
+                onLongPress={() => onMessageLongPress(msg)}
+                // `playUrl` is the downloaded copy when there is one, so a
+                // saved video opens instantly and works with no signal.
+                onOpen={(playUrl) => {
                   if (selectedIds.size) { toggleSelected(msg); return; }
-                  if (msg._uploading) return;
                   setVideoPlaylist(chatVideos());
-                  setVideoItem({ id: msg.id, url: uri, name: msg.file_name || 'Video' });
+                  setVideoItem({ id: msg.id, url: playUrl, name: msg.file_name || 'Video' });
                   setVideoMini(false);
                   if (msg.one_time_seconds && !mine) startOneTimeClock(msg);
                 }}
-                onLongPress={() => onMessageLongPress(msg)}
-                delayLongPress={350}
-                disabled={msg._uploading}
-              >
-                <View style={s.videoThumb}>
-                  <Text style={s.videoPlayIcon}>▶</Text>
-                </View>
-              </TouchableOpacity>
+              />
             );
           })()}
           {!hiddenOneTime && msg.type === 'location' && (() => {
