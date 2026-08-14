@@ -45,6 +45,9 @@ import FullMusicPlayer from '../components/FullMusicPlayer';
 import type { Track } from '../audioManager';
 import { guessMime, messageTypeFor, fileIcon, extOf } from '../mime';
 import { compressForSend } from '../compressImage';
+import VideoSendSheet, { VideoChoice } from '../components/VideoSendSheet';
+import { compressVideo } from '../compressVideo';
+import { VideoQuality } from '../videoQuality';
 import { Quality } from '../imageQuality';
 import { tokenize, telHref, toAsciiDigits } from '../textTokens';
 import { toast } from '../components/Toast';
@@ -185,6 +188,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // Photos are sent re-encoded by default — a phone camera's 8 MB original is
   // what makes sending "take a couple of seconds". HD sends the file untouched.
   const [sendQuality, setSendQuality] = useState<Quality>('standard');
+  // A staged video waiting on the resolution/trim sheet, and the rest of the
+  // send it was pulled out of, so it can be resumed once the user chooses.
+  const [videoChoice, setVideoChoice] = useState<
+    { item: { uri: string; name: string; mime: string }; bytes: number;
+      caption: string | null; oneTime?: number } | null>(null);
+  const [videoWorking, setVideoWorking] = useState(0);
   useEffect(() => {
     AsyncStorage.getItem('sendQuality').then(v => {
       if (v === 'hd' || v === 'standard') setSendQuality(v);
@@ -844,7 +853,21 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       setOneTimeSecs(null);
       emitStopTyping();
       const images = items.filter(m => m.mime.startsWith('image/'));
-      const others = items.filter(m => !m.mime.startsWith('image/'));
+      let others = items.filter(m => !m.mime.startsWith('image/'));
+
+      // Exactly one video and nothing else: ask how to send it first. With a
+      // mixed batch the sheet would have to be answered once per video, which
+      // is worse than just sending them, so it is skipped there.
+      const videos = others.filter(m => m.mime.startsWith('video/'));
+      if (videos.length === 1 && items.length === 1) {
+        const v = videos[0];
+        FileSystem.getInfoAsync(v.uri, { size: true })
+          .then(info => setVideoChoice({
+            item: v, bytes: (info as any)?.size || 0, caption, oneTime,
+          }))
+          .catch(() => setVideoChoice({ item: v, bytes: 0, caption, oneTime }));
+        return;
+      }
       if (images.length > 1) {
         // Multiple images travel as ONE gallery message with the caption below.
         sendGallery(images, caption, oneTime);
@@ -1689,6 +1712,27 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         loadRoomInfo();
       }
     });
+  }
+
+  // The user chose a resolution (and possibly trimmed): do the work, then send.
+  async function sendChosenVideo(choice: VideoChoice) {
+    const pending = videoChoice;
+    setVideoChoice(null);
+    if (!pending) return;
+
+    let uri = choice.uri;
+    let name = pending.item.name;
+    if (choice.quality !== 'original') {
+      setVideoWorking(0.001);   // a non-zero value is what shows the bar
+      uri = await compressVideo(choice.uri, choice.quality, choice.size, p => setVideoWorking(p || 0.001));
+      setVideoWorking(0);
+      // Re-encoding always produces an mp4, whatever the source container was.
+      if (uri !== choice.uri) name = name.replace(/\.[^.]+$/, '') + '.mp4';
+    } else if (uri !== pending.item.uri) {
+      // Trimmed but not re-encoded — still a new file.
+      name = name.replace(/\.[^.]+$/, '') + '.mp4';
+    }
+    uploadFile(uri, name, 'video/mp4', pending.caption, pending.oneTime);
   }
 
   // Post a location. `liveMinutes` 0 = a one-off pin; anything else starts a
@@ -2838,6 +2882,25 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         </View>
       </Modal>
 
+      {/* How to send a video: resolution, and trimming. */}
+      {videoChoice && (
+        <VideoSendSheet
+          visible
+          uri={videoChoice.item.uri}
+          originalBytes={videoChoice.bytes}
+          onCancel={() => setVideoChoice(null)}
+          onConfirm={sendChosenVideo}
+        />
+      )}
+      {videoWorking > 0 && (
+        <View style={s.transcodeBar}>
+          <ActivityIndicator size="small" color={C.accent} />
+          <Text style={s.transcodeText}>
+            Preparing video… {Math.round(videoWorking * 100)}%
+          </Text>
+        </View>
+      )}
+
       {/* Share location */}
       <Modal visible={showLocationMenu} transparent animationType="slide" onRequestClose={() => setShowLocationMenu(false)}>
         <View style={s.overlay}>
@@ -3206,6 +3269,14 @@ const s = StyleSheet.create({
     alignItems: 'center', gap: 14,
   },
   busyText: { color: C.text, fontSize: 14.5, fontWeight: '600' },
+  transcodeBar: {
+    position: 'absolute', left: 14, right: 14, bottom: 96,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: C.sidebar, borderRadius: 12, padding: 12,
+    borderWidth: 1, borderColor: C.border, zIndex: 40,
+  },
+  transcodeText: { color: C.text, fontSize: 13, fontWeight: '600' },
+
   locCard: {
     width: 224, borderRadius: 12, overflow: 'hidden',
     borderWidth: 1, borderColor: C.border, backgroundColor: C.sidebar,
