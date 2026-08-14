@@ -6,9 +6,14 @@ on:
     paths:
       - 'server.js'
       - 'db.js'
+      # Required by server.js at startup — a change to it alone used to make
+      # no deploy at all, leaving the servers on old credential rules.
+      - 'credentials.js'
       - 'package.json'
       - 'package-lock.json'
       - 'public/**'
+      # So a fix to the deploy script itself actually deploys.
+      - '.github/workflows/deploy-servers.yml'
   workflow_dispatch:
 
 jobs:
@@ -69,8 +74,23 @@ jobs:
           cd "$APP_DIR"
           git fetch origin "$BRANCH"
           git checkout "$BRANCH"
-          git pull origin "$BRANCH"
-          npm install --omit=dev
+          # Hard reset, NOT pull. "npm install" rewrites package-lock.json on
+          # the server, which left the checkout permanently dirty, and every
+          # later "git pull" then aborted with "your local changes would be
+          # overwritten". Both servers sat 13 commits behind because of it.
+          # A deploy target holds no local edits worth keeping, so the remote
+          # branch simply wins.
+          #
+          # Deliberately no "git clean": chat.db and uploads/ are untracked and
+          # live in this directory. Cleaning would delete the database and every
+          # uploaded file. reset --hard only touches TRACKED files, so user data
+          # is untouched.
+          git reset --hard "origin/$BRANCH"
+          # "ci" installs exactly what the lock says and never rewrites it,
+          # which is what stopped the tree from being dirtied again. It insists
+          # the lock matches package.json, so fall back rather than blocking a
+          # deploy on that.
+          npm ci --omit=dev || npm install --omit=dev
           systemctl restart "$SERVICE"
           systemctl is-active "$SERVICE"
           EOF
