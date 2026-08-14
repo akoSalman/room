@@ -69,7 +69,12 @@ jobs:
             exit 1
           fi
           echo "Deploy key fingerprint: $(ssh-keygen -lf ~/.ssh/deploy_key.pub)"
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "root@$HOST" bash -s <<EOF
+          # Quoted heredoc: NOTHING expands on the runner, so the script below is
+          # the script the server runs. The three values it needs are passed as
+          # environment assignments instead. (With an unquoted heredoc, every
+          # server-side $var and $(...) would have been substituted here first.)
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "root@$HOST" \
+            "APP_DIR='$APP_DIR' BRANCH='$BRANCH' SERVICE='$SERVICE' bash -s" <<'EOF'
           set -e
           cd "$APP_DIR"
           git fetch origin "$BRANCH"
@@ -91,7 +96,31 @@ jobs:
           # the lock matches package.json, so fall back rather than blocking a
           # deploy on that.
           npm ci --omit=dev || npm install --omit=dev
+          # "ci" DELETES node_modules and reinstalls. better-sqlite3 and sharp
+          # are native modules compiled against one Node ABI, so a cached
+          # prebuild for the wrong ABI loads fine on one server and throws
+          # ERR_DLOPEN_FAILED on another. Both are required at the top of
+          # server.js, so that failure kills the process at startup — which is
+          # a 502/503 for every user, from a deploy that reported success.
+          # Prove they load, and rebuild from source if they don't.
+          if ! node -e "require('better-sqlite3'); require('sharp')"; then
+            echo "Native modules failed to load — rebuilding from source."
+            npm rebuild better-sqlite3 sharp --build-from-source
+            node -e "require('better-sqlite3'); require('sharp')"
+          fi
           systemctl restart "$SERVICE"
+          # NOT "is-active" on its own: run straight after a restart it reports
+          # success while the process is still starting, so a server that dies
+          # a second later still passed. Give it time to fall over, then check
+          # — and print the journal on failure so the reason is in THIS log
+          # instead of needing someone to SSH in and look.
+          sleep 8
+          if ! systemctl is-active --quiet "$SERVICE"; then
+            echo "::error::$SERVICE is not running after deploy."
+            systemctl status "$SERVICE" --no-pager -l || true
+            journalctl -u "$SERVICE" -n 60 --no-pager || true
+            exit 1
+          fi
           systemctl is-active "$SERVICE"
           EOF
           echo "Deployed to ${{ matrix.name }} and service is active."

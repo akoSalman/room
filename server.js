@@ -164,7 +164,28 @@ app.use('/uploads', express.static('uploads', {
 //
 // Re-encoding through sharp also means the bytes we return are ours, not the
 // uploader's, so unlike /uploads these can safely be served inline as images.
-const sharp = require('sharp');
+// Loaded LAZILY, and deliberately so. sharp is a native module: a prebuilt
+// binary for the wrong Node ABI or libc throws ERR_DLOPEN_FAILED at require()
+// time. Required at module scope, that single failure took down the entire
+// chat server — every message, every call — over an optional thumbnail. Now a
+// broken sharp costs thumbnails and nothing else; clients already fall back to
+// the original image when /thumb fails.
+let sharpMod;
+let sharpBroken = false;
+function getSharp() {
+  if (sharpBroken) return null;
+  if (!sharpMod) {
+    try {
+      sharpMod = require('sharp');
+    } catch (e) {
+      sharpBroken = true;
+      console.error('sharp failed to load — thumbnails are disabled, '
+        + 'originals will be served instead:', e.message);
+      return null;
+    }
+  }
+  return sharpMod;
+}
 const THUMB_DIR = path.join('uploads', '.thumbs');
 const THUMB_WIDTHS = [96, 200, 400];   // fixed set: an attacker can't ask for 10000 renders
 
@@ -202,6 +223,10 @@ app.get('/thumb/:name', async (req, res) => {
 
   try {
     if (!fs.existsSync(out)) {
+      const sharp = getSharp();
+      // No thumbnailer: 415 makes the client use the full-size original,
+      // which is slower but works.
+      if (!sharp) return res.status(415).end();
       fs.mkdirSync(THUMB_DIR, { recursive: true });
       await sharp(src)
         .rotate()                       // honour EXIF orientation
