@@ -962,3 +962,13 @@ html {
 .auth-warning-head { color: #f59e0b; font-size: 0.85rem; margin-bottom: 6px; }
 .auth-warning p { color: var(--text, #e2e8f0); font-size: 0.79rem; line-height: 1.5; margin: 0; }
 .auth-warning p + p { margin-top: 8px; }
+
+/* Location messages */
+.loc-card {
+  width: 260px; border: 1px solid var(--border); border-radius: 10px;
+  overflow: hidden; background: var(--sidebar-bg);
+}
+.loc-map { display: block; width: 100%; height: 150px; border: 0; }
+.loc-foot { display: block; padding: 8px 10px; text-decoration: none; }
+.loc-title { font-size: 13px; font-weight: 700; color: var(--text); }
+.loc-sub { font-size: 11.5px; color: var(--muted); margin-top: 2px; }

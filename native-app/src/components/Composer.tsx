@@ -32,6 +32,9 @@ type Props = {
   onAttach: () => void;
   onRecord: () => void;
   onOneTime: () => void;
+  onLocation: () => void;
+  /** Truthy while this device is streaming a live location. */
+  liveLocation?: boolean;
   onToggleQuickEmoji: (open: boolean) => void;
   onRemoveMedia: (index: number) => void;
   onPreviewMedia: (uri: string) => void;
@@ -40,7 +43,7 @@ type Props = {
 function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
   const {
     pendingMedia, oneTimeSecs, quickEmoji, editing,
-    onTyping, onSend, onAttach, onRecord, onOneTime,
+    onTyping, onSend, onAttach, onRecord, onOneTime, onLocation, liveLocation,
     onToggleQuickEmoji, onRemoveMedia, onPreviewMedia,
   } = props;
 
@@ -118,6 +121,17 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
         </TouchableOpacity>
         <TouchableOpacity style={[s.stripBtn, oneTimeSecs ? s.oneTimeActive : null]} onPress={onOneTime}>
           <Text style={s.stripBtnText}>🔥 One-time{oneTimeSecs ? ` ${oneTimeSecs}s` : ''}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[s.stripBtn, liveLocation ? s.locationActive : null]}
+          onPress={onLocation}
+          accessibilityLabel="Share location"
+        >
+          <Ionicons
+            name={liveLocation ? 'navigate' : 'location-outline'}
+            size={17}
+            color={liveLocation ? '#22c55e' : C.text}
+          />
         </TouchableOpacity>
         {!quickEmoji && (
           <TouchableOpacity style={s.stripBtn}
@@ -221,6 +235,7 @@ const s = StyleSheet.create({
   },
   stripBtnText: { color: C.accent, fontSize: 13, fontWeight: '600' },
   oneTimeActive: { backgroundColor: 'rgba(248,113,113,0.25)', borderRadius: 8 },
+  locationActive: { backgroundColor: 'rgba(34,197,94,0.22)', borderRadius: 8 },
   pendingMediaBar: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     paddingHorizontal: 12, paddingVertical: 6,

@@ -532,6 +532,7 @@ function messagePreview(msg) {
     : msg.type === 'music' ? '🎵 Audio file'
     : msg.type === 'invite' ? '🔒 Room invitation'
     : msg.type === 'call' ? '📞 Call'
+    : msg.type === 'location' ? '📍 Location'
     : msg.type === 'system' ? 'ℹ️ Room update' : '📄 File';
 }
 
@@ -1001,7 +1002,7 @@ io.on('connection', (socket) => {
   // Message types a CLIENT is allowed to send. 'system'/'call'/'invite' are
   // produced by the server only — letting clients set them would forge join
   // notices, call logs and invitations.
-  const CLIENT_MSG_TYPES = new Set(['text', 'image', 'gallery', 'video', 'audio', 'music', 'file']);
+  const CLIENT_MSG_TYPES = new Set(['text', 'image', 'gallery', 'video', 'audio', 'music', 'file', 'location']);
 
   socket.on('send_message', (data, ack) => {
     const { roomId, type, content, filePath, fileName, replyToId, clientId, oneTimeSeconds } = data;
@@ -1346,6 +1347,75 @@ io.on('connection', (socket) => {
     } catch (err) {
       console.error('[leave_room_membership]', err.message);
       reply({ error: 'Could not leave the room' });
+    }
+  });
+
+  // ── Live location ─────────────────────────────────────────────────────────
+  // A live share is one 'location' message whose coordinates keep changing.
+  // Updating the row (rather than posting a message per fix) is what keeps a
+  // 30-minute share from burying the chat under hundreds of pins.
+  socket.on('location_update', ({ messageId, lat, lng, accuracy }, ack) => {
+    const reply = (r) => { if (typeof ack === 'function') ack(r); };
+    try {
+      if (typeof lat !== 'number' || typeof lng !== 'number'
+        || !isFinite(lat) || !isFinite(lng)
+        || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+        return reply({ error: 'Bad coordinates' });
+      }
+      const msg = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
+      if (!msg || msg.type !== 'location') return reply({ error: 'Not a location message' });
+      // Only the person sharing can move the pin.
+      if (msg.user_id !== socket.user.id) return reply({ error: 'Not allowed' });
+
+      let payload;
+      try { payload = JSON.parse(msg.content || '{}'); } catch { payload = {}; }
+      // Expired shares stop accepting updates server-side, so a client that
+      // fails to stop its watcher cannot keep broadcasting a position.
+      if (!payload.liveUntil || payload.liveUntil <= Date.now()) {
+        return reply({ error: 'This live share has ended', ended: true });
+      }
+
+      const next = { ...payload, lat, lng, accuracy: accuracy ?? null, updatedAt: Date.now() };
+      db.prepare('UPDATE messages SET content = ? WHERE id = ?').run(JSON.stringify(next), msg.id);
+
+      const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(msg.room_id);
+      if (room) {
+        const out = { messageId: msg.id, roomId: msg.room_id, content: JSON.stringify(next) };
+        const ids = getRoomMemberIds(room);
+        ids.forEach(id => io.to('user:' + id).emit('location_updated', out));
+        previewerIds(room, ids).forEach(id => io.to('user:' + id).emit('location_updated', out));
+      }
+      reply({ ok: true });
+    } catch (err) {
+      console.error('[location_update]', err.message);
+      reply({ error: 'Could not update location' });
+    }
+  });
+
+  // Ending a share early. Everyone sees it stop immediately.
+  socket.on('location_stop', ({ messageId }, ack) => {
+    const reply = (r) => { if (typeof ack === 'function') ack(r); };
+    try {
+      const msg = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
+      if (!msg || msg.type !== 'location') return reply({ error: 'Not a location message' });
+      if (msg.user_id !== socket.user.id) return reply({ error: 'Not allowed' });
+
+      let payload;
+      try { payload = JSON.parse(msg.content || '{}'); } catch { payload = {}; }
+      const next = { ...payload, liveUntil: Date.now() };
+      db.prepare('UPDATE messages SET content = ? WHERE id = ?').run(JSON.stringify(next), msg.id);
+
+      const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(msg.room_id);
+      if (room) {
+        const out = { messageId: msg.id, roomId: msg.room_id, content: JSON.stringify(next) };
+        const ids = getRoomMemberIds(room);
+        ids.forEach(id => io.to('user:' + id).emit('location_updated', out));
+        previewerIds(room, ids).forEach(id => io.to('user:' + id).emit('location_updated', out));
+      }
+      reply({ ok: true });
+    } catch (err) {
+      console.error('[location_stop]', err.message);
+      reply({ error: 'Could not stop sharing' });
     }
   });
 

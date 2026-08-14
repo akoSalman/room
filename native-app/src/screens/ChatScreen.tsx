@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import {
   View, Text, TextInput, FlatList, TouchableOpacity,
   StyleSheet, KeyboardAvoidingView, Platform, Alert, Dimensions,
@@ -29,6 +29,12 @@ import GalleryGrid from '../components/GalleryGrid';
 import ImageWithSpinner from '../components/ImageWithSpinner';
 import GalleryImage from '../components/GalleryImage';
 import VideoPlayer, { VideoItem } from '../components/VideoPlayer';
+import TileMap from '../components/TileMap';
+import LocationView, { LocationPin } from '../components/LocationView';
+import * as locationManager from '../locationManager';
+import {
+  parseLocation, isLiveNow, formatRemaining, formatCoords, distanceMeters, formatDistance,
+} from '../geo';
 import CameraScreen from './CameraScreen';
 import * as Sharing from 'expo-sharing';
 import SwipeableMessage from '../components/SwipeableMessage';
@@ -143,6 +149,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // Snapshotted when a video is opened, so next/previous stays stable even if
   // new messages arrive while watching.
   const [videoPlaylist, setVideoPlaylist] = useState<VideoItem[]>([]);
+  // Which location message is open fullscreen, and the live-share menu.
+  const [openLocationId, setOpenLocationId] = useState<number | string | null>(null);
+  const [showLocationMenu, setShowLocationMenu] = useState(false);
+  const [liveShare, setLiveShare] = useState(locationManager.activeShare());
+  // The viewer's own position, only fetched once a location message exists in
+  // this chat — no point asking for GPS in a chat that has none.
+  const [myPosition, setMyPosition] = useState<{ lat: number; lng: number } | null>(null);
+  // Ticks so "12m left" on a live pin stays honest without a per-second render.
+  const [clockTick, setClockTick] = useState(0);
   const [maxOtherReadMsgId, setMaxOtherReadMsgId] = useState(0);
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
   // clientId -> uploaded file URL, so the server's echo can be matched back to
@@ -598,6 +613,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           });
         } else {
           setMessages(prev => [...prev, msg]);
+        }
+        // A live share we just requested: the watcher can only start now, once
+        // the server has given the message a real id to keep updating.
+        if (msg.type === 'location' && msg.username === meRef.current && pendingLiveShare.current) {
+          const { until } = pendingLiveShare.current;
+          pendingLiveShare.current = null;
+          locationManager.startSharing(msg.id, room.id, until).catch(() => {});
         }
         if (isNearBottomRef.current) scrollBottom();
         else if (msg.username !== meRef.current) setMissedCount(n => n + 1);
@@ -1533,6 +1555,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
   useEffect(() => () => clearTimeout(tapTimer.current), []);
 
+  useEffect(() => locationManager.subscribe(() => setLiveShare(locationManager.activeShare())), []);
+  useEffect(() => {
+    const t = setInterval(() => setClockTick(n => n + 1), 30000);
+    return () => clearInterval(t);
+  }, []);
+
   // Hardware back on the video: shrink first, close from the floating window.
   // Leaving the chat outright would be a surprise while something is playing.
   useEffect(() => {
@@ -1545,6 +1573,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     });
     return () => sub.remove();
   }, [videoItem, videoMini]);
+
+  // The fullscreen map takes hardware back before the chat does.
+  useEffect(() => {
+    if (openLocationId == null) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      setOpenLocationId(null);
+      return true;
+    });
+    return () => sub.remove();
+  }, [openLocationId]);
 
   // Hardware back gets out of a selection first, rather than leaving the chat
   // with messages still picked.
@@ -1611,6 +1649,87 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     });
   }
 
+  // Post a location. `liveMinutes` 0 = a one-off pin; anything else starts a
+  // live share that keeps updating the SAME message.
+  async function sendLocation(liveMinutes: number) {
+    setShowLocationMenu(false);
+    if (!(await locationManager.ensurePermission())) {
+      Alert.alert('Location needed', 'Allow location access to share where you are.');
+      return;
+    }
+    const pos = await locationManager.currentPosition();
+    if (!pos) { Alert.alert('No position', 'Could not get your location. Try again outdoors.'); return; }
+
+    const liveUntil = liveMinutes > 0 ? Date.now() + liveMinutes * 60_000 : null;
+    const payload = { lat: pos.lat, lng: pos.lng, accuracy: pos.accuracy, liveUntil, updatedAt: Date.now() };
+
+    socketRef.current?.emit('send_message', {
+      roomId: room.id, type: 'location', content: JSON.stringify(payload),
+    }, (res: any) => {
+      if (res?.error) { Alert.alert('Could not share location', res.error); return; }
+    });
+
+    if (liveUntil) {
+      // The message id only exists once the server echoes it back, so the
+      // watcher starts from the echo rather than guessing.
+      pendingLiveShare.current = { until: liveUntil };
+    }
+  }
+
+  // Set between requesting a live share and its message arriving back.
+  const pendingLiveShare = useRef<{ until: number } | null>(null);
+
+  function stopLiveShare() {
+    locationManager.stopSharing();
+  }
+
+  // Every location in this chat, newest position per sender. Live shares win
+  // over old static pins so a person appears once, where they actually are.
+  const locationPins = useMemo<LocationPin[]>(() => {
+    const byUser = new Map<string, LocationPin>();
+    const loose: LocationPin[] = [];
+    for (const m of messages) {
+      if (m.type !== 'location') continue;
+      const p = parseLocation(m.content);
+      if (!p) continue;
+      const pin: LocationPin = { id: m.id, username: m.username, payload: p, mine: m.username === me };
+      if (isLiveNow(p)) {
+        const prev = byUser.get(m.username);
+        if (!prev || (p.updatedAt || 0) >= (prev.payload.updatedAt || 0)) byUser.set(m.username, pin);
+      } else {
+        loose.push(pin);
+      }
+    }
+    // A static pin is still worth showing unless that person is live.
+    return [...byUser.values(), ...loose.filter(p => !byUser.has(p.username))];
+  }, [messages, me, clockTick]);
+
+  // Distances are only meaningful with a position of our own.
+  useEffect(() => {
+    if (myPosition || !locationPins.length) return;
+    let alive = true;
+    (async () => {
+      const granted = await locationManager.ensurePermission().catch(() => false);
+      if (!granted) return;
+      const p = await locationManager.currentPosition();
+      if (alive && p) setMyPosition({ lat: p.lat, lng: p.lng });
+    })();
+    return () => { alive = false; };
+  }, [locationPins.length, myPosition]);
+
+  // Everyone in the room sees live pins move.
+  useEffect(() => {
+    const sock = socketRef.current;
+    if (!sock) return;
+    const onMoved = ({ messageId, roomId, content }: any) => {
+      if (String(roomId) !== String(room.id)) return;
+      setMessages(prev => prev.map(m =>
+        String(m.id) === String(messageId) ? { ...m, content } : m));
+    };
+    sock.on('location_updated', onMoved);
+    return () => { sock.off('location_updated', onMoved); };
+  }, [room.id, socketRef.current]);
+
   function replyPreview(msg: Message): string {
     if (msg.reply_type === 'audio') return '🎙 Voice message';
     if (msg.reply_type === 'image') return '🖼 Image';
@@ -1618,6 +1737,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     if (msg.reply_type === 'video') return '🎥 Video';
     if (msg.reply_type === 'music') return '🎵 Audio file';
     if (msg.reply_type === 'file') return '📄 File';
+    if (msg.reply_type === 'location') return '📍 Location';
     return (msg.reply_content || '').slice(0, 60);
   }
 
@@ -1898,6 +2018,52 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               </TouchableOpacity>
             );
           })()}
+          {!hiddenOneTime && msg.type === 'location' && (() => {
+            const p = parseLocation(msg.content);
+            if (!p) return <Text style={s.msgText}>📍 Location (unreadable)</Text>;
+            const live = isLiveNow(p);
+            const away = myPosition ? distanceMeters(myPosition, p) : null;
+            return (
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={() => {
+                  if (selectedIds.size) { toggleSelected(msg); return; }
+                  setOpenLocationId(msg.id);
+                }}
+                onLongPress={() => onMessageLongPress(msg)}
+                delayLongPress={350}
+              >
+                <View style={s.locCard}>
+                  {/* A still preview: not interactive, so the tap opens the
+                      fullscreen map instead of being eaten by a map drag. */}
+                  <TileMap
+                    center={{ lat: p.lat, lng: p.lng }}
+                    zoom={15}
+                    markers={[{ at: { lat: p.lat, lng: p.lng }, label: '', mine, live }]}
+                    width={224}
+                    height={132}
+                    interactive={false}
+                  />
+                  <View style={s.locFoot}>
+                    <Ionicons
+                      name={live ? 'navigate' : 'location'}
+                      size={14}
+                      color={live ? '#22c55e' : C.accent}
+                    />
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={s.locTitle} numberOfLines={1}>
+                        {live ? 'Live location' : 'Location'}
+                      </Text>
+                      <Text style={s.locSub} numberOfLines={1}>
+                        {live ? formatRemaining(p.liveUntil || 0) : formatCoords(p)}
+                        {away != null ? ` · ${formatDistance(away)} away` : ''}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              </TouchableOpacity>
+            );
+          })()}
           {!hiddenOneTime && (msg.type === 'file' || (msg.type === 'music' && msg._uploading)) && (() => {
             const fname = msg.file_name || 'File';
             const icon = fileIcon(fname, null);
@@ -1917,7 +2083,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               </TouchableOpacity>
             );
           })()}
-          {!hiddenOneTime && msg.type !== 'text' && msg.type !== 'invite' && msg.type !== 'call' && msg.content ? (
+          {!hiddenOneTime && msg.type !== 'text' && msg.type !== 'invite' && msg.type !== 'call'
+            && msg.type !== 'location' && msg.content ? (
             <Text style={[s.msgText, s.caption]} selectable>{renderTextWithLinks(msg.content)}</Text>
           ) : null}
           {msg.one_time_seconds && !hiddenOneTime && !msg._uploading ? (
@@ -2609,6 +2776,47 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         </View>
       </Modal>
 
+      {/* Share location */}
+      <Modal visible={showLocationMenu} transparent animationType="slide" onRequestClose={() => setShowLocationMenu(false)}>
+        <View style={s.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowLocationMenu(false)} />
+          <View style={s.attachSheet}>
+            <View style={s.sheetHandle} />
+            <Text style={s.forwardTitle}>📍 Share location</Text>
+            <TouchableOpacity style={s.attachOption} onPress={() => sendLocation(0)}>
+              <Text style={s.attachOptionText}>Send my current location</Text>
+            </TouchableOpacity>
+            <Text style={s.oneTimeHint}>
+              Live location keeps updating for everyone in this chat until it ends or you stop it.
+            </Text>
+            {[15, 60, 480].map(mins => (
+              <TouchableOpacity key={mins} style={s.attachOption} onPress={() => sendLocation(mins)}>
+                <Text style={s.attachOptionText}>
+                  Share live for {mins < 60 ? `${mins} minutes` : mins === 60 ? '1 hour' : `${mins / 60} hours`}
+                </Text>
+              </TouchableOpacity>
+            ))}
+            {liveShare ? (
+              <TouchableOpacity style={s.attachOption} onPress={() => { setShowLocationMenu(false); stopLiveShare(); }}>
+                <Text style={[s.attachOptionText, { color: '#f87171' }]}>Stop sharing live location</Text>
+              </TouchableOpacity>
+            ) : null}
+            <TouchableOpacity style={s.attachCancel} onPress={() => setShowLocationMenu(false)}>
+              <Text style={s.attachCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Fullscreen map for a tapped location, with everyone who is sharing. */}
+      {openLocationId != null && (
+        <LocationView
+          pins={locationPins}
+          focusId={openLocationId}
+          onClose={() => setOpenLocationId(null)}
+        />
+      )}
+
       {/* Forward picker */}
       <Modal visible={forwardOpen} transparent animationType="slide" onRequestClose={() => { setForwardOpen(false); setForwardMsg(null); }}>
         <View style={s.overlay}>
@@ -2731,6 +2939,22 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         </View>
       </Modal>
 
+      {/* Streaming a live location is easy to forget about, so it stays
+          visible with Stop one tap away. */}
+      {liveShare ? (
+        <View style={s.liveBar}>
+          <Ionicons name="navigate" size={15} color="#22c55e" />
+          <Text style={s.liveBarText} numberOfLines={1}>
+            {String(liveShare.roomId) === String(room.id)
+              ? `Sharing your live location · ${formatRemaining(liveShare.until)}`
+              : `Sharing live location in another chat · ${formatRemaining(liveShare.until)}`}
+          </Text>
+          <TouchableOpacity onPress={stopLiveShare} hitSlop={hitSlop10}>
+            <Text style={s.liveBarStop}>Stop</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
       {/* Not a member: the room is read-only, so the Join bar REPLACES the
           composer rather than sitting above it. The server enforces the same
           rule, so a stale screen cannot post either. */}
@@ -2760,6 +2984,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           onAttach={() => setShowAttachMenu(true)}
           onRecord={() => startRecordingUI()}
           onOneTime={() => setShowOneTimeMenu(true)}
+          onLocation={() => setShowLocationMenu(true)}
+          liveLocation={!!liveShare}
           onToggleQuickEmoji={setQuickEmoji}
           onRemoveMedia={(i) => setPendingMedia(prev => prev.filter((_, j) => j !== i))}
           onPreviewMedia={(uri) => openViewer(uri)}
@@ -2915,6 +3141,23 @@ const s = StyleSheet.create({
     alignItems: 'center', gap: 14,
   },
   busyText: { color: C.text, fontSize: 14.5, fontWeight: '600' },
+  locCard: {
+    width: 224, borderRadius: 12, overflow: 'hidden',
+    borderWidth: 1, borderColor: C.border, backgroundColor: C.sidebar,
+  },
+  locFoot: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 9 },
+  locTitle: { color: C.text, fontSize: 13.5, fontWeight: '700' },
+  locSub: { color: C.muted, fontSize: 11.5, marginTop: 1 },
+
+  liveBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingHorizontal: 14, paddingVertical: 8,
+    backgroundColor: 'rgba(34,197,94,0.14)',
+    borderTopWidth: 1, borderTopColor: 'rgba(34,197,94,0.3)',
+  },
+  liveBarText: { flex: 1, color: C.text, fontSize: 12.5, fontWeight: '600' },
+  liveBarStop: { color: '#f87171', fontSize: 12.5, fontWeight: '800' },
+
   joinBar: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     paddingHorizontal: 14, paddingVertical: 10,

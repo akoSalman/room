@@ -143,6 +143,7 @@ function showNotif(msg) {
     : msg.type === 'image' ? '🖼 Photo'
     : msg.type === 'gallery' ? '🖼 Photos'
     : msg.type === 'video' ? '🎥 Video'
+    : msg.type === 'location' ? '📍 Location'
     : msg.type === 'music' ? '🎵 Audio file'
     : msg.type === 'call' ? '📞 Call'
     : msg.type === 'system' ? 'ℹ️ Room update' : '📄 File';
@@ -483,6 +484,15 @@ function connectSocket() {
       applyEdit(messageId, content);
     });
     socket.on('message_deleted', ({ messageId }) => applyDelete(messageId));
+    // A live share moved: swap the card in place, keeping everything else in
+    // the bubble (reply quote, timestamp, reactions) untouched.
+    socket.on('location_updated', ({ messageId, roomId, content }) => {
+      if (roomId != null && String(roomId) !== String(currentRoomId)) return;
+      const wrapper = document.querySelector(`[data-msg-id="${messageId}"]`);
+      const old = wrapper && wrapper.querySelector('.loc-card');
+      if (!old) return;
+      old.replaceWith(buildLocationCard({ content }));
+    });
     socket.on('reactions_updated', ({ messageId, roomId, reactions }) => {
       // Also delivered on our personal channel now, so other rooms land here too.
       if (roomId != null && String(roomId) !== String(currentRoomId)) return;
@@ -1292,7 +1302,7 @@ function sendOrSave() {
 function setReply(msg) {
   replyTo = { id: msg.id, username: msg.username, content: msg.content, type: msg.type };
   document.getElementById('reply-bar-user').textContent = msg.username;
-  const preview = msg.type === 'text' ? (msg.content || '').slice(0, 60) : msg.type === 'audio' ? '🎙 Voice message' : msg.type === 'image' ? '🖼 Image' : msg.type === 'gallery' ? '🖼 Photos' : msg.type === 'video' ? '🎥 Video' : msg.type === 'music' ? '🎵 Audio file' : '📄 File';
+  const preview = msg.type === 'text' ? (msg.content || '').slice(0, 60) : msg.type === 'audio' ? '🎙 Voice message' : msg.type === 'image' ? '🖼 Image' : msg.type === 'gallery' ? '🖼 Photos' : msg.type === 'video' ? '🎥 Video' : msg.type === 'location' ? '📍 Location' : msg.type === 'music' ? '🎵 Audio file' : '📄 File';
   document.getElementById('reply-bar-text').textContent = preview;
   show('reply-bar');
   document.getElementById('msg-input').focus();
@@ -2162,6 +2172,46 @@ function updateSeenCheckmarks() {
   });
 }
 
+// A location message on the web: a static OpenStreetMap frame with the pin,
+// plus a link out to a real map. Live shares keep re-rendering as the sender
+// moves, because `location_updated` rewrites the message's content.
+function buildLocationCard(msg) {
+  const wrap = document.createElement('div');
+  wrap.className = 'loc-card';
+  let p = null;
+  try { p = JSON.parse(msg.content || ''); } catch {}
+  if (!p || typeof p.lat !== 'number' || typeof p.lng !== 'number') {
+    wrap.textContent = '📍 Location (unreadable)';
+    return wrap;
+  }
+  const live = !!(p.liveUntil && p.liveUntil > Date.now());
+  const url = `https://www.openstreetmap.org/?mlat=${p.lat}&mlon=${p.lng}#map=16/${p.lat}/${p.lng}`;
+
+  const frame = document.createElement('iframe');
+  frame.className = 'loc-map';
+  frame.loading = 'lazy';
+  const d = 0.006;
+  frame.src = 'https://www.openstreetmap.org/export/embed.html?bbox='
+    + [p.lng - d, p.lat - d / 2, p.lng + d, p.lat + d / 2].join('%2C')
+    + `&layer=mapnik&marker=${p.lat}%2C${p.lng}`;
+  wrap.appendChild(frame);
+
+  const foot = document.createElement('a');
+  foot.className = 'loc-foot';
+  foot.href = url; foot.target = '_blank'; foot.rel = 'noopener';
+  const title = document.createElement('div');
+  title.className = 'loc-title';
+  title.textContent = live ? '🟢 Live location' : '📍 Location';
+  const sub = document.createElement('div');
+  sub.className = 'loc-sub';
+  sub.textContent = live
+    ? `updating · until ${new Date(p.liveUntil).toLocaleTimeString()}`
+    : `${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}`;
+  foot.appendChild(title); foot.appendChild(sub);
+  wrap.appendChild(foot);
+  return wrap;
+}
+
 function buildMessageElement(msg) {
   if (E2E.isEncrypted(msg.content) || E2E.isEncrypted(msg.reply_content)) {
     msg = { ...msg };
@@ -2217,6 +2267,7 @@ function buildMessageElement(msg) {
       : msg.reply_type === 'audio' ? '🎙 Voice message'
       : msg.reply_type === 'image' ? '🖼 Image'
       : msg.reply_type === 'video' ? '🎥 Video'
+      : msg.reply_type === 'location' ? '📍 Location'
       : msg.reply_type === 'music' ? '🎵 Audio file'
       : msg.reply_type === 'gallery' ? '🖼 Photos' : '📄 File';
     quote.appendChild(quoteUser);
@@ -2330,6 +2381,8 @@ function buildMessageElement(msg) {
     video.preload = 'metadata';
     video.onplay = () => claimPlayback(video, () => video.pause());
     bubble.appendChild(video);
+  } else if (msg.type === 'location') {
+    bubble.appendChild(buildLocationCard(msg));
   } else if (msg.type === 'music') {
     const wrap = document.createElement('div');
     wrap.className = 'music-player';
@@ -2353,7 +2406,7 @@ function buildMessageElement(msg) {
   // Captions belong to media messages. Types whose content IS their payload
   // must be excluded — 'system' was missing, so every join/leave notice also
   // dumped its raw JSON underneath itself as a "caption".
-  const CAPTIONLESS = ['text', 'invite', 'call', 'system'];
+  const CAPTIONLESS = ['text', 'invite', 'call', 'system', 'location'];
   if (!oneTimeHidden && !CAPTIONLESS.includes(msg.type) && msg.content) {
     const cap = document.createElement('div');
     cap.className = 'msg-caption';

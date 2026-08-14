@@ -476,6 +476,73 @@ test('SECURITY: uploads need a valid, unexpired signature', async () => {
   fsMod.rmSync(require('path').join('uploads', name), { force: true });
 });
 
+test('live location updates in place, and only the sharer can move the pin', async () => {
+  const sharer = await signUp('geoshare15');
+  const watcher = await signUp('geowatch15');
+  const sharerSock = await connect(sharer.token);
+  const watchSock = await connect(watcher.token);
+
+  const room = await api('/rooms', 'POST', { name: 'geo-room-15' }, sharer.token);
+  await emit(watchSock, 'accept_invite', { roomId: room.id });
+
+  const until = Date.now() + 60_000;
+  await emit(sharerSock, 'send_message', {
+    roomId: room.id, type: 'location',
+    content: JSON.stringify({ lat: 35.6892, lng: 51.3890, liveUntil: until }),
+  });
+  const history = await api(`/messages/${room.id}`, 'GET', null, sharer.token);
+  const pin = history.find(m => m.type === 'location');
+  assert.ok(pin, 'location message was not stored — is the type allowed?');
+
+  // The watcher is told when the pin moves.
+  const moved = waitFor(watchSock, 'location_updated', p => p.messageId === pin.id);
+  const upd = await emit(sharerSock, 'location_update', { messageId: pin.id, lat: 35.70, lng: 51.40 });
+  assert.ok(upd.ok, `update refused: ${JSON.stringify(upd)}`);
+  const evt = await moved;
+  const payload = JSON.parse(evt.content);
+  assert.strictEqual(payload.lat, 35.70);
+  assert.strictEqual(payload.liveUntil, until, 'the expiry must survive an update');
+
+  // It updates the SAME message rather than posting a new one.
+  const after = await api(`/messages/${room.id}`, 'GET', null, sharer.token);
+  assert.strictEqual(after.filter(m => m.type === 'location').length, 1,
+    'a live update created an extra message instead of moving the pin');
+
+  // Nobody else can move someone's pin.
+  const stolen = await emit(watchSock, 'location_update', { messageId: pin.id, lat: 0, lng: 0 });
+  assert.ok(stolen.error, 'another user was allowed to move the pin');
+
+  // Rubbish coordinates are refused.
+  assert.ok((await emit(sharerSock, 'location_update', { messageId: pin.id, lat: 999, lng: 0 })).error,
+    'an impossible latitude was accepted');
+  assert.ok((await emit(sharerSock, 'location_update', { messageId: pin.id, lat: 'x', lng: 0 })).error,
+    'a non-numeric latitude was accepted');
+});
+
+test('a live share stops, and stops accepting updates', async () => {
+  const u = await signUp('geostop16');
+  const sock = await connect(u.token);
+  const room = await api('/rooms', 'POST', { name: 'geo-room-16' }, u.token);
+
+  await emit(sock, 'send_message', {
+    roomId: room.id, type: 'location',
+    content: JSON.stringify({ lat: 10, lng: 20, liveUntil: Date.now() + 60_000 }),
+  });
+  const pin = (await api(`/messages/${room.id}`, 'GET', null, u.token)).find(m => m.type === 'location');
+
+  assert.ok((await emit(sock, 'location_stop', { messageId: pin.id })).ok, 'stop failed');
+
+  // After stopping, the server refuses further updates even if a client keeps
+  // watching the device's position and never noticed it should stop.
+  const late = await emit(sock, 'location_update', { messageId: pin.id, lat: 11, lng: 21 });
+  assert.ok(late.error, 'an ended share still accepted updates');
+
+  const after = (await api(`/messages/${room.id}`, 'GET', null, u.token)).find(m => m.type === 'location');
+  const payload = JSON.parse(after.content);
+  assert.ok(payload.liveUntil <= Date.now(), 'the share was not marked ended');
+  assert.strictEqual(payload.lat, 10, 'the late update leaked through');
+});
+
 test('room list is ordered by most recent activity, not by name', async () => {
   const u = await signUp('sorter6');
   const sock = await connect(u.token);

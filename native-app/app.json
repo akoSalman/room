@@ -29,7 +29,9 @@
         "android.permission.RECEIVE_BOOT_COMPLETED",
         "android.permission.SCHEDULE_EXACT_ALARM",
         "android.permission.POST_NOTIFICATIONS",
-        "android.permission.REQUEST_INSTALL_PACKAGES"
+        "android.permission.REQUEST_INSTALL_PACKAGES",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
       ]
     },
     "plugins": [
@@ -107,6 +109,14 @@
             "android:documentLaunchMode": "never",
             "android:excludeFromRecents": "false"
           }
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow ChatRoom to share your location in chats.",
+          "locationWhenInUsePermission": "Allow ChatRoom to share your location in chats.",
+          "isAndroidForegroundServiceEnabled": false
         }
       ]
     ],
