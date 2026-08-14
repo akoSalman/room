@@ -8,6 +8,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import * as Notifications from 'expo-notifications';
+import * as TaskManager from 'expo-task-manager';
+import notifee, { EventType } from '@notifee/react-native';
+import { ringIncoming, stopRinging, ensureCallChannel } from './src/incomingCall';
 import AuthScreen from './src/screens/AuthScreen';
 import RoomsScreen from './src/screens/RoomsScreen';
 import CallOverlay from './src/components/CallOverlay';
@@ -44,8 +47,46 @@ Notifications.setNotificationChannelAsync('messages-v3', {
   sound: 'notify.wav',
   vibrationPattern: [0, 250, 250, 250],
 }).catch(() => {});
-// Incoming calls get their own channel that RINGS (looping-feel ring sound,
-// long vibration) so it behaves like a real phone call notification.
+// ── Incoming calls, with the app closed ─────────────────────────────────────
+//
+// Registered at MODULE scope on purpose: when a data push arrives and the app
+// is not running, Android starts the JS bundle and runs this file. Anything
+// inside a component would be too late.
+const CALL_PUSH_TASK = 'chatroom-incoming-call';
+
+TaskManager.defineTask(CALL_PUSH_TASK, async ({ data }: any) => {
+  try {
+    // expo-notifications hands the FCM payload through in a couple of shapes
+    // depending on Android version and whether the app was alive.
+    const d = data?.notification?.data || data?.data || data || {};
+    if (String(d.type) !== 'call') return;
+    await ringIncoming(
+      String(d.fromUsername || 'Someone'),
+      d.kind === 'video' ? 'video' : 'voice',
+      d.fromUserId,
+    );
+  } catch {}
+});
+Notifications.registerTaskAsync(CALL_PUSH_TASK).catch(() => {});
+
+// Accept/Decline pressed on the ringing notification while the app is in the
+// background or not running. Declining must not need the app to be opened.
+notifee.onBackgroundEvent(async ({ type, detail }) => {
+  if (type !== EventType.ACTION_PRESS && type !== EventType.PRESS) return;
+  await stopRinging();
+  if (detail.pressAction?.id === 'decline') {
+    // Best effort: the socket may not be up in a background process, so the
+    // caller learns of it from the ring timing out if this does not land.
+    try {
+      const { declineCallInBackground } = require('./src/callManager');
+      await declineCallInBackground(detail.notification?.data?.fromUserId);
+    } catch {}
+  }
+});
+ensureCallChannel().catch(() => {});
+
+// The older single-shot channel, kept so existing installs still get SOMETHING
+// if the ringer is unavailable.
 Notifications.setNotificationChannelAsync('calls-v1', {
   name: 'Calls',
   importance: Notifications.AndroidImportance.MAX,

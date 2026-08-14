@@ -6,6 +6,7 @@ import { PermissionsAndroid, Platform } from 'react-native';
 import { Audio } from 'expo-av';
 import { mediaDevices, RTCPeerConnection, MediaStream } from 'react-native-webrtc';
 import { apiFetch, getSocket } from './api';
+import { stopRinging } from './incomingCall';
 import { audioManager } from './audioManager';
 
 // react-native-incall-manager routes call audio (earpiece/speaker/proximity)
@@ -50,6 +51,10 @@ class CallManager {
     const snd = this.ringSound;
     this.ringSound = null;
     if (snd) snd.unloadAsync().catch(() => {});
+    // Also silence the notification ringer, which may have been started by the
+    // background task before the app was opened. Without this, answering in
+    // the app leaves the phone still ringing in the shade.
+    stopRinging().catch(() => {});
   }
   // Room voice chat connected its first peer. This does NOT go through
   // markConnected(): that one owns the DM call's "Connected" status, its
@@ -505,3 +510,19 @@ class CallManager {
 }
 
 export const callManager = new CallManager();
+
+
+/**
+ * Decline from the ringing notification while the app is in the background.
+ *
+ * A background process may have no live socket, so this opens a short-lived
+ * one purely to deliver the hang-up. Best effort by design: if it fails, the
+ * caller simply sees the call ring out — the same as a missed call.
+ */
+export async function declineCallInBackground(fromUserId: any): Promise<void> {
+  if (!fromUserId) return;
+  try {
+    const sock = await getSocket();
+    sock?.emit('call_end', { toUserId: parseInt(String(fromUserId), 10) });
+  } catch {}
+}

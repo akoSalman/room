@@ -525,6 +525,16 @@ async function getFcmAccessToken() {
   return fcmToken;
 }
 
+/**
+ * `android.dataOnly` sends a message with NO notification block.
+ *
+ * That distinction decides whether the app's own code gets to run. A payload
+ * carrying a `notification` is drawn by the OS and the app's JS never starts
+ * while it is backgrounded or closed — fine for a message, useless for a call,
+ * which needs to ring continuously rather than chime once. A data-only,
+ * high-priority message wakes the app so it can raise a real ringing call
+ * notification itself.
+ */
 async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
   if (!fcmCreds || !userIds.length) return;
   try {
@@ -541,18 +551,23 @@ async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
         body: JSON.stringify({
           message: {
             token: t,
-            notification: { title, body },
-            data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])),
+            ...(android.dataOnly ? {} : { notification: { title, body } }),
+            data: Object.fromEntries(Object.entries({ ...data, title, body })
+              .map(([k, v]) => [k, String(v)])),
             android: {
               priority: 'high',
               // Tag the tray notification with the message id so a later
               // delete can replace/collapse it on the recipient's device.
-              notification: {
-                channel_id: android.channelId || 'messages-v3',
-                sound: android.sound || 'notify',
-                ...(android.categoryId ? { click_action: android.categoryId, notification_priority: 'PRIORITY_MAX' } : {}),
-                ...(data.msgId ? { tag: `msg-${data.msgId}` } : {}),
-              },
+              ...(android.dataOnly ? {} : {
+                notification: {
+                  channel_id: android.channelId || 'messages-v3',
+                  sound: android.sound || 'notify',
+                  ...(android.categoryId ? { click_action: android.categoryId, notification_priority: 'PRIORITY_MAX' } : {}),
+                  ...(data.msgId ? { tag: `msg-${data.msgId}` } : {}),
+                },
+              }),
+              // Calls must not be held back by Doze or app-standby buckets.
+              ...(android.dataOnly ? { ttl: '45s', direct_boot_ok: true } : {}),
             },
           },
         }),
@@ -1225,12 +1240,20 @@ io.on('connection', (socket) => {
         fromUserId: socket.user.id, fromUsername: socket.user.username,
         kind: k, sdp, candidates: [], ts: Date.now(),
       });
+      // Data-only: the app has to WAKE UP and ring, rather than the OS drawing
+      // a banner that chimes once and goes quiet. `fromUsername` travels in the
+      // payload because the ringing notification is built on the device, with
+      // no chance to look anything up.
       sendPushToUsers(
         [toUserId],
         (socket.user.avatar ? socket.user.avatar + ' ' : '') + socket.user.username,
         k === 'video' ? '🎥 Incoming video call' : '📞 Incoming voice call',
-        { type: 'call', kind: k, fromUserId: socket.user.id },
-        { channelId: 'calls-v1', sound: 'ring', categoryId: 'incoming_call' },
+        {
+          type: 'call', kind: k,
+          fromUserId: socket.user.id,
+          fromUsername: socket.user.username,
+        },
+        { dataOnly: true },
       );
     }
   });
