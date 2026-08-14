@@ -911,7 +911,7 @@ app.get('/join/:roomId', (req, res) => {
 });
 
 // Socket.IO
-const onlineUsers = new Map(); // socketId -> { userId, username, roomId }
+const onlineUsers = new Map(); // socketId -> { userId, username, roomId, focused }
 const voiceRooms = new Map(); // roomId -> Map(socketId -> { userId, username })
 
 // Pending 1:1 call offers, so a callee whose app was closed can still receive
@@ -1002,12 +1002,25 @@ io.on('connection', (socket) => {
         .map(u => u.username);
       io.to(prev.roomId).emit('room_online', { users: oldOnline });
     }
-    onlineUsers.set(socket.id, { userId: socket.user.id, username: socket.user.username, roomId: String(roomId) });
+    onlineUsers.set(socket.id, {
+      userId: socket.user.id, username: socket.user.username, roomId: String(roomId),
+      focused: prev ? prev.focused !== false : true,
+    });
     socket.join(String(roomId)); // presence room (active room only)
     const roomOnline = [...onlineUsers.values()]
       .filter(u => u.roomId === String(roomId))
       .map(u => u.username);
     io.to(String(roomId)).emit('room_online', { users: roomOnline });
+  });
+
+  // Whether this particular connection is in front of the user right now: a
+  // hidden browser tab or a backgrounded app reports false. A device that is
+  // merely *sitting* on a room is not "reading" it, so without this a laptop
+  // with the tab left open would suppress notifications forever.
+  socket.on('app_focus', (focused) => {
+    const cur = onlineUsers.get(socket.id);
+    if (!cur) return;
+    onlineUsers.set(socket.id, { ...cur, focused: !!focused });
   });
 
   // The client emits this when the chat screen backgrounds or unmounts, so a
@@ -1017,7 +1030,10 @@ io.on('connection', (socket) => {
     const prev = onlineUsers.get(socket.id);
     if (!prev?.roomId) return;
     socket.leave(prev.roomId);
-    onlineUsers.set(socket.id, { userId: socket.user.id, username: socket.user.username, roomId: null });
+    onlineUsers.set(socket.id, {
+      userId: socket.user.id, username: socket.user.username, roomId: null,
+      focused: prev.focused !== false,
+    });
     const oldOnline = [...onlineUsers.values()]
       .filter(u => u.roomId === prev.roomId && u.username !== socket.user.username)
       .map(u => u.username);
@@ -1067,18 +1083,26 @@ io.on('connection', (socket) => {
 
     const memberIds = getRoomMemberIds(room);
     const outMsg = signMessage(msg);
-    memberIds.forEach(id => io.to('user:' + id).emit('message_received', outMsg));
-    // …plus anyone reading this public room without having joined it yet.
-    previewerIds(room, memberIds).forEach(id => io.to('user:' + id).emit('message_received', outMsg));
 
     // Users who have ANY socket actively viewing this room right now. Push is
     // suppressed for them entirely (on all their devices) so a user reading the
     // chat on one device doesn't get notification buzzes on their other devices.
     const viewingUserIds = new Set(
       [...onlineUsers.values()]
-        .filter(u => u.roomId === String(roomId))
+        .filter(u => u.roomId === String(roomId) && u.focused !== false)
         .map(u => u.userId)
     );
+
+    // `seenElsewhere` tells each recipient that another of THEIR devices is
+    // looking at this room right now. Push was already suppressed for them
+    // server-side, but the web build raises its own browser notification from
+    // this event, which no server-side check could reach — so a laptop kept
+    // buzzing for messages the user was reading on their phone.
+    const deliver = (id) => io.to('user:' + id).emit('message_received',
+      viewingUserIds.has(id) ? { ...outMsg, seenElsewhere: true } : outMsg);
+    memberIds.forEach(deliver);
+    // …plus anyone reading this public room without having joined it yet.
+    previewerIds(room, memberIds).forEach(deliver);
 
     // Push notification for everyone but the sender (reaches closed apps)
     const roomLabel = room && !room.is_dm ? ` · ${room.name}` : '';

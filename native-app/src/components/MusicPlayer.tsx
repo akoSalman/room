@@ -35,7 +35,7 @@ export default function MusicPlayer({
   const pendingSeek = useRef<number | null>(null);
   useEffect(() => audioManager.subscribe(() => {
     if (pendingSeek.current != null
-        && audioManager.currentId === msgId && audioManager.duration > 0) {
+        && String(audioManager.currentId) === String(msgId) && audioManager.duration > 0) {
       const f = pendingSeek.current;
       pendingSeek.current = null;
       audioManager.seek(f);
@@ -43,7 +43,7 @@ export default function MusicPlayer({
     forceUpdate();
   }), [msgId]);
 
-  const isCurrent = audioManager.currentId === msgId;
+  const isCurrent = String(audioManager.currentId) === String(msgId);
   const playing = isCurrent && audioManager.playing;
   const loading = isCurrent && audioManager.loading;
   const progress = isCurrent ? audioManager.progress : 0;
@@ -62,7 +62,7 @@ export default function MusicPlayer({
   function seekTo(x: number) {
     if (!barWidth.current) return;
     const f = Math.max(0, Math.min(1, x / barWidth.current));
-    if (audioManager.currentId === msgId) { audioManager.seek(f); return; }
+    if (String(audioManager.currentId) === String(msgId)) { audioManager.seek(f); return; }
     // Dragging the bar of a track that isn't playing starts it, then seeks
     // once it has loaded enough to know its duration.
     pendingSeek.current = f;

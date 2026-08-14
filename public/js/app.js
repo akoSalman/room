@@ -137,6 +137,9 @@ function showNotif(msg) {
   // Notifications are only for when the user is away from the app; while it's
   // open, unread badges/dots do the signalling.
   if (document.visibilityState === 'visible') return;
+  // Another of this user's devices is looking at the chat right now — they are
+  // already reading it, so a second buzz on the laptop is just noise.
+  if (msg.seenElsewhere) return;
   // Never preview content — only the kind of message received
   const body = msg.type === 'text' ? '💬 New message'
     : msg.type === 'audio' ? '🎙 Voice message'
@@ -427,6 +430,7 @@ function connectSocket() {
       checkAppVersion(); // a reconnect often follows a deploy
     });
     document.addEventListener('visibilitychange', () => {
+      socket.emit('app_focus', document.visibilityState === 'visible');
       if (document.visibilityState === 'visible') {
         // Back on this tab: re-mark as viewing the open room and re-sync.
         if (currentRoomId) { socket.emit('join_room', currentRoomId); refreshLatestMessages(); }

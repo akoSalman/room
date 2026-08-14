@@ -270,6 +270,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // The FlatList is inverted (index 0 renders at the visual bottom), so the
   // latest message is on screen from the first frame with no scroll jump.
   const invertedMessages = React.useMemo(() => [...messages].reverse(), [messages]);
+  const keyExtractor = useCallback((m: Message) => String(m.id), []);
+  // Only the things a row actually reads. Anything else changing must NOT
+  // invalidate the rows.
+  const rowExtraData = useMemo(
+    () => ({ maxOtherReadMsgId, uploadProgress, reactions, highlightId, online, revealedOneTime, e2eActive, selectedIds, textSelectId }),
+    [maxOtherReadMsgId, uploadProgress, reactions, highlightId, online, revealedOneTime, e2eActive, selectedIds, textSelectId],
+  );
 
   const scrollBottom = useCallback(() => {
     flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
@@ -349,7 +356,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   useEffect(() => {
     audioManager.setFinishHandler(finishedId => {
       const msgs = messagesRef.current;
-      const idx = msgs.findIndex(m => m.id === finishedId);
+      const idx = msgs.findIndex(m => String(m.id) === String(finishedId));
       if (idx === -1) return;
       if (msgs[idx].type !== 'audio') return; // only chain voice messages
       const next = msgs.slice(idx + 1).find(m => m.type === 'audio');
@@ -614,6 +621,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           || null;
         if (pendingId) {
           delete pendingUploadPaths.current[pendingId];
+          // If this message is the one currently playing, move the player onto
+          // its real id — otherwise its bubble goes back to looking idle while
+          // the audio keeps playing.
+          audioManager.retarget(pendingId, msg.id);
           outbox.markDone(pendingId);
           removeFailedMsg(pendingId); // send confirmed — drop the crash-safety copy
           setUploadProgress(prev => {
@@ -2448,9 +2459,20 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           ref={flatListRef}
           data={invertedMessages}
           inverted
-          keyExtractor={m => String(m.id)}
+          keyExtractor={keyExtractor}
+          // Render a screenful, not the whole history. Without these the list
+          // mounts far more rows than are visible, and every one of them costs
+          // on each re-render.
+          initialNumToRender={12}
+          maxToRenderPerBatch={10}
+          updateCellsBatchingPeriod={50}
+          windowSize={9}
           renderItem={renderMessage}
-          extraData={[maxOtherReadMsgId, uploadProgress, reactions, highlightId, online, revealedOneTime, e2eActive]}
+          // extraData was an inline ARRAY LITERAL, which is a new object on
+          // every render — so FlatList re-rendered every visible row on EVERY
+          // state change anywhere in the screen, including opening a sheet.
+          // That is what made the One-time menu feel slow to open and close.
+          extraData={rowExtraData}
           contentContainerStyle={s.messagesList}
           onScroll={onMessagesScroll}
           scrollEventThrottle={100}

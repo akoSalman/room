@@ -31,7 +31,7 @@ export default function VoicePlayer({ url, peaks: rawPeaks, mine, msgId, roomId,
 
   useEffect(() => audioManager.subscribe(forceUpdate), []);
 
-  const isCurrent = audioManager.currentId === msgId;
+  const isCurrent = String(audioManager.currentId) === String(msgId);
   const playing = isCurrent && audioManager.playing;
   const loading = isCurrent && audioManager.loading;
   const progress = isCurrent ? audioManager.progress : 0;

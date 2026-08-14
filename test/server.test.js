@@ -543,6 +543,65 @@ test('a live share stops, and stops accepting updates', async () => {
   assert.strictEqual(payload.lat, 10, 'the late update leaked through');
 });
 
+test('a message is flagged seenElsewhere when another device is reading it', async () => {
+  // The bug: the user is reading a chat on their phone, and their laptop —
+  // with the tab in the background — still raises a browser notification.
+  // Push was already suppressed server-side, but the web build raises its own
+  // notification from `message_received`, so it needs to be told.
+  const sender = await signUp('seensender');
+  const reader = await signUp('seenreader');
+  const room = await api('/rooms', 'POST', { name: 'seen-room' }, sender.token);
+
+  const senderSock = await connect(sender.token);
+  // The reader's two devices: a phone with the chat open, and a laptop.
+  const phone = await connect(reader.token);
+  const laptop = await connect(reader.token);
+  await emit(phone, 'accept_invite', { roomId: room.id });
+  phone.emit('join_room', room.id);   // no ack on this handler
+  await new Promise(r => setTimeout(r, 80));
+
+  const onLaptop = waitFor(laptop, 'message_received', m => m.content === 'hello');
+  await emit(senderSock, 'send_message', { roomId: room.id, type: 'text', content: 'hello' });
+  const got = await onLaptop;
+  assert.strictEqual(got.seenElsewhere, true,
+    'the laptop was not told the phone is already showing this chat');
+
+  // The SENDER is not reading the room on any device, so nothing is suppressed
+  // for them — otherwise the flag would silence everyone.
+  const other = await signUp('seenother');
+  const otherSock = await connect(other.token);
+  await emit(otherSock, 'accept_invite', { roomId: room.id });
+  const onOther = waitFor(otherSock, 'message_received', m => m.content === 'second');
+  await emit(senderSock, 'send_message', { roomId: room.id, type: 'text', content: 'second' });
+  assert.ok(!(await onOther).seenElsewhere,
+    'a user with no device on the room was told it had been seen elsewhere');
+});
+
+test('a backgrounded device stops counting as reading the chat', async () => {
+  // A laptop left on the chat overnight must not suppress notifications
+  // forever — sitting on a room is not the same as looking at it.
+  const sender = await signUp('focussender');
+  const reader = await signUp('focusreader');
+  const room = await api('/rooms', 'POST', { name: 'focus-room' }, sender.token);
+
+  const senderSock = await connect(sender.token);
+  const phone = await connect(reader.token);
+  const laptop = await connect(reader.token);
+  await emit(phone, 'accept_invite', { roomId: room.id });
+  phone.emit('join_room', room.id);   // no ack on this handler
+  await new Promise(r => setTimeout(r, 80));
+
+  // The phone goes into the user's pocket; it stays "on" the room but is no
+  // longer in front of them.
+  phone.emit('app_focus', false);
+  await new Promise(r => setTimeout(r, 60));
+
+  const onLaptop = waitFor(laptop, 'message_received', m => m.content === 'ping');
+  await emit(senderSock, 'send_message', { roomId: room.id, type: 'text', content: 'ping' });
+  assert.ok(!(await onLaptop).seenElsewhere,
+    'an unfocused device still counted as reading the chat, silencing the others');
+});
+
 test('room list is ordered by most recent activity, not by name', async () => {
   const u = await signUp('sorter6');
   const sock = await connect(u.token);

@@ -218,6 +218,15 @@ class AudioManager {
 
       await TrackPlayer.setRate(this.rate);
       await TrackPlayer.play();
+
+      // Reconcile with the player's real state. The UI is driven by
+      // PlaybackState events, and if one is missed or coalesced the bubble is
+      // left showing the wrong icon while audio comes out of the speaker.
+      if (token !== this.playToken) return;
+      const st = await TrackPlayer.getPlaybackState();
+      this.playing = st.state === State.Playing;
+      this.loading = st.state === State.Loading || st.state === State.Buffering;
+      this.emit();
     } catch {
       if (token !== this.playToken) return;
       this.currentId = null;
@@ -377,6 +386,28 @@ class AudioManager {
     this.loading = false;
     this.progress = 0;
     this.emit();
+  }
+
+  /**
+   * A message's id changed under us.
+   *
+   * Your own voice message plays from an optimistic bubble with a temporary
+   * `tmp-…` id, and the server's echo then replaces it with the real one. The
+   * player kept pointing at the old id, so the bubble showed "ready to play"
+   * while its audio was already playing.
+   */
+  retarget(oldId: number | string, newId: number | string) {
+    if (String(oldId) === String(newId)) return;
+    let touched = false;
+    if (String(this.currentId) === String(oldId)) { this.currentId = newId; touched = true; }
+    this.queue = this.queue.map(t => {
+      if (String(t.id) !== String(oldId)) return t;
+      touched = true;
+      return { ...t, id: newId };
+    });
+    this.baseQueue = this.baseQueue.map(t =>
+      String(t.id) === String(oldId) ? { ...t, id: newId } : t);
+    if (touched) this.emit();
   }
 
   async setRate(rate: number) {
