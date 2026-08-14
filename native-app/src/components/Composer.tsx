@@ -33,6 +33,9 @@ type Props = {
   onRecord: () => void;
   onOneTime: () => void;
   onLocation: () => void;
+  /** How photos are sent: re-encoded, or the untouched original. */
+  sendQuality: 'standard' | 'hd';
+  onQuality: (q: 'standard' | 'hd') => void;
   /** Truthy while this device is streaming a live location. */
   liveLocation?: boolean;
   onToggleQuickEmoji: (open: boolean) => void;
@@ -44,6 +47,7 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
   const {
     pendingMedia, oneTimeSecs, quickEmoji, editing,
     onTyping, onSend, onAttach, onRecord, onOneTime, onLocation, liveLocation,
+    sendQuality, onQuality,
     onToggleQuickEmoji, onRemoveMedia, onPreviewMedia,
   } = props;
 
@@ -141,6 +145,36 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
         )}
       </View>
 
+      {/* Quality choice, shown only when a picture is actually staged — it is
+          meaningless for a PDF, and a permanent control would be clutter. */}
+      {pendingMedia.some(m => m.mime.startsWith('image/')) && (
+        <View style={s.qualityBar}>
+          <Ionicons name="image-outline" size={14} color={C.muted} />
+          <Text style={s.qualityLabel}>Photo quality</Text>
+          <View style={s.qualitySwitch}>
+            <TouchableOpacity
+              style={[s.qualityOpt, sendQuality === 'standard' && s.qualityOptOn]}
+              onPress={() => onQuality('standard')}
+            >
+              <Text style={[s.qualityOptText, sendQuality === 'standard' && s.qualityOptTextOn]}>
+                Standard
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[s.qualityOpt, sendQuality === 'hd' && s.qualityOptOn]}
+              onPress={() => onQuality('hd')}
+            >
+              <Text style={[s.qualityOptText, sendQuality === 'hd' && s.qualityOptTextOn]}>
+                HD
+              </Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={s.qualityHint} numberOfLines={1}>
+            {sendQuality === 'hd' ? 'full size, slower' : 'faster to send'}
+          </Text>
+        </View>
+      )}
+
       {/* Staged media previews */}
       {pendingMedia.length > 0 && (
         <View style={s.pendingMediaBar}>
@@ -235,6 +269,20 @@ const s = StyleSheet.create({
   },
   stripBtnText: { color: C.accent, fontSize: 13, fontWeight: '600' },
   oneTimeActive: { backgroundColor: 'rgba(248,113,113,0.25)', borderRadius: 8 },
+  qualityBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingHorizontal: 12, paddingTop: 8,
+  },
+  qualityLabel: { color: C.muted, fontSize: 11.5, fontWeight: '700' },
+  qualitySwitch: {
+    flexDirection: 'row', borderRadius: 13, overflow: 'hidden',
+    borderWidth: 1, borderColor: C.border,
+  },
+  qualityOpt: { paddingHorizontal: 11, paddingVertical: 4 },
+  qualityOptOn: { backgroundColor: C.accent },
+  qualityOptText: { color: C.muted, fontSize: 11.5, fontWeight: '700' },
+  qualityOptTextOn: { color: '#fff' },
+  qualityHint: { color: C.muted, fontSize: 10.5, flexShrink: 1 },
   locationActive: { backgroundColor: 'rgba(34,197,94,0.22)', borderRadius: 8 },
   pendingMediaBar: {
     flexDirection: 'row', alignItems: 'center', gap: 10,

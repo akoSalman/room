@@ -30,6 +30,7 @@ import ImageWithSpinner from '../components/ImageWithSpinner';
 import GalleryImage from '../components/GalleryImage';
 import VideoPlayer, { VideoItem } from '../components/VideoPlayer';
 import VideoBubble from '../components/VideoBubble';
+import EdgeBack from '../components/EdgeBack';
 import TileMap from '../components/TileMap';
 import LocationView, { LocationPin } from '../components/LocationView';
 import * as locationManager from '../locationManager';
@@ -43,6 +44,8 @@ import MusicPlayer from '../components/MusicPlayer';
 import FullMusicPlayer from '../components/FullMusicPlayer';
 import type { Track } from '../audioManager';
 import { guessMime, messageTypeFor, fileIcon, extOf } from '../mime';
+import { compressForSend } from '../compressImage';
+import { Quality } from '../imageQuality';
 import { tokenize, telHref, toAsciiDigits } from '../textTokens';
 import { toast } from '../components/Toast';
 import * as outbox from '../outbox';
@@ -179,6 +182,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // later so the handles become draggable.
   const [textSelectRange, setTextSelectRange] = useState<{ start: number; end: number } | undefined>(undefined);
   const [pendingMedia, setPendingMedia] = useState<{ uri: string; name: string; mime: string }[]>([]);
+  // Photos are sent re-encoded by default — a phone camera's 8 MB original is
+  // what makes sending "take a couple of seconds". HD sends the file untouched.
+  const [sendQuality, setSendQuality] = useState<Quality>('standard');
+  useEffect(() => {
+    AsyncStorage.getItem('sendQuality').then(v => {
+      if (v === 'hd' || v === 'standard') setSendQuality(v);
+    });
+  }, []);
+  function chooseQuality(q: Quality) {
+    setSendQuality(q);
+    AsyncStorage.setItem('sendQuality', q).catch(() => {});
+  }
   const dmPeerPk = useRef<Uint8Array | null>(null); // DM partner's public key (E2E)
   const dmPeerId = useRef<number | null>(null); // DM partner's user id (calls)
   const [e2eActive, setE2eActive] = useState(false);
@@ -1032,7 +1047,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     });
   }
 
-  async function uploadFile(uri: string, name: string, mime: string, caption: string | null = null, oneTimeOverride?: number) {
+  async function uploadFile(
+    uri: string, name: string, mime: string, caption: string | null = null,
+    oneTimeOverride?: number, quality: Quality = sendQuality,
+  ) {
     // messageTypeFor re-checks the extension, so a file whose mime was missing
     // still lands as 'music'/'video'/'image' and gets the right player/bubble.
     const type = messageTypeFor(mime, name || uri);
@@ -1040,6 +1058,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     const replyToId = replyTo?.id ?? null;
     const oneTime = oneTimeOverride ?? (oneTimeSecs ?? undefined);
     setOneTimeSecs(null);
+    // Re-encode BEFORE the durable copy is made, so a retry reuses the
+    // already-compressed file instead of doing the work again.
+    if (type === 'image') {
+      const c = await compressForSend(uri, name, mime, quality);
+      uri = c.uri; name = c.name; mime = c.mime;
+    }
     // Keep a durable copy so an interrupted upload can resume on next open.
     uri = await persistLocal(uri, name);
     addOptimisticMessage(clientId, type, uri, name, replyToId, caption);
@@ -1060,12 +1084,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   // Uploads several images and sends them as ONE gallery message.
-  async function sendGallery(images: { uri: string; name: string; mime: string }[], caption: string | null, oneTime?: number) {
+  async function sendGallery(
+    images: { uri: string; name: string; mime: string }[], caption: string | null,
+    oneTime?: number, quality: Quality = sendQuality,
+  ) {
     const clientId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const replyToId = replyTo?.id ?? null;
     // Durable copies first, so leaving the chat mid-upload doesn't strand the
     // pictures on cache paths that are gone by the time we retry.
-    images = await Promise.all(images.map(async m => ({ ...m, uri: await persistLocal(m.uri, m.name) })));
+    images = await Promise.all(images.map(async m => {
+      const c = await compressForSend(m.uri, m.name, m.mime, quality);
+      return { ...c, uri: await persistLocal(c.uri, c.name) };
+    }));
     addOptimisticMessage(clientId, 'gallery', JSON.stringify(images.map(m => m.uri)), JSON.stringify(images.map(m => m.name)), replyToId, caption);
     setReplyTo(null);
     outbox.markStart(clientId, room.id);
@@ -2149,6 +2179,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   return (
+    // Swipe in from either side edge to leave the chat, like the device's back
+    // button. Suspended whenever something is on top or the user is in the
+    // middle of something modal — going back from under a fullscreen video or
+    // out of a half-finished selection would be a surprise.
+    <EdgeBack
+      onBack={onBack}
+      enabled={
+        !videoItem && openLocationId == null && !cameraMode
+        && !selectedIds.size && textSelectId == null
+        && !forwardOpen && !showPlayer && !recording
+      }
+    >
     <KeyboardAvoidingView style={s.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       {/* Multi-select action bar. Replaces the header while messages are
           picked, the way every chat app does it, so the count and the actions
@@ -2984,6 +3026,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           onOneTime={() => setShowOneTimeMenu(true)}
           onLocation={() => setShowLocationMenu(true)}
           liveLocation={!!liveShare}
+          sendQuality={sendQuality}
+          onQuality={chooseQuality}
           onToggleQuickEmoji={setQuickEmoji}
           onRemoveMedia={(i) => setPendingMedia(prev => prev.filter((_, j) => j !== i))}
           onPreviewMedia={(uri) => openViewer(uri)}
@@ -2993,6 +3037,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         <EmojiBurst key={burst.key} emoji={burst.emoji} onDone={() => setBurst(b => ({ ...b, emoji: '' }))} />
       ) : null}
     </KeyboardAvoidingView>
+    </EdgeBack>
   );
 }
 
