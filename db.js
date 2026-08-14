@@ -58,6 +58,12 @@ try { db.exec('ALTER TABLE messages ADD COLUMN forwarded_from TEXT'); } catch {}
 try { db.exec('ALTER TABLE messages ADD COLUMN one_time_seconds INTEGER'); } catch {}
 try { db.exec('ALTER TABLE messages ADD COLUMN viewed_at INTEGER'); } catch {}
 try { db.exec('ALTER TABLE messages ADD COLUMN played INTEGER DEFAULT 0'); } catch {}
+// Disappearing messages: when a chat has the mode on, everything sent into it
+// is stamped with the moment it should be destroyed. Distinct from
+// one_time_seconds, which counts from when a message is OPENED — this counts
+// from when it was sent, and applies to everyone's messages in the chat.
+try { db.exec('ALTER TABLE messages ADD COLUMN expires_at INTEGER'); } catch {}
+try { db.exec('ALTER TABLE rooms ADD COLUMN disappearing_seconds INTEGER'); } catch {}
 // One-time backfill: voices sent before the played-status feature existed
 // can never receive a voice_played event, so treat them as already played.
 db.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)');

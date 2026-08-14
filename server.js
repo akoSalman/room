@@ -590,7 +590,7 @@ async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
 function destroyMessage(msg) {
   db.prepare('DELETE FROM reactions WHERE message_id = ?').run(msg.id);
   db.prepare('DELETE FROM messages WHERE id = ?').run(msg.id);
-  if (msg.one_time_seconds && msg.file_path) {
+  if ((msg.one_time_seconds || msg.expires_at) && msg.file_path) {
     // Gallery messages store a JSON array of upload paths
     let paths = [];
     if (msg.file_path.startsWith('[')) {
@@ -622,6 +622,12 @@ setInterval(() => {
     db.prepare('SELECT * FROM messages WHERE one_time_seconds IS NOT NULL AND viewed_at IS NOT NULL')
       .all()
       .filter(m => now >= m.viewed_at + m.one_time_seconds * 1000)
+      .forEach(destroyMessage);
+    // Disappearing messages. Swept the same way, so a timer that elapsed while
+    // the server was down is still honoured on the next tick rather than
+    // leaving the message sitting there forever.
+    db.prepare('SELECT * FROM messages WHERE expires_at IS NOT NULL AND expires_at <= ?')
+      .all(now)
       .forEach(destroyMessage);
   } catch (err) {
     console.error('[one-time] sweep error:', err.message);
@@ -836,6 +842,15 @@ app.get('/search', authMiddleware, (req, res) => {
 });
 
 // Room info (for link joining + room profile)
+// The disappearing-messages setting for any chat, DMs included. /room-info is
+// rooms-only, and a DM needs this just as much.
+app.get('/room-settings/:roomId', authMiddleware, (req, res) => {
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  if (!canAccessRoom(req.user.id, room)) return res.status(403).json({ error: 'No access' });
+  res.json({ disappearingSeconds: room.disappearing_seconds || 0 });
+});
+
 app.get('/room-info/:roomId', authMiddleware, (req, res) => {
   const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
   if (!room || room.is_dm) return res.status(404).json({ error: 'Room not found' });
@@ -845,6 +860,7 @@ app.get('/room-info/:roomId', authMiddleware, (req, res) => {
   const owner = room.created_by
     ? db.prepare('SELECT id, username, avatar FROM users WHERE id = ?').get(room.created_by)
     : null;
+  const disappearingSeconds = room.disappearing_seconds || 0;
   // Private rooms: explicit member list. Public rooms: everyone who has posted.
   let members = [];
   if (room.is_private) {
@@ -874,6 +890,7 @@ app.get('/room-info/:roomId', authMiddleware, (req, res) => {
     is_member: room.created_by === req.user.id || !!db.prepare(
       'SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?'
     ).get(room.id, req.user.id),
+    disappearingSeconds,
     members,
   });
 });
@@ -1168,10 +1185,16 @@ io.on('connection', (socket) => {
     const msgType = CLIENT_MSG_TYPES.has(type) ? type : 'text';
     const oneTime = Number.isInteger(oneTimeSeconds) && oneTimeSeconds >= 1 && oneTimeSeconds <= 3600
       ? oneTimeSeconds : null;
+    // Disappearing mode: everything sent into this chat is stamped with when
+    // it dies. Read from the room, not from the sender, so it applies to both
+    // sides even if one of them is on an older build.
+    const disappearing = room && room.disappearing_seconds > 0 ? room.disappearing_seconds : 0;
+    const expiresAt = disappearing ? Date.now() + disappearing * 1000 : null;
+
     const result = db.prepare(`
-      INSERT INTO messages (room_id, user_id, type, content, file_path, file_name, reply_to_id, one_time_seconds)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(roomId, socket.user.id, msgType, content || null, stripSig(filePath), fileName || null, replyToId || null, oneTime);
+      INSERT INTO messages (room_id, user_id, type, content, file_path, file_name, reply_to_id, one_time_seconds, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(roomId, socket.user.id, msgType, content || null, stripSig(filePath), fileName || null, replyToId || null, oneTime, expiresAt);
 
     const msg = db.prepare(`
       SELECT m.*, u.username, u.avatar,
@@ -1508,6 +1531,49 @@ io.on('connection', (socket) => {
     } catch (err) {
       console.error('[leave_room_membership]', err.message);
       reply({ error: 'Could not leave the room' });
+    }
+  });
+
+  // ── Disappearing messages ─────────────────────────────────────────────────
+  //
+  // A chat-wide setting, not a per-message one: once it is on, everything
+  // EITHER side sends is destroyed a fixed time after it was sent. Stored on
+  // the room so it applies to both people regardless of which of them is
+  // online, and announced in the chat so nobody is unaware their words are
+  // being deleted.
+  const DISAPPEARING_CHOICES = [0, 30, 300, 3600, 86400, 604800];
+
+  socket.on('set_disappearing', ({ roomId, seconds }, ack) => {
+    const reply = (r) => { if (typeof ack === 'function') ack(r); };
+    try {
+      const secs = parseInt(seconds, 10) || 0;
+      if (!DISAPPEARING_CHOICES.includes(secs)) return reply({ error: 'Unsupported duration' });
+
+      const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+      if (!room) return reply({ error: 'Room not found' });
+      // Only people in the chat may change it — otherwise anyone reading a
+      // public room could switch it on for its members.
+      if (!isRoomMember(socket.user.id, room)) return reply({ error: 'Join the room first' });
+      if ((room.disappearing_seconds || 0) === secs) return reply({ ok: true, seconds: secs });
+
+      db.prepare('UPDATE rooms SET disappearing_seconds = ? WHERE id = ?').run(secs || null, room.id);
+
+      const msg = insertSystemMessage(room.id, socket.user.id,
+        secs ? 'disappearing_on' : 'disappearing_off', {
+          userId: socket.user.id,
+          username: socket.user.username,
+          avatar: socket.user.avatar || null,
+          seconds: secs,
+        });
+      if (msg) broadcastRoomMessage(room, msg);
+
+      const evt = { roomId: room.id, seconds: secs, byUsername: socket.user.username };
+      io.to(String(room.id)).emit('disappearing_changed', evt);
+      getRoomMemberIds(room).forEach(id => io.to('user:' + id).emit('disappearing_changed', evt));
+      reply({ ok: true, seconds: secs });
+    } catch (err) {
+      console.error('[set_disappearing]', err.message);
+      reply({ error: 'Could not change the setting' });
     }
   });
 

@@ -33,6 +33,8 @@ type Props = {
   onRecord: () => void;
   onOneTime: () => void;
   onLocation: () => void;
+  /** Seconds after which everything in this chat disappears; 0 = off. */
+  disappearing?: number;
   /** How photos are sent: re-encoded, or the untouched original. */
   sendQuality: 'standard' | 'hd';
   onQuality: (q: 'standard' | 'hd') => void;
@@ -47,7 +49,7 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
   const {
     pendingMedia, oneTimeSecs, quickEmoji, editing,
     onTyping, onSend, onAttach, onRecord, onOneTime, onLocation, liveLocation,
-    sendQuality, onQuality,
+    sendQuality, onQuality, disappearing,
     onToggleQuickEmoji, onRemoveMedia, onPreviewMedia,
   } = props;
 
@@ -123,8 +125,15 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
         <TouchableOpacity style={s.stripBtn} onPress={onAttach}>
           <Text style={s.stripBtnText}>📎 Media</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={[s.stripBtn, oneTimeSecs ? s.oneTimeActive : null]} onPress={onOneTime}>
-          <Text style={s.stripBtnText}>🔥 One-time{oneTimeSecs ? ` ${oneTimeSecs}s` : ''}</Text>
+        {/* Just the flame. The label was the widest thing on the strip and
+            said nothing the icon does not; the seconds still show when a
+            one-time timer is armed, because that IS worth knowing. */}
+        <TouchableOpacity
+          style={[s.stripBtn, (oneTimeSecs || disappearing) ? s.oneTimeActive : null]}
+          onPress={onOneTime}
+          accessibilityLabel="Disappearing and one-time messages"
+        >
+          <Text style={s.stripBtnText}>🔥{oneTimeSecs ? ` ${oneTimeSecs}s` : ''}</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[s.stripBtn, liveLocation ? s.locationActive : null]}

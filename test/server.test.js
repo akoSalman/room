@@ -725,6 +725,89 @@ test('the DM name match is escaped, so it cannot cross-match another chat', () =
   mem.close();
 });
 
+test('disappearing messages: announced, applied to BOTH sides, and swept', async () => {
+  const a = await signUp('vanisha');
+  const b = await signUp('vanishb');
+  const room = await api('/rooms', 'POST', { name: 'vanish-room' }, a.token);
+  const sa = await connect(a.token);
+  const sb = await connect(b.token);
+  await emit(sb, 'accept_invite', { roomId: room.id });
+
+  // Turning it on announces it in the chat, so nobody is unaware.
+  const announced = waitFor(sb, 'message_received',
+    m => m.room_id === room.id && m.type === 'system');
+  const on = await emit(sa, 'set_disappearing', { roomId: room.id, seconds: 30 });
+  assert.ok(on.ok, `could not enable: ${JSON.stringify(on)}`);
+  const sys = JSON.parse((await announced).content);
+  assert.strictEqual(sys.kind, 'disappearing_on');
+  assert.strictEqual(sys.seconds, 30);
+  assert.strictEqual(sys.username, 'vanisha');
+
+  assert.strictEqual((await api(`/room-settings/${room.id}`, 'GET', null, b.token)).disappearingSeconds, 30,
+    'the other side was not told the chat is now disappearing');
+
+  // It applies to the OTHER person's messages too, not just whoever set it.
+  await emit(sb, 'send_message', { roomId: room.id, type: 'text', content: 'from b' });
+  await new Promise(r => setTimeout(r, 150));
+  const stored = (await api(`/messages/${room.id}`, 'GET', null, a.token))
+    .find(m => m.content === 'from b');
+  assert.ok(stored, 'the message was not stored');
+  assert.ok(stored.expires_at > Date.now(), 'the message was not given an expiry');
+
+  // Turning it off is announced too, and later messages are permanent again.
+  const offAnnounced = waitFor(sb, 'message_received',
+    m => m.type === 'system' && (JSON.parse(m.content || '{}').kind === 'disappearing_off'));
+  assert.ok((await emit(sa, 'set_disappearing', { roomId: room.id, seconds: 0 })).ok);
+  await offAnnounced;
+  await emit(sb, 'send_message', { roomId: room.id, type: 'text', content: 'permanent' });
+  await new Promise(r => setTimeout(r, 150));
+  const perm = (await api(`/messages/${room.id}`, 'GET', null, a.token))
+    .find(m => m.content === 'permanent');
+  assert.ok(perm && !perm.expires_at, 'a message sent after switching off still expires');
+});
+
+test('an expired message is destroyed and everyone is told', async () => {
+  const u = await signUp('vanishexp');
+  const sock = await connect(u.token);
+  const room = await api('/rooms', 'POST', { name: 'vanish-sweep' }, u.token);
+  await emit(sock, 'set_disappearing', { roomId: room.id, seconds: 30 });
+  await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: 'short-lived' });
+  await new Promise(r => setTimeout(r, 150));
+
+  const msg = (await api(`/messages/${room.id}`, 'GET', null, u.token))
+    .find(m => m.content === 'short-lived');
+  assert.ok(msg, 'message missing');
+
+  // Backdate it rather than waiting 30 seconds, then let the sweeper run.
+  const db = require('../db.js');
+  db.prepare('UPDATE messages SET expires_at = ? WHERE id = ?').run(Date.now() - 1000, msg.id);
+  const gone = waitFor(sock, 'message_deleted', p => p.messageId === msg.id, 40000);
+  await gone;
+
+  const after = (await api(`/messages/${room.id}`, 'GET', null, u.token))
+    .find(m => m.id === msg.id);
+  assert.ok(!after, 'the expired message is still in history');
+}, 45000);
+
+test('SECURITY: a non-member cannot switch disappearing messages on', async () => {
+  const owner = await signUp('vanishowner');
+  const outsider = await signUp('vanishoutsider');
+  const room = await api('/rooms', 'POST', { name: 'vanish-public' }, owner.token);
+  const sock = await connect(outsider.token);
+  const res = await emit(sock, 'set_disappearing', { roomId: room.id, seconds: 3600 });
+  assert.ok(res.error, 'someone who had not joined changed the chat setting');
+  assert.strictEqual((await api(`/room-settings/${room.id}`, 'GET', null, owner.token)).disappearingSeconds, 0);
+});
+
+test('an arbitrary disappearing duration is refused', async () => {
+  const u = await signUp('vanishdur');
+  const sock = await connect(u.token);
+  const room = await api('/rooms', 'POST', { name: 'vanish-dur' }, u.token);
+  // Not one of the offered choices — a client must not be able to invent one.
+  assert.ok((await emit(sock, 'set_disappearing', { roomId: room.id, seconds: 7 })).error);
+  assert.ok((await emit(sock, 'set_disappearing', { roomId: room.id, seconds: -5 })).error);
+});
+
 test('room list is ordered by most recent activity, not by name', async () => {
   const u = await signUp('sorter6');
   const sock = await connect(u.token);

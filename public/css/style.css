@@ -980,3 +980,12 @@ html {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -100%);
   font-size: 22px; line-height: 1; filter: drop-shadow(0 1px 2px rgba(0,0,0,.5));
 }
+
+/* Disappearing messages: a distinctly different chat, so the mode is obvious */
+.disappearing-bar {
+  background: #1f2a3a; color: #9fb4d4; font-size: 12px; font-weight: 700;
+  text-align: center; padding: 6px 14px; border-bottom: 1px solid #31415a;
+}
+body.disappearing-on #messages { background: #141a24; }
+body.disappearing-on .msg-bubble { background: #1e2836; color: #dbe6f5; }
+body.disappearing-on .msg-caption, body.disappearing-on .msg-time { color: #8fa3c0; }

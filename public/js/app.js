@@ -488,6 +488,11 @@ function connectSocket() {
       applyEdit(messageId, content);
     });
     socket.on('message_deleted', ({ messageId }) => applyDelete(messageId));
+    // Disappearing mode changed: re-skin the chat so it is obvious here too.
+    socket.on('disappearing_changed', ({ roomId, seconds }) => {
+      if (roomId != null && String(roomId) !== String(currentRoomId)) return;
+      applyDisappearingSkin(seconds || 0);
+    });
     // A live share moved: swap the card in place, keeping everything else in
     // the bubble (reply quote, timestamp, reactions) untouched.
     socket.on('location_updated', ({ messageId, roomId, content }) => {
@@ -1189,6 +1194,12 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   // Shared content works for DMs too — that's where most media lives.
   document.getElementById('room-media-btn').classList.remove('hidden');
   refreshJoinBar(roomId, isDM);
+  // Whether THIS chat destroys its messages — the skin must follow the room,
+  // not linger from the last one.
+  applyDisappearingSkin(0);
+  api(`/room-settings/${roomId}`)
+    .then(r => { if (r && !r.error && String(currentRoomId) === String(roomId)) applyDisappearingSkin(r.disappearingSeconds || 0); })
+    .catch(() => {});
   jumpBackStack = [];
   document.getElementById('scroll-fab').classList.add('hidden');
   oldestLoadedMsgId = null;
@@ -2179,6 +2190,25 @@ function updateSeenCheckmarks() {
 // A location message on the web: a static OpenStreetMap frame with the pin,
 // plus a link out to a real map. Live shares keep re-rendering as the sender
 // moves, because `location_updated` rewrites the message's content.
+// A visibly different chat while messages are being destroyed. Forgetting the
+// mode is on is exactly when it does damage, so the whole page says so.
+function applyDisappearingSkin(seconds) {
+  document.body.classList.toggle('disappearing-on', seconds > 0);
+  let bar = document.getElementById('disappearing-bar');
+  if (!seconds) { if (bar) bar.remove(); return; }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'disappearing-bar';
+    bar.className = 'disappearing-bar';
+    const msgs = document.getElementById('messages');
+    if (msgs && msgs.parentNode) msgs.parentNode.insertBefore(bar, msgs);
+  }
+  const label = seconds === 30 ? '30 seconds' : seconds === 300 ? '5 minutes'
+    : seconds === 3600 ? '1 hour' : seconds === 86400 ? '24 hours'
+    : seconds === 604800 ? '1 week' : `${seconds} seconds`;
+  bar.textContent = `\u23F3  Disappearing messages on \u00B7 ${label}`;
+}
+
 function buildLocationCard(msg) {
   const wrap = document.createElement('div');
   wrap.className = 'loc-card';
@@ -2358,7 +2388,16 @@ function buildMessageElement(msg) {
     nameEl.textContent = (d.avatar ? d.avatar + ' ' : '') + (isMe ? 'You' : who);
     el.appendChild(nameEl);
     const rest = document.createElement('span');
-    rest.textContent = d.kind === 'removed'
+    // Mirrors disappearingLabel() in the app — the same six choices.
+    const durLabel = (secs) => secs === 30 ? '30 seconds' : secs === 300 ? '5 minutes'
+      : secs === 3600 ? '1 hour' : secs === 86400 ? '24 hours' : secs === 604800 ? '1 week'
+      : secs < 60 ? `${secs} seconds` : secs < 3600 ? `${Math.round(secs / 60)} minutes`
+      : secs < 86400 ? `${Math.round(secs / 3600)} hours` : `${Math.round(secs / 86400)} days`;
+    rest.textContent = d.kind === 'disappearing_on'
+      ? ` turned on disappearing messages — new messages vanish after ${durLabel(d.seconds || 0)}`
+      : d.kind === 'disappearing_off'
+      ? ' turned off disappearing messages'
+      : d.kind === 'removed'
       ? ` ${isMe ? 'were' : 'was'} removed from the room${d.byUsername ? ' by ' + d.byUsername : ''}`
       : d.kind === 'left'
       ? ` left the room`

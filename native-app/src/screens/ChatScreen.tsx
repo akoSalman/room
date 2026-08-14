@@ -52,6 +52,7 @@ import { VideoQuality } from '../videoQuality';
 import { Quality } from '../imageQuality';
 import { tokenize, telHref, toAsciiDigits } from '../textTokens';
 import { charIndexAt, wordRangeAt, TextLine } from '../textSelect';
+import { DISAPPEARING_OPTIONS, disappearingLabel, disappearingPredicate } from '../disappearing';
 import { toast } from '../components/Toast';
 import * as outbox from '../outbox';
 import EmojiBurst from '../components/EmojiBurst';
@@ -179,6 +180,23 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [oneTimeSecs, setOneTimeSecs] = useState<number | null>(null); // 🔥 applies to next message
   const [revealedOneTime, setRevealedOneTime] = useState<Set<number | string>>(new Set());
   const [showOneTimeMenu, setShowOneTimeMenu] = useState(false);
+  // Chat-wide disappearing timer, 0 = off. Drives the menu, the banner and the
+  // "secret" look of the whole screen.
+  const [disappearing, setDisappearing] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    apiFetch(`/room-settings/${room.id}`)
+      .then((r: any) => { if (alive && r && !r.error) setDisappearing(r.disappearingSeconds || 0); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [room.id]);
+  function chooseDisappearing(seconds: number) {
+    setShowOneTimeMenu(false);
+    socketRef.current?.emit('set_disappearing', { roomId: room.id, seconds }, (res: any) => {
+      if (res?.error) { Alert.alert('Could not change', res.error); return; }
+      setDisappearing(res.seconds || 0);
+    });
+  }
   const [actionsMsg, setActionsMsg] = useState<{ msg: Message; x: number; y: number } | null>(null); // tap menu for a message
   // Long press puts the chat into multi-select: pick several messages and
   // forward or delete them in one go.
@@ -1834,6 +1852,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     return () => { alive = false; };
   }, [locationPins.length, myPosition]);
 
+  useEffect(() => {
+    const sock = socketRef.current;
+    if (!sock) return;
+    const onChanged = ({ roomId, seconds }: any) => {
+      if (String(roomId) !== String(room.id)) return;
+      setDisappearing(seconds || 0);
+    };
+    sock.on('disappearing_changed', onChanged);
+    return () => { sock.off('disappearing_changed', onChanged); };
+  }, [room.id, socketRef.current]);
+
   // Everyone in the room sees live pins move.
   useEffect(() => {
     const sock = socketRef.current;
@@ -1886,7 +1915,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             <Text style={s.systemName}>
               {d.avatar ? `${d.avatar} ` : ''}{isMe ? 'You' : who}
             </Text>
-            {d.kind === 'removed'
+            {d.kind === 'disappearing_on' || d.kind === 'disappearing_off'
+              ? <Text>{' '}{disappearingPredicate(d.seconds || 0)}</Text>
+              : d.kind === 'removed'
               ? <Text>{' '}{isMe ? 'were' : 'was'} removed from the room{d.byUsername ? ` by ${d.byUsername}` : ''}</Text>
               : d.kind === 'left'
               ? <Text>{' '}left the room</Text>
@@ -2294,7 +2325,21 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         && !forwardOpen && !showPlayer && !recording
       }
     >
-    <KeyboardAvoidingView style={s.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <KeyboardAvoidingView
+      // A visibly different, darker chat while messages are being destroyed.
+      // The mode is easy to forget you switched on, and forgetting it is
+      // exactly when it does damage — so the whole screen says so, not a
+      // single small icon.
+      style={[s.container, disappearing > 0 && s.containerSecret]}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
+      {disappearing > 0 && (
+        <View style={s.secretBar}>
+          <Text style={s.secretBarText} numberOfLines={1}>
+            ⏳  Disappearing messages on · {disappearingLabel(disappearing)}
+          </Text>
+        </View>
+      )}
       {/* Multi-select action bar. Replaces the header while messages are
           picked, the way every chat app does it, so the count and the actions
           sit where the user is already looking. */}
@@ -2811,6 +2856,53 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         }}
       />
 
+      {/* One-time message duration picker */}
+      <Modal visible={showOneTimeMenu} transparent animationType="slide" onRequestClose={() => setShowOneTimeMenu(false)}>
+        <View style={s.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowOneTimeMenu(false)} />
+          <View style={s.attachSheet}>
+            <View style={s.sheetHandle} />
+            <Text style={s.forwardTitle}>🔥 One-time message</Text>
+            <Text style={s.oneTimeHint}>Just the NEXT message, destroyed this many seconds after it is opened:</Text>
+            {[5, 30, 60].map(secs => (
+              <TouchableOpacity key={secs} style={s.attachOption} onPress={() => chooseOneTime(secs)}>
+                <Text style={s.attachOptionText}>{secs} seconds{oneTimeSecs === secs ? '  ✓' : ''}</Text>
+              </TouchableOpacity>
+            ))}
+            {oneTimeSecs ? (
+              <TouchableOpacity style={s.attachOption} onPress={() => chooseOneTime(null)}>
+                <Text style={[s.attachOptionText, { color: '#f87171' }]}>Turn off</Text>
+              </TouchableOpacity>
+            ) : null}
+
+            {/* The chat-wide setting, kept clearly apart from the one-shot one
+                above: this affects EVERY later message from BOTH people, and
+                the other side is told when it changes. */}
+            <View style={s.sheetDivider} />
+            <Text style={s.forwardTitle}>⏳ Disappearing messages</Text>
+            <Text style={s.oneTimeHint}>
+              Every new message from both of you is deleted after this long, and
+              everyone in the chat is told when this changes.
+            </Text>
+            {DISAPPEARING_OPTIONS.filter(v => v > 0).map(secs => (
+              <TouchableOpacity key={`d${secs}`} style={s.attachOption} onPress={() => chooseDisappearing(secs)}>
+                <Text style={s.attachOptionText}>
+                  {disappearingLabel(secs)}{disappearing === secs ? '  ✓' : ''}
+                </Text>
+              </TouchableOpacity>
+            ))}
+            {disappearing ? (
+              <TouchableOpacity style={s.attachOption} onPress={() => chooseDisappearing(0)}>
+                <Text style={[s.attachOptionText, { color: '#f87171' }]}>Turn off disappearing messages</Text>
+              </TouchableOpacity>
+            ) : null}
+            <TouchableOpacity style={s.attachCancel} onPress={() => setShowOneTimeMenu(false)}>
+              <Text style={s.attachCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       {/* How to send a video: resolution, and trimming. */}
       {videoChoice && (
         <VideoSendSheet
@@ -3040,6 +3132,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           onOneTime={() => setShowOneTimeMenu(true)}
           onLocation={() => setShowLocationMenu(true)}
           liveLocation={!!liveShare}
+          disappearing={disappearing}
           sendQuality={sendQuality}
           onQuality={chooseQuality}
           onToggleQuickEmoji={setQuickEmoji}
@@ -3266,6 +3359,14 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(59,125,216,0.14)',
     borderWidth: StyleSheet.hairlineWidth, borderColor: C.accent,
   },
+  // ── The "secret" skin ──────────────────────────────────────────────────────
+  containerSecret: { backgroundColor: '#141a24' },
+  secretBar: {
+    backgroundColor: '#1f2a3a',
+    paddingVertical: 6, paddingHorizontal: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#31415a',
+  },
+  secretBarText: { color: '#9fb4d4', fontSize: 11.5, fontWeight: '700', textAlign: 'center' },
   sheetDivider: { height: StyleSheet.hairlineWidth, backgroundColor: C.border, marginVertical: 8 },
   sheetRow: {
     flexDirection: 'row', alignItems: 'center', gap: 16,
