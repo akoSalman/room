@@ -26,13 +26,14 @@ import { Ionicons } from '@expo/vector-icons';
 import Composer, { ComposerHandle } from '../components/Composer';
 import AwesomeGallery from 'react-native-awesome-gallery';
 import GalleryGrid from '../components/GalleryGrid';
-import MediaBrowser from '../components/MediaBrowser';
+import MediaBrowser, { MediaAction, MediaItem } from '../components/MediaBrowser';
 import ImageWithSpinner from '../components/ImageWithSpinner';
 import GalleryImage from '../components/GalleryImage';
 import VideoPlayer, { VideoItem } from '../components/VideoPlayer';
 import VideoBubble from '../components/VideoBubble';
 import EdgeBack from '../components/EdgeBack';
 import ExpiryRing from '../components/ExpiryRing';
+import TextViewer from '../components/TextViewer';
 import TileMap from '../components/TileMap';
 import LocationView, { LocationPin } from '../components/LocationView';
 import * as locationManager from '../locationManager';
@@ -165,6 +166,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // new messages arrive while watching.
   const [videoPlaylist, setVideoPlaylist] = useState<VideoItem[]>([]);
   // Which location message is open fullscreen, and the live-share menu.
+  // A message opened for reliable text selection (see TextViewer).
+  const [selectTextOf, setSelectTextOf] = useState<string | null>(null);
   const [openLocationId, setOpenLocationId] = useState<number | string | null>(null);
   const [showLocationMenu, setShowLocationMenu] = useState(false);
   const [liveShare, setLiveShare] = useState(locationManager.activeShare());
@@ -1142,6 +1145,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   async function uploadFile(
     uri: string, name: string, mime: string, caption: string | null = null,
     oneTimeOverride?: number, quality: Quality = sendQuality,
+    // Slow video work, deferred so it runs AFTER the bubble is on screen.
+    videoPrep?: (onProgress: (p: number) => void) => Promise<{ uri: string; name: string }>,
   ) {
     // messageTypeFor re-checks the extension, so a file whose mime was missing
     // still lands as 'music'/'video'/'image' and gets the right player/bubble.
@@ -1150,16 +1155,33 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     const replyToId = replyTo?.id ?? null;
     const oneTime = oneTimeOverride ?? (oneTimeSecs ?? undefined);
     setOneTimeSecs(null);
-    // Re-encode BEFORE the durable copy is made, so a retry reuses the
-    // already-compressed file instead of doing the work again.
+    // The bubble goes up FIRST, showing the original file, and the slow work
+    // happens behind it.
+    //
+    // This used to run the other way round: re-encode, then persist, then show
+    // the bubble. Choosing 720p and pressing Send therefore left the user
+    // staring at "Preparing video…" with nothing in the chat, for as long as
+    // the transcode took. Every other messenger puts the message in the chat
+    // immediately and does the work underneath it, because the message being
+    // there is what the user pressed Send for.
+    addOptimisticMessage(clientId, type, uri, name, replyToId, caption);
+    setReplyTo(null);
+
     if (type === 'image') {
       const c = await compressForSend(uri, name, mime, quality);
       uri = c.uri; name = c.name; mime = c.mime;
+    } else if (type === 'video' && videoPrep) {
+      // Transcode/trim, reported as progress on the bubble itself.
+      const out = await videoPrep((pct) =>
+        setUploadProgress(prev => ({ ...prev, [clientId]: Math.round(pct * 40) })));
+      uri = out.uri; name = out.name;
     }
     // Keep a durable copy so an interrupted upload can resume on next open.
     uri = await persistLocal(uri, name);
-    addOptimisticMessage(clientId, type, uri, name, replyToId, caption);
-    setReplyTo(null);
+    // The bubble was created against the ORIGINAL file; point it at whatever
+    // is actually going to be uploaded.
+    setMessages(prev => prev.map(m =>
+      String(m.id) === clientId ? { ...m, file_path: uri, file_name: name } : m));
     // Registered at module scope: the upload keeps running if the user leaves
     // this chat, and re-entering must not start a second copy of it.
     outbox.markStart(clientId, room.id);
@@ -1575,6 +1597,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     });
   }
 
+  // The media endpoint returns objects now; older servers returned bare
+  // strings. Both are handled so a stale server does not empty the gallery.
+  const normaliseMediaUrls = (list: any): string[] =>
+    (Array.isArray(list) ? list : []).map((x: any) => (typeof x === 'string' ? x : x?.url)).filter(Boolean);
+
   const roomLink = `${BASE_URL}/join/${room.id}`;
   // Server-rendered, disk-cached thumbnail for an /uploads path. Media paths
   // now carry a signature (?e=&s=); /thumb checks the same one, so it has to
@@ -1757,22 +1784,76 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     setVideoChoice(null);
     if (!pending) return;
 
-    let uri = choice.uri;
-    let name = pending.item.name;
-    if (choice.quality !== 'original') {
-      setVideoWorking(0.001);   // a non-zero value is what shows the bar
-      uri = await compressVideo(
-        choice.uri, choice.quality, choice.size, p => setVideoWorking(p || 0.001),
-        pending.bytes, choice.seconds,
-      );
-      setVideoWorking(0);
-      // Re-encoding always produces an mp4, whatever the source container was.
-      if (uri !== choice.uri) name = name.replace(/\.[^.]+$/, '') + '.mp4';
-    } else if (uri !== pending.item.uri) {
-      // Trimmed but not re-encoded — still a new file.
-      name = name.replace(/\.[^.]+$/, '') + '.mp4';
+    // Hand the transcode to uploadFile as a deferred step: the bubble appears
+    // straight away and this runs behind it, reporting onto the bubble's own
+    // progress bar. Pressing Send now feels instant even for a 4K clip.
+    const prep = async (onProgress: (p: number) => void) => {
+      let uri = choice.uri;
+      let name = pending.item.name;
+      if (choice.quality !== 'original') {
+        uri = await compressVideo(
+          choice.uri, choice.quality, choice.size, onProgress, pending.bytes, choice.seconds,
+        );
+      }
+      // Re-encoding, and the trimmer, both produce an mp4 whatever went in.
+      if (uri !== pending.item.uri) name = name.replace(/\.[^.]+$/, '') + '.mp4';
+      return { uri, name };
+    };
+
+    uploadFile(choice.uri, pending.item.name, 'video/mp4', pending.caption, pending.oneTime,
+      sendQuality, prep);
+  }
+
+  // Actions for the photo currently open in the viewer. The url is matched
+  // back to the shared-media list so "Show in chat" knows which message it
+  // came from.
+  const [viewerActions, setViewerActions] = useState<MediaItem | null>(null);
+  function openViewerActions() {
+    if (!viewerUrl) return;
+    const rel = viewerUrl.startsWith(BASE_URL) ? viewerUrl.slice(BASE_URL.length) : viewerUrl;
+    const list: any[] = Array.isArray(mediaData?.images) ? mediaData.images : [];
+    const hit = list.find((x: any) => (typeof x === 'string' ? x : x?.url) === rel);
+    setViewerActions(hit && typeof hit === 'object'
+      ? hit
+      : { url: rel, name: rel.split('/').pop() || 'photo' });
+  }
+
+  // What the media browser's long-press menu does. Everything routes through
+  // the same helpers the chat itself uses, so a file behaves identically
+  // whether it is opened from a bubble or from the gallery.
+  async function onMediaAction(action: MediaAction, item: MediaItem) {
+    const abs = item.url.startsWith('http') ? item.url : `${BASE_URL}${item.url}`;
+    if (action === 'showInChat') {
+      if (!item.msgId) { toast('That message is no longer here'); return; }
+      setShowMedia(false);
+      setViewerFromMedia(false);
+      // Paging back to an old message takes a moment; close the browser first
+      // so the jump is visible rather than happening behind it.
+      setTimeout(() => jumpToMessage(Number(item.msgId)), 250);
+      return;
     }
-    uploadFile(uri, name, 'video/mp4', pending.caption, pending.oneTime);
+    if (action === 'open') {
+      const images = normaliseMediaUrls(mediaData?.images);
+      const idx = images.indexOf(item.url);
+      if (idx >= 0) {
+        setShowMedia(false);
+        setViewerFromMedia(true);
+        openViewer(`${BASE_URL}${images[idx]}`, images.map(u => `${BASE_URL}${u}`));
+      } else {
+        Linking.openURL(abs).catch(() => toast('Could not open this'));
+      }
+      return;
+    }
+    // Download and Share reuse the chat's own paths, which already handle the
+    // durable copy, the progress and the OS share sheet.
+    const asMessage: any = {
+      id: item.msgId ?? `media-${item.url}`,
+      file_path: item.url.startsWith('http') ? item.url : item.url,
+      file_name: item.name || item.url.split('/').pop() || 'file',
+      type: item.kind === 'music' ? 'music' : item.kind === 'video' ? 'video' : 'file',
+    };
+    if (action === 'download') downloadMedia(asMessage);
+    else if (action === 'share') shareOut(asMessage);
   }
 
   // Post a location. `liveMinutes` 0 = a one-off pin; anything else starts a
@@ -2484,6 +2565,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                   <Text style={s.lightboxCloseText}>⬇</Text>
                 </TouchableOpacity>
               )}
+              {/* The same actions as the gallery's long-press menu, on the
+                  photo you are actually looking at — including Show in chat. */}
+              {!isOneTimeUrl(viewerUrl) && (
+                <TouchableOpacity
+                  onPress={() => openViewerActions()}
+                  style={s.lightboxMore}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                  <Ionicons name="ellipsis-horizontal" size={20} color="#fff" />
+                </TouchableOpacity>
+              )}
               {viewer.images.length > 1 && (
                 <Text style={s.lightboxCounter}>{viewerIdx + 1} / {viewer.images.length}</Text>
               )}
@@ -2797,6 +2889,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                   setReplyTo({ id: m.id, username: m.username, content: m.content, type: m.type });
                   composerRef.current?.focus();
                 }} />
+                {/* Inline selection is unreliable on any message containing a
+                    link, a phone number or even a price: those render as
+                    pressable spans and swallow the long-press. This always
+                    works, whatever the message contains. */}
+                {m.type === 'text' && !hidden && !!m.content && (
+                  <Row icon="✏️" label="Select text" onPress={() => {
+                    close();
+                    setSelectTextOf(m.content || '');
+                  }} />
+                )}
                 {(m.type === 'text' || (m.file_path && !m.one_time_seconds)) && !hidden && (
                   <Row icon="📋" label="Copy" onPress={() => {
                     let fp = m.file_path || '';
@@ -2849,6 +2951,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           setViewerFromMedia(true);
           openViewer(all[i], all);
         }}
+        onAction={onMediaAction}
       />
 
       {/* One-time message duration picker */}
@@ -2948,6 +3051,41 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           </View>
         </View>
       </Modal>
+
+      <Modal visible={!!viewerActions} transparent animationType="fade" onRequestClose={() => setViewerActions(null)}>
+        <View style={s.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setViewerActions(null)} />
+          <View style={s.attachSheet}>
+            <View style={s.sheetHandle} />
+            {([
+              ['showInChat', '💬  Show in chat'],
+              ['download', '⬇  Download'],
+              ['share', '📤  Share'],
+            ] as [MediaAction, string][]).map(([action, label]) => (
+              <TouchableOpacity key={action} style={s.attachOption} onPress={() => {
+                const it = viewerActions; setViewerActions(null);
+                if (!it) return;
+                setViewer(null);
+                onMediaAction(action, it);
+              }}>
+                <Text style={s.attachOptionText}>{label}</Text>
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity style={s.attachCancel} onPress={() => setViewerActions(null)}>
+              <Text style={s.attachCancelText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {selectTextOf != null && (
+        <TextViewer
+          visible
+          text={selectTextOf}
+          onClose={() => setSelectTextOf(null)}
+          onCopyAll={() => { copy(selectTextOf, 'message'); setSelectTextOf(null); }}
+        />
+      )}
 
       {/* Fullscreen map for a tapped location, with everyone who is sharing. */}
       {openLocationId != null && (
@@ -3516,6 +3654,7 @@ const s = StyleSheet.create({
   memberRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.border },
   memberName: { color: C.text, fontSize: 14 },
   memberOwnerTag: { color: C.accent, fontSize: 11, fontWeight: '700', backgroundColor: 'rgba(59,125,216,0.1)', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8 },
+  lightboxMore: { position: 'absolute', top: 50, end: 108, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
   lightboxClose: { position: 'absolute', top: 50, end: 20, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
   lightboxSave: { position: 'absolute', top: 50, end: 68, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
   lightboxCloseText: { color: '#fff', fontSize: 18 },

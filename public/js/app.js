@@ -801,12 +801,14 @@ function renderMedia() {
     grid.className = 'media-grid';
     // Absolute urls, in the order shown, so the lightbox swipes through the
     // gallery itself rather than through whatever the chat has rendered.
-    const full = mediaData.images.map(u => location.origin + u);
+    const full = mediaData.images.map(x => location.origin + mediaUrl(x));
     full.forEach((src, i) => {
       const img = document.createElement('img');
       // Grid cells load a small server-rendered thumbnail; the full image is
       // only fetched when one is actually opened.
-      img.src = thumbUrl(mediaData.images[i], 200);
+      // The smallest thumbnail the server makes: the grid cells are small,
+      // and asking for a bigger one only makes the gallery slower to fill.
+      img.src = thumbUrl(mediaUrl(mediaData.images[i]), 96);
       img.onerror = () => { img.onerror = null; img.src = src; };  // non-image or old upload
       img.loading = 'lazy';
       img.onclick = () => { lightboxList = full; lightboxIdx = i; showLightboxAt(i); show('lightbox'); };
@@ -820,7 +822,8 @@ function renderMedia() {
     if (!mediaData.links.length) return empty('links');
     const list = document.createElement('div');
     list.className = 'media-list';
-    mediaData.links.forEach(l => {
+    mediaData.links.forEach(item => {
+      const l = mediaUrl(item);
       const a = document.createElement('a');
       a.className = 'media-row';
       a.href = /^https?:\/\//.test(l) ? l : 'https://' + l;
@@ -2264,6 +2267,12 @@ function watchForSeen(el, msg) {
   }
   seenObserver.observe(el);
 }
+
+// /room-media returns objects now ({url, msgId, name}); it used to return bare
+// strings. Both shapes are accepted so a browser talking to an older server
+// does not render an empty gallery.
+function mediaUrl(x) { return typeof x === 'string' ? x : (x && x.url) || ''; }
+function mediaName(x) { return (x && x.name) || mediaUrl(x).split('/').pop() || 'file'; }
 
 function applyDisappearingSkin(seconds) {
   document.body.classList.toggle('disappearing-on', seconds > 0);

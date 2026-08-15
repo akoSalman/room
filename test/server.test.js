@@ -944,6 +944,32 @@ test('disappearing messages reach the OTHER side of a DM, live', async () => {
   await aNotified;
 });
 
+test('shared media carries the message it came from, for "Show in chat"', async () => {
+  const u = await signUp('mediajump');
+  const room = await api('/rooms', 'POST', { name: 'media-jump' }, u.token);
+  const sock = await connect(u.token);
+  await emit(sock, 'send_message', {
+    roomId: room.id, type: 'image', filePath: '/uploads/pic-1.jpg', fileName: 'pic-1.jpg',
+  });
+  await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: 'see https://example.com/x' });
+  await new Promise(r => setTimeout(r, 150));
+
+  const sent = await api(`/messages/${room.id}`, 'GET', null, u.token);
+  const imgMsg = sent.find(m => m.type === 'image');
+  const media = await api(`/room-media/${room.id}`, 'GET', null, u.token);
+
+  assert.ok(media.images.length, 'no images listed');
+  const img = media.images[0];
+  assert.strictEqual(typeof img, 'object', 'images are still bare strings — no message to jump to');
+  assert.strictEqual(img.msgId, imgMsg.id, 'the image does not point at its message');
+  assert.ok(img.url.includes('/uploads/'), 'the image lost its url');
+  assert.ok(/[?&]s=/.test(img.url), 'the image url is unsigned');
+
+  assert.ok(media.links.length, 'no links listed');
+  assert.ok(media.links[0].msgId, 'a link does not point at its message');
+  assert.ok(media.links[0].url.includes('example.com'), 'the link lost its url');
+});
+
 test('room list is ordered by most recent activity, not by name', async () => {
   const u = await signUp('sorter6');
   const sock = await connect(u.token);

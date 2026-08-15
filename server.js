@@ -777,16 +777,28 @@ app.get('/room-media/:roomId', authMiddleware, (req, res) => {
   `).all(room.id);
   const media = { images: [], files: [], music: [], links: [] };
   const LINK_RE = /(https?:\/\/[^\s]+|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:\/[^\s]*)?)/g;
+  // Every item carries the id of the message it came from, so the browser can
+  // offer "Show in chat" and jump straight to it.
   rows.forEach(m => {
-    if (m.type === 'image' && m.file_path) media.images.push(signPath(m.file_path));
-    else if (m.type === 'gallery' && m.file_path) {
-      try { JSON.parse(m.file_path).forEach(u => media.images.push(signPath(u))); } catch {}
-    } else if (m.type === 'video' && m.file_path) media.files.push({ url: signPath(m.file_path), name: m.file_name || 'Video' });
-    else if (m.type === 'file' && m.file_path) media.files.push({ url: signPath(m.file_path), name: m.file_name || 'File' });
-    else if (m.type === 'music' && m.file_path) media.music.push({ url: signPath(m.file_path), name: m.file_name || 'Audio' });
+    if (m.type === 'image' && m.file_path) {
+      media.images.push({ url: signPath(m.file_path), msgId: m.id, name: m.file_name || 'Photo' });
+    } else if (m.type === 'gallery' && m.file_path) {
+      try {
+        JSON.parse(m.file_path).forEach(u =>
+          media.images.push({ url: signPath(u), msgId: m.id, name: m.file_name || 'Photo' }));
+      } catch {}
+    } else if (m.type === 'video' && m.file_path) {
+      media.files.push({ url: signPath(m.file_path), name: m.file_name || 'Video', msgId: m.id, kind: 'video' });
+    } else if (m.type === 'file' && m.file_path) {
+      media.files.push({ url: signPath(m.file_path), name: m.file_name || 'File', msgId: m.id, kind: 'file' });
+    } else if (m.type === 'music' && m.file_path) {
+      media.music.push({ url: signPath(m.file_path), name: m.file_name || 'Audio', msgId: m.id, kind: 'music' });
+    }
     if (m.type === 'text' && m.content && !m.content.startsWith('e2e:')) {
       (m.content.match(LINK_RE) || []).forEach(l => {
-        if (media.links.length < 200 && !media.links.includes(l)) media.links.push(l);
+        if (media.links.length < 200 && !media.links.some(x => x.url === l)) {
+          media.links.push({ url: l, msgId: m.id });
+        }
       });
     }
   });
