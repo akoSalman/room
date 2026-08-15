@@ -69,6 +69,9 @@ try { db.exec('ALTER TABLE messages ADD COLUMN expires_at INTEGER'); } catch {}
 // mail.
 try { db.exec('ALTER TABLE messages ADD COLUMN disappear_seconds INTEGER'); } catch {}
 try { db.exec('ALTER TABLE rooms ADD COLUMN disappearing_seconds INTEGER'); } catch {}
+// How many times this account has changed its username. A username is how
+// people find and address each other, so it is deliberately hard to churn.
+try { db.exec('ALTER TABLE users ADD COLUMN username_changes INTEGER DEFAULT 0'); } catch {}
 // One-time backfill: voices sent before the played-status feature existed
 // can never receive a voice_played event, so treat them as already played.
 db.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)');

@@ -1090,6 +1090,89 @@ test('SECURITY: search respects room access', async () => {
   assert.strictEqual(r.status, 403, 'an outsider searched a private room');
 });
 
+test('a username can be changed twice, then never again', async () => {
+  const u = await signUp('namechange1');
+  let r = await api('/profile', 'PUT', { newUsername: 'namechange2', currentPassword: 'pw123456' }, u.token);
+  assert.ok(!r.error, `first change failed: ${JSON.stringify(r)}`);
+  assert.strictEqual(r.username, 'namechange2');
+  assert.strictEqual(r.usernameChangesLeft, 1, 'the client was not told how many changes remain');
+
+  r = await api('/profile', 'PUT', { newUsername: 'namechange3', currentPassword: 'pw123456' }, r.token);
+  assert.ok(!r.error, `second change failed: ${JSON.stringify(r)}`);
+  assert.strictEqual(r.usernameChangesLeft, 0);
+
+  const third = await api('/profile', 'PUT', { newUsername: 'namechange4', currentPassword: 'pw123456' }, r.token);
+  assert.ok(third.error, 'a third username change was allowed');
+  // And the name really did not move.
+  const me = await api('/me', 'GET', null, r.token);
+  assert.strictEqual(me.username, 'namechange3');
+  assert.strictEqual(me.usernameChangesLeft, 0);
+});
+
+test('a new username still has to obey the rules, and be free', async () => {
+  const a = await signUp('namerules1');
+  await signUp('nametaken1');
+  assert.ok((await api('/profile', 'PUT', { newUsername: 'x', currentPassword: 'pw123456' }, a.token)).error,
+    'a too-short username was accepted');
+  assert.ok((await api('/profile', 'PUT', { newUsername: 'NameTaken1', currentPassword: 'pw123456' }, a.token)).error,
+    'a name differing only in case was accepted');
+  // A rejected attempt must not burn one of the two allowed changes.
+  assert.strictEqual((await api('/me', 'GET', null, a.token)).usernameChangesLeft, 2,
+    'a failed attempt consumed a change');
+});
+
+test('@mentions notify the named person and list as unread', async () => {
+  const a = await signUp('mentiona');
+  const b = await signUp('mentionb');
+  const room = await api('/rooms', 'POST', { name: 'mention-room' }, a.token);
+  const sa = await connect(a.token);
+  const sb = await connect(b.token);
+  await emit(sb, 'accept_invite', { roomId: room.id });
+
+  const told = waitFor(sb, 'mentioned', e => String(e.roomId) === String(room.id));
+  await emit(sa, 'send_message', { roomId: room.id, type: 'text', content: 'hey @mentionb look at this' });
+  const evt = await told;
+  assert.strictEqual(evt.byUsername, 'mentiona');
+  assert.ok(evt.messageId, 'the mention carried no message to jump to');
+
+  const mine = await api(`/mentions/${room.id}`, 'GET', null, b.token);
+  assert.ok(mine.mentions.includes(evt.messageId), 'the mention is not listed as unread');
+
+  // Someone not named gets no mention event or entry.
+  const c = await signUp('mentionc');
+  const sc = await connect(c.token);
+  await emit(sc, 'accept_invite', { roomId: room.id });
+  assert.strictEqual((await api(`/mentions/${room.id}`, 'GET', null, c.token)).mentions.length, 0,
+    'an unmentioned member was told they were mentioned');
+});
+
+test('a stray @name cannot notify someone outside the chat', async () => {
+  const a = await signUp('mentionout1');
+  const outsider = await signUp('mentionout2');
+  const room = await api('/rooms', 'POST', { name: 'mention-out' }, a.token);
+  const sa = await connect(a.token);
+  const so = await connect(outsider.token);
+
+  let got = false;
+  so.on('mentioned', () => { got = true; });
+  await emit(sa, 'send_message', { roomId: room.id, type: 'text', content: 'hi @mentionout2' });
+  await new Promise(r => setTimeout(r, 250));
+  assert.strictEqual(got, false, 'someone who is not in the chat was notified of a mention');
+});
+
+test('the composer can list who is mentionable in a chat', async () => {
+  const a = await signUp('mlist1');
+  const b = await signUp('mlist2');
+  const room = await api('/rooms', 'POST', { name: 'mention-list' }, a.token);
+  const sb = await connect(b.token);
+  await emit(sb, 'accept_invite', { roomId: room.id });
+
+  const r = await api(`/room-usernames/${room.id}`, 'GET', null, a.token);
+  const names = r.users.map(x => x.username);
+  assert.ok(names.includes('mlist2'), 'a member is not offered as a suggestion');
+  assert.ok(!names.includes('mlist1'), 'you are offered as a suggestion for yourself');
+});
+
 test('room list is ordered by most recent activity, not by name', async () => {
   const u = await signUp('sorter6');
   const sock = await connect(u.token);

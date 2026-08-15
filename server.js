@@ -412,6 +412,10 @@ app.post('/auth/signin', async (req, res) => {
 });
 
 // Profile update
+// Two changes, then the name is fixed. Exposed so the client can say how many
+// are left BEFORE the user commits to one.
+const USERNAME_CHANGE_LIMIT = 2;
+
 app.put('/profile', authMiddleware, async (req, res) => {
   const { newUsername, currentPassword, newPassword, avatar } = req.body;
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
@@ -423,9 +427,23 @@ app.put('/profile', authMiddleware, async (req, res) => {
   }
 
   if (newUsername && newUsername !== user.username) {
-    const taken = db.prepare('SELECT id FROM users WHERE username = ? AND id != ?').get(newUsername, req.user.id);
+    // A username is an identity other people rely on to find and address you,
+    // so it can only be changed a couple of times — not churned.
+    const used = user.username_changes || 0;
+    if (used >= USERNAME_CHANGE_LIMIT) {
+      return res.status(403).json({
+        error: `You have already changed your username ${used} times. It cannot be changed again.`,
+      });
+    }
+    const check = credentials.validateUsername(newUsername);
+    if (check) return res.status(400).json({ error: check.en, errorFa: check.fa, code: check.code });
+    const normalized = credentials.normalizeUsername(newUsername);
+    // Case-insensitive: "Ako" must not become a second account beside "ako".
+    const taken = db.prepare('SELECT id FROM users WHERE lower(username) = ? AND id != ?')
+      .get(normalized, req.user.id);
     if (taken) return res.status(409).json({ error: 'Username already taken' });
-    db.prepare('UPDATE users SET username = ? WHERE id = ?').run(newUsername, req.user.id);
+    db.prepare('UPDATE users SET username = ?, username_changes = ? WHERE id = ?')
+      .run(normalized, used + 1, req.user.id);
   }
 
   if (newPassword) {
@@ -442,7 +460,51 @@ app.put('/profile', authMiddleware, async (req, res) => {
 
   const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
   const token = jwt.sign({ id: updated.id, username: updated.username }, JWT_SECRET);
-  res.json({ token, username: updated.username, avatar: updated.avatar || null });
+  res.json({
+    token, username: updated.username, avatar: updated.avatar || null,
+    usernameChangesLeft: Math.max(0, USERNAME_CHANGE_LIMIT - (updated.username_changes || 0)),
+  });
+});
+
+app.get('/me', authMiddleware, (req, res) => {
+  const u = db.prepare('SELECT username, avatar, username_changes FROM users WHERE id = ?').get(req.user.id);
+  if (!u) return res.status(404).json({ error: 'User not found' });
+  res.json({
+    username: u.username,
+    avatar: u.avatar || null,
+    usernameChangesLeft: Math.max(0, USERNAME_CHANGE_LIMIT - (u.username_changes || 0)),
+    usernameChangeLimit: USERNAME_CHANGE_LIMIT,
+  });
+});
+
+// Who can be @mentioned in this chat, for the composer's suggestions.
+app.get('/room-usernames/:roomId', authMiddleware, (req, res) => {
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
+  if (!canAccessRoom(req.user.id, room)) return res.status(403).json({ error: 'No access' });
+  const ids = getRoomMemberIds(room).filter(id => id !== req.user.id);
+  if (!ids.length) return res.json({ users: [] });
+  const users = db.prepare(
+    `SELECT id, username, avatar FROM users WHERE id IN (${ids.map(() => '?').join(',')}) ORDER BY username`
+  ).all(...ids);
+  res.json({ users });
+});
+
+// Unread @mentions of me in this chat, so the client can offer a jump button.
+app.get('/mentions/:roomId', authMiddleware, (req, res) => {
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
+  if (!canAccessRoom(req.user.id, room)) return res.status(403).json({ error: 'No access' });
+  const me = db.prepare('SELECT username FROM users WHERE id = ?').get(req.user.id);
+  if (!me) return res.json({ mentions: [] });
+  const read = db.prepare('SELECT last_read_msg_id FROM room_reads WHERE room_id = ? AND user_id = ?')
+    .get(room.id, req.user.id);
+  const rows = db.prepare(`
+    SELECT id FROM messages
+    WHERE room_id = ? AND user_id != ? AND id > ?
+      AND content LIKE ? ESCAPE '#'
+    ORDER BY id ASC LIMIT 100
+  `).all(room.id, req.user.id, read?.last_read_msg_id || 0,
+    '%@' + me.username.replace(/[#%_]/g, c => '#' + c) + '%');
+  res.json({ mentions: rows.map(r => r.id) });
 });
 
 // Rooms the user actually belongs to — ones they created or joined. Public
@@ -1322,6 +1384,40 @@ io.on('connection', (socket) => {
 
     // Push notification for everyone but the sender (reaches closed apps)
     const roomLabel = room && !room.is_dm ? ` · ${room.name}` : '';
+    // ── @mentions ───────────────────────────────────────────────────────────
+    // Being named is different from a message arriving: it is addressed to
+    // you. Mentioned people get told even when they are not looking at the
+    // chat, and their client badges the room and offers a jump to the message.
+    const mentioned = new Set();
+    if (msgType === 'text' && content && !String(content).startsWith('e2e:')) {
+      const names = String(content).match(/@([a-z0-9._]{3,20})/gi) || [];
+      if (names.length) {
+        const wanted = [...new Set(names.map(n => n.slice(1).toLowerCase()))];
+        const rows = db.prepare(
+          `SELECT id, username FROM users WHERE lower(username) IN (${wanted.map(() => '?').join(',')})`
+        ).all(...wanted);
+        const inChat = new Set(memberIds);
+        rows.forEach(r => {
+          // Only people who are actually in this chat, so a stray @name cannot
+          // notify a stranger.
+          if (r.id !== socket.user.id && inChat.has(r.id)) mentioned.add(r.id);
+        });
+      }
+    }
+    if (mentioned.size) {
+      const evt = { roomId: room.id, messageId: msg.id, byUsername: socket.user.username };
+      mentioned.forEach(id => io.to('user:' + id).emit('mentioned', evt));
+      // Mentions are pushed even to someone reading a DIFFERENT chat — that is
+      // the point of being named — but not to someone already looking at this
+      // one, who can see it.
+      sendPushToUsers(
+        [...mentioned].filter(id => !viewingUserIds.has(id)),
+        (msg.avatar ? msg.avatar + ' ' : '') + msg.username + roomLabel,
+        `mentioned you`,
+        { roomId: String(roomId), msgId: String(msg.id), mention: '1' },
+      );
+    }
+
     sendPushToUsers(
       memberIds.filter(id => id !== socket.user.id && !viewingUserIds.has(id)),
       (msg.avatar ? msg.avatar + ' ' : '') + msg.username + roomLabel,

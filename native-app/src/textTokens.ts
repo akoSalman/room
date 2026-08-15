@@ -32,9 +32,15 @@ const CODE = `[A-Za-z]{1,4}[${D}]{8,}(?![${D}])`;
 const PHONE = `\\+?[${D}](?:[${SEP}]?[${D}]){7,17}(?![${D}])`;
 const NUMBER = `[${D}]+(?:[.,\u066B\u066C][${D}]+)*`;   // 1,234.56 / ۱۲۳٫۴۵
 
-export const TOKEN_RE = new RegExp(`(${URL}|${CODE}|${PHONE}|${NUMBER})`, 'g');
+// @mention. The same shape the server accepts as a username, so what looks
+// like a mention in the chat is exactly what the server would resolve. It must
+// come FIRST in the alternation: '@user2' would otherwise have its digits
+// split off as a NUMBER.
+const MENTION = `@[a-zA-Z0-9._]{3,20}`;
 
-export type TokenKind = 'url' | 'phone' | 'number' | 'text';
+export const TOKEN_RE = new RegExp(`(${MENTION}|${URL}|${CODE}|${PHONE}|${NUMBER})`, 'g');
+
+export type TokenKind = 'url' | 'phone' | 'number' | 'mention' | 'text';
 
 // Convert Persian/Arabic-Indic digits to ASCII.
 export function toAsciiDigits(s: string): string {
@@ -66,6 +72,7 @@ export function isPhone(t: string): boolean {
 
 export function classify(token: string): TokenKind {
   if (!token) return 'text';
+  if (token[0] === '@') return 'mention';
   if (isUrl(token)) return 'url';
   if (isPhone(token)) return 'phone';
   if (countDigits(token) > 0) return 'number';
@@ -86,7 +93,14 @@ export function tokenize(content: string): Token[] {
     const raw = m[0];
     // Trailing separators (". " at the end of a sentence) belong to the text.
     const trimmed = raw.replace(/[\s.,\-()]+$/, '');
-    const kind = classify(trimmed);
+    let kind = classify(trimmed);
+    // An '@' glued to the end of a word is an email address, not a mention:
+    // "me@example.com" would otherwise render "@example.com" as a tappable
+    // mention of a user who does not exist. A mention starts a word.
+    if (kind === 'mention') {
+      const before = m.index > 0 ? src[m.index - 1] : '';
+      if (before && /[\w.@-]/.test(before)) kind = 'text';
+    }
     if (!trimmed || kind === 'text') {
       out.push({ text: raw, kind: 'text' });
     } else {

@@ -119,6 +119,44 @@ test('real phone numbers still classify as phones', () => {
   assert.strictEqual(T.classify('+98 912 345 6789'), 'phone');
 });
 
+test('an @mention is one token, digits and all', () => {
+  // '@user2' must not have its '2' split off as a number, which is what
+  // happens if MENTION is not matched before NUMBER.
+  const toks = T.tokenize('hey @ako2 and @sara_x look');
+  const mentions = toks.filter(t => t.kind === 'mention').map(t => t.text);
+  assert.deepStrictEqual(mentions, ['@ako2', '@sara_x']);
+  assert.ok(!toks.some(t => t.kind === 'number'), 'a mention was split into a number');
+});
+
+test('an email is not turned into a mention', () => {
+  // The token here is '@example.com', NOT '@example' — an earlier version of
+  // this test asserted the wrong string and passed while the bug was live.
+  for (const src of ['write to me@example.com please', 'ako.salman@gmail.com', 'a@b.co']) {
+    const toks = T.tokenize(src);
+    assert.ok(!toks.some(t => t.kind === 'mention'),
+      `${src} produced a mention: ${JSON.stringify(toks.filter(t => t.kind === 'mention'))}`);
+  }
+});
+
+test('a mention still works at the start of a message and after punctuation', () => {
+  for (const [src, want] of [
+    ['@ako hello', '@ako'],
+    ['hi @ako', '@ako'],
+    ['(@ako)', '@ako'],
+    ['say hi to @ako.', '@ako'],
+  ]) {
+    const toks = T.tokenize(src);
+    const m = toks.find(t => t.kind === 'mention');
+    assert.ok(m, `no mention found in ${JSON.stringify(src)}`);
+    assert.strictEqual(m.text, want, `wrong mention in ${JSON.stringify(src)}`);
+  }
+});
+
+test('tokenising still round-trips with mentions present', () => {
+  const src = 'hi @ako, call 09123456789 or see https://x.com — 250000';
+  assert.strictEqual(T.tokenize(src).map(t => t.text).join(''), src);
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }
