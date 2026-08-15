@@ -12,6 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { C, isRTL } from '../theme';
 import { useFavEmojis } from '../favEmojis';
 import EmojiEditor from './EmojiEditor';
+import { mentionQuery, applyMention, filterUsernames } from '../mentions';
 
 export type ComposerHandle = {
   setText: (v: string) => void;
@@ -40,6 +41,8 @@ type Props = {
   onQuality: (q: 'standard' | 'hd') => void;
   /** Truthy while this device is streaming a live location. */
   liveLocation?: boolean;
+  /** Everyone in this chat who can be @mentioned. */
+  mentionables?: string[];
   onToggleQuickEmoji: (open: boolean) => void;
   onRemoveMedia: (index: number) => void;
   onPreviewMedia: (uri: string) => void;
@@ -50,10 +53,15 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
     pendingMedia, oneTimeSecs, quickEmoji, editing,
     onTyping, onSend, onAttach, onRecord, onOneTime, onLocation, liveLocation,
     sendQuality, onQuality, disappearing,
-    onToggleQuickEmoji, onRemoveMedia, onPreviewMedia,
+    onToggleQuickEmoji, onRemoveMedia, onPreviewMedia, mentionables,
   } = props;
 
   const [text, setText] = useState('');
+  // Where the caret is. Read only — the input's selection is never controlled
+  // from here, because forcing it back mid-typing fights the keyboard.
+  const caretRef = useRef(0);
+  const [suggest, setSuggest] = useState<string[]>([]);
+  const suggestAt = useRef<{ start: number; caret: number } | null>(null);
   const favEmojis = useFavEmojis();
   const [editEmojis, setEditEmojis] = useState(false);
   const textRef = useRef('');
@@ -65,6 +73,27 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
     // independent of React's batched commit (which can be gated behind the
     // message-list re-render).
     inputRef.current?.setNativeProps({ text: v });
+  }, []);
+
+  const updateSuggestions = useCallback((v: string, caret: number) => {
+    const names = mentionables || [];
+    const q = names.length ? mentionQuery(v, caret) : null;
+    if (!q) { suggestAt.current = null; setSuggest([]); return; }
+    const hits = filterUsernames(names, q.query);
+    suggestAt.current = hits.length ? { start: q.start, caret } : null;
+    setSuggest(hits);
+  }, [mentionables]);
+
+  const pickMention = useCallback((username: string) => {
+    const at = suggestAt.current;
+    if (!at) return;
+    const next = applyMention(textRef.current, at.start, at.caret, username);
+    textRef.current = next.text;
+    setText(next.text);
+    inputRef.current?.setNativeProps({ text: next.text });
+    caretRef.current = next.caret;
+    suggestAt.current = null;
+    setSuggest([]);
   }, []);
 
   useImperativeHandle(ref, () => ({
@@ -213,6 +242,21 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
         </View>
       )}
 
+      {/* @mention suggestions, above the input so the keyboard does not cover
+          them. Tapping one completes the name already being typed. */}
+      {suggest.length > 0 && (
+        <View style={s.mentionBar}>
+          <ScrollView keyboardShouldPersistTaps="always" showsVerticalScrollIndicator={false} style={{ maxHeight: 176 }}>
+            {suggest.map(u => (
+              <TouchableOpacity key={u} style={s.mentionRow} onPress={() => pickMention(u)}>
+                <View style={s.mentionAvatar}><Text style={s.mentionAvatarText}>{u.slice(0, 1).toUpperCase()}</Text></View>
+                <Text style={s.mentionName}>@{u}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
       {/* Input bar — the trailing button is a mic while the composer is empty
           (and no media staged), and turns into Send as soon as you type. */}
       <View style={s.inputBar}>
@@ -222,7 +266,16 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
           placeholder={pendingMedia.length ? 'Add a caption…' : 'Message...'}
           placeholderTextColor={C.muted}
           value={text}
-          onChangeText={(v: string) => { textRef.current = v; setText(v); onTyping(); }}
+          onChangeText={(v: string) => {
+            textRef.current = v; setText(v); onTyping();
+            // The caret has not been reported yet for this keystroke, so
+            // assume it followed the edit — true for ordinary typing.
+            updateSuggestions(v, Math.min(caretRef.current + 1, v.length));
+          }}
+          onSelectionChange={(e: any) => {
+            caretRef.current = e.nativeEvent.selection.end;
+            updateSuggestions(textRef.current, caretRef.current);
+          }}
           onSubmitEditing={send}
           blurOnSubmit={false}
           multiline
@@ -280,6 +333,20 @@ const s = StyleSheet.create({
   },
   stripBtnText: { color: C.accent, fontSize: 13, fontWeight: '600' },
   oneTimeActive: { backgroundColor: 'rgba(248,113,113,0.25)', borderRadius: 8 },
+  mentionBar: {
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border,
+    backgroundColor: C.sidebar,
+  },
+  mentionRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 14, paddingVertical: 9,
+  },
+  mentionAvatar: {
+    width: 26, height: 26, borderRadius: 13, backgroundColor: C.accent,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  mentionAvatarText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+  mentionName: { color: C.text, fontSize: 14.5, fontWeight: '600' },
   qualityBar: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     paddingHorizontal: 12, paddingTop: 8,

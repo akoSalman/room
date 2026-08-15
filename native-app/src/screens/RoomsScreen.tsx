@@ -38,12 +38,18 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   const [renamingRoom, setRenamingRoom] = useState<Room | null>(null);
   const [renameText, setRenameText] = useState('');
   const [newUsername, setNewUsername] = useState('');
-  const [curPass, setCurPass] = useState('');
-  const [newPass, setNewPass] = useState('');
+  const [editingUsername, setEditingUsername] = useState(false);
+  // null while unknown — the dialog waits for /me rather than guessing a
+  // number of remaining changes at the user.
+  const [changesLeft, setChangesLeft] = useState<number | null>(null);
   const [profileError, setProfileError] = useState('');
   const [profileSuccess, setProfileSuccess] = useState('');
   const [savingProfile, setSavingProfile] = useState(false);
   const [unread, setUnread] = useState<Record<number, number>>({});
+  // Rooms where someone @mentioned me and I have not opened the chat yet.
+  // Kept apart from the unread count so a mention can be marked louder than
+  // ordinary traffic — being addressed by name is not the same as a busy room.
+  const [mentions, setMentions] = useState<Record<number, boolean>>({});
   const [latestVersion, setLatestVersion] = useState<number | null>(null);
   const [versionCheckFailed, setVersionCheckFailed] = useState(false);
   // Mirrors the module-scope download, so re-opening this screen mid-download
@@ -129,6 +135,12 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
       // for whichever of the two people is looking at this list.
       sock.on('disappearing_changed', () => load());
       sock.on('removed_from_room', () => load());
+      // Someone wrote my @name somewhere. If the chat is not open, the room
+      // list is where I should be able to see it.
+      sock.on('mentioned', (m: any) => {
+        if (!m?.roomId) return;
+        setMentions(prev => ({ ...prev, [m.roomId]: true }));
+      });
     })();
     return () => {
       sock?.off('message_received');
@@ -137,6 +149,7 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
       sock?.off('left_room');
       sock?.off('disappearing_changed');
       sock?.off('removed_from_room');
+      sock?.off('mentioned');
     };
   }, [load]);
 
@@ -165,6 +178,7 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
 
   function selectRoom(room: Room) {
     setUnread(prev => ({ ...prev, [room.id]: 0 }));
+    setMentions(prev => (prev[room.id] ? { ...prev, [room.id]: false } : prev));
     onSelectRoom(room);
   }
 
@@ -234,24 +248,33 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
     setMyAvatar(res.avatar);
   }
 
-  async function saveProfile() {
+  // A username is how other people find and @mention you, so it is not a
+  // free-form setting: the server allows two changes and the dialog says so
+  // BEFORE the change, not after it has been spent.
+  async function openUsernameEditor() {
     setProfileError('');
     setProfileSuccess('');
-    if (!curPass) { setProfileError('Current password is required to save changes'); return; }
+    setNewUsername(me);
+    setChangesLeft(null);
+    setEditingUsername(true);
+    const res = await apiFetch('/me');
+    if (typeof res?.usernameChangesLeft === 'number') setChangesLeft(res.usernameChangesLeft);
+  }
+
+  async function saveUsername() {
+    const name = newUsername.trim();
+    setProfileError('');
+    setProfileSuccess('');
+    if (!name || name === me) { setEditingUsername(false); return; }
     setSavingProfile(true);
-    const res = await apiFetch('/profile', 'PUT', {
-      newUsername: newUsername.trim() || undefined,
-      currentPassword: curPass,
-      newPassword: newPass || undefined,
-    });
+    const res = await apiFetch('/profile', 'PUT', { newUsername: name });
     setSavingProfile(false);
     if (res.error) { setProfileError(res.error); return; }
-    await setAuth(res.token, res.username);
+    await setAuth(res.token, res.username, res.avatar ?? myAvatar);
     setMe(res.username);
-    setNewUsername('');
-    setCurPass('');
-    setNewPass('');
-    setProfileSuccess('Profile updated');
+    setChangesLeft(res.usernameChangesLeft ?? null);
+    setEditingUsername(false);
+    setProfileSuccess('Username updated');
   }
 
   return (
@@ -334,6 +357,9 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
                 {item.disappearing_seconds > 0 && (
                   <Text style={s.roomDisappearing}>⏳</Text>
                 )}
+                {mentions[item.id] && (
+                  <View style={s.mentionBadge}><Text style={s.mentionBadgeText}>@</Text></View>
+                )}
                 {count > 0 && (
                   <View style={s.unreadBadge}>
                     <Text style={s.unreadBadgeText}>{count > 99 ? '99+' : count}</Text>
@@ -368,7 +394,13 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
                   ? <Text style={s.bigAvatarEmoji}>{myAvatar}</Text>
                   : <Text style={s.bigAvatarText}>{initials(me)}</Text>}
               </View>
-              <Text style={s.profileName}>{me}</Text>
+              <View style={s.profileNameRow}>
+                <Text style={s.profileName}>{me}</Text>
+                <TouchableOpacity onPress={openUsernameEditor} style={s.pencilBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                  <Text style={s.pencilIcon}>✏️</Text>
+                </TouchableOpacity>
+              </View>
+              {!!profileSuccess && <Text style={s.profileSuccessText}>{profileSuccess}</Text>}
             </View>
 
             {/* Profile picture (emoji) picker: one row + expandable sheet */}
@@ -393,28 +425,6 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
                   <Text style={s.removeAvatarText}>Remove profile picture</Text>
                 </TouchableOpacity>
               )}
-            </View>
-
-            {/* Edit profile */}
-            <View style={s.section}>
-              <Text style={s.sectionTitle}>EDIT PROFILE</Text>
-              <TextInput
-                style={s.profileInput} placeholder="New username" placeholderTextColor={C.muted}
-                value={newUsername} onChangeText={setNewUsername} autoCapitalize="none"
-              />
-              <TextInput
-                style={s.profileInput} placeholder="Current password (required)" placeholderTextColor={C.muted}
-                value={curPass} onChangeText={setCurPass} secureTextEntry
-              />
-              <TextInput
-                style={s.profileInput} placeholder="New password (optional)" placeholderTextColor={C.muted}
-                value={newPass} onChangeText={setNewPass} secureTextEntry
-              />
-              {!!profileError && <Text style={s.profileErrorText}>{profileError}</Text>}
-              {!!profileSuccess && <Text style={s.profileSuccessText}>{profileSuccess}</Text>}
-              <TouchableOpacity style={s.saveProfileBtn} onPress={saveProfile} disabled={savingProfile}>
-                <Text style={s.saveProfileBtnText}>{savingProfile ? 'Saving...' : 'Save changes'}</Text>
-              </TouchableOpacity>
             </View>
 
             {/* My Rooms */}
@@ -564,6 +574,41 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
           </View>
         </View>
       </Modal>
+
+      {/* Change username */}
+      <Modal visible={editingUsername} transparent animationType="fade" onRequestClose={() => setEditingUsername(false)}>
+        <View style={s.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setEditingUsername(false)} />
+          <View style={s.renameCard}>
+            <Text style={s.renameTitle}>Change username</Text>
+            <Text style={s.usernameWarn}>
+              {changesLeft === null
+                ? 'Checking how many changes you have left…'
+                : changesLeft === 0
+                  ? 'You have used all your username changes. This name can no longer be changed.'
+                  : `Your username can only be changed ${changesLeft} more ${changesLeft === 1 ? 'time' : 'times'}. People who know your old @name will no longer find you by it.`}
+            </Text>
+            <TextInput
+              style={s.renameInput} value={newUsername} onChangeText={setNewUsername}
+              placeholderTextColor={C.muted} autoCapitalize="none" autoCorrect={false}
+              editable={changesLeft !== 0} onSubmitEditing={saveUsername}
+            />
+            {!!profileError && <Text style={s.profileErrorText}>{profileError}</Text>}
+            <View style={s.renameRow}>
+              <TouchableOpacity style={s.renameCancel} onPress={() => setEditingUsername(false)}>
+                <Text style={s.renameCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[s.renameSave, (savingProfile || changesLeft === 0 || changesLeft === null) && s.renameSaveOff]}
+                onPress={saveUsername}
+                disabled={savingProfile || changesLeft === 0 || changesLeft === null}
+              >
+                <Text style={s.renameSaveText}>{savingProfile ? 'Saving…' : 'Change'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -625,14 +670,15 @@ const s = StyleSheet.create({
   removeAvatarBtn: { marginTop: 12, alignItems: 'center', padding: 8 },
   removeAvatarText: { color: C.danger, fontSize: 13, fontWeight: '600' },
   profileName: { color: C.text, fontWeight: '600', fontSize: 17 },
+  profileNameRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  pencilBtn: { padding: 2 },
+  pencilIcon: { fontSize: 15 },
+  usernameWarn: { color: '#d97706', fontSize: 12.5, lineHeight: 18, marginBottom: 10 },
   section: { paddingHorizontal: 20, paddingVertical: 14, borderTopWidth: 1, borderTopColor: C.border },
   sectionTitle: { color: C.muted, fontSize: 11, fontWeight: '700', letterSpacing: 0.5, marginBottom: 10 },
   emptyRooms: { color: C.muted, fontSize: 14 },
-  profileInput: { backgroundColor: C.inputBg, borderRadius: 8, padding: 10, color: C.text, fontSize: 14, borderWidth: 1, borderColor: C.border, marginBottom: 10, textAlign: isRTL ? 'right' : 'left' },
   profileErrorText: { color: C.danger, fontSize: 12, marginBottom: 8 },
   profileSuccessText: { color: C.online, fontSize: 12, marginBottom: 8 },
-  saveProfileBtn: { backgroundColor: C.accent, borderRadius: 10, padding: 12, alignItems: 'center' },
-  saveProfileBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
   myRoomRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: C.border, gap: 6 },
   myRoomName: { flex: 1, color: C.text, fontSize: 15 },
   roomActionBtn: { padding: 6 },
@@ -663,5 +709,11 @@ const s = StyleSheet.create({
   renameCancel: { flex: 1, backgroundColor: C.inputBg, borderRadius: 8, padding: 12, alignItems: 'center' },
   renameCancelText: { color: C.muted, fontWeight: '600' },
   renameSave: { flex: 1, backgroundColor: C.accent, borderRadius: 8, padding: 12, alignItems: 'center' },
+  renameSaveOff: { opacity: 0.45 },
+  mentionBadge: {
+    minWidth: 20, height: 20, borderRadius: 10, backgroundColor: C.accent,
+    alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5,
+  },
+  mentionBadgeText: { color: '#fff', fontSize: 12, fontWeight: '800' },
   renameSaveText: { color: '#fff', fontWeight: '700' },
 });

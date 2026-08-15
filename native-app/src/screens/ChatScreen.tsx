@@ -268,6 +268,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [inviteSearching, setInviteSearching] = useState(false);
   const [highlightId, setHighlightId] = useState<number | string | null>(null);
   const [showScrollFab, setShowScrollFab] = useState(false);
+  // Unread messages in this chat that name me. Telegram-style: a button that
+  // walks you through them oldest-first, because the point of a mention is
+  // that someone wanted an answer, and it is usually not the newest message.
+  const [mentionIds, setMentionIds] = useState<number[]>([]);
+  // Who is in this chat, for the composer's @ suggestions. Loaded once per
+  // chat: a request per keystroke would be absurd for a list this small.
+  const [mentionables, setMentionables] = useState<string[]>([]);
   // Every image ever sent in this chat (chronological), from /room-media —
   // lets the lightbox traverse the whole chat, not just loaded messages.
   const [allImages, setAllImages] = useState<string[]>([]);
@@ -683,6 +690,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       setLoading(false);
       if (initialJumpMsgId) setTimeout(() => jumpToMessage(initialJumpMsgId), 300);
 
+      // Mentions of me that arrived while I was away.
+      apiFetch(`/mentions/${room.id}`)
+        .then((r: any) => { if (Array.isArray(r?.mentions)) setMentionIds(r.mentions); })
+        .catch(() => {});
+      apiFetch(`/room-usernames/${room.id}`)
+        .then((r: any) => {
+          if (Array.isArray(r?.users)) setMentionables(r.users.map((u: any) => u.username));
+        })
+        .catch(() => {});
+
       socketRef.current = sock;
       sock.emit('join_room', room.id);
 
@@ -702,6 +719,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           // looked like someone else's and lit the dot on the back button.
           if (msg.username !== meRef.current) setOtherUnread(true);
           return;
+        }
+        // A mention arriving while the chat is open still joins the queue —
+        // it is only cleared when it has actually been jumped to.
+        if (msg.type === 'text' && msg.username !== meRef.current
+            && meRef.current && typeof msg.id === 'number'
+            && new RegExp(`@${meRef.current.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')
+                 .test(String(msg.content || ''))) {
+          const mid = msg.id;
+          setMentionIds(prev => (prev.includes(mid) ? prev : [...prev, mid]));
         }
         // meRef for the same reason as above — bound once, `me` is '' then.
         if (msg.type === 'text' && msg.username !== meRef.current) {
@@ -1510,6 +1536,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   function renderTextWithLinks(content: string) {
     return tokenize(content).map((tok, i) => {
       if (tok.kind === 'text') return <Text key={i}>{tok.text}</Text>;
+      if (tok.kind === 'mention') {
+        const name = tok.text.slice(1);
+        const isMe = name.toLowerCase() === (me || '').toLowerCase();
+        return (
+          <Text key={i} style={[s.mention, isMe && s.mentionMe]}
+            onPress={() => openMentionedUser(name)}>{tok.text}</Text>
+        );
+      }
       if (tok.kind === 'number') {
         return (
           <Text key={i} style={s.copyableNumber}
@@ -1524,6 +1558,21 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         >{tok.text}</Text>
       );
     });
+  }
+
+  // Tapping an @name opens a direct chat with that person. The username in a
+  // message is just text, so it has to be resolved to an account first — and
+  // if no such account exists we say so rather than opening an empty chat.
+  async function openMentionedUser(name: string) {
+    if (name.toLowerCase() === (me || '').toLowerCase()) return;
+    const res = await apiFetch(`/search?q=${encodeURIComponent(name)}`);
+    const user = (res?.users || []).find(
+      (u: any) => String(u.username).toLowerCase() === name.toLowerCase(),
+    );
+    if (!user) { toast(`No user @${name}`); return; }
+    const dm = await apiFetch(`/dm/${user.id}`, 'POST');
+    if (dm.error) { Alert.alert('Error', dm.error); return; }
+    onOpenDM({ id: dm.id, name: dm.name, is_dm: 1, other_username: dm.otherUsername || user.username });
   }
 
   async function handleLinkPress(url: string) {
@@ -2788,6 +2837,25 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         />
       )}
 
+      {/* Jump to the oldest mention of me that I have not looked at yet. */}
+      {mentionIds.length > 0 && (
+        <TouchableOpacity
+          style={[s.mentionFab, (replyTo || editingId) && s.mentionFabRaised]}
+          onPress={() => {
+            const [next, ...rest] = mentionIds;
+            setMentionIds(rest);
+            jumpToMessage(next);
+          }}
+        >
+          <Text style={s.mentionFabIcon}>@</Text>
+          {mentionIds.length > 1 && (
+            <View style={s.scrollFabBadge}>
+              <Text style={s.scrollFabBadgeText}>{mentionIds.length > 99 ? '99+' : mentionIds.length}</Text>
+            </View>
+          )}
+        </TouchableOpacity>
+      )}
+
       {fabVisible && (
         <TouchableOpacity
           style={[s.scrollFab, (replyTo || editingId) && s.scrollFabRaised]}
@@ -3368,6 +3436,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           disappearing={disappearing}
           sendQuality={sendQuality}
           onQuality={chooseQuality}
+          mentionables={mentionables}
           onToggleQuickEmoji={setQuickEmoji}
           onRemoveMedia={(i) => setPendingMedia(prev => prev.filter((_, j) => j !== i))}
           onPreviewMedia={(uri) => openViewer(uri)}
@@ -3728,6 +3797,14 @@ const s = StyleSheet.create({
     borderWidth: 2, borderColor: C.bg,
   },
   scrollFabBadgeText: { color: '#fff', fontSize: 10.5, fontWeight: '800' },
+  // Sits above the scroll-to-bottom button so the two never overlap.
+  mentionFab: {
+    position: 'absolute', end: 16, bottom: 200, width: 44, height: 44, borderRadius: 22,
+    backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center',
+    elevation: 4, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 6, shadowOffset: { width: 0, height: 2 },
+  },
+  mentionFabRaised: { bottom: 266 },
+  mentionFabIcon: { color: '#fff', fontSize: 20, fontWeight: '800' },
   lightboxOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', alignItems: 'center', justifyContent: 'center' },
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   sheetHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: C.border, alignSelf: 'center', marginTop: 10, marginBottom: 6 },
@@ -3739,6 +3816,9 @@ const s = StyleSheet.create({
   attachCancelText: { color: C.muted, fontSize: 15, fontWeight: '600' },
   forwardTitle: { color: C.text, fontWeight: '700', fontSize: 16, paddingHorizontal: 20, paddingVertical: 10 },
   link: { color: C.accent, textDecorationLine: 'underline' },
+  mention: { color: C.accent, fontWeight: '700' },
+  // Being addressed by name should stand out from mentioning someone else.
+  mentionMe: { backgroundColor: 'rgba(88,101,242,0.22)' },
   forwardedLabel: { color: C.muted, fontSize: 11, fontStyle: 'italic', marginBottom: 4 },
   inviteCard: { gap: 6, minWidth: 200 },
   inviteTitle: { color: C.text, fontWeight: '700', fontSize: 14 },

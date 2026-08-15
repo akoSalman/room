@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node test/server.test.js && node test/migrations.test.js && node test/callpush.test.js && node test/mime.test.js && node test/tokens.test.js && node test/outbox.test.js && node test/credentials.test.js && node test/geo.test.js && node test/download.test.js && node test/playlist.test.js && node test/imageQuality.test.js && node test/edgeBack.test.js && node test/videoQuality.test.js && node test/disappearing.test.js && node test/expiryRing.test.js"
+    "test": "node test/server.test.js && node test/migrations.test.js && node test/callpush.test.js && node test/mime.test.js && node test/tokens.test.js && node test/outbox.test.js && node test/credentials.test.js && node test/geo.test.js && node test/download.test.js && node test/playlist.test.js && node test/imageQuality.test.js && node test/edgeBack.test.js && node test/videoQuality.test.js && node test/disappearing.test.js && node test/expiryRing.test.js && node test/mentions.test.js"
   },
   "repository": {
     "type": "git",
