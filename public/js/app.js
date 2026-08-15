@@ -488,6 +488,12 @@ function connectSocket() {
       applyEdit(messageId, content);
     });
     socket.on('message_deleted', ({ messageId }) => applyDelete(messageId));
+    // A countdown started somewhere — remember the deadline so a later render
+    // does not re-report the message as newly seen.
+    socket.on('expiry_started', ({ roomId, started }) => {
+      if (roomId != null && String(roomId) !== String(currentRoomId)) return;
+      (started || []).forEach(x => seenReported.add(String(x.messageId)));
+    });
     // Disappearing mode changed: re-skin the chat so it is obvious here too.
     socket.on('disappearing_changed', ({ roomId, seconds }) => {
       // The sidebar marker updates for BOTH people, whichever chat they are
@@ -2217,6 +2223,48 @@ function updateSeenCheckmarks() {
 // moves, because `location_updated` rewrites the message's content.
 // A visibly different chat while messages are being destroyed. Forgetting the
 // mode is on is exactly when it does damage, so the whole page says so.
+// Report which disappearing messages are actually ON SCREEN, so their
+// countdowns start when they are seen rather than when they were sent. Being
+// scrolled up in a long chat is not reading the bottom of it.
+const seenReported = new Set();
+let seenObserver = null;
+let seenPending = new Set();
+let seenTimer = null;
+
+function flushSeen() {
+  const ids = [...seenPending];
+  seenPending.clear();
+  if (!ids.length || !socket || !currentRoomId) return;
+  socket.emit('messages_seen', { roomId: currentRoomId, messageIds: ids });
+}
+
+function watchForSeen(el, msg) {
+  if (!msg || !msg.disappear_seconds || msg.expires_at) return;
+  if (msg.username === username) return;   // your own message proves nothing
+  const key = String(msg.id);
+  if (seenReported.has(key)) return;
+  if (!('IntersectionObserver' in window)) {
+    // No observer: treat rendering as seeing rather than never expiring.
+    seenReported.add(key); seenPending.add(msg.id);
+    clearTimeout(seenTimer); seenTimer = setTimeout(flushSeen, 400);
+    return;
+  }
+  if (!seenObserver) {
+    seenObserver = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        const id = e.target.dataset.msgId;
+        if (!id || seenReported.has(String(id))) continue;
+        seenReported.add(String(id));
+        seenPending.add(parseInt(id, 10));
+        seenObserver.unobserve(e.target);
+      }
+      if (seenPending.size) { clearTimeout(seenTimer); seenTimer = setTimeout(flushSeen, 400); }
+    }, { threshold: 0.5 });
+  }
+  seenObserver.observe(el);
+}
+
 function applyDisappearingSkin(seconds) {
   document.body.classList.toggle('disappearing-on', seconds > 0);
   let bar = document.getElementById('disappearing-bar');
@@ -2314,6 +2362,8 @@ function buildMessageElement(msg) {
   wrapper.className = 'msg-wrapper ' + (isMine ? 'mine' : 'theirs');
   wrapper.dataset.msgId = msg.id;
   if (!msg._uploading) addLongPress(wrapper, () => openCtxMenu(msg.id, msg.type, isMine, wrapper, msg));
+  // Its disappearing clock starts when it is actually on screen.
+  watchForSeen(wrapper, msg);
 
   // System notices carry their own centered text; they must not get a
   // clickable sender header above them.

@@ -63,6 +63,11 @@ try { db.exec('ALTER TABLE messages ADD COLUMN played INTEGER DEFAULT 0'); } cat
 // one_time_seconds, which counts from when a message is OPENED — this counts
 // from when it was sent, and applies to everyone's messages in the chat.
 try { db.exec('ALTER TABLE messages ADD COLUMN expires_at INTEGER'); } catch {}
+// The configured lifetime, recorded when the message is SENT; expires_at is
+// only filled in once someone has actually seen it. Destroying a message the
+// recipient never had a chance to read is not "disappearing", it is losing
+// mail.
+try { db.exec('ALTER TABLE messages ADD COLUMN disappear_seconds INTEGER'); } catch {}
 try { db.exec('ALTER TABLE rooms ADD COLUMN disappearing_seconds INTEGER'); } catch {}
 // One-time backfill: voices sent before the played-status feature existed
 // can never receive a voice_played event, so treat them as already played.

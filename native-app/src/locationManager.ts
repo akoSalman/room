@@ -9,6 +9,7 @@
 // watching cannot keep broadcasting.
 import * as Location from 'expo-location';
 import { getSocket } from './api';
+import { showLiveLocation, hideLiveLocation } from './incomingCall';
 
 type Active = {
   messageId: number | string;
@@ -54,7 +55,9 @@ export async function currentPosition(): Promise<{ lat: number; lng: number; acc
 }
 
 /** Begin streaming positions into an existing live-location message. */
-export async function startSharing(messageId: number | string, roomId: number | string, until: number) {
+export async function startSharing(
+  messageId: number | string, roomId: number | string, until: number, chatName?: string,
+) {
   await stopSharing({ silent: true });
 
   const sock = await getSocket().catch(() => null);
@@ -91,6 +94,9 @@ export async function startSharing(messageId: number | string, roomId: number | 
     sub,
     timer: setTimeout(() => stopSharing(), Math.max(0, until - Date.now())),
   };
+  // Visible in the notification shade for as long as it runs, with Stop on it,
+  // so leaving the app cannot hide the fact that you are still broadcasting.
+  showLiveLocation(chatName || 'Chat', until).catch(() => {});
   emit();
 }
 
@@ -100,6 +106,7 @@ export async function stopSharing(opts: { silent?: boolean } = {}) {
   if (!cur) { if (!opts.silent) emit(); return; }
   clearTimeout(cur.timer);
   try { cur.sub?.remove(); } catch {}
+  hideLiveLocation().catch(() => {});
   if (!opts.silent) {
     const sock = await getSocket().catch(() => null);
     sock?.emit('location_stop', { messageId: cur.messageId });

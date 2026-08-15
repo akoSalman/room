@@ -590,7 +590,7 @@ async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
 function destroyMessage(msg) {
   db.prepare('DELETE FROM reactions WHERE message_id = ?').run(msg.id);
   db.prepare('DELETE FROM messages WHERE id = ?').run(msg.id);
-  if ((msg.one_time_seconds || msg.expires_at) && msg.file_path) {
+  if ((msg.one_time_seconds || msg.disappear_seconds) && msg.file_path) {
     // Gallery messages store a JSON array of upload paths
     let paths = [];
     if (msg.file_path.startsWith('[')) {
@@ -1185,16 +1185,16 @@ io.on('connection', (socket) => {
     const msgType = CLIENT_MSG_TYPES.has(type) ? type : 'text';
     const oneTime = Number.isInteger(oneTimeSeconds) && oneTimeSeconds >= 1 && oneTimeSeconds <= 3600
       ? oneTimeSeconds : null;
-    // Disappearing mode: everything sent into this chat is stamped with when
-    // it dies. Read from the room, not from the sender, so it applies to both
-    // sides even if one of them is on an older build.
+    // Disappearing mode: record the LIFETIME now, but do not start the clock.
+    // The countdown begins when someone actually sees the message (see
+    // 'messages_seen'), because a message destroyed while its recipient was
+    // offline was never delivered — it was just lost.
     const disappearing = room && room.disappearing_seconds > 0 ? room.disappearing_seconds : 0;
-    const expiresAt = disappearing ? Date.now() + disappearing * 1000 : null;
 
     const result = db.prepare(`
-      INSERT INTO messages (room_id, user_id, type, content, file_path, file_name, reply_to_id, one_time_seconds, expires_at)
+      INSERT INTO messages (room_id, user_id, type, content, file_path, file_name, reply_to_id, one_time_seconds, disappear_seconds)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(roomId, socket.user.id, msgType, content || null, stripSig(filePath), fileName || null, replyToId || null, oneTime, expiresAt);
+    `).run(roomId, socket.user.id, msgType, content || null, stripSig(filePath), fileName || null, replyToId || null, oneTime, disappearing || null);
 
     const msg = db.prepare(`
       SELECT m.*, u.username, u.avatar,
@@ -1531,6 +1531,55 @@ io.on('connection', (socket) => {
     } catch (err) {
       console.error('[leave_room_membership]', err.message);
       reply({ error: 'Could not leave the room' });
+    }
+  });
+
+  // A recipient has actually SEEN these messages — start their countdowns.
+  //
+  // "Seen" means the message was on screen, not merely that the chat was open:
+  // sitting scrolled up in a long chat is not reading the bottom of it. The
+  // client reports only rows the list says are visible.
+  //
+  // The clock starts once, on the first non-sender to see it, and the resulting
+  // deadline is shared with everyone — so both sides watch the same countdown
+  // and the message dies from both at the same moment.
+  socket.on('messages_seen', ({ roomId, messageIds }, ack) => {
+    const reply = (r) => { if (typeof ack === 'function') ack(r); };
+    try {
+      if (!Array.isArray(messageIds) || !messageIds.length) return reply({ ok: true, started: [] });
+      const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+      if (!room || !canAccessRoom(socket.user.id, room)) return reply({ error: 'No access' });
+
+      // Cap the batch: a client must not be able to ask about the whole table.
+      const ids = messageIds.slice(0, 200).map(x => parseInt(x, 10)).filter(Number.isInteger);
+      if (!ids.length) return reply({ ok: true, started: [] });
+
+      const started = [];
+      const now = Date.now();
+      const rows = db.prepare(
+        `SELECT id, user_id, disappear_seconds FROM messages
+         WHERE room_id = ? AND expires_at IS NULL AND disappear_seconds > 0
+           AND id IN (${ids.map(() => '?').join(',')})`
+      ).all(room.id, ...ids);
+
+      for (const m of rows) {
+        // The sender seeing their own message proves nothing about delivery.
+        if (m.user_id === socket.user.id) continue;
+        const expiresAt = now + m.disappear_seconds * 1000;
+        db.prepare('UPDATE messages SET expires_at = ? WHERE id = ? AND expires_at IS NULL')
+          .run(expiresAt, m.id);
+        started.push({ messageId: m.id, expiresAt, seconds: m.disappear_seconds });
+      }
+
+      if (started.length) {
+        const payload = { roomId: room.id, started };
+        io.to(String(room.id)).emit('expiry_started', payload);
+        getRoomMemberIds(room).forEach(id => io.to('user:' + id).emit('expiry_started', payload));
+      }
+      reply({ ok: true, started });
+    } catch (err) {
+      console.error('[messages_seen]', err.message);
+      reply({ error: 'Could not start timers' });
     }
   });
 

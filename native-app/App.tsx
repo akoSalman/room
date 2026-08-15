@@ -73,6 +73,17 @@ Notifications.registerTaskAsync(CALL_PUSH_TASK).catch(() => {});
 // background or not running. Declining must not need the app to be opened.
 notifee.onBackgroundEvent(async ({ type, detail }) => {
   if (type !== EventType.ACTION_PRESS && type !== EventType.PRESS) return;
+
+  // Stop sharing my live location, straight from the shade — the whole point
+  // is not having to open the app to stop broadcasting.
+  if (detail.pressAction?.id === 'stop-location') {
+    try {
+      const { stopSharing } = require('./src/locationManager');
+      await stopSharing();
+    } catch {}
+    return;
+  }
+
   await stopRinging();
   if (detail.pressAction?.id === 'decline') {
     // Best effort: the socket may not be up in a background process, so the
@@ -80,6 +91,17 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
     try {
       const { declineCallInBackground } = require('./src/callManager');
       await declineCallInBackground(detail.notification?.data?.fromUserId);
+    } catch {}
+  }
+});
+// The same actions, pressed while the app IS running — onBackgroundEvent is
+// not called then, so both paths have to exist.
+notifee.onForegroundEvent(async ({ type, detail }) => {
+  if (type !== EventType.ACTION_PRESS) return;
+  if (detail.pressAction?.id === 'stop-location') {
+    try {
+      const { stopSharing } = require('./src/locationManager');
+      await stopSharing();
     } catch {}
   }
 });

@@ -13,7 +13,7 @@ import { C } from '../theme';
 import { fmtBytes } from '../download';
 import {
   VideoQuality, VIDEO_PRESETS, videoTarget, trimmedDuration, estimateBytes, fmtDuration,
-  shouldTranscode,
+  shouldTranscode, presetFor,
 } from '../videoQuality';
 import { trimVideo } from '../compressVideo';
 
@@ -70,6 +70,15 @@ export default function VideoSendSheet({
   const seconds = trimmedDuration(duration, 0, duration);
   const originalSeconds = seconds;
 
+  // The currently selected option, resolved once so the badge over the preview
+  // and the row in the list cannot disagree.
+  const selectedTarget = size ? videoTarget(size.width, size.height, quality) : null;
+  const selectedNoChange = quality !== 'original'
+    && !shouldTranscode(quality, originalBytes, seconds, size);
+  const selectedBytes = estimateBytes(
+    selectedNoChange ? 'original' : quality, seconds, originalBytes, originalSeconds,
+  );
+
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onCancel}>
       <View style={s.overlay}>
@@ -97,6 +106,20 @@ export default function VideoSendSheet({
                 <ActivityIndicator color="#fff" />
               </View>
             )}
+            {/* What the SELECTED option will actually produce, over the
+                picture it applies to. Reading the choice at the bottom of the
+                sheet and the source at the top left the user doing the
+                arithmetic themselves. */}
+            <View style={s.previewBadge}>
+              <Text style={s.previewBadgeText}>
+                {selectedNoChange
+                  ? `Sent as-is · ${size ? `${size.width}×${size.height}` : 'original'}`
+                  : `${presetFor(quality).label} · ${selectedTarget
+                      ? `${selectedTarget.width}×${selectedTarget.height}`
+                      : size ? `${size.width}×${size.height}` : '…'}`}
+                {selectedBytes ? `  ·  ~${fmtBytes(selectedBytes)}` : ''}
+              </Text>
+            </View>
           </View>
 
           <View style={s.metaRow}>
@@ -185,6 +208,12 @@ const s = StyleSheet.create({
     height: 190, borderRadius: 12, backgroundColor: '#000', overflow: 'hidden',
   },
   previewBusy: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center' },
+  previewBadge: {
+    position: 'absolute', left: 8, bottom: 8,
+    backgroundColor: 'rgba(15,23,42,0.82)', borderRadius: 8,
+    paddingHorizontal: 9, paddingVertical: 5,
+  },
+  previewBadgeText: { color: '#fff', fontSize: 11.5, fontWeight: '700' },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 9 },
   meta: { flex: 1, color: C.muted, fontSize: 12 },
   trimBtn: {

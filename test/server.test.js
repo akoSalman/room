@@ -752,7 +752,11 @@ test('disappearing messages: announced, applied to BOTH sides, and swept', async
   const stored = (await api(`/messages/${room.id}`, 'GET', null, a.token))
     .find(m => m.content === 'from b');
   assert.ok(stored, 'the message was not stored');
-  assert.ok(stored.expires_at > Date.now(), 'the message was not given an expiry');
+  // The LIFETIME is recorded at send; the deadline only starts once it is seen.
+  assert.strictEqual(stored.disappear_seconds, 30, 'the message was given no lifetime');
+  assert.strictEqual(stored.expires_at, null, 'the countdown started before it was seen');
+  const seen = await emit(sa, 'messages_seen', { roomId: room.id, messageIds: [stored.id] });
+  assert.strictEqual(seen.started.length, 1, "the recipient's view did not start the countdown");
 
   // Turning it off is announced too, and later messages are permanent again.
   const offAnnounced = waitFor(sb, 'message_received',
@@ -763,7 +767,89 @@ test('disappearing messages: announced, applied to BOTH sides, and swept', async
   await new Promise(r => setTimeout(r, 150));
   const perm = (await api(`/messages/${room.id}`, 'GET', null, a.token))
     .find(m => m.content === 'permanent');
-  assert.ok(perm && !perm.expires_at, 'a message sent after switching off still expires');
+  assert.ok(perm && !perm.disappear_seconds && !perm.expires_at,
+    'a message sent after switching off still expires');
+});
+
+test('a message does NOT start expiring until it has been SEEN', async () => {
+  // The reported bug: messages vanished on a timer even though the recipient
+  // was offline and never read them. That is not disappearing, it is losing
+  // mail.
+  const a = await signUp('seena');
+  const b = await signUp('seenb');
+  const room = await api('/rooms', 'POST', { name: 'seen-room-x' }, a.token);
+  const sa = await connect(a.token);
+  const sb = await connect(b.token);
+  await emit(sb, 'accept_invite', { roomId: room.id });
+  await emit(sa, 'set_disappearing', { roomId: room.id, seconds: 30 });
+
+  await emit(sa, 'send_message', { roomId: room.id, type: 'text', content: 'unread yet' });
+  await new Promise(r => setTimeout(r, 150));
+
+  let msg = (await api(`/messages/${room.id}`, 'GET', null, a.token))
+    .find(m => m.content === 'unread yet');
+  assert.ok(msg, 'message missing');
+  assert.strictEqual(msg.expires_at, null,
+    'the countdown started before anyone had seen the message');
+  assert.strictEqual(msg.disappear_seconds, 30, 'the lifetime was not recorded');
+
+  // The SENDER seeing their own message proves nothing about delivery.
+  await emit(sa, 'messages_seen', { roomId: room.id, messageIds: [msg.id] });
+  msg = (await api(`/messages/${room.id}`, 'GET', null, a.token)).find(m => m.id === msg.id);
+  assert.strictEqual(msg.expires_at, null,
+    "the sender looking at their own message started its countdown");
+
+  // The recipient seeing it does start it, and everyone is told the deadline
+  // so both sides count down to the same moment.
+  const told = waitFor(sa, 'expiry_started', p => p.started.some(x => x.messageId === msg.id));
+  const res = await emit(sb, 'messages_seen', { roomId: room.id, messageIds: [msg.id] });
+  assert.strictEqual(res.started.length, 1, `expected one timer to start: ${JSON.stringify(res)}`);
+  const evt = await told;
+  const started = evt.started.find(x => x.messageId === msg.id);
+  assert.ok(started.expiresAt > Date.now(), 'the deadline is already in the past');
+
+  msg = (await api(`/messages/${room.id}`, 'GET', null, a.token)).find(m => m.id === msg.id);
+  assert.strictEqual(msg.expires_at, started.expiresAt,
+    'the stored deadline differs from the one announced');
+});
+
+test('seeing a message twice does not restart or shorten its countdown', async () => {
+  const a = await signUp('seenidem');
+  const b = await signUp('seenidem2');
+  const room = await api('/rooms', 'POST', { name: 'seen-idem' }, a.token);
+  const sa = await connect(a.token);
+  const sb = await connect(b.token);
+  await emit(sb, 'accept_invite', { roomId: room.id });
+  await emit(sa, 'set_disappearing', { roomId: room.id, seconds: 300 });
+  await emit(sa, 'send_message', { roomId: room.id, type: 'text', content: 'once' });
+  await new Promise(r => setTimeout(r, 150));
+  const id = (await api(`/messages/${room.id}`, 'GET', null, a.token)).find(m => m.content === 'once').id;
+
+  const first = await emit(sb, 'messages_seen', { roomId: room.id, messageIds: [id] });
+  const deadline = first.started[0].expiresAt;
+  await new Promise(r => setTimeout(r, 120));
+  const second = await emit(sb, 'messages_seen', { roomId: room.id, messageIds: [id] });
+  assert.strictEqual(second.started.length, 0, 'the timer was started a second time');
+
+  const after = (await api(`/messages/${room.id}`, 'GET', null, a.token)).find(m => m.id === id);
+  assert.strictEqual(after.expires_at, deadline, 'the deadline moved on a second view');
+});
+
+test('SECURITY: an outsider cannot start timers in a chat they cannot see', async () => {
+  const a = await signUp('seenpriv');
+  const outsider = await signUp('seenoutsider');
+  const room = await api('/rooms', 'POST', { name: 'seen-private', isPrivate: true }, a.token);
+  const sa = await connect(a.token);
+  await emit(sa, 'set_disappearing', { roomId: room.id, seconds: 30 });
+  await emit(sa, 'send_message', { roomId: room.id, type: 'text', content: 'private' });
+  await new Promise(r => setTimeout(r, 150));
+  const id = (await api(`/messages/${room.id}`, 'GET', null, a.token)).find(m => m.content === 'private').id;
+
+  const so = await connect(outsider.token);
+  const res = await emit(so, 'messages_seen', { roomId: room.id, messageIds: [id] });
+  assert.ok(res.error, 'an outsider was allowed to start timers in a private room');
+  const after = (await api(`/messages/${room.id}`, 'GET', null, a.token)).find(m => m.id === id);
+  assert.strictEqual(after.expires_at, null, "an outsider's view started the countdown");
 });
 
 test('an expired message is destroyed and everyone is told', async () => {
@@ -779,6 +865,8 @@ test('an expired message is destroyed and everyone is told', async () => {
   assert.ok(msg, 'message missing');
 
   // Backdate it rather than waiting 30 seconds, then let the sweeper run.
+  // Backdate the deadline rather than waiting; the point here is the SWEEP,
+  // not how the deadline came to exist.
   const db = require('../db.js');
   db.prepare('UPDATE messages SET expires_at = ? WHERE id = ?').run(Date.now() - 1000, msg.id);
   const gone = waitFor(sock, 'message_deleted', p => p.messageId === msg.id, 40000);
@@ -842,8 +930,12 @@ test('disappearing messages reach the OTHER side of a DM, live', async () => {
   await new Promise(r => setTimeout(r, 150));
   const mine = (await api(`/messages/${dmId}`, 'GET', null, b.token))
     .find(m => m.content === 'from the other side');
-  assert.ok(mine?.expires_at > Date.now(),
-    "the other side's own message was not given an expiry");
+  assert.strictEqual(mine?.disappear_seconds, 300,
+    "the other side's own message was not given a lifetime");
+  // And A seeing it is what starts the clock, not B sending it.
+  const startedForA = await emit(sa, 'messages_seen', { roomId: dmId, messageIds: [mine.id] });
+  assert.strictEqual(startedForA.started.length, 1,
+    "the recipient's view did not start the countdown on the other side's message");
 
   // Either side can turn it off again.
   const aNotified = waitFor(sa, 'disappearing_changed', e => e.seconds === 0);

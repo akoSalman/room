@@ -92,3 +92,52 @@ export async function stopRinging(): Promise<void> {
 }
 
 export { EventType };
+
+
+// ── Live location sharing ────────────────────────────────────────────────────
+//
+// An ongoing notification while a live share is running. Sharing your position
+// is exactly the thing that must not be possible to forget about, and the app
+// being closed is when forgetting happens — so it sits in the shade with Stop
+// one tap away, and cannot be swiped off by accident.
+export const LOCATION_CHANNEL = 'live-location-v1';
+export const LOCATION_NOTIFICATION_ID = 'live-location';
+
+export async function showLiveLocation(chatName: string, untilMs: number): Promise<boolean> {
+  try {
+    await notifee.createChannel({
+      id: LOCATION_CHANNEL,
+      name: 'Live location',
+      // Deliberately quiet: this is a standing reminder, not an alert. It
+      // should be impossible to miss in the shade and impossible to be
+      // irritated by.
+      importance: AndroidImportance.LOW,
+      vibration: false,
+    });
+    const mins = Math.max(0, Math.round((untilMs - Date.now()) / 60000));
+    await notifee.displayNotification({
+      id: LOCATION_NOTIFICATION_ID,
+      title: 'Sharing your live location',
+      body: mins > 0 ? `${chatName} · about ${mins} min left` : chatName,
+      android: {
+        channelId: LOCATION_CHANNEL,
+        importance: AndroidImportance.LOW,
+        ongoing: true,
+        autoCancel: false,
+        onlyAlertOnce: true,
+        smallIcon: 'ic_notification',
+        pressAction: { id: 'default', launchActivity: 'default' },
+        actions: [
+          { title: 'Stop sharing', pressAction: { id: 'stop-location' } },
+        ],
+      },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function hideLiveLocation(): Promise<void> {
+  try { await notifee.cancelNotification(LOCATION_NOTIFICATION_ID); } catch {}
+}

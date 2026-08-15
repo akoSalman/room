@@ -32,6 +32,7 @@ import GalleryImage from '../components/GalleryImage';
 import VideoPlayer, { VideoItem } from '../components/VideoPlayer';
 import VideoBubble from '../components/VideoBubble';
 import EdgeBack from '../components/EdgeBack';
+import ExpiryRing from '../components/ExpiryRing';
 import TileMap from '../components/TileMap';
 import LocationView, { LocationPin } from '../components/LocationView';
 import * as locationManager from '../locationManager';
@@ -51,7 +52,6 @@ import { compressVideo } from '../compressVideo';
 import { VideoQuality } from '../videoQuality';
 import { Quality } from '../imageQuality';
 import { tokenize, telHref, toAsciiDigits } from '../textTokens';
-import { charIndexAt, wordRangeAt, TextLine } from '../textSelect';
 import { DISAPPEARING_OPTIONS, disappearingLabel, disappearingPredicate } from '../disappearing';
 import { toast } from '../components/Toast';
 import * as outbox from '../outbox';
@@ -68,6 +68,8 @@ type Message = {
   client_id?: string;
   played?: number;
   one_time_seconds?: number | null; viewed_at?: number | null;
+  /** Disappearing mode: the lifetime, and the deadline once someone has seen it. */
+  disappear_seconds?: number | null; expires_at?: number | null;
   _uploading?: boolean; _uploadFailed?: boolean;
 };
 // Shows a spinner over the image until it finishes loading (download progress proxy).
@@ -202,22 +204,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // forward or delete them in one go.
   const [selectedIds, setSelectedIds] = useState<Set<Message['id']>>(new Set());
   // The one message whose text is currently being selected in place.
-  const [textSelectId, setTextSelectId] = useState<Message['id'] | null>(null);
   // Controlled selection range, used only to preselect the whole message the
   // instant double-tap turns it into a selectable field; released a moment
   // later so the handles become draggable.
-  const [textSelectRange, setTextSelectRange] = useState<{ start: number; end: number } | undefined>(undefined);
-  // The selection we ASKED for, held until the field reports it back.
-  //
-  // Focusing a TextInput fires onSelectionChange with a collapsed caret, and
-  // that overwrote the range we had just set — so the highlight was wiped a
-  // frame after appearing and the text looked unselected. This re-asserts our
-  // range until the field agrees, then hands control back to the user's drags.
-  const wantSelection = useRef<{ start: number; end: number } | null>(null);
-  // Rendered line boxes per message, reported by <Text onTextLayout>. They are
-  // what turns a tap position into a character offset, and so into a word.
-  const textLines = useRef<Record<string, TextLine[]>>({});
-  const tapCharIndex = useRef(-1);
   const [pendingMedia, setPendingMedia] = useState<{ uri: string; name: string; mime: string }[]>([]);
   // Photos are sent re-encoded by default — a phone camera's 8 MB original is
   // what makes sending "take a couple of seconds". HD sends the file untouched.
@@ -319,8 +308,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // Only the things a row actually reads. Anything else changing must NOT
   // invalidate the rows.
   const rowExtraData = useMemo(
-    () => ({ maxOtherReadMsgId, uploadProgress, reactions, highlightId, online, revealedOneTime, e2eActive, selectedIds, textSelectId }),
-    [maxOtherReadMsgId, uploadProgress, reactions, highlightId, online, revealedOneTime, e2eActive, selectedIds, textSelectId],
+    () => ({ maxOtherReadMsgId, uploadProgress, reactions, highlightId, online, revealedOneTime, e2eActive, selectedIds }),
+    [maxOtherReadMsgId, uploadProgress, reactions, highlightId, online, revealedOneTime, e2eActive, selectedIds],
   );
 
   const scrollBottom = useCallback(() => {
@@ -364,11 +353,43 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     scrollBottom();
   }
 
+  // Messages the user has actually LOOKED at. A disappearing message's clock
+  // starts here, not when it was sent: sitting scrolled up in a long chat is
+  // not reading the bottom of it, and being offline is not reading at all.
+  const seenReported = useRef<Set<string>>(new Set());
+  const seenPending = useRef<Set<number | string>>(new Set());
+  const seenTimer = useRef<any>(null);
+
+  function flushSeen() {
+    const sock = socketRef.current;
+    const ids = [...seenPending.current];
+    seenPending.current.clear();
+    if (!sock || !ids.length) return;
+    sock.emit('messages_seen', { roomId: room.id, messageIds: ids });
+  }
+
   const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
     if (viewableItems.length > 0) {
       visibleIdRef.current = viewableItems[0].item.id;
     }
+    for (const v of viewableItems) {
+      const m = v?.item;
+      if (!m || !m.disappear_seconds || m.expires_at) continue;
+      // Never report your own message: seeing what you sent says nothing about
+      // whether it was delivered.
+      if (m.username === meRef.current) continue;
+      const key = String(m.id);
+      if (seenReported.current.has(key)) continue;
+      seenReported.current.add(key);
+      seenPending.current.add(m.id);
+    }
+    // Batched: scrolling through a long chat would otherwise emit per row.
+    if (seenPending.current.size) {
+      clearTimeout(seenTimer.current);
+      seenTimer.current = setTimeout(flushSeen, 400);
+    }
   }).current;
+  useEffect(() => () => clearTimeout(seenTimer.current), []);
   const viewabilityConfigRef = useRef({ itemVisiblePercentThreshold: 50 }).current;
 
   function onMessagesScroll(e: any) {
@@ -691,7 +712,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         if (msg.type === 'location' && msg.username === meRef.current && pendingLiveShare.current) {
           const { until } = pendingLiveShare.current;
           pendingLiveShare.current = null;
-          locationManager.startSharing(msg.id, room.id, until).catch(() => {});
+          locationManager.startSharing(msg.id, room.id, until,
+            room.is_dm ? (room.other_username || room.name) : room.name).catch(() => {});
         }
         if (isNearBottomRef.current) scrollBottom();
         else if (msg.username !== meRef.current) setMissedCount(n => n + 1);
@@ -1587,17 +1609,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   // Message press routing.
-  //   • long press    : enters multi-select (forward/delete several at once)
-  //   • tap on text   : opens the menu — but DEFERRED, so a second tap can
-  //                     cancel it. Opening instantly made the menu flash up
-  //                     and vanish again on every double tap.
-  //   • double tap    : selects the whole text in place, for copying
-  //   • tap on media  : opens the media; never the menu
-  //   • tap on space  : opens the menu, anywhere across the row
+  //   • long press on a text bubble : the platform's own text selection
+  //   • long press elsewhere        : multi-select (forward/delete several)
+  //   • tap on media                : opens the media; never the menu
+  //   • tap on the space beside a message : opens the menu (which has Copy)
   //   • any tap while multi-selecting toggles that message instead
   const tapTimer = useRef<any>(null);
-  const lastTap = useRef<{ id: Message['id'] | -1; t: number }>({ id: -1, t: 0 });
-  const DOUBLE_MS = 280;
 
   function openMenuFor(msg: Message, e?: any) {
     setActionsMsg({ msg, x: e?.nativeEvent?.pageX ?? 0, y: e?.nativeEvent?.pageY ?? 0 });
@@ -1620,48 +1637,23 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     });
   }
   function enterSelectMode(msg: Message) {
-    setTextSelectId(null);
     clearTimeout(tapTimer.current);
     setSelectedIds(new Set([msg.id]));
   }
   function exitSelectMode() { setSelectedIds(new Set()); }
 
   function onMessageLongPress(msg: Message) {
-    if (textSelectId != null) return;   // busy selecting text in that bubble
     enterSelectMode(msg);
   }
 
   // Tap on a text bubble, or on the empty space beside any message.
-  function onMessageTap(msg: Message, e: any, fromText: boolean) {
+  //
+  // No double-tap handling any more: text selection is the platform's job now
+  // (long-press or double-tap on a selectable Text), so a tap no longer has to
+  // wait to find out whether a second one is coming. The menu opens at once.
+  function onMessageTap(msg: Message, e: any, _fromText: boolean) {
     if (selectedIds.size) { toggleSelected(msg); return; }
-    if (textSelectId != null) { setTextSelectId(null); return; }  // tap away = done selecting
-
-    if (!fromText || !canSelectText(msg)) { openMenuFor(msg, e); return; }
-
-    // Where in the text this tap landed. The bubble's padding offsets the
-    // coordinates slightly; charIndexAt snaps to a line and wordRangeAt then
-    // widens to word boundaries, so a few points of error changes nothing.
-    const lines = textLines.current[String(msg.id)];
-    tapCharIndex.current = charIndexAt(
-      lines, (e?.nativeEvent?.locationX ?? 0) - BUBBLE_PAD, (e?.nativeEvent?.locationY ?? 0) - BUBBLE_PAD,
-    );
-
-    const now = Date.now();
-    const second = lastTap.current.id === msg.id && now - lastTap.current.t < DOUBLE_MS;
-    lastTap.current = { id: msg.id, t: now };
-    if (second) {
-      clearTimeout(tapTimer.current);   // kill the pending menu so it never shows
-      lastTap.current = { id: -1, t: 0 };
-      const range = wordRangeAt(msg.content || '', tapCharIndex.current);
-      wantSelection.current = range;
-      setTextSelectRange(range);
-      setTextSelectId(msg.id);
-      return;
-    }
-    // Defer: if a second tap follows, the menu must never have appeared.
-    const ev = { nativeEvent: { pageX: e?.nativeEvent?.pageX, pageY: e?.nativeEvent?.pageY } };
-    clearTimeout(tapTimer.current);
-    tapTimer.current = setTimeout(() => openMenuFor(msg, ev), DOUBLE_MS);
+    openMenuFor(msg, e);
   }
 
   useEffect(() => () => clearTimeout(tapTimer.current), []);
@@ -1698,14 +1690,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // Hardware back gets out of a selection first, rather than leaving the chat
   // with messages still picked.
   useEffect(() => {
-    if (!selectedIds.size && textSelectId == null) return;
+    if (!selectedIds.size) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (textSelectId != null) { setTextSelectId(null); return true; }
       if (selectedIds.size) { exitSelectMode(); return true; }
       return false;
     });
     return () => sub.remove();
-  }, [selectedIds.size, textSelectId]);
+  }, [selectedIds.size]);
 
   // Membership gates posting, so it must be known as soon as the room opens —
   // not only when the info sheet is opened.
@@ -1863,6 +1854,21 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     return () => { sock.off('disappearing_changed', onChanged); };
   }, [room.id, socketRef.current]);
 
+  // A countdown started somewhere — record the deadline so the ring can be
+  // drawn, on the sender's side as well as the reader's.
+  useEffect(() => {
+    const sock = socketRef.current;
+    if (!sock) return;
+    const onStarted = ({ roomId, started }: any) => {
+      if (String(roomId) !== String(room.id) || !Array.isArray(started)) return;
+      const byId = new Map(started.map((x: any) => [String(x.messageId), x.expiresAt]));
+      setMessages(prev => prev.map(m =>
+        byId.has(String(m.id)) ? { ...m, expires_at: byId.get(String(m.id)) } : m));
+    };
+    sock.on('expiry_started', onStarted);
+    return () => { sock.off('expiry_started', onStarted); };
+  }, [room.id, socketRef.current]);
+
   // Everyone in the room sees live pins move.
   useEffect(() => {
     const sock = socketRef.current;
@@ -1981,25 +1987,29 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         )}
         <View style={[s.bubbleRow, mine && s.bubbleRowMine]}>
         <SwipeableMessage
-          enabled={textSelectId !== msg.id && !selectedIds.size}
+          enabled={!selectedIds.size}
           onSwipeRight={() => { setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type }); composerRef.current?.focus(); }}
           onSwipeLeft={mine ? () => deleteMsg(msg.id) : undefined}
         >
         {(() => {
         const textual = isTextual(msg);
-        const selecting = textSelectId === msg.id;
         // While the text is being selected the bubble must not capture
         // touches at all, or the OS selection handles never get them.
         // Text: tap is routed for the double-tap check. Media: no tap handler,
         // so a tap reaches the image/video and only opens it.
-        const bubbleProps: any = selecting ? {} : (textual
-          ? { onPress: (e: any) => onMessageTap(msg, e, true), activeOpacity: 0.85 }
-          : { onPress: selectedIds.size ? () => toggleSelected(msg) : undefined, activeOpacity: 1 });
-        if (!selecting) {
-          bubbleProps.onLongPress = () => onMessageLongPress(msg);
-          bubbleProps.delayLongPress = 350;
-        }
-        const Bubble: any = selecting ? View : TouchableOpacity;
+        // Text bubbles are NOT pressable: a Pressable ancestor swallows the
+        // long-press that starts native text selection. The row-wide catcher
+        // behind the bubble still opens the menu from the space beside it, and
+        // the menu carries Copy.
+        const bubbleProps: any = textual
+          ? {}
+          : {
+              onPress: selectedIds.size ? () => toggleSelected(msg) : undefined,
+              activeOpacity: 1,
+              onLongPress: () => onMessageLongPress(msg),
+              delayLongPress: 350,
+            };
+        const Bubble: any = textual ? View : TouchableOpacity;
         return (
         <Bubble
           {...bubbleProps}
@@ -2024,47 +2034,23 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             </TouchableOpacity>
           )}
           {!hiddenOneTime && msg.type === 'text' && (
-            selecting ? (
-              // A <Text> cannot have its selection set programmatically, so
-              // "select the whole message by default" needs a TextInput. It is
-              // editable (Android only shows selection handles on an editable
-              // field) but controlled with no onChangeText, so any keystroke is
-              // reverted immediately — selectable and copyable, never editable.
-              // The keyboard is suppressed since there is nothing to type.
-              <TextInput
-                style={[s.msgText, s.msgTextInput, looksRTLText(msg.content || '') && s.msgTextRTL]}
-                value={msg.content || ''}
-                editable
-                showSoftInputOnFocus={false}
-                multiline
-                autoFocus
-                selection={textSelectRange}
-                // Mirror the user's drags rather than releasing control. The
-                // previous version cleared `selection` on a timer, which made
-                // the highlight appear for a moment and then disappear.
-                onSelectionChange={(e) => {
-                  const sel = e.nativeEvent.selection;
-                  const want = wantSelection.current;
-                  if (want) {
-                    // Not what we asked for yet — this is the focus event
-                    // collapsing the caret. Put our range back.
-                    if (sel.start !== want.start || sel.end !== want.end) {
-                      setTextSelectRange({ ...want });
-                      return;
-                    }
-                    wantSelection.current = null;   // landed; the user drives now
-                  }
-                  setTextSelectRange(sel);
-                }}
-                contextMenuHidden={false}
-              />
-            ) : (
+            // Plain <Text selectable>, never swapped for a TextInput.
+            //
+            // The old approach replaced the bubble with an editable field on
+            // double-tap so the selection could be set programmatically. A
+            // TextInput lays text out differently from a Text — different line
+            // breaking and vertical metrics — so on some devices the message
+            // visibly jumped and a line could end up clipped out of the bubble.
+            // Losing sight of the message you are trying to copy is a worse
+            // failure than not pre-selecting a word.
+            //
+            // Native selection on a selectable Text does the job: long-press or
+            // double-tap picks the word under the finger, the handles adjust it,
+            // and the system Copy appears. Nothing re-lays-out, so nothing moves.
             <Text
               style={s.msgText}
               selectable
-              onTextLayout={(e) => { textLines.current[String(msg.id)] = e.nativeEvent.lines as any; }}
             >{renderTextWithLinks(msg.content || '')}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}{msg.one_time_seconds ? <Text style={s.oneTimeTag}> 🔥{msg.one_time_seconds}s</Text> : null}</Text>
-            )
           )}
           {msg.type === 'call' && (() => {
             let c: any = {};
@@ -2287,6 +2273,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
         <View style={s.footer}>
           <Text style={s.time}>{fmtTime(msg.created_at)}</Text>
+          {/* How much life this message has left. Absent until someone has
+              actually seen it — an unread message is not counting down. */}
+          {msg.disappear_seconds ? (
+            msg.expires_at ? (
+              <ExpiryRing expiresAt={msg.expires_at} seconds={msg.disappear_seconds} />
+            ) : (
+              <Text style={s.pendingExpiry}>⏳</Text>
+            )
+          ) : null}
           {msg.one_time_seconds ? (
             <Text style={s.oneTimeTag}>
               🔥{oneTimeExpiry[msg.id as number]
@@ -2321,7 +2316,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       onBack={onBack}
       enabled={
         !videoItem && openLocationId == null && !cameraMode
-        && !selectedIds.size && textSelectId == null
+        && !selectedIds.size
         && !forwardOpen && !showPlayer && !recording
       }
     >
@@ -3360,6 +3355,7 @@ const s = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth, borderColor: C.accent,
   },
   // ── The "secret" skin ──────────────────────────────────────────────────────
+  pendingExpiry: { fontSize: 10, opacity: 0.55 },
   containerSecret: { backgroundColor: '#141a24' },
   secretBar: {
     backgroundColor: '#1f2a3a',
