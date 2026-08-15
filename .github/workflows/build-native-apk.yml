@@ -9,12 +9,21 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # Put [skip apk] in the commit message to land native-app changes without
-    # spending build minutes — useful when the work is being deployed to the
-    # servers first and the APK is cut later, deliberately.
+    # Building is OPT-IN, deliberately.
+    #
+    # This used to build on every push unless the commit said [skip apk]. That
+    # made "do not build" depend on remembering a magic string on every single
+    # commit, and it silently failed the moment one was forgotten — five APKs
+    # were built from commits that were never meant to produce one.
+    #
+    # The default is now "no build", which matches how this repo is actually
+    # worked on: changes land continuously, and an APK is cut when someone
+    # decides they want one. To get a build, either run this workflow manually
+    # (Actions → Build Native APK → Run workflow) or put [build apk] in the
+    # commit message.
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      !contains(github.event.head_commit.message, '[skip apk]')
+      contains(github.event.head_commit.message, '[build apk]')
     strategy:
       fail-fast: false
       matrix:
