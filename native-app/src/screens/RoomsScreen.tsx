@@ -4,6 +4,7 @@ import {
   StyleSheet, Alert, ActivityIndicator, Modal, ScrollView, Linking, Platform, Pressable,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system';
+import * as appUpdate from '../appUpdate';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { C, isRTL } from '../theme';
 import { apiFetch, getUsername, getUserId, getSocket, setAuth, getAvatar, RELEASE_TAG, RELEASE_FILE } from '../api';
@@ -45,9 +46,16 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   const [unread, setUnread] = useState<Record<number, number>>({});
   const [latestVersion, setLatestVersion] = useState<number | null>(null);
   const [versionCheckFailed, setVersionCheckFailed] = useState(false);
-  const [updateProgress, setUpdateProgress] = useState<number | null>(null); // 0..1 while downloading
+  // Mirrors the module-scope download, so re-opening this screen mid-download
+  // shows the real progress instead of starting again.
+  const [updateProgress, setUpdateProgress] = useState<number | null>(
+    appUpdate.current().status === 'downloading' ? appUpdate.current().progress : null,
+  );
+  useEffect(() => appUpdate.subscribe(() => {
+    const st = appUpdate.current();
+    setUpdateProgress(st.status === 'downloading' ? st.progress : null);
+  }), []);
   const [myAvatar, setMyAvatar] = useState<string | null>(null);
-  const updateDownloadRef = useRef<FileSystem.DownloadResumable | null>(null);
   // Used to scroll the profile sheet straight to the APP UPDATE section when
   // the user arrives via the update badge — otherwise the sheet opened at the
   // top and the update controls sat off-screen below the fold.
@@ -213,42 +221,10 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   }
 
   async function downloadAndInstallUpdate() {
-    if (updateProgress !== null) return; // already downloading
-    if (Platform.OS !== 'android') {
-      Linking.openURL(LATEST_APK_URL);
-      return;
-    }
-    setUpdateProgress(0);
-    const dest = FileSystem.cacheDirectory + 'ChatRoom-update.apk';
-    try {
-      const dl = FileSystem.createDownloadResumable(
-        LATEST_APK_URL, dest, {},
-        p => {
-          if (p.totalBytesExpectedToWrite > 0) {
-            setUpdateProgress(p.totalBytesWritten / p.totalBytesExpectedToWrite);
-          }
-        }
-      );
-      updateDownloadRef.current = dl;
-      const result = await dl.downloadAsync();
-      setUpdateProgress(null);
-      if (!result?.uri) { Alert.alert('Update failed', 'Could not download the update.'); return; }
-      const contentUri = await FileSystem.getContentUriAsync(result.uri);
-      await IntentLauncher.startActivityAsync('android.intent.action.INSTALL_PACKAGE', {
-        data: contentUri,
-        flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
-      });
-    } catch (e) {
-      setUpdateProgress(null);
-      Alert.alert(
-        'Update failed',
-        'Could not download or start the installer. You can download the APK manually instead.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Download manually', onPress: () => Linking.openURL(LATEST_APK_URL) },
-        ]
-      );
-    }
+    if (Platform.OS !== 'android') { Linking.openURL(LATEST_APK_URL); return; }
+    // Owned by appUpdate at module scope: closing this screen, or the app,
+    // no longer cancels the download.
+    appUpdate.start(LATEST_APK_URL).catch(() => {});
   }
 
   async function setAvatarEmoji(emoji: string | null) {

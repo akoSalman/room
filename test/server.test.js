@@ -970,6 +970,52 @@ test('shared media carries the message it came from, for "Show in chat"', async 
   assert.ok(media.links[0].url.includes('example.com'), 'the link lost its url');
 });
 
+test('an old message can be jumped to in ONE request', async () => {
+  // "Show in chat" used to page backwards from the newest message until the
+  // target appeared — dozens of round trips for anything old, which looked
+  // like the button doing nothing.
+  const u = await signUp('ctxuser');
+  const room = await api('/rooms', 'POST', { name: 'ctx-room' }, u.token);
+  const sock = await connect(u.token);
+  for (let i = 0; i < 60; i++) {
+    await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: `m${i}` });
+  }
+  await new Promise(r => setTimeout(r, 250));
+
+  const all = await api(`/messages/${room.id}`, 'GET', null, u.token);
+  const oldest = all[0];
+  assert.ok(oldest, 'no messages');
+
+  const ctx = await api(`/message-context/${room.id}/${oldest.id}`, 'GET', null, u.token);
+  assert.strictEqual(ctx.targetId, oldest.id);
+  assert.ok(ctx.messages.some(m => m.id === oldest.id),
+    'the window does not contain the message it was asked for');
+  assert.ok(ctx.messages.length > 1, 'no surrounding context returned');
+  // Ordered oldest-first, like /messages, so the client can render it directly.
+  const ids = ctx.messages.map(m => m.id);
+  assert.deepStrictEqual(ids, [...ids].sort((a, b) => a - b), 'the window is not in order');
+});
+
+test('jumping to a message that is gone says so', async () => {
+  const u = await signUp('ctxgone');
+  const room = await api('/rooms', 'POST', { name: 'ctx-gone' }, u.token);
+  const r = await raw(`/message-context/${room.id}/999999`, 'GET', null, u.token);
+  assert.strictEqual(r.status, 404,
+    'a deleted message returned a window the client cannot distinguish from a slow load');
+});
+
+test('SECURITY: message context respects room access', async () => {
+  const owner = await signUp('ctxowner');
+  const outsider = await signUp('ctxoutsider');
+  const room = await api('/rooms', 'POST', { name: 'ctx-private', isPrivate: true }, owner.token);
+  const sock = await connect(owner.token);
+  await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: 'secret' });
+  await new Promise(r => setTimeout(r, 150));
+  const id = (await api(`/messages/${room.id}`, 'GET', null, owner.token))[0].id;
+  const r = await raw(`/message-context/${room.id}/${id}`, 'GET', null, outsider.token);
+  assert.strictEqual(r.status, 403, 'an outsider read a private room through message-context');
+});
+
 test('room list is ordered by most recent activity, not by name', async () => {
   const u = await signUp('sorter6');
   const sock = await connect(u.token);

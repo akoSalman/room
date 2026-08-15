@@ -966,6 +966,44 @@ app.get('/dm-rooms', authMiddleware, (req, res) => {
 // Messages (paginated: most recent page by default, or the page before
 // `before` (a message id) for infinite-scroll-up loading of older history)
 const MESSAGES_PAGE_SIZE = 20;
+// Messages AROUND one particular message.
+//
+// "Show in chat" used to work by paging backwards from the newest message
+// until the target turned up. For a photo from months ago that is dozens of
+// round trips, and it appeared to do nothing at all — which is exactly what a
+// long silent loop looks like. This fetches the target and its neighbours in
+// ONE request, so jumping to an old message costs the same as jumping to a
+// recent one.
+app.get('/message-context/:roomId/:msgId', authMiddleware, (req, res) => {
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
+  if (!canAccessRoom(req.user.id, room)) return res.status(403).json({ error: 'No access' });
+  const msgId = parseInt(req.params.msgId, 10);
+  if (!Number.isInteger(msgId)) return res.status(400).json({ error: 'Bad message id' });
+
+  const target = db.prepare('SELECT id FROM messages WHERE id = ? AND room_id = ?')
+    .get(msgId, room.id);
+  // Gone (deleted, expired, or never in this room) — say so rather than
+  // returning an empty window the client cannot tell apart from a slow load.
+  if (!target) return res.status(404).json({ error: 'That message is no longer here' });
+
+  const HALF = Math.floor(MESSAGES_PAGE_SIZE / 2);
+  const sql = (cmp, order) => `
+    SELECT m.*, u.username, u.avatar,
+      rm.content AS reply_content, rm.type AS reply_type, rm.file_name AS reply_file_name,
+      ru.username AS reply_username
+    FROM messages m
+    JOIN users u ON m.user_id = u.id
+    LEFT JOIN messages rm ON m.reply_to_id = rm.id
+    LEFT JOIN users ru ON rm.user_id = ru.id
+    WHERE m.room_id = ? AND m.id ${cmp} ?
+    ORDER BY m.id ${order} LIMIT ?`;
+
+  const older = db.prepare(sql('<=', 'DESC')).all(room.id, msgId, HALF + 1);
+  const newer = db.prepare(sql('>', 'ASC')).all(room.id, msgId, HALF);
+  const messages = [...older.reverse(), ...newer].map(signMessage);
+  res.json({ messages, targetId: msgId, hasOlder: older.length > HALF });
+});
+
 app.get('/messages/:roomId', authMiddleware, (req, res) => {
   const roomRow = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
   if (!canAccessRoom(req.user.id, roomRow)) return res.status(403).json({ error: 'Not a member of this room' });

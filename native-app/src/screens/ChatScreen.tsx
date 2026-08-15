@@ -168,6 +168,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // Which location message is open fullscreen, and the live-share menu.
   // A message opened for reliable text selection (see TextViewer).
   const [selectTextOf, setSelectTextOf] = useState<string | null>(null);
+  // Fetching the context around a message being jumped to.
+  const [jumping, setJumping] = useState(false);
   const [openLocationId, setOpenLocationId] = useState<number | string | null>(null);
   const [showLocationMenu, setShowLocationMenu] = useState(false);
   const [liveShare, setLiveShare] = useState(locationManager.activeShare());
@@ -330,11 +332,35 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   async function jumpToMessage(messageId: number) {
-    // Target may be older than what's loaded — page backwards until we find it
-    while (messagesRef.current.findIndex(m => m.id === messageId) === -1 && hasMoreOlderRef.current) {
-      await loadOlderMessages();
+    // Already loaded: nothing to fetch.
+    if (messagesRef.current.findIndex(m => m.id === messageId) === -1) {
+      // Fetch the message and its neighbours in ONE request rather than paging
+      // backwards until it turns up. For a photo from months ago the old loop
+      // was dozens of round trips and looked exactly like the button being
+      // broken — which is what it was reported as.
+      setJumping(true);
+      try {
+        const ctx = await apiFetch(`/message-context/${room.id}/${messageId}`);
+        if (ctx?.error || !Array.isArray(ctx?.messages) || !ctx.messages.length) {
+          setJumping(false);
+          toast(ctx?.error || 'That message is no longer here');
+          return;
+        }
+        // Merge, keeping whatever is already on screen, so returning to the
+        // bottom afterwards still works.
+        setMessages(prev => {
+          const seen = new Set(prev.map(m => String(m.id)));
+          const add = ctx.messages.filter((m: any) => !seen.has(String(m.id)));
+          return [...add, ...prev].sort((a: any, b: any) => Number(a.id) - Number(b.id));
+        });
+        hasMoreOlderRef.current = !!ctx.hasOlder;
+      } catch {
+        setJumping(false);
+        toast('Could not open that message');
+        return;
+      }
+      setJumping(false);
     }
-    if (messagesRef.current.findIndex(m => m.id === messageId) === -1) return;
 
     // Push where we came from so the FAB can walk back through each reply level
     jumpBackStackRef.current.push(isNearBottomRef.current ? 'bottom' : (visibleIdRef.current ?? 'bottom'));
@@ -1655,6 +1681,26 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     return isTextual(m) && !!(m.content || '').trim() && m.type !== 'invite' && m.type !== 'call';
   }
 
+  /**
+   * Whether a message's content may be selected, copied, downloaded or shared.
+   *
+   * Two rules, both about the same thing — content that was sent on the
+   * understanding it would not travel:
+   *
+   *  • A DISAPPEARING message cannot be copied out. Copying defeats the point
+   *    of a message that deletes itself, so selection is off for exactly those
+   *    messages — and stays on for everything sent before the mode was turned
+   *    on, and after it is turned off, which are ordinary messages.
+   *  • In a PRIVATE room, only the message's own author may take their content
+   *    out of it. You can always copy and download what you wrote yourself.
+   */
+  function canTakeContent(m: Message) {
+    if (m.disappear_seconds) return false;
+    const priv = !!(roomInfo?.is_private ?? room.is_private);
+    if (priv && m.username !== me) return false;
+    return true;
+  }
+
   // ── Multi-select ───────────────────────────────────────────────────────────
   function toggleSelected(msg: Message) {
     setSelectedIds(prev => {
@@ -1829,7 +1875,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       setViewerFromMedia(false);
       // Paging back to an old message takes a moment; close the browser first
       // so the jump is visible rather than happening behind it.
-      setTimeout(() => jumpToMessage(Number(item.msgId)), 250);
+      jumpToMessage(Number(item.msgId));
       return;
     }
     if (action === 'open') {
@@ -2130,7 +2176,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             // and the system Copy appears. Nothing re-lays-out, so nothing moves.
             <Text
               style={s.msgText}
-              selectable
+              selectable={canTakeContent(msg)}
             >{renderTextWithLinks(msg.content || '')}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}{msg.one_time_seconds ? <Text style={s.oneTimeTag}> 🔥{msg.one_time_seconds}s</Text> : null}</Text>
           )}
           {msg.type === 'call' && (() => {
@@ -2557,17 +2603,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                   <GalleryImage uri={item} setImageDimensions={setImageDimensions} />
                 )}
               />
-              <TouchableOpacity onPress={closeViewer} style={s.lightboxClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                <Text style={s.lightboxCloseText}>✕</Text>
-              </TouchableOpacity>
-              {!isOneTimeUrl(viewerUrl) && (
-                <TouchableOpacity onPress={saveImage} style={s.lightboxSave} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                  <Text style={s.lightboxCloseText}>⬇</Text>
-                </TouchableOpacity>
-              )}
+              {/* Close and Download used to sit here as separate buttons. They
+                  are in the ⋯ menu now — three controls in a row over the
+                  picture, two of them duplicating the menu beside them, was
+                  clutter on top of the thing you came to look at. Swipe down
+                  still closes. */}
               {/* The same actions as the gallery's long-press menu, on the
                   photo you are actually looking at — including Show in chat. */}
-              {!isOneTimeUrl(viewerUrl) && (
+              {(
                 <TouchableOpacity
                   onPress={() => openViewerActions()}
                   style={s.lightboxMore}
@@ -2893,13 +2936,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                     link, a phone number or even a price: those render as
                     pressable spans and swallow the long-press. This always
                     works, whatever the message contains. */}
-                {m.type === 'text' && !hidden && !!m.content && (
+                {m.type === 'text' && !hidden && !!m.content && canTakeContent(m) && (
                   <Row icon="✏️" label="Select text" onPress={() => {
                     close();
                     setSelectTextOf(m.content || '');
                   }} />
                 )}
-                {(m.type === 'text' || (m.file_path && !m.one_time_seconds)) && !hidden && (
+                {(m.type === 'text' || (m.file_path && !m.one_time_seconds)) && !hidden && canTakeContent(m) && (
                   <Row icon="📋" label="Copy" onPress={() => {
                     let fp = m.file_path || '';
                     if (m.type === 'gallery') { try { fp = JSON.parse(fp)[0] || ''; } catch {} }
@@ -2911,10 +2954,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 {m.type !== 'invite' && !m.one_time_seconds && (
                   <Row icon="↪" label="Forward" onPress={() => { close(); openForwardPicker(m); }} />
                 )}
-                {m.file_path && !hidden && !m.one_time_seconds && (
+                {m.file_path && !hidden && !m.one_time_seconds && canTakeContent(m) && (
                   <Row icon="⬇" label="Download" onPress={() => { close(); downloadMedia(m); }} />
                 )}
-                {m.file_path && !hidden && !m.one_time_seconds && (
+                {m.file_path && !hidden && !m.one_time_seconds && canTakeContent(m) && (
                   <Row icon="📤" label="Share to another app" onPress={() => { close(); shareOut(m); }} />
                 )}
                 {mineMsg && m.type === 'text' && (
@@ -2960,40 +3003,57 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowOneTimeMenu(false)} />
           <View style={s.attachSheet}>
             <View style={s.sheetHandle} />
-            <Text style={s.forwardTitle}>🔥 One-time message</Text>
-            <Text style={s.oneTimeHint}>Just the NEXT message, destroyed this many seconds after it is opened:</Text>
-            {[5, 30, 60].map(secs => (
-              <TouchableOpacity key={secs} style={s.attachOption} onPress={() => chooseOneTime(secs)}>
-                <Text style={s.attachOptionText}>{secs} seconds{oneTimeSecs === secs ? '  ✓' : ''}</Text>
+            {/* Two compact rows of chips instead of a scroll of full-width
+                rows. Both settings and their current state are visible at a
+                glance, and choosing one is a single tap without reading a
+                list. */}
+            <Text style={s.fireHeading}>🔥  One-time message</Text>
+            <Text style={s.fireHint}>Just the next message, gone after it is opened</Text>
+            <View style={s.chipRow}>
+              {[5, 30, 60].map(secs => (
+                <TouchableOpacity
+                  key={secs}
+                  style={[s.chip, oneTimeSecs === secs && s.chipOn]}
+                  onPress={() => chooseOneTime(oneTimeSecs === secs ? null : secs)}
+                >
+                  <Text style={[s.chipText, oneTimeSecs === secs && s.chipTextOn]}>{secs}s</Text>
+                </TouchableOpacity>
+              ))}
+              <TouchableOpacity
+                style={[s.chip, !oneTimeSecs && s.chipOn]}
+                onPress={() => chooseOneTime(null)}
+              >
+                <Text style={[s.chipText, !oneTimeSecs && s.chipTextOn]}>Off</Text>
               </TouchableOpacity>
-            ))}
-            {oneTimeSecs ? (
-              <TouchableOpacity style={s.attachOption} onPress={() => chooseOneTime(null)}>
-                <Text style={[s.attachOptionText, { color: '#f87171' }]}>Turn off</Text>
-              </TouchableOpacity>
-            ) : null}
+            </View>
 
-            {/* The chat-wide setting, kept clearly apart from the one-shot one
-                above: this affects EVERY later message from BOTH people, and
-                the other side is told when it changes. */}
             <View style={s.sheetDivider} />
-            <Text style={s.forwardTitle}>⏳ Disappearing messages</Text>
-            <Text style={s.oneTimeHint}>
-              Every new message from both of you is deleted after this long, and
-              everyone in the chat is told when this changes.
+
+            <Text style={s.fireHeading}>⏳  Disappearing messages</Text>
+            <Text style={s.fireHint}>
+              Every new message from both of you, deleted after it is seen
             </Text>
-            {DISAPPEARING_OPTIONS.filter(v => v > 0).map(secs => (
-              <TouchableOpacity key={`d${secs}`} style={s.attachOption} onPress={() => chooseDisappearing(secs)}>
-                <Text style={s.attachOptionText}>
-                  {disappearingLabel(secs)}{disappearing === secs ? '  ✓' : ''}
-                </Text>
+            <View style={s.chipRow}>
+              {DISAPPEARING_OPTIONS.filter(v => v > 0).map(secs => (
+                <TouchableOpacity
+                  key={`d${secs}`}
+                  style={[s.chip, disappearing === secs && s.chipOn]}
+                  onPress={() => chooseDisappearing(disappearing === secs ? 0 : secs)}
+                >
+                  <Text style={[s.chipText, disappearing === secs && s.chipTextOn]}>
+                    {disappearingLabel(secs).replace(' seconds', 's').replace(' minutes', 'm')
+                      .replace('1 hour', '1h').replace('24 hours', '24h').replace('1 week', '1w')}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+              <TouchableOpacity
+                style={[s.chip, !disappearing && s.chipOn]}
+                onPress={() => chooseDisappearing(0)}
+              >
+                <Text style={[s.chipText, !disappearing && s.chipTextOn]}>Off</Text>
               </TouchableOpacity>
-            ))}
-            {disappearing ? (
-              <TouchableOpacity style={s.attachOption} onPress={() => chooseDisappearing(0)}>
-                <Text style={[s.attachOptionText, { color: '#f87171' }]}>Turn off disappearing messages</Text>
-              </TouchableOpacity>
-            ) : null}
+            </View>
+
             <TouchableOpacity style={s.attachCancel} onPress={() => setShowOneTimeMenu(false)}>
               <Text style={s.attachCancelText}>Cancel</Text>
             </TouchableOpacity>
@@ -3010,6 +3070,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           onCancel={() => setVideoChoice(null)}
           onConfirm={sendChosenVideo}
         />
+      )}
+      {jumping && (
+        <View style={s.jumpingBar}>
+          <ActivityIndicator size="small" color={C.accent} />
+          <Text style={s.transcodeText}>Finding that message…</Text>
+        </View>
       )}
       {videoWorking > 0 && (
         <View style={s.transcodeBar}>
@@ -3057,11 +3123,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setViewerActions(null)} />
           <View style={s.attachSheet}>
             <View style={s.sheetHandle} />
-            {([
+            {(([
               ['showInChat', '💬  Show in chat'],
-              ['download', '⬇  Download'],
-              ['share', '📤  Share'],
-            ] as [MediaAction, string][]).map(([action, label]) => (
+              // Saving a one-time photo would defeat it.
+              ...(isOneTimeUrl(viewerUrl) ? [] : [['download', '⬇  Download'] as [MediaAction, string]]),
+              ...(isOneTimeUrl(viewerUrl) ? [] : [['share', '📤  Share'] as [MediaAction, string]]),
+            ] as [MediaAction, string][])).map(([action, label]) => (
               <TouchableOpacity key={action} style={s.attachOption} onPress={() => {
                 const it = viewerActions; setViewerActions(null);
                 if (!it) return;
@@ -3071,8 +3138,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 <Text style={s.attachOptionText}>{label}</Text>
               </TouchableOpacity>
             ))}
+            <TouchableOpacity style={s.attachOption} onPress={() => { setViewerActions(null); closeViewer(); }}>
+              <Text style={s.attachOptionText}>✕  Close photo</Text>
+            </TouchableOpacity>
             <TouchableOpacity style={s.attachCancel} onPress={() => setViewerActions(null)}>
-              <Text style={s.attachCancelText}>Close</Text>
+              <Text style={s.attachCancelText}>Cancel</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -3427,6 +3497,12 @@ const s = StyleSheet.create({
     alignItems: 'center', gap: 14,
   },
   busyText: { color: C.text, fontSize: 14.5, fontWeight: '600' },
+  jumpingBar: {
+    position: 'absolute', left: 14, right: 14, top: 90,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: C.sidebar, borderRadius: 12, padding: 12,
+    borderWidth: 1, borderColor: C.border, zIndex: 40,
+  },
   transcodeBar: {
     position: 'absolute', left: 14, right: 14, bottom: 96,
     flexDirection: 'row', alignItems: 'center', gap: 10,
@@ -3501,6 +3577,16 @@ const s = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#31415a',
   },
   secretBarText: { color: '#9fb4d4', fontSize: 11.5, fontWeight: '700', textAlign: 'center' },
+  fireHeading: { color: C.text, fontSize: 15.5, fontWeight: '800', paddingHorizontal: 16, paddingTop: 6 },
+  fireHint: { color: C.muted, fontSize: 12, paddingHorizontal: 16, paddingTop: 2, paddingBottom: 8 },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 16, paddingBottom: 6 },
+  chip: {
+    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 16,
+    borderWidth: 1, borderColor: C.border, backgroundColor: 'transparent',
+  },
+  chipOn: { backgroundColor: C.accent, borderColor: C.accent },
+  chipText: { color: C.text, fontSize: 13, fontWeight: '700' },
+  chipTextOn: { color: '#fff' },
   sheetDivider: { height: StyleSheet.hairlineWidth, backgroundColor: C.border, marginVertical: 8 },
   sheetRow: {
     flexDirection: 'row', alignItems: 'center', gap: 16,

@@ -131,7 +131,15 @@ export default function MediaBrowser({
             <Text style={s.rowTitle} numberOfLines={1}>{item.name || item.url}</Text>
             <Text style={s.rowSub} numberOfLines={1}>{sub(item)}</Text>
           </View>
-          <Ionicons name="ellipsis-vertical" size={16} color={C.muted} />
+          {/* A real button, not decoration. Tapping the dots used to fall
+              through to the row and just open the file. */}
+          <Pressable
+            onPress={() => setMenuFor(item)}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            style={s.rowMore}
+          >
+            <Ionicons name="ellipsis-vertical" size={18} color={C.muted} />
+          </Pressable>
         </Pressable>
       )}
       ListEmptyComponent={<Text style={s.empty}>Nothing here yet</Text>}
@@ -285,6 +293,7 @@ const s = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border,
   },
   rowIcon: { fontSize: 22 },
+  rowMore: { paddingHorizontal: 6, paddingVertical: 4 },
   rowTitle: { color: C.text, fontSize: 14.5, fontWeight: '600' },
   rowSub: { color: C.muted, fontSize: 11.5, marginTop: 1 },
   empty: { color: C.muted, fontSize: 13.5, textAlign: 'center', marginTop: 40 },
