@@ -34,6 +34,7 @@ import VideoBubble from '../components/VideoBubble';
 import EdgeBack from '../components/EdgeBack';
 import ExpiryRing from '../components/ExpiryRing';
 import TextViewer from '../components/TextViewer';
+import ChatSearch from '../components/ChatSearch';
 import TileMap from '../components/TileMap';
 import LocationView, { LocationPin } from '../components/LocationView';
 import * as locationManager from '../locationManager';
@@ -170,6 +171,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [selectTextOf, setSelectTextOf] = useState<string | null>(null);
   // Fetching the context around a message being jumped to.
   const [jumping, setJumping] = useState(false);
+  // In-chat search: replaces the header while open.
+  const [searching, setSearching] = useState(false);
   const [openLocationId, setOpenLocationId] = useState<number | string | null>(null);
   const [showLocationMenu, setShowLocationMenu] = useState(false);
   const [liveShare, setLiveShare] = useState(locationManager.activeShare());
@@ -1760,6 +1763,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     return () => sub.remove();
   }, [openLocationId]);
 
+  // Hardware back closes search before it leaves the chat.
+  useEffect(() => {
+    if (!searching) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      setSearching(false);
+      setHighlightId(null);
+      return true;
+    });
+    return () => sub.remove();
+  }, [searching]);
+
   // Hardware back gets out of a selection first, rather than leaving the chat
   // with messages still picked.
   useEffect(() => {
@@ -2443,7 +2457,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       onBack={onBack}
       enabled={
         !videoItem && openLocationId == null && !cameraMode
-        && !selectedIds.size
+        && !selectedIds.size && !searching
         && !forwardOpen && !showPlayer && !recording
       }
     >
@@ -2480,8 +2494,23 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         </View>
       )}
 
+      {/* Search takes over the header while it is open, like every chat app
+          people already use — the chat stays visible underneath so results can
+          be scrolled to as they are stepped through. */}
+      {selectedIds.size === 0 && searching && (
+        <ChatSearch
+          onClose={() => { setSearching(false); setHighlightId(null); }}
+          onSearch={async (q) => {
+            const r = await apiFetch(`/search-messages/${room.id}?q=${encodeURIComponent(q)}`);
+            if (!r || r.error) return { results: [], encryptedSkipped: 0 };
+            return { results: r.results || [], encryptedSkipped: r.encryptedSkipped || 0 };
+          }}
+          onJump={(id) => jumpToMessage(id)}
+        />
+      )}
+
       {/* Header */}
-      {selectedIds.size === 0 && (
+      {selectedIds.size === 0 && !searching && (
       <View style={s.header}>
         <TouchableOpacity onPress={onBack} style={s.backBtn} activeOpacity={0.6}
           hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}>
@@ -2537,11 +2566,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             <Ionicons name="call-outline" size={22} color={C.accent} />
           </TouchableOpacity>
         )}
-        <TouchableOpacity onPress={onOpenProfile} style={s.headerAvatar} activeOpacity={0.7}
+        {/* Search, where the profile avatar used to be. Your own avatar is one
+            tap away on the rooms list; searching a chat is something you want
+            FROM inside the chat. */}
+        <TouchableOpacity onPress={() => setSearching(true)} style={s.callBtn}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-          {myAvatar
-            ? <Text style={s.headerAvatarEmoji}>{myAvatar}</Text>
-            : <Text style={s.headerAvatarText}>{(me || '?').slice(0, 2).toUpperCase()}</Text>}
+          <Ionicons name="search" size={22} color={C.accent} />
         </TouchableOpacity>
       </View>
       )}

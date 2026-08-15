@@ -966,6 +966,45 @@ app.get('/dm-rooms', authMiddleware, (req, res) => {
 // Messages (paginated: most recent page by default, or the page before
 // `before` (a message id) for infinite-scroll-up loading of older history)
 const MESSAGES_PAGE_SIZE = 20;
+// Text search within one chat.
+//
+// Server-side so it covers the WHOLE history, not just what a client happens
+// to have loaded — searching only the last 50 messages would be worse than no
+// search at all.
+//
+// End-to-end encrypted DM messages are stored as ciphertext, so they cannot be
+// matched here and are excluded rather than silently returning nothing useful;
+// the client says so instead of pretending the chat has no matches.
+app.get('/search-messages/:roomId', authMiddleware, (req, res) => {
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
+  if (!canAccessRoom(req.user.id, room)) return res.status(403).json({ error: 'No access' });
+  const q = String(req.query.q || '').trim();
+  if (q.length < 2) return res.json({ results: [], encryptedSkipped: 0 });
+
+  // LIKE with the wildcards escaped, so a search for "100%" or "a_b" looks for
+  // those characters rather than matching everything.
+  const pattern = '%' + q.replace(/[#%_]/g, c => '#' + c) + '%';
+  const rows = db.prepare(`
+    SELECT m.id, m.content, m.created_at, m.user_id, u.username, u.avatar
+    FROM messages m
+    JOIN users u ON m.user_id = u.id
+    WHERE m.room_id = ?
+      AND m.type = 'text'
+      AND m.content IS NOT NULL
+      AND m.content NOT LIKE 'e2e:%'
+      AND m.content LIKE ? ESCAPE '#'
+    ORDER BY m.id DESC
+    LIMIT 500
+  `).all(room.id, pattern);
+
+  // How much of this chat could not be searched, so the client can say so.
+  const encryptedSkipped = db.prepare(
+    "SELECT COUNT(*) c FROM messages WHERE room_id = ? AND type = 'text' AND content LIKE 'e2e:%'"
+  ).get(room.id).c;
+
+  res.json({ results: rows, encryptedSkipped });
+});
+
 // Messages AROUND one particular message.
 //
 // "Show in chat" used to work by paging backwards from the newest message

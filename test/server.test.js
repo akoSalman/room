@@ -1016,6 +1016,80 @@ test('SECURITY: message context respects room access', async () => {
   assert.strictEqual(r.status, 403, 'an outsider read a private room through message-context');
 });
 
+test('in-chat search finds matches across the whole history', async () => {
+  const u = await signUp('searchuser');
+  const room = await api('/rooms', 'POST', { name: 'search-room' }, u.token);
+  const sock = await connect(u.token);
+  for (const t of ['hello world', 'nothing here', 'say hello again', 'HELLO shouting', 'سلام دنیا']) {
+    await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: t });
+  }
+  await new Promise(r => setTimeout(r, 200));
+
+  const r = await api(`/search-messages/${room.id}?q=hello`, 'GET', null, u.token);
+  assert.strictEqual(r.results.length, 3, `expected 3 matches, got ${r.results.length}`);
+  // Case-insensitive, so "HELLO shouting" is included.
+  assert.ok(r.results.some(x => x.content === 'HELLO shouting'), 'search was case-sensitive');
+  // Newest first, which is the order the UI steps through.
+  const ids = r.results.map(x => x.id);
+  assert.deepStrictEqual(ids, [...ids].sort((a, b) => b - a), 'results are not newest-first');
+  assert.ok(r.results[0].username, 'results carry no sender');
+
+  // Persian searches too.
+  const fa = await api(`/search-messages/${room.id}?q=${encodeURIComponent('سلام')}`, 'GET', null, u.token);
+  assert.strictEqual(fa.results.length, 1, 'Persian text was not matched');
+});
+
+test('search treats % and _ as characters, not wildcards', async () => {
+  const u = await signUp('searchwild');
+  const room = await api('/rooms', 'POST', { name: 'search-wild' }, u.token);
+  const sock = await connect(u.token);
+  // Each pair is chosen so an UNESCAPED pattern matches both and an escaped
+  // one matches only the first — otherwise the test passes either way.
+  for (const t of ['50% off today', '50 percent off', 'a_b naming', 'aXb naming']) {
+    await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: t });
+  }
+  await new Promise(r => setTimeout(r, 200));
+
+  // '%' unescaped is "any characters", so '50%' would also match '50 percent'.
+  const pct = await api(`/search-messages/${room.id}?q=${encodeURIComponent('50%')}`, 'GET', null, u.token);
+  assert.strictEqual(pct.results.length, 1,
+    `'50%' matched ${pct.results.length} messages: ${pct.results.map(x => x.content).join(' | ')}`);
+  assert.strictEqual(pct.results[0].content, '50% off today');
+
+  // '_' unescaped is "any single character", so 'a_b' would also match 'aXb'.
+  const und = await api(`/search-messages/${room.id}?q=${encodeURIComponent('a_b')}`, 'GET', null, u.token);
+  assert.strictEqual(und.results.length, 1,
+    `'a_b' matched ${und.results.length} messages: ${und.results.map(x => x.content).join(' | ')}`);
+  assert.strictEqual(und.results[0].content, 'a_b naming');
+});
+
+test('search reports how much of a chat is encrypted and unsearchable', async () => {
+  const u = await signUp('searchenc');
+  const room = await api('/rooms', 'POST', { name: 'search-enc' }, u.token);
+  const sock = await connect(u.token);
+  // The ciphertext deliberately CONTAINS the search term, so a missing filter
+  // would return it — otherwise this test proves nothing.
+  await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: 'e2e:sometextciphertext' });
+  await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: 'readable text' });
+  await new Promise(r => setTimeout(r, 200));
+
+  const r = await api(`/search-messages/${room.id}?q=text`, 'GET', null, u.token);
+  assert.strictEqual(r.results.length, 1);
+  assert.ok(!r.results.some(x => String(x.content).startsWith('e2e:')), 'ciphertext was returned as a result');
+  assert.strictEqual(r.encryptedSkipped, 1, 'the client was not told anything was skipped');
+});
+
+test('SECURITY: search respects room access', async () => {
+  const owner = await signUp('searchowner');
+  const outsider = await signUp('searchoutsider');
+  const room = await api('/rooms', 'POST', { name: 'search-private', isPrivate: true }, owner.token);
+  const sock = await connect(owner.token);
+  await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: 'confidential' });
+  await new Promise(r => setTimeout(r, 150));
+  const r = await raw(`/search-messages/${room.id}?q=confidential`, 'GET', null, outsider.token);
+  assert.strictEqual(r.status, 403, 'an outsider searched a private room');
+});
+
 test('room list is ordered by most recent activity, not by name', async () => {
   const u = await signUp('sorter6');
   const sock = await connect(u.token);

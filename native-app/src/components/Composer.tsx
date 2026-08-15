@@ -122,8 +122,10 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
 
       {/* Options strip */}
       <View style={s.optionsStrip}>
-        <TouchableOpacity style={s.stripBtn} onPress={onAttach}>
-          <Text style={s.stripBtnText}>📎 Media</Text>
+        {/* Icon only, like the flame beside it. The word said nothing the
+            paperclip does not. */}
+        <TouchableOpacity style={s.stripBtn} onPress={onAttach} accessibilityLabel="Attach media">
+          <Text style={s.stripBtnText}>📎</Text>
         </TouchableOpacity>
         {/* Just the flame. The label was the widest thing on the strip and
             said nothing the icon does not; the seconds still show when a
