@@ -1,0 +1,118 @@
+name: Diagnose Servers
+
+# Read-only. Restarts nothing, deploys nothing, changes nothing.
+#
+# This exists because the only way to look inside these servers from here was
+# to deploy to them, and a deploy restarts the service — which both destroys
+# the evidence you are trying to collect and costs the OTHER server a few
+# seconds of downtime for no reason. Diagnosis should not require a restart.
+#
+# It also looks BACKWARDS rather than at the current moment. By the time an
+# outage is reported the box has usually been restarted, so "what is it doing
+# now" answers the wrong question; the journal survives reboots, and that is
+# where the answer actually is.
+on:
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: 'How many hours back to look'
+        required: false
+        default: '8'
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: akosalman
+            host_secret: DEPLOY_HOST_AKOSALMAN
+            app_dir_secret: DEPLOY_DIR_AKOSALMAN
+            service_secret: DEPLOY_SERVICE_AKOSALMAN
+          - name: bistbarg
+            host_secret: DEPLOY_HOST_BISTBARG
+            app_dir_secret: DEPLOY_DIR_BISTBARG
+            service_secret: DEPLOY_SERVICE_BISTBARG
+
+    steps:
+      - name: Diagnose ${{ matrix.name }}
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets[matrix.host_secret] }}
+          APP_DIR: ${{ secrets[matrix.app_dir_secret] }}
+          SERVICE: ${{ secrets[matrix.service_secret] }}
+          HOURS: ${{ inputs.hours || '8' }}
+        run: |
+          if [ -z "$HOST" ] || [ -z "$SSH_KEY" ]; then
+            echo "Deploy secrets for ${{ matrix.name }} are not configured — skipping."
+            exit 0
+          fi
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "root@$HOST" \
+            "APP_DIR='$APP_DIR' SERVICE='$SERVICE' HOURS='$HOURS' bash -s" <<'EOF'
+          # Never fail the job over a missing log file: a partial picture is
+          # still worth having, and half these paths differ per distribution.
+          set +e
+          SINCE="-${HOURS}h"
+
+          echo "══════════ NOW ══════════"
+          date -u
+          uptime
+          echo "cpus: $(nproc)"
+          free -m | head -3
+          df -h / | tail -1
+
+          echo
+          echo "══════════ BUSIEST PROCESSES ══════════"
+          ps -eo pcpu,pmem,etimes,user,comm --sort=-pcpu | head -15
+
+          echo
+          echo "══════════ REBOOTS ══════════"
+          # An outage that ends in a reboot is a different story from one that
+          # does not, and the box has rebooted several times today.
+          last -x reboot shutdown | head -10
+
+          echo
+          echo "══════════ KERNEL: PRESSURE ══════════"
+          # Out-of-memory kills and hung tasks are what a box under real strain
+          # leaves behind, and they survive the reboot that hid everything else.
+          journalctl -k --since "$SINCE" --no-pager 2>/dev/null \
+            | grep -iE 'out of memory|oom-killer|killed process|blocked for more than|hung task|nf_conntrack: table full' \
+            | tail -25 || echo "none"
+
+          echo
+          echo "══════════ SYSTEM WARNINGS AND ERRORS ══════════"
+          journalctl --since "$SINCE" -p warning --no-pager 2>/dev/null | tail -40
+
+          echo
+          echo "══════════ THE CHAT SERVICE ══════════"
+          systemctl status "$SERVICE" --no-pager -l 2>/dev/null | head -12
+          journalctl -u "$SERVICE" --since "$SINCE" --no-pager 2>/dev/null | tail -30
+
+          echo
+          echo "══════════ WEB SERVER IN FRONT ══════════"
+          ss -ltn 2>/dev/null | grep -E ':(80|443|3000)\b'
+          echo "-- socket summary --"
+          ss -s 2>/dev/null | head -5
+          for l in /var/log/apache2/error.log /var/log/httpd/error_log \
+                   /usr/local/apache/logs/error_log /var/log/nginx/error.log; do
+            [ -f "$l" ] || continue
+            echo "-- $l --"
+            tail -30 "$l"
+          done
+
+          echo
+          echo "══════════ WHO IS CALLING ══════════"
+          # A flood shows up here as one or two addresses with an implausible
+          # share of the requests. Top 12 only.
+          for l in /var/log/apache2/access.log /var/log/httpd/access_log \
+                   /usr/local/apache/domlogs/* /var/log/nginx/access.log; do
+            [ -f "$l" ] || continue
+            echo "-- $l ($(wc -l < "$l") lines) --"
+            awk '{print $1}' "$l" | sort | uniq -c | sort -rn | head -12
+            break
+          done
+          EOF
