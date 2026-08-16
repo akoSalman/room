@@ -170,11 +170,21 @@ if [ "$XMLRPC" = "yes" ]; then
       # The in-flight brute-force requests are already inside PHP and
       # a reload will not touch them. They have to be cut off.
       echo "   killing workers stuck on long-running requests:"
-      for pid in $(ps -eo pid,etimes,comm --no-headers 2>/dev/null \
-                   | awk '$3 ~ /php-fpm/ && $2 > 300 {print $1}'); do
-        echo "      pid $pid (running $(ps -o etimes= -p $pid 2>/dev/null)s)"
-        kill -TERM "$pid" 2>/dev/null
-      done
+      # WORKERS only. Matching on comm alone also matches the php-fpm MASTER
+      # for each version — the run before this one killed four of them, and
+      # only got away with it because section 2 restarts the units a moment
+      # later. Masters are started by systemd and so have PPID 1; workers are
+      # forked by a master and never do.
+      #
+      # The age comes from the same snapshot as the decision, too. Asking ps
+      # again afterwards printed "running s" for pids that had already gone,
+      # which reports nothing and reads like a bug in the number.
+      ps -eo pid,ppid,etimes,comm --no-headers 2>/dev/null \
+        | awk '$4 ~ /php-fpm/ && $2 != 1 && $3 > 300 {print $1, $3}' \
+        | while read -r pid age; do
+            echo "      pid $pid (on one request for ${age}s)"
+            kill -TERM "$pid" 2>/dev/null
+          done
     fi
     echo "   undo with:  rm $F && systemctl reload httpd"
   fi
