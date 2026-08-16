@@ -133,6 +133,19 @@ jobs:
             node -e "require('sharp')" 2>/dev/null \
               || echo "::warning::sharp is unavailable, so thumbnails are disabled and full-size images are served instead. The app is otherwise fine. Node must be >=20.9.0 for sharp 0.35's prebuilt binary."
           fi
+          # ── Health report, printed EVERY time, not only on failure ────────
+          # There is no other way to see inside these boxes. They are not
+          # reachable from the environment this repo is worked on from, so
+          # "is it up, and if not why" arrives through this log or not at all.
+          # Cheap to print, and useless if it only appears once something has
+          # already gone wrong.
+          echo "── disk ──";           df -h "$APP_DIR" / 2>/dev/null || true
+          echo "── memory ──";         free -m 2>/dev/null | head -3 || true
+          echo "── node ──";           node -v 2>/dev/null || true
+          echo "── biggest dirs ──";   du -sh "$APP_DIR"/* 2>/dev/null | sort -h | tail -6 || true
+          echo "── journal before restart ──"
+          journalctl -u "$SERVICE" -n 40 --no-pager 2>/dev/null || true
+
           systemctl restart "$SERVICE"
           # NOT "is-active" on its own: run straight after a restart it reports
           # success while the process is still starting, so a server that dies
@@ -147,5 +160,14 @@ jobs:
             exit 1
           fi
           systemctl is-active "$SERVICE"
+          # "active" only means the process exists. Ask it for something over
+          # HTTP too: a server that is up but not answering is exactly what a
+          # user reports as "not reachable", and systemd calls that healthy.
+          code=$(curl -sS -o /dev/null -m 10 -w '%{http_code}' "http://127.0.0.1:${PORT:-3000}/" 2>/dev/null || echo 000)
+          echo "local HTTP check: $code"
+          if [ "$code" = "000" ]; then
+            echo "::warning::service is running but did not answer HTTP locally."
+            journalctl -u "$SERVICE" -n 40 --no-pager || true
+          fi
           EOF
           echo "Deployed to ${{ matrix.name }} and service is active."
