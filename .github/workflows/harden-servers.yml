@@ -25,6 +25,10 @@ on:
         description: 'PHP-FPM pm.max_children ceiling (0 = leave alone)'
         required: false
         default: '12'
+      php_cpu_quota:
+        description: 'Percent of ONE cpu php-fpm may use in total; 400 = four of six cores (0 = no limit)'
+        required: false
+        default: '400'
 
 jobs:
   harden:
@@ -49,6 +53,7 @@ jobs:
           WANTED: ${{ inputs.server || 'both' }}
           APPLY: ${{ inputs.apply || 'APPLY' }}
           MAXKIDS: ${{ inputs.max_children || '12' }}
+          QUOTA: ${{ inputs.php_cpu_quota || '400' }}
         run: |
           if [ "$WANTED" != "both" ] && [ "$WANTED" != "${{ matrix.name }}" ]; then
             echo "Not selected — skipping ${{ matrix.name }}."
@@ -62,7 +67,7 @@ jobs:
           echo "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "root@$HOST" \
-            "SERVICE='$SERVICE' APPLY='$APPLY' MAXKIDS='$MAXKIDS' bash -s" <<'EOF'
+            "SERVICE='$SERVICE' APPLY='$APPLY' MAXKIDS='$MAXKIDS' QUOTA='$QUOTA' bash -s" <<'EOF'
           set +e
           STAMP=$(date -u +%Y%m%d-%H%M%S)
           DO=1; [ "$APPLY" = "APPLY" ] || DO=0
@@ -76,7 +81,9 @@ jobs:
           # server works that out for itself: an address is blocked only when
           # most of its requests are for paths that exist purely to be
           # exploited — environment files, credential dumps, known webshells.
-          BAD='\.env|/config/(secrets|database)\.ya?ml|\.env\.(bak|old|php|txt|json)|wp_filemanager|/vendor/phpunit|/\.git/|/\.aws/|eval-stdin\.php|/SDK/webLanguage'
+          # Character classes rather than backslash escapes: awk warns about
+          # `\.` and treats it as a plain dot anyway.
+          BAD='[.]env|/config/(secrets|database)[.]ya?ml|[.]env[.](bak|old|php|txt|json)|wp_filemanager|/vendor/phpunit|/[.]git/|/[.]aws/|eval-stdin[.]php|/SDK/webLanguage'
           LOGS=$(ls /var/log/httpd/access_log* /var/log/apache2/access.log* 2>/dev/null | head -5)
           if [ -z "$LOGS" ]; then
             echo "no access logs found — skipping"
@@ -106,10 +113,36 @@ jobs:
 
           echo
           echo "══════════ 2. CAP PHP-FPM ══════════"
-          # An unbounded pool is what let scanner traffic take all six CPUs.
-          # Only ever LOWERS an existing limit, never raises one, and validates
-          # the config before reloading — a bad edit here would take every PHP
-          # site on the box down.
+          # I had assumed an unbounded pool. The dry run disproved that:
+          # pm.max_children is already 10 on every PHP version here, and ten
+          # workers is exactly what was seen. So the worker COUNT is not the
+          # problem — each worker being CPU-bound is, and capping children
+          # cannot fix that, because six workers can saturate six CPUs just as
+          # well as ten can.
+          #
+          # What actually bounds CPU is a cgroup quota, so that is what gets
+          # set: PHP may have most of the machine, never all of it, and the
+          # remainder is what keeps Apache able to accept connections and the
+          # chat reachable. It is a systemd drop-in, so nothing in the PHP
+          # configuration is touched and removing one file undoes it.
+          #
+          # The max_children logic below is kept as a safety net for the case
+          # where some pool really is unbounded.
+          if [ "$QUOTA" != "0" ]; then
+            for unit in $(systemctl list-units --type=service --no-legend 'php*fpm*' 2>/dev/null | awk '{print $1}'); do
+              d="/etc/systemd/system/${unit}.d"
+              echo "-- $unit: limiting to ${QUOTA}% of one CPU (box has $(nproc)00%)"
+              run "mkdir -p '$d'"
+              if [ "$DO" = 1 ]; then
+                printf '%s\n' '# Added to stop PHP taking every CPU on the box and' \
+                  '# starving the web server that fronts the chat.' \
+                  '# Delete this file and daemon-reload to undo.' \
+                  '[Service]' "CPUQuota=${QUOTA}%" > "$d/quota.conf"
+              fi
+              echo "   undo with:  rm $d/quota.conf && systemctl daemon-reload && systemctl restart $unit"
+            done
+            run "systemctl daemon-reload"
+          fi
           if [ "$MAXKIDS" = "0" ]; then
             echo "max_children left alone by request"
           else
@@ -133,9 +166,17 @@ jobs:
             for unit in $(systemctl list-units --type=service --no-legend 'php*fpm*' 2>/dev/null | awk '{print $1}'); do
               echo "-- $unit"
               if [ "$DO" = 1 ]; then
-                if systemctl reload "$unit"; then echo "   reloaded"; else echo "   ::warning::reload failed, config left in place"; fi
+                # A CPU quota only takes effect on restart, but a reload is
+                # enough for a max_children change and does not drop requests.
+                # Restart only when a quota was actually written.
+                if [ "$QUOTA" != "0" ]; then
+                  systemctl restart "$unit" && echo "   restarted (quota applied)" \
+                    || echo "   ::warning::restart failed"
+                elif systemctl reload "$unit"; then echo "   reloaded"
+                else echo "   ::warning::reload failed, config left in place"
+                fi
               else
-                echo "   would reload $unit"
+                echo "   would restart/reload $unit"
               fi
             done
           fi
