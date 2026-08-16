@@ -121,6 +121,26 @@ jobs:
           # the chat app used under a second. Naming the pool and the queries
           # is the difference between "PHP is busy" and knowing which site.
           ps -eo pcpu,user,args --sort=-pcpu 2>/dev/null | head -12 | cut -c1-200
+          # ps %CPU is an AVERAGE over each process's whole lifetime, which is
+          # useless for "what is it doing now" and can look like a quota is
+          # being ignored when it is not. Take a real instantaneous sample.
+          echo "-- instantaneous cpu (top, second sample) --"
+          top -bn2 -d1 2>/dev/null | awk '/^%Cpu|^top -/{h=1} h' | tail -12
+
+          # Did the CPU quota actually take? Ask systemd and the kernel rather
+          # than inferring it from process averages.
+          echo "-- cgroup version --"
+          stat -fc %T /sys/fs/cgroup 2>/dev/null
+          for u in $(systemctl list-units --type=service --no-legend 'php*fpm*' 2>/dev/null | awk '{print $1}'); do
+            echo "-- $u"
+            systemctl show "$u" -p CPUQuotaPerSecUSec -p CPUAccounting -p ControlGroup 2>/dev/null
+            cg=$(systemctl show "$u" -p ControlGroup --value 2>/dev/null)
+            [ -n "$cg" ] || continue
+            for f in /sys/fs/cgroup${cg}/cpu.max /sys/fs/cgroup/cpu${cg}/cpu.cfs_quota_us; do
+              [ -f "$f" ] && echo "   $f = $(cat "$f" 2>/dev/null)"
+            done
+          done
+
           echo "-- php-fpm pools --"
           ls /etc/php/*/fpm/pool.d/ /opt/*/php*/etc/php-fpm.d/ 2>/dev/null | head -20
           echo "-- mysql: what is running right now --"
