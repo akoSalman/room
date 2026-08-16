@@ -29,6 +29,10 @@ on:
         description: 'csf DENY_IP_LIMIT to raise to (0 = leave alone)'
         required: false
         default: '500'
+      block_xmlrpc:
+        description: 'Deny /xmlrpc.php in apache and kill stuck workers (yes/no)'
+        required: false
+        default: 'no'
       quarantine:
         description: 'Quarantine detected web malware (yes/no)'
         required: false
@@ -68,6 +72,7 @@ jobs:
           QUOTA: ${{ inputs.php_cpu_quota || '400' }}
           DENYLIMIT: ${{ inputs.deny_limit || '500' }}
           QUARANTINE: ${{ inputs.quarantine || 'no' }}
+          XMLRPC: ${{ inputs.block_xmlrpc || 'no' }}
           WATCHDOG: ${{ inputs.watchdog || 'no' }}
         run: |
           if [ "$WANTED" != "both" ] && [ "$WANTED" != "${{ matrix.name }}" ]; then
@@ -82,7 +87,7 @@ jobs:
           echo "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "root@$HOST" \
-            "SERVICE='$SERVICE' APPLY='$APPLY' MAXKIDS='$MAXKIDS' QUOTA='$QUOTA' DENYLIMIT='$DENYLIMIT' QUARANTINE='$QUARANTINE' WATCHDOG='$WATCHDOG' bash -s" <<'EOF'
+            "SERVICE='$SERVICE' APPLY='$APPLY' MAXKIDS='$MAXKIDS' QUOTA='$QUOTA' DENYLIMIT='$DENYLIMIT' QUARANTINE='$QUARANTINE' WATCHDOG='$WATCHDOG' XMLRPC='$XMLRPC' bash -s" <<'EOF'
           set +e
           STAMP=$(date -u +%Y%m%d-%H%M%S)
           DO=1; [ "$APPLY" = "APPLY" ] || DO=0
@@ -204,6 +209,70 @@ jobs:
           fi
 
           echo
+          echo "══════════ 1b. SHUT XML-RPC ══════════"
+          # This is where the CPU was actually going, and it took until the
+          # cgroup accounting was measured rather than assumed to find it.
+          #
+          # Ten php-fpm workers, each alive 990 seconds, each burning ~54% of a
+          # core, one of them holding xmlrpc.php open — while the access log
+          # recorded two or three requests a minute. That combination has one
+          # explanation: XML-RPC's system.multicall lets a caller attempt
+          # hundreds of logins inside a SINGLE http request. The request runs
+          # for a quarter of an hour, WordPress hashes every password with a
+          # deliberately expensive algorithm, and Apache writes its one log line
+          # only when it finally ends — so the load is invisible in the log and
+          # the machine still has no CPU left. 38,056 rows in wp_users says how
+          # well it has been going.
+          #
+          # Almost nothing legitimate needs xmlrpc.php: the Jetpack plugin and
+          # the old WordPress mobile app, neither of which a Persian shop is
+          # likely to use. Denying it costs no PHP at all — Apache answers 403
+          # itself, before a worker is ever handed the request.
+          if [ "$XMLRPC" = "yes" ]; then
+            # Find a directory Apache already includes, rather than editing a
+            # vhost file DirectAdmin regenerates and would overwrite.
+            CONFD=""
+            for d in /etc/httpd/conf/extra /etc/httpd/conf.d /etc/apache2/conf-enabled /etc/apache2/conf.d; do
+              [ -d "$d" ] && { CONFD="$d"; break; }
+            done
+            if [ -z "$CONFD" ]; then
+              echo "   no apache include directory found — skipping"
+            else
+              F="$CONFD/block-xmlrpc.conf"
+              echo "-- writing $F"
+              if [ "$DO" = 1 ]; then
+                printf '%s\n' \
+                  '# XML-RPC brute force was saturating this machine: one request' \
+                  '# can carry hundreds of login attempts via system.multicall.' \
+                  '# Delete this file and reload apache to undo.' \
+                  '<LocationMatch "^/+xmlrpc\.php$">' \
+                  '    Require all denied' \
+                  '</LocationMatch>' > "$F"
+                # Never reload a config the daemon has not accepted; a bad file
+                # here takes every site on the box down.
+                if httpd -t 2>/dev/null || apachectl -t 2>/dev/null; then
+                  systemctl reload httpd 2>/dev/null || systemctl reload apache2 2>/dev/null
+                  echo "   config valid, apache reloaded"
+                else
+                  rm -f "$F"
+                  echo "   ::warning::apache rejected the config — removed it, nothing changed"
+                fi
+                # The in-flight brute-force requests are already inside PHP and
+                # a reload will not touch them. They have to be cut off.
+                echo "   killing workers stuck on long-running requests:"
+                for pid in $(ps -eo pid,etimes,comm --no-headers 2>/dev/null \
+                             | awk '$3 ~ /php-fpm/ && $2 > 300 {print $1}'); do
+                  echo "      pid $pid (running $(ps -o etimes= -p $pid 2>/dev/null)s)"
+                  kill -TERM "$pid" 2>/dev/null
+                done
+              fi
+              echo "   undo with:  rm $F && systemctl reload httpd"
+            fi
+          else
+            echo "not requested"
+          fi
+
+          echo
           echo "══════════ 2. CAP PHP-FPM ══════════"
           # I had assumed an unbounded pool. The dry run disproved that:
           # pm.max_children is already 10 on every PHP version here, and ten
@@ -284,25 +353,45 @@ jobs:
               run "sed -i 's/^\s*pm\.max_children\s*=.*/pm.max_children = $MAXKIDS/' '$c'"
               echo "   undo with:  cp '$c.bak-$STAMP' '$c' && systemctl reload <the php-fpm unit>"
             done
-            # Reload, not restart, and only if the daemon agrees the config is
-            # valid. A reload finishes in-flight requests instead of dropping
-            # them on the floor.
-            for unit in $(systemctl list-units --type=service --no-legend 'php*fpm*' 2>/dev/null | awk '{print $1}'); do
-              echo "-- $unit"
-              if [ "$DO" = 1 ]; then
-                # A CPU quota only takes effect on restart, but a reload is
-                # enough for a max_children change and does not drop requests.
-                # Restart only when a quota was actually written.
-                if [ "$QUOTA" != "0" ]; then
-                  systemctl restart "$unit" && echo "   restarted (quota applied)" \
-                    || echo "   ::warning::restart failed"
-                elif systemctl reload "$unit"; then echo "   reloaded"
-                else echo "   ::warning::reload failed, config left in place"
-                fi
-              else
-                echo "   would restart/reload $unit"
-              fi
-            done
+          fi
+
+          # CORRECTION, and this one silently undid the whole cap.
+          #
+          # This loop used to live inside the `else` above, so passing
+          # max_children=0 — "leave max_children alone" — skipped it. The slice
+          # was written and daemon-reload ran, but the RUNNING workers were
+          # never moved into it: systemctl reported ControlGroup=/php.slice/...
+          # because that is where the unit WOULD start, while the live
+          # processes stayed in system.slice, uncapped. The slice had
+          # accumulated 0.8 CPU-seconds in total while those workers had eight
+          # minutes each.
+          #
+          # A cgroup change applies when the service restarts, and that has
+          # nothing to do with max_children.
+          for unit in $(systemctl list-units --type=service --no-legend 'php*fpm*' 2>/dev/null | awk '{print $1}'); do
+            echo "-- $unit"
+            if [ "$DO" != 1 ]; then
+              echo "   would restart/reload $unit"
+              continue
+            fi
+            if [ "$QUOTA" != "0" ]; then
+              # Restart, not reload: a reload keeps the existing worker
+              # processes, which is exactly the thing that has to change.
+              systemctl restart "$unit" && echo "   restarted (slice applied)" \
+                || echo "   ::warning::restart failed"
+            elif [ "$MAXKIDS" != "0" ]; then
+              systemctl reload "$unit" && echo "   reloaded" \
+                || echo "   ::warning::reload failed, config left in place"
+            else
+              echo "   nothing to apply"
+            fi
+          done
+          # Say whether it actually took, rather than assuming. usage_usec
+          # climbing is the proof the workers are really inside the slice.
+          if [ -f /sys/fs/cgroup/php.slice/cpu.stat ]; then
+            a=$(awk '/^usage_usec/{print $2}' /sys/fs/cgroup/php.slice/cpu.stat); sleep 2
+            b=$(awk '/^usage_usec/{print $2}' /sys/fs/cgroup/php.slice/cpu.stat)
+            echo "-- php.slice now using $(( (b-a) / 20000 ))% of one cpu (cap ${QUOTA}%)"
           fi
 
           echo
