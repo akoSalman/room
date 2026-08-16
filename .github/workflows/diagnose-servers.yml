@@ -134,6 +134,14 @@ jobs:
           # than inferring it from process averages.
           echo "-- cgroup version --"
           stat -fc %T /sys/fs/cgroup 2>/dev/null
+          # The quota now lives on the SLICE, not the services — the services
+          # each read "infinity" and that is correct. Reading only the service
+          # cgroup reported "none" for a cap that was in place, so read the
+          # parent too, and read what it has actually been THROTTLED by.
+          echo "-- php.slice (where the shared quota lives) --"
+          for f in /sys/fs/cgroup/php.slice/cpu.max /sys/fs/cgroup/php.slice/cpu.stat; do
+            [ -f "$f" ] && echo "   $f = $(tr '\n' ' ' < "$f" 2>/dev/null)"
+          done
           for u in $(systemctl list-units --type=service --no-legend 'php*fpm*' 2>/dev/null | awk '{print $1}'); do
             echo "-- $u"
             systemctl show "$u" -p CPUQuotaPerSecUSec -p CPUAccounting -p ControlGroup 2>/dev/null
@@ -175,10 +183,32 @@ jobs:
 
           echo "-- php-fpm pools --"
           ls /etc/php/*/fpm/pool.d/ /opt/*/php*/etc/php-fpm.d/ 2>/dev/null | head -20
+
+          # WHICH SCRIPT is burning the CPU. cwd only names the site; the open
+          # file descriptors name the actual file being executed, which is the
+          # difference between "WordPress is busy" and knowing whether it is a
+          # backdoor, wp-cron or a search query.
+          echo "-- files open in the busiest php workers --"
+          for pid in $(ps -eo pid,comm --sort=-pcpu 2>/dev/null | awk '$2 ~ /php-fpm/ {print $1}' | head -3); do
+            echo "   pid $pid:"
+            ls -l /proc/$pid/fd 2>/dev/null | awk '{print $NF}' \
+              | grep -E '\.php$|/tmp/|/dev/shm/' | sort -u | head -6 | sed 's/^/      /'
+          done
+
           echo "-- mysql: what is running right now --"
-          mysql -e 'SHOW FULL PROCESSLIST;' 2>/dev/null | head -20 \
-            || mysqladmin processlist 2>/dev/null | head -20 \
-            || echo "could not query mysql without credentials"
+          # root has no my.cnf here, but DirectAdmin keeps credentials in a
+          # known place — without them this section printed nothing at all and
+          # the busiest process on the box went unexplained.
+          DACNF=/usr/local/directadmin/conf/mysql.conf
+          if [ -f "$DACNF" ]; then
+            DAU=$(awk -F= '/^user=/{print $2}' "$DACNF" 2>/dev/null)
+            DAP=$(awk -F= '/^passwd=/{print $2}' "$DACNF" 2>/dev/null)
+            MYSQL_PWD="$DAP" mysql -u"$DAU" -e 'SHOW FULL PROCESSLIST;' 2>/dev/null \
+              | cut -c1-200 | head -20 || echo "   directadmin credentials did not work"
+          else
+            mysql -e 'SHOW FULL PROCESSLIST;' 2>/dev/null | cut -c1-200 | head -20 \
+              || echo "could not query mysql without credentials"
+          fi
 
           echo
           echo "══════════ WHO IS CALLING ══════════"
@@ -186,17 +216,28 @@ jobs:
           # share of the requests. Top 12 only.
           # The first pass matched an EMPTY apache2 log and stopped there, so
           # it reported nothing while the real traffic was logged elsewhere.
-          # Take the biggest non-empty log rather than the first one that
-          # happens to exist.
-          biggest=$(ls -S /var/log/httpd/*access* /var/log/apache2/*access* \
-                          /var/log/nginx/*access* /home/*/logs/* 2>/dev/null \
-                    | head -1)
-          if [ -n "$biggest" ] && [ -s "$biggest" ]; then
-            echo "-- $biggest ($(wc -l < "$biggest") lines) --"
-            echo "top callers:"
-            awk '{print $1}' "$biggest" | sort | uniq -c | sort -rn | head -12
-            echo "most requested:"
-            awk '{print $7}' "$biggest" | sort | uniq -c | sort -rn | head -12
+          #
+          # CORRECTION. Taking the BIGGEST log then picked access_log.3 — a
+          # rotated file — and reported hours-old traffic as if it were what
+          # the box is doing now. "Who is hitting us at this moment" has to
+          # come from the NEWEST log, and from the last few minutes of it.
+          newest=$(ls -t /var/log/httpd/*access* /var/log/apache2/*access* \
+                         /var/log/nginx/*access* /home/*/logs/*log 2>/dev/null \
+                   | grep -v '[.]gz$' | head -1)
+          if [ -n "$newest" ] && [ -s "$newest" ]; then
+            echo "-- $newest ($(wc -l < "$newest") lines) --"
+            # The tail is the recent traffic; the whole file may span a day.
+            tail -5000 "$newest" > /tmp/recent.log 2>/dev/null
+            echo "window: $(head -1 /tmp/recent.log | grep -o '\[[^]]*\]' | head -1) .. $(tail -1 /tmp/recent.log | grep -o '\[[^]]*\]' | head -1)"
+            echo "top callers (last 5000 requests):"
+            awk '{print $1}' /tmp/recent.log | sort | uniq -c | sort -rn | head -12
+            echo "most requested (last 5000):"
+            awk '{print $7}' /tmp/recent.log | sort | uniq -c | sort -rn | head -12
+            # A flood is only a flood if it is fast. Requests per minute over
+            # the window is what separates "busy site" from "under attack".
+            echo "requests per minute, last 10 minutes:"
+            awk -F'[][]' '{print $2}' /tmp/recent.log | cut -d: -f1-3 \
+              | uniq -c | tail -10
           else
             echo "no non-empty access log found in the usual places"
           fi
@@ -207,9 +248,11 @@ jobs:
           # that reading the tail of the log is enough.
           echo "load:        $(uptime | sed 's/.*load average: //') on $(nproc) cpus"
           echo "chat:        port ${NPORT:-?} -> $(curl -sS -o /dev/null -m 10 -w '%{http_code}' "http://127.0.0.1:${NPORT:-3000}/" 2>/dev/null || echo unreachable)"
-          for u in $(systemctl list-units --type=service --no-legend 'php*fpm*' 2>/dev/null | awk '{print $1}'); do
-            cg=$(systemctl show "$u" -p ControlGroup --value 2>/dev/null)
-            echo "php quota:   $u $(cat /sys/fs/cgroup${cg}/cpu.max 2>/dev/null || echo 'none') (period 100000 = 1 cpu)"
-          done
+          # The quota is on the slice, not on each service. Reporting only the
+          # service cgroup printed "none" for a cap that was in place.
+          echo "php quota:   php.slice $(cat /sys/fs/cgroup/php.slice/cpu.max 2>/dev/null || echo 'no slice') (period 100000 = 1 cpu)"
+          echo "php throttled: $(awk '/nr_throttled|throttled_usec/ {printf "%s=%s ", $1, $2}' /sys/fs/cgroup/php.slice/cpu.stat 2>/dev/null || echo '?')"
+          echo "idle cpu:    $(top -bn2 -d1 2>/dev/null | awk '/^%Cpu/{l=$0} END{print l}')"
+          echo "watchdog:    $(systemctl is-active web-malware-watch.timer 2>/dev/null || echo 'not installed'), $(grep -c quarantined /var/log/web-malware-watch.log 2>/dev/null || echo 0) file(s) caught since install"
           echo "csf deny:    $(wc -l < /etc/csf/csf.deny 2>/dev/null || echo '?') entries, limit $(grep -oP '^DENY_IP_LIMIT\s*=\s*"\K[0-9]+' /etc/csf/csf.conf 2>/dev/null || echo '?')"
           EOF
