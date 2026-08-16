@@ -93,6 +93,17 @@ jobs:
           journalctl -u "$SERVICE" --since "$SINCE" --no-pager 2>/dev/null | tail -30
 
           echo
+          echo "══════════ IS THE CHAT ACTUALLY SERVING ══════════"
+          # Ask the process what port it is on rather than assuming 3000. A
+          # health check against a hardcoded port reports a healthy server as
+          # dead, which is worse than no check at all.
+          NPORT=$(ss -ltnp 2>/dev/null | grep -o 'users:(("node".*' | head -1 >/dev/null; \
+                  ss -ltnp 2>/dev/null | awk '/"node"/ {split($4,a,":"); print a[length(a)]; exit}')
+          echo "node is listening on: ${NPORT:-<not found>}"
+          if [ -n "$NPORT" ]; then
+            echo "HTTP on 127.0.0.1:$NPORT -> $(curl -sS -o /dev/null -m 10 -w '%{http_code}' "http://127.0.0.1:$NPORT/" 2>/dev/null || echo unreachable)"
+          fi
+
           echo "══════════ WEB SERVER IN FRONT ══════════"
           ss -ltn 2>/dev/null | grep -E ':(80|443|3000)\b'
           echo "-- socket summary --"
