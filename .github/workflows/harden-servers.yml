@@ -29,6 +29,10 @@ on:
         description: 'csf DENY_IP_LIMIT to raise to (0 = leave alone)'
         required: false
         default: '500'
+      quarantine:
+        description: 'Quarantine detected web malware (yes/no)'
+        required: false
+        default: 'no'
       php_cpu_quota:
         description: 'Percent of ONE cpu php-fpm may use in total; 400 = four of six cores (0 = no limit)'
         required: false
@@ -59,6 +63,7 @@ jobs:
           MAXKIDS: ${{ inputs.max_children || '12' }}
           QUOTA: ${{ inputs.php_cpu_quota || '400' }}
           DENYLIMIT: ${{ inputs.deny_limit || '500' }}
+          QUARANTINE: ${{ inputs.quarantine || 'no' }}
         run: |
           if [ "$WANTED" != "both" ] && [ "$WANTED" != "${{ matrix.name }}" ]; then
             echo "Not selected — skipping ${{ matrix.name }}."
@@ -72,12 +77,51 @@ jobs:
           echo "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "root@$HOST" \
-            "SERVICE='$SERVICE' APPLY='$APPLY' MAXKIDS='$MAXKIDS' QUOTA='$QUOTA' DENYLIMIT='$DENYLIMIT' bash -s" <<'EOF'
+            "SERVICE='$SERVICE' APPLY='$APPLY' MAXKIDS='$MAXKIDS' QUOTA='$QUOTA' DENYLIMIT='$DENYLIMIT' QUARANTINE='$QUARANTINE' bash -s" <<'EOF'
           set +e
           STAMP=$(date -u +%Y%m%d-%H%M%S)
           DO=1; [ "$APPLY" = "APPLY" ] || DO=0
           [ "$DO" = 1 ] || echo "*** DRY RUN — nothing will be changed ***"
           run() { if [ "$DO" = 1 ]; then eval "$@"; else echo "   would run: $@"; fi; }
+
+          if [ "$QUARANTINE" = "yes" ]; then
+          echo "══════════ Q. QUARANTINE WEB MALWARE ══════════"
+          # The diagnostic found index.php + cache.php pairs inside directories
+          # like wordpress/wordpress/wordpress/wordpress, s/s/s, and
+          # responsive/responsive — a repeated path segment is not something an
+          # installer produces, and no theme keeps PHP in its SASS folder.
+          # That is dropped malware, and it is what has been burning the CPU.
+          #
+          # MOVED, never deleted: it is evidence of how the site was broken
+          # into, and if I have misjudged a file it can be put straight back.
+          Q="/root/quarantine-$STAMP"
+          found=0
+          for f in $(find /home/*/domains/*/public_html -maxdepth 12 \
+                       \( -name 'cache.php' -o -name 'index.php' \) -mtime -14 2>/dev/null); do
+            d=$(dirname "$f")
+            # Only inside a directory whose path repeats a segment back to back,
+            # AND only where the tell-tale cache.php sits beside it. Both
+            # conditions, so an ordinary index.php is never touched.
+            echo "$d" | grep -qE '/([^/]+)/\1(/|$)' || continue
+            [ -f "$d/cache.php" ] || continue
+            found=$((found+1))
+            echo "   $f"
+            if [ "$DO" = 1 ]; then
+              mkdir -p "$Q$d"
+              mv "$f" "$Q$d/" 2>/dev/null && echo "      -> quarantined"
+            fi
+          done
+          if [ "$found" = 0 ]; then
+            echo "   nothing matched"
+          else
+            echo "   $found file(s); originals preserved under $Q"
+            echo "   restore everything with:  cp -a $Q/home /  "
+            # The workers still running the old code have to go, or the CPU
+            # burn continues until they happen to recycle.
+            run "systemctl restart php-fpm82.service php-fpm81.service php-fpm80.service php-fpm74.service"
+          fi
+          echo
+          fi
 
           echo "══════════ 0. ROOM IN THE DENY LIST ══════════"
           # Blocking is pointless if the list is full. csf.deny is capped by
