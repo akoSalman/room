@@ -34,6 +34,10 @@ import VideoBubble from '../components/VideoBubble';
 import EdgeBack from '../components/EdgeBack';
 import ExpiryRing from '../components/ExpiryRing';
 import TextViewer from '../components/TextViewer';
+import {
+  reduceSelection, initialSelection, LONG_PRESS_MS,
+  type SelectionState, type MsgId,
+} from '../textSelection';
 import ChatSearch from '../components/ChatSearch';
 import TileMap from '../components/TileMap';
 import LocationView, { LocationPin } from '../components/LocationView';
@@ -322,9 +326,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const keyExtractor = useCallback((m: Message) => String(m.id), []);
   // Only the things a row actually reads. Anything else changing must NOT
   // invalidate the rows.
+  // ── Native text selection ──────────────────────────────────────────────────
+  // The OS owns the selection inside a <Text selectable>; it will not tell us
+  // one exists, so we infer it (see textSelection.ts) and remount the bubble
+  // to clear it. `selKey` is what forces that remount.
+  const selState = useRef<SelectionState>(initialSelection);
+  const selLast = useRef<{ id: MsgId; at: number } | null>(null);
+  const holdTimer = useRef<any>(null);
+  const [selCleared, setSelCleared] = useState<{ id: MsgId; key: number } | null>(null);
+
   const rowExtraData = useMemo(
-    () => ({ maxOtherReadMsgId, uploadProgress, reactions, highlightId, online, revealedOneTime, e2eActive, selectedIds }),
-    [maxOtherReadMsgId, uploadProgress, reactions, highlightId, online, revealedOneTime, e2eActive, selectedIds],
+    () => ({ maxOtherReadMsgId, uploadProgress, reactions, highlightId, online, revealedOneTime, e2eActive, selectedIds, selCleared }),
+    [maxOtherReadMsgId, uploadProgress, reactions, highlightId, online, revealedOneTime, e2eActive, selectedIds, selCleared],
   );
 
   const scrollBottom = useCallback(() => {
@@ -1721,6 +1734,27 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   //   • any tap while multi-selecting toggles that message instead
   const tapTimer = useRef<any>(null);
 
+  function selectionEvent(ev: Parameters<typeof reduceSelection>[2]) {
+    const r = reduceSelection(selState.current, selLast.current, ev);
+    selState.current = r.state;
+    selLast.current = r.last;
+    return r.action;
+  }
+
+  /** A touch went down on a selectable text bubble (observed, not claimed). */
+  function noteTextTouch(id: MsgId) {
+    clearTimeout(holdTimer.current);
+    selectionEvent({ type: 'down', id, at: Date.now() });
+    // No tap within the long-press window means the finger was held, which is
+    // the other way the OS starts a selection.
+    holdTimer.current = setTimeout(() => selectionEvent({ type: 'held', id }), LONG_PRESS_MS);
+  }
+
+  /** Wipe the on-screen selection by remounting the message's Text. */
+  function dismissTextSelection(id: MsgId) {
+    setSelCleared(prev => ({ id, key: (prev?.key || 0) + 1 }));
+  }
+
   function openMenuFor(msg: Message, e?: any) {
     setActionsMsg({ msg, x: e?.nativeEvent?.pageX ?? 0, y: e?.nativeEvent?.pageY ?? 0 });
   }
@@ -1768,6 +1802,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   function exitSelectMode() { setSelectedIds(new Set()); }
 
   function onMessageLongPress(msg: Message) {
+    clearTimeout(holdTimer.current);
+    const selecting = selState.current.selecting;
+    selectionEvent({ type: 'clear' });
+    if (selecting !== null) dismissTextSelection(selecting);
     enterSelectMode(msg);
   }
 
@@ -1777,11 +1815,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // (long-press or double-tap on a selectable Text), so a tap no longer has to
   // wait to find out whether a second one is coming. The menu opens at once.
   function onMessageTap(msg: Message, e: any, _fromText: boolean) {
+    clearTimeout(holdTimer.current);
+    const selecting = selState.current.selecting;
+    const action = selectionEvent({ type: 'tap' });
+    // A tap outside a live text selection means "never mind" — it clears the
+    // selection and stops there. Opening the message menu on that same tap
+    // made dismissing a selection impossible without also being interrupted.
+    if (action === 'dismiss') { if (selecting !== null) dismissTextSelection(selecting); return; }
     if (selectedIds.size) { toggleSelected(msg); return; }
     openMenuFor(msg, e);
   }
 
-  useEffect(() => () => clearTimeout(tapTimer.current), []);
+  useEffect(() => () => { clearTimeout(tapTimer.current); clearTimeout(holdTimer.current); }, []);
 
   useEffect(() => locationManager.subscribe(() => setLiveShare(locationManager.activeShare())), []);
   useEffect(() => {
@@ -2192,7 +2237,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         // behind the bubble still opens the menu from the space beside it, and
         // the menu carries Copy.
         const bubbleProps: any = textual
-          ? {}
+          ? {
+              // Capture phase, always returning false: this WATCHES the touch
+              // going down without claiming it, so native text selection still
+              // works exactly as before. It is the only signal available for
+              // guessing that a selection is about to start.
+              onStartShouldSetResponderCapture: () => {
+                if (canTakeContent(msg)) noteTextTouch(msg.id);
+                return false;
+              },
+            }
           : {
               onPress: selectedIds.size ? () => toggleSelected(msg) : undefined,
               activeOpacity: 1,
@@ -2238,6 +2292,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             // double-tap picks the word under the finger, the handles adjust it,
             // and the system Copy appears. Nothing re-lays-out, so nothing moves.
             <Text
+              // Remounting is the only way to drop a native selection: React
+              // Native exposes no API to clear one. The key changes only for
+              // the message being dismissed, so no other bubble is touched.
+              key={selCleared?.id === msg.id ? `sel${selCleared.key}` : 'sel'}
               style={s.msgText}
               selectable={canTakeContent(msg)}
             >{renderTextWithLinks(msg.content || '')}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}{msg.one_time_seconds ? <Text style={s.oneTimeTag}> 🔥{msg.one_time_seconds}s</Text> : null}</Text>
