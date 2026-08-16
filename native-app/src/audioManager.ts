@@ -18,6 +18,7 @@ import TrackPlayer, {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { orderFor, nextRepeat, Repeat } from './playlist';
 import * as mediaCache from './mediaCache';
+import { playbackFlags, TrackState } from './playbackState';
 
 type Listener = () => void;
 type FinishHandler = (finishedId: number | string) => void;
@@ -117,28 +118,56 @@ class AudioManager {
     return this.setupPromise;
   }
 
+  /**
+   * How many start-up sequences are in flight.
+   *
+   * A counter, not a boolean: a second tap while the first track is still
+   * being loaded would otherwise have the inner sequence clear the flag while
+   * the outer one is still running.
+   */
+  private starting = 0;
+
+  private static stateName(state: any): TrackState {
+    switch (state) {
+      case State.Playing: return 'playing';
+      case State.Paused: return 'paused';
+      case State.Stopped: return 'stopped';
+      case State.Buffering: return 'buffering';
+      case State.Loading: return 'loading';
+      case State.Ready: return 'ready';
+      case State.Ended: return 'ended';
+      case State.Error: return 'error';
+      case State.Connecting: return 'connecting';
+      default: return 'none';
+    }
+  }
+
+  /** Apply a reported player state to our own flags. */
+  private applyState(state: any) {
+    const f = playbackFlags(AudioManager.stateName(state), this.starting > 0);
+    this.loading = f.loading;
+    this.playing = f.playing;
+    if (f.clearCurrent) {
+      // A real stop — pressed in the shade or on the lock screen. The in-app
+      // player has to go too, or it sits there claiming to be playing
+      // something that no longer exists.
+      this.currentId = null;
+      this.roomId = null;
+      this.roomMeta = null;
+      this.queue = [];
+      this.baseQueue = [];
+      this.queueIndex = -1;
+      this.progress = 0;
+    }
+    this.emit();
+  }
+
   private bound = false;
   private bindEvents() {
     if (this.bound) return;
     this.bound = true;
 
-    TrackPlayer.addEventListener(Event.PlaybackState, ({ state }) => {
-      this.loading = state === State.Loading || state === State.Buffering;
-      this.playing = state === State.Playing;
-      // Stop pressed in the shade or on the lock screen: the service clears
-      // itself, so the in-app mini player has to go too, or it sits there
-      // claiming to be playing something that no longer exists.
-      if (state === State.Stopped || state === State.None) {
-        this.currentId = null;
-        this.roomId = null;
-        this.roomMeta = null;
-        this.queue = [];
-        this.baseQueue = [];
-        this.queueIndex = -1;
-        this.progress = 0;
-      }
-      this.emit();
-    });
+    TrackPlayer.addEventListener(Event.PlaybackState, ({ state }) => this.applyState(state));
 
     TrackPlayer.addEventListener(Event.PlaybackProgressUpdated, ({ position, duration }) => {
       this.duration = duration || 0;
@@ -220,6 +249,9 @@ class AudioManager {
     this.duration = 0;
     this.emit();
 
+    // Everything from here to play() taking effect is start-up: the states the
+    // player reports in between describe the transition, not the result.
+    this.starting++;
     try {
       await this.ensureSetup();
       if (token !== this.playToken) return;   // superseded while setting up
@@ -242,17 +274,32 @@ class AudioManager {
       // Reconcile with the player's real state. The UI is driven by
       // PlaybackState events, and if one is missed or coalesced the bubble is
       // left showing the wrong icon while audio comes out of the speaker.
+      //
+      // Still inside start-up on purpose: right after play() the player
+      // normally reports Ready or Buffering, and writing that in as "not
+      // playing" is what used to leave a playing message showing ▶ with no
+      // further event coming to correct it.
       if (token !== this.playToken) return;
       const st = await TrackPlayer.getPlaybackState();
-      this.playing = st.state === State.Playing;
-      this.loading = st.state === State.Loading || st.state === State.Buffering;
-      this.emit();
+      this.applyState(st.state);
     } catch {
       if (token !== this.playToken) return;
       this.currentId = null;
       this.playing = false;
       this.loading = false;
       this.emit();
+    } finally {
+      this.starting = Math.max(0, this.starting - 1);
+      // One settled re-read shortly after start-up finishes. If the player was
+      // still Ready when we last looked, nothing else would arrive to move the
+      // UI off its spinner; this closes that hole without polling.
+      const settle = token;
+      setTimeout(() => {
+        if (settle !== this.playToken) return;
+        TrackPlayer.getPlaybackState()
+          .then(x => this.applyState(x.state))
+          .catch(() => {});
+      }, 500);
     }
   }
 
@@ -395,7 +442,11 @@ class AudioManager {
 
   async stop() {
     ++this.playToken; // invalidate any in-flight play()
+    // The reset below reports Stopped/None; stop() clears everything itself
+    // just after, so the event handler must not race it.
+    this.starting++;
     try { if (this.ready) await TrackPlayer.reset(); } catch {}
+    this.starting = Math.max(0, this.starting - 1);
     this.currentId = null;
     this.roomId = null;
     this.roomMeta = null;
