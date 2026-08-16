@@ -187,7 +187,13 @@ jobs:
           # "active" only means the process exists. Ask it for something over
           # HTTP too: a server that is up but not answering is exactly what a
           # user reports as "not reachable", and systemd calls that healthy.
-          code=$(curl -sS -o /dev/null -m 10 -w '%{http_code}' "http://127.0.0.1:${PORT:-3000}/" 2>/dev/null || echo 000)
+          # Ask the process which port it is on. ${PORT:-3000} looked right but
+          # PORT is set in the systemd unit, not in this shell, so it always
+          # fell back to 3000 — and akosalman serves on 3001. That reported a
+          # perfectly healthy server as unreachable.
+          nport=$(ss -ltnp 2>/dev/null | awk '/"node"/ {split($4,a,":"); print a[length(a)]; exit}')
+          code=$(curl -sS -o /dev/null -m 10 -w '%{http_code}' "http://127.0.0.1:${nport:-3000}/" 2>/dev/null || echo 000)
+          echo "node port: ${nport:-unknown}"
           echo "local HTTP check: $code"
           if [ "$code" = "000" ]; then
             echo "::warning::service is running but did not answer HTTP locally."
