@@ -57,20 +57,59 @@ function sessionExpired() {
   onSessionExpired?.();
 }
 
+// ── Offline ──────────────────────────────────────────────────────────────────
+// Whether the last request could reach the server at all, so screens can say
+// "offline" rather than "empty" — the two look identical otherwise.
+let online = true;
+const netListeners = new Set<(up: boolean) => void>();
+
+export function isOnline() { return online; }
+export function onNetworkChange(fn: (up: boolean) => void) {
+  netListeners.add(fn);
+  return () => { netListeners.delete(fn); };
+}
+function setOnline(up: boolean) {
+  if (online === up) return;
+  online = up;
+  netListeners.forEach(f => { try { f(up); } catch {} });
+}
+
+/**
+ * A failed request RESOLVES with an error rather than throwing.
+ *
+ * fetch() rejects when there is no connection, and every caller that awaited
+ * several of these together (`Promise.all`) then threw straight past its own
+ * `setLoading(false)`. The result was the worst possible offline behaviour: a
+ * spinner that never stops, on a screen whose contents were on the device all
+ * along. An error value flows through the `if (res.error)` path every caller
+ * already has.
+ */
 export async function apiFetch(path: string, method = 'GET', body?: object) {
   const token = await getToken();
-  const res = await fetch(`${BASE_URL}${path}`, {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  // 401 means the token is no longer accepted — sign out rather than leaving
-  // the user staring at a screen that silently fails.
-  if (res.status === 401 && token) sessionExpired();
-  return res.json();
+  try {
+    const res = await fetch(`${BASE_URL}${path}`, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    // 401 means the token is no longer accepted — sign out rather than leaving
+    // the user staring at a screen that silently fails.
+    if (res.status === 401 && token) sessionExpired();
+    setOnline(true);
+    try {
+      return await res.json();
+    } catch {
+      // Reached the server but got something that is not JSON — a proxy's
+      // error page, or a truncated response.
+      return { error: `Bad response (${res.status})`, offline: false };
+    }
+  } catch {
+    setOnline(false);
+    return { error: 'No connection', offline: true };
+  }
 }
 
 let socket: Socket | null = null;

@@ -12,6 +12,7 @@ import * as TaskManager from 'expo-task-manager';
 import notifee, { EventType } from '@notifee/react-native';
 import { ringIncoming, stopRinging, ensureCallChannel } from './src/incomingCall';
 import * as mediaCache from './src/mediaCache';
+import * as offlineStore from './src/offlineStore';
 import AuthScreen from './src/screens/AuthScreen';
 import RoomsScreen from './src/screens/RoomsScreen';
 import CallOverlay from './src/components/CallOverlay';
@@ -417,6 +418,9 @@ export default function App() {
 
   async function logout() {
     await AsyncStorage.multiRemove(['token', 'username', 'avatar']);
+    // Signing out must not leave the previous account's chats readable on the
+    // device — the offline copy is real message content.
+    await offlineStore.clearAll();
     audioManager.stop();
     disconnectSocket();
     setScreen('auth');

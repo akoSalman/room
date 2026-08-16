@@ -16,7 +16,7 @@ import {
   PinchGestureHandler, PanGestureHandler, State as GHState, GestureHandlerRootView,
 } from 'react-native-gesture-handler';
 import { C, isRTL } from '../theme';
-import { apiFetch, getSocket, getToken, getUsername, getAvatar, BASE_URL, ensureSocketAlive } from '../api';
+import { isOnline, onNetworkChange, apiFetch, getSocket, getToken, getUsername, getAvatar, BASE_URL, ensureSocketAlive } from '../api';
 import { e2eReady, e2eDMPeerKey, e2eEncrypt, e2eDecrypt, e2eIsEncrypted, e2eSetup, e2eVerifyIdentity } from '../e2e';
 import { callManager } from '../callManager';
 import { audioManager } from '../audioManager';
@@ -35,6 +35,7 @@ import EdgeBack from '../components/EdgeBack';
 import ExpiryRing from '../components/ExpiryRing';
 import TextViewer from '../components/TextViewer';
 import * as mediaCache from '../mediaCache';
+import * as offline from '../offlineStore';
 import {
   reduceSelection, initialSelection, LONG_PRESS_MS,
   type SelectionState, type MsgId,
@@ -616,6 +617,34 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     return () => sub.remove();
   }, [room.id]);
 
+  // The device's copy of this chat, on screen before any request goes out.
+  // A chat that was readable a minute ago should still be readable with the
+  // network down — and even with a working connection, showing history
+  // instantly beats showing a spinner for a second.
+  const [offlineNow, setOfflineNow] = useState(!isOnline());
+  useEffect(() => onNetworkChange(up => setOfflineNow(!up)), []);
+
+  useEffect(() => {
+    let alive = true;
+    offline.loadMessages(room.id).then(cached => {
+      // Anything the server has already returned wins; this only fills a void.
+      if (!alive || !cached || messagesRef.current.length) return;
+      setMessages(cached);
+      messagesRef.current = cached;
+      setLoading(false);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [room.id]);
+
+  // Keep the device's copy current as messages arrive, so it is up to date the
+  // next time the app opens with no connection. Debounced: a busy room should
+  // not write the whole history to storage on every incoming line.
+  useEffect(() => {
+    if (loading) return;
+    const t = setTimeout(() => offline.saveMessages(room.id, messagesRef.current), 1500);
+    return () => clearTimeout(t);
+  }, [messages, loading, room.id]);
+
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -654,6 +683,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         messagesRef.current = msgs;
         hasMoreOlderRef.current = msgs.length >= MESSAGES_PAGE_SIZE;
         if (msgs.length) sock.emit('mark_read', { roomId: room.id, lastMsgId: msgs[msgs.length - 1].id });
+        offline.saveMessages(room.id, msgs);
         // Emoji effect received while we were away: if the newest message is a
         // recent emoji-only message from the other person, play it on entry.
         const last: any = msgs[msgs.length - 1];
@@ -2969,6 +2999,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         </TouchableOpacity>
       )}
 
+      {/* Saying so, rather than letting saved history pass for live history. */}
+      {offlineNow && (
+        <Text style={s.offlineBar}>No connection — showing saved messages</Text>
+      )}
+
       {fabVisible && (
         <TouchableOpacity
           style={[s.scrollFab, (replyTo || editingId) && s.scrollFabRaised]}
@@ -3877,6 +3912,11 @@ const s = StyleSheet.create({
   emojiBtn: { padding: 6 },
   emoji: { fontSize: 22 },
   typingBar: { color: C.success, fontSize: 12, textAlign: 'center', paddingVertical: 4, paddingHorizontal: 12 },
+  offlineBar: {
+    color: '#d97706', fontSize: 12, textAlign: 'center', fontWeight: '600',
+    paddingVertical: 5, paddingHorizontal: 12,
+    backgroundColor: 'rgba(217,119,6,0.15)',
+  },
   recordingBar: { color: C.danger, fontSize: 12, textAlign: 'center', paddingVertical: 4, paddingHorizontal: 12, fontWeight: '600' },
   editBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(82,136,193,0.12)', borderTopWidth: 1, borderTopColor: C.accent, padding: 10, paddingHorizontal: 14 },
   editText: { flex: 1, color: C.accent, fontSize: 13 },
