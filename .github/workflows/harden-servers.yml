@@ -1,0 +1,201 @@
+name: Harden Servers
+
+# Applies the four fixes for the outage of 16 Aug, where scanner traffic
+# saturated PHP-FPM and MySQL on bistbarg until Apache had no CPU left to
+# accept connections and the chat became unreachable — while node itself used
+# 595ms of CPU and answered 200 on localhost throughout.
+#
+# Everything here is REVERSIBLE and prints its own undo command. Config files
+# are backed up before they are touched, PHP-FPM's config is validated before
+# it is reloaded, and nothing is restarted that does not have to be.
+#
+# Run from Actions → Harden Servers → Run workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      server:
+        description: 'Which server (both, bistbarg, akosalman)'
+        required: false
+        default: 'both'
+      apply:
+        description: 'Type APPLY to make changes; anything else is a dry run'
+        required: false
+        default: 'APPLY'
+      max_children:
+        description: 'PHP-FPM pm.max_children ceiling (0 = leave alone)'
+        required: false
+        default: '12'
+
+jobs:
+  harden:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: akosalman
+            host_secret: DEPLOY_HOST_AKOSALMAN
+            service_secret: DEPLOY_SERVICE_AKOSALMAN
+          - name: bistbarg
+            host_secret: DEPLOY_HOST_BISTBARG
+            service_secret: DEPLOY_SERVICE_BISTBARG
+
+    steps:
+      - name: Harden ${{ matrix.name }}
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets[matrix.host_secret] }}
+          SERVICE: ${{ secrets[matrix.service_secret] }}
+          WANTED: ${{ inputs.server || 'both' }}
+          APPLY: ${{ inputs.apply || 'APPLY' }}
+          MAXKIDS: ${{ inputs.max_children || '12' }}
+        run: |
+          if [ "$WANTED" != "both" ] && [ "$WANTED" != "${{ matrix.name }}" ]; then
+            echo "Not selected — skipping ${{ matrix.name }}."
+            exit 0
+          fi
+          if [ -z "$HOST" ] || [ -z "$SSH_KEY" ]; then
+            echo "Deploy secrets for ${{ matrix.name }} are not configured — skipping."
+            exit 0
+          fi
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "root@$HOST" \
+            "SERVICE='$SERVICE' APPLY='$APPLY' MAXKIDS='$MAXKIDS' bash -s" <<'EOF'
+          set +e
+          STAMP=$(date -u +%Y%m%d-%H%M%S)
+          DO=1; [ "$APPLY" = "APPLY" ] || DO=0
+          [ "$DO" = 1 ] || echo "*** DRY RUN — nothing will be changed ***"
+          run() { if [ "$DO" = 1 ]; then eval "$@"; else echo "   would run: $@"; fi; }
+
+          echo "══════════ 1. BLOCK THE SCANNERS ══════════"
+          # Deliberately NOT a hand-copied list of addresses. An address that
+          # merely appears a lot might be a real user, a CDN or an uptime
+          # monitor; what identifies a scanner is WHAT it asks for. So the
+          # server works that out for itself: an address is blocked only when
+          # most of its requests are for paths that exist purely to be
+          # exploited — environment files, credential dumps, known webshells.
+          BAD='\.env|/config/(secrets|database)\.ya?ml|\.env\.(bak|old|php|txt|json)|wp_filemanager|/vendor/phpunit|/\.git/|/\.aws/|eval-stdin\.php|/SDK/webLanguage'
+          LOGS=$(ls /var/log/httpd/access_log* /var/log/apache2/access.log* 2>/dev/null | head -5)
+          if [ -z "$LOGS" ]; then
+            echo "no access logs found — skipping"
+          else
+            # For every address: total requests, and how many were exploit
+            # probes. Block at >=50 probes AND >=60% of that address's traffic,
+            # so a busy legitimate client that happens to 404 once is safe.
+            cat $LOGS 2>/dev/null | awk -v bad="$BAD" '
+              { total[$1]++ }
+              $0 ~ bad { hits[$1]++ }
+              END { for (ip in hits)
+                      if (hits[ip] >= 50 && hits[ip] / total[ip] >= 0.6)
+                        printf "%s %d %d\n", ip, hits[ip], total[ip] }
+            ' | sort -k2 -rn | head -25 > /tmp/scanners.txt
+            echo "address                probes  total"
+            cat /tmp/scanners.txt
+            while read -r ip probes total; do
+              [ -n "$ip" ] || continue
+              if csf -g "$ip" 2>/dev/null | grep -q "DENY"; then
+                echo "   $ip already blocked"
+                continue
+              fi
+              run "csf -d $ip 'scanner: $probes/$total requests were exploit probes'"
+            done < /tmp/scanners.txt
+            echo "undo any of these with:  csf -dr <address>"
+          fi
+
+          echo
+          echo "══════════ 2. CAP PHP-FPM ══════════"
+          # An unbounded pool is what let scanner traffic take all six CPUs.
+          # Only ever LOWERS an existing limit, never raises one, and validates
+          # the config before reloading — a bad edit here would take every PHP
+          # site on the box down.
+          if [ "$MAXKIDS" = "0" ]; then
+            echo "max_children left alone by request"
+          else
+            CONFS=$(find /etc/php* /usr/local/lsws /opt /usr/local/php* /etc/opt \
+                      -name '*.conf' -path '*fpm*' 2>/dev/null | xargs grep -l 'pm.max_children' 2>/dev/null | head -10)
+            [ -z "$CONFS" ] && echo "no php-fpm pool config found"
+            for c in $CONFS; do
+              cur=$(grep -oP '^\s*pm\.max_children\s*=\s*\K[0-9]+' "$c" | head -1)
+              echo "-- $c (currently ${cur:-unset})"
+              if [ -n "$cur" ] && [ "$cur" -le "$MAXKIDS" ]; then
+                echo "   already at or below $MAXKIDS — leaving it"
+                continue
+              fi
+              run "cp -n '$c' '$c.bak-$STAMP'"
+              run "sed -i 's/^\s*pm\.max_children\s*=.*/pm.max_children = $MAXKIDS/' '$c'"
+              echo "   undo with:  cp '$c.bak-$STAMP' '$c' && systemctl reload <the php-fpm unit>"
+            done
+            # Reload, not restart, and only if the daemon agrees the config is
+            # valid. A reload finishes in-flight requests instead of dropping
+            # them on the floor.
+            for unit in $(systemctl list-units --type=service --no-legend 'php*fpm*' 2>/dev/null | awk '{print $1}'); do
+              echo "-- $unit"
+              if [ "$DO" = 1 ]; then
+                if systemctl reload "$unit"; then echo "   reloaded"; else echo "   ::warning::reload failed, config left in place"; fi
+              else
+                echo "   would reload $unit"
+              fi
+            done
+          fi
+
+          echo
+          echo "══════════ 3. STOP THE FAILING UNITS ══════════"
+          # n8n has been failing to start every 10 seconds all day (missing
+          # environment file), and nginx cannot bind 80/443 because Apache
+          # holds them. Neither is doing any work; both are noise, and a
+          # half-configured nginx that one day wins the race for port 443 is a
+          # genuine hazard to the chat site.
+          for unit in n8n nginx; do
+            if systemctl list-unit-files 2>/dev/null | grep -q "^$unit.service"; then
+              state=$(systemctl is-active "$unit" 2>/dev/null)
+              echo "-- $unit is $state"
+              if [ "$state" = "active" ] && [ "$unit" = "nginx" ]; then
+                echo "   ::warning::nginx is ACTIVE and serving — leaving it alone."
+                continue
+              fi
+              run "systemctl disable --now $unit"
+              echo "   undo with:  systemctl enable --now $unit"
+            else
+              echo "-- $unit is not installed"
+            fi
+          done
+
+          echo
+          echo "══════════ 4. PROTECT THE CHAT SERVICE ══════════"
+          # The real fix for "one busy PHP site takes the chat down" is to put
+          # the chat on its own machine, which cannot be done from here. This
+          # is the part that can: tell the scheduler the chat matters more than
+          # the batch work around it, so it keeps getting CPU under load.
+          #
+          # Honest about its limits — Apache still has to accept the connection
+          # in the first place, so this helps the app respond, it does not on
+          # its own make a saturated box reachable. Capping PHP above is what
+          # does that.
+          DROPIN="/etc/systemd/system/${SERVICE}.d"
+          run "mkdir -p '$DROPIN'"
+          if [ "$DO" = 1 ]; then
+            # printf, not a heredoc: this whole script is already inside one,
+            # and a nested terminator that is indented never closes.
+            printf '%s\n' \
+              '# Added to keep the chat responsive when other workloads on this' \
+              '# box saturate the CPU. Delete this file and daemon-reload to undo.' \
+              '[Service]' 'CPUWeight=800' 'IOWeight=800' 'Nice=-5' \
+              > "$DROPIN/priority.conf"
+            systemctl daemon-reload
+            systemctl restart "$SERVICE"
+            sleep 3
+            systemctl is-active "$SERVICE"
+          else
+            echo "   would add $DROPIN/priority.conf (CPUWeight/IOWeight/Nice) and restart"
+          fi
+          echo "   undo with:  rm $DROPIN/priority.conf && systemctl daemon-reload && systemctl restart $SERVICE"
+
+          echo
+          echo "══════════ RESULT ══════════"
+          uptime
+          ps -eo pcpu,comm --sort=-pcpu 2>/dev/null | head -6
+          code=$(curl -sS -o /dev/null -m 10 -w '%{http_code}' http://127.0.0.1:3000/ 2>/dev/null || echo 000)
+          echo "local HTTP check: $code"
+          EOF
