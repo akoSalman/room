@@ -25,6 +25,7 @@ fs.copyFileSync(path.join(SRC, 'download.ts'), path.join(WORK, 'download.ts'));
 fs.mkdirSync(path.join(WORK, 'expo-file-system'), { recursive: true });
 fs.writeFileSync(path.join(WORK, 'expo-file-system', 'index.ts'),
   'export const cacheDirectory = "file:///cache/";\n'
+  + 'export const documentDirectory = "file:///docs/";\n'
   + 'export const makeDirectoryAsync: any = async () => {};\n'
   + 'export const getInfoAsync: any = async () => ({ exists: false });\n'
   + 'export const downloadAsync: any = async () => ({ uri: "", status: 500 });\n'

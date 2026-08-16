@@ -839,12 +839,30 @@ app.get('/keys/:userId', authMiddleware, (req, res) => {
   res.json({ publicKey: u?.public_key || null });
 });
 
+/**
+ * May this viewer keep a copy of this message's media on their device?
+ *
+ * The same two rules the app applies to copying, downloading and sharing —
+ * stated here as well so the media browser gets an authoritative answer for
+ * history it has not loaded as messages:
+ *
+ *  • A DISAPPEARING message must not be kept. A cached photo that outlives
+ *    the message it came from defeats the entire feature.
+ *  • In a PRIVATE room, only the author may keep their own content.
+ */
+function mayKeepContent(msg, room, viewerId) {
+  if (msg.disappear_seconds) return false;
+  if (room.is_private && msg.user_id !== viewerId) return false;
+  return true;
+}
+
 // Shared media of a room, categorized for the media browser tabs.
 app.get('/room-media/:roomId', authMiddleware, (req, res) => {
   const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
   if (!room || !canAccessRoom(req.user.id, room)) return res.status(404).json({ error: 'Not found' });
   const rows = db.prepare(`
-    SELECT id, type, content, file_path, file_name, created_at FROM messages
+    SELECT id, type, content, file_path, file_name, created_at, user_id, disappear_seconds
+    FROM messages
     WHERE room_id = ? AND one_time_seconds IS NULL
     ORDER BY id DESC LIMIT 5000
   `).all(room.id);
@@ -853,19 +871,21 @@ app.get('/room-media/:roomId', authMiddleware, (req, res) => {
   // Every item carries the id of the message it came from, so the browser can
   // offer "Show in chat" and jump straight to it.
   rows.forEach(m => {
+    // Whether the viewer's device may hold on to this after it is shown.
+    const keep = mayKeepContent(m, room, req.user.id);
     if (m.type === 'image' && m.file_path) {
-      media.images.push({ url: signPath(m.file_path), msgId: m.id, name: m.file_name || 'Photo' });
+      media.images.push({ url: signPath(m.file_path), msgId: m.id, name: m.file_name || 'Photo', cacheable: keep });
     } else if (m.type === 'gallery' && m.file_path) {
       try {
         JSON.parse(m.file_path).forEach(u =>
-          media.images.push({ url: signPath(u), msgId: m.id, name: m.file_name || 'Photo' }));
+          media.images.push({ url: signPath(u), msgId: m.id, name: m.file_name || 'Photo', cacheable: keep }));
       } catch {}
     } else if (m.type === 'video' && m.file_path) {
-      media.files.push({ url: signPath(m.file_path), name: m.file_name || 'Video', msgId: m.id, kind: 'video' });
+      media.files.push({ url: signPath(m.file_path), name: m.file_name || 'Video', msgId: m.id, kind: 'video', cacheable: keep });
     } else if (m.type === 'file' && m.file_path) {
-      media.files.push({ url: signPath(m.file_path), name: m.file_name || 'File', msgId: m.id, kind: 'file' });
+      media.files.push({ url: signPath(m.file_path), name: m.file_name || 'File', msgId: m.id, kind: 'file', cacheable: keep });
     } else if (m.type === 'music' && m.file_path) {
-      media.music.push({ url: signPath(m.file_path), name: m.file_name || 'Audio', msgId: m.id, kind: 'music' });
+      media.music.push({ url: signPath(m.file_path), name: m.file_name || 'Audio', msgId: m.id, kind: 'music', cacheable: keep });
     }
     if (m.type === 'text' && m.content && !m.content.startsWith('e2e:')) {
       (m.content.match(LINK_RE) || []).forEach(l => {

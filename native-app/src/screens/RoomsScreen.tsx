@@ -5,6 +5,8 @@ import {
 } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import * as appUpdate from '../appUpdate';
+import * as mediaCache from '../mediaCache';
+import { fmtBytes } from '../download';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { C, isRTL } from '../theme';
 import { apiFetch, getUsername, getUserId, getSocket, setAuth, getAvatar, RELEASE_TAG, RELEASE_FILE } from '../api';
@@ -62,6 +64,9 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
     setUpdateProgress(st.status === 'downloading' ? st.progress : null);
   }), []);
   const [myAvatar, setMyAvatar] = useState<string | null>(null);
+  // What the kept media actually costs, so the number is visible rather than
+  // something the user has to guess at from the phone's storage screen.
+  const [cacheBytes, setCacheBytes] = useState<number | null>(null);
   // Used to scroll the profile sheet straight to the APP UPDATE section when
   // the user arrives via the update badge — otherwise the sheet opened at the
   // top and the update controls sat off-screen below the fold.
@@ -96,6 +101,15 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
 
   // Check for a newer build once on mount: drives the header update badge.
   useEffect(() => { checkLatestVersion(); }, []);
+
+  // Measured when the sheet opens; walking the directory on every render
+  // would be pointless work.
+  useEffect(() => {
+    if (!showProfile) return;
+    let alive = true;
+    mediaCache.usage().then(b => { if (alive) setCacheBytes(b); }).catch(() => {});
+    return () => { alive = false; };
+  }, [showProfile]);
 
   useEffect(() => {
     if (openProfileOnMount) {
@@ -449,6 +463,37 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
               )}
             </View>
 
+            {/* Downloaded media */}
+            <View style={s.section}>
+              <Text style={s.sectionTitle}>DOWNLOADED MEDIA</Text>
+              <Text style={s.cacheHint}>
+                Photos, voice messages and files are kept after the first
+                download, so opening them again costs nothing. Older ones are
+                removed automatically once this passes 2 GB.
+              </Text>
+              <View style={s.cacheRow}>
+                <Text style={s.cacheSize}>
+                  {cacheBytes === null ? 'Measuring…' : fmtBytes(cacheBytes)}
+                </Text>
+                <TouchableOpacity
+                  style={s.clearCacheBtn}
+                  onPress={() => Alert.alert(
+                    'Clear downloaded media?',
+                    'Your messages are not affected. Photos and files will be downloaded again the next time you open them.',
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      {
+                        text: 'Clear', style: 'destructive',
+                        onPress: async () => { await mediaCache.clear(); setCacheBytes(0); },
+                      },
+                    ],
+                  )}
+                >
+                  <Text style={s.clearCacheText}>Clear</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
             {/* App Update */}
             <View style={s.section} onLayout={e => { updateSectionY.current = e.nativeEvent.layout.y; }}>
               <Text style={s.sectionTitle}>APP UPDATE</Text>
@@ -710,6 +755,14 @@ const s = StyleSheet.create({
   renameCancelText: { color: C.muted, fontWeight: '600' },
   renameSave: { flex: 1, backgroundColor: C.accent, borderRadius: 8, padding: 12, alignItems: 'center' },
   renameSaveOff: { opacity: 0.45 },
+  cacheHint: { color: C.muted, fontSize: 12, lineHeight: 17, marginBottom: 10 },
+  cacheRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  cacheSize: { flex: 1, color: C.text, fontSize: 15, fontWeight: '700' },
+  clearCacheBtn: {
+    borderWidth: 1, borderColor: C.danger, borderRadius: 10,
+    paddingHorizontal: 16, paddingVertical: 8,
+  },
+  clearCacheText: { color: C.danger, fontSize: 13, fontWeight: '700' },
   mentionBadge: {
     minWidth: 20, height: 20, borderRadius: 10, backgroundColor: C.accent,
     alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5,

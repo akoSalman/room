@@ -24,12 +24,14 @@ export function trackTitle(fileName: string): { title: string; artist: string | 
 // draggable progress bar and the elapsed/total time. Tapping the disc plays
 // within the chat's whole audio playlist so it continues to the next track.
 export default function MusicPlayer({
-  url, fileName, mine, msgId, roomId, roomMeta, onPlayStart, playlist, onOpenPlayer,
+  url, fileName, mine, msgId, roomId, roomMeta, onPlayStart, playlist, onOpenPlayer, cache,
 }: {
   url: string; fileName: string; mine: boolean; msgId: number | string; roomId: number; roomMeta?: any;
   onPlayStart?: () => void;
   playlist?: () => Track[];      // every audio file in this chat, in order
   onOpenPlayer?: () => void;     // opens the full-screen player
+  /** False for audio that must not be kept on the device. */
+  cache?: boolean;
 }) {
   const [, forceUpdate] = useReducer(x => x + 1, 0);
   const pendingSeek = useRef<number | null>(null);
@@ -78,7 +80,7 @@ export default function MusicPlayer({
       // Play as part of the chat's playlist so it rolls on to the next track.
       audioManager.playQueue(list, idx, roomId, roomMeta);
     } else {
-      audioManager.play(msgId, url, `🎵 ${title}`, roomId, roomMeta);
+      audioManager.play(msgId, url, `🎵 ${title}`, roomId, roomMeta, false, cache !== false);
     }
   }
 

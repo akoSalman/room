@@ -28,6 +28,12 @@ export type MediaItem = {
   msgId?: number | string;
   name?: string;
   kind?: string;
+  /**
+   * Set by the server: false when this viewer may not keep a copy — a
+   * disappearing message, or someone else's content in a private room. The
+   * server decides because the browser lists history the chat never loaded.
+   */
+  cacheable?: boolean;
 };
 
 export type MediaAction = 'open' | 'download' | 'share' | 'showInChat';
@@ -108,6 +114,7 @@ export default function MediaBrowser({
         // asking for anything bigger just makes the gallery slower to fill —
         // which was the whole complaint.
         uri={thumbUrl(item.url, 96)}
+        cache={item.cacheable !== false}
         style={{ width: cell, height: cell, backgroundColor: '#111' }}
         resizeMode="cover"
       />

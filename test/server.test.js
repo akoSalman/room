@@ -556,6 +556,56 @@ test('a media URL is STABLE, so caches can actually hold on to it', async () => 
   fsMod.rmSync(require('path').join('uploads', name), { force: true });
 });
 
+test('the media browser marks what a device may NOT keep', async () => {
+  // The app writes downloaded media to disk so it never fetches twice. That
+  // must not apply to content sent on the understanding it would not persist:
+  // a cached copy outliving a disappearing message defeats the whole feature,
+  // and in a private room only the author may keep their own content.
+  const owner = await signUp('cacheowner21');
+  const guest = await signUp('cacheguest21');
+  const ownerSock = await connect(owner.token);
+  const guestSock = await connect(guest.token);
+
+  // ── An ordinary room: media is keepable by everyone in it.
+  const open = await api('/rooms', 'POST', { name: 'cache-open-21' }, owner.token);
+  await emit(guestSock, 'accept_invite', { roomId: open.id });
+  await emit(ownerSock, 'send_message',
+    { roomId: open.id, type: 'image', content: '', filePath: '/uploads/ok.jpg', fileName: 'ok.jpg' });
+
+  let media = await api(`/room-media/${open.id}`, 'GET', null, guest.token);
+  assert.strictEqual(media.images.length, 1);
+  assert.strictEqual(media.images[0].cacheable, true,
+    'ordinary media was marked unkeepable, so it would re-download forever');
+
+  // ── The same room with disappearing messages on.
+  assert.ok((await emit(ownerSock, 'set_disappearing', { roomId: open.id, seconds: 30 })).ok);
+  await emit(ownerSock, 'send_message',
+    { roomId: open.id, type: 'image', content: '', filePath: '/uploads/gone.jpg', fileName: 'gone.jpg' });
+
+  media = await api(`/room-media/${open.id}`, 'GET', null, guest.token);
+  const vanishing = media.images.find(i => i.url.includes('gone.jpg'));
+  assert.ok(vanishing, 'disappearing image missing from the browser');
+  assert.strictEqual(vanishing.cacheable, false,
+    'a disappearing photo was marked keepable — it would survive on disk after the message died');
+  // The earlier, non-disappearing photo is untouched by the mode change.
+  assert.strictEqual(media.images.find(i => i.url.includes('ok.jpg')).cacheable, true,
+    'turning the mode on retroactively blocked messages sent before it');
+
+  // ── A private room: only the author may keep their own content.
+  const priv = await api('/rooms', 'POST', { name: 'cache-priv-21', isPrivate: true }, owner.token);
+  await emit(ownerSock, 'invite_to_room', { roomId: priv.id, username: 'cacheguest21' });
+  await emit(guestSock, 'accept_invite', { roomId: priv.id });
+  await emit(ownerSock, 'send_message',
+    { roomId: priv.id, type: 'image', content: '', filePath: '/uploads/mine.jpg', fileName: 'mine.jpg' });
+
+  const asAuthor = await api(`/room-media/${priv.id}`, 'GET', null, owner.token);
+  assert.strictEqual(asAuthor.images[0].cacheable, true,
+    'the author was stopped from keeping their own photo');
+  const asOther = await api(`/room-media/${priv.id}`, 'GET', null, guest.token);
+  assert.strictEqual(asOther.images[0].cacheable, false,
+    "someone else's photo in a private room was marked keepable");
+});
+
 test('live location updates in place, and only the sharer can move the pin', async () => {
   const sharer = await signUp('geoshare15');
   const watcher = await signUp('geowatch15');

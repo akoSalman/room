@@ -21,7 +21,11 @@ import * as mediaCache from './mediaCache';
 
 type Listener = () => void;
 type FinishHandler = (finishedId: number | string) => void;
-export type Track = { id: number | string; uri: string; title: string };
+export type Track = {
+  id: number | string; uri: string; title: string;
+  /** False for audio the listener may not keep on their device. */
+  cacheable?: boolean;
+};
 
 class AudioManager {
   currentId: number | string | null = null;
@@ -191,6 +195,8 @@ class AudioManager {
    * local, which also means it still plays with no connection.
    */
   private async toCachedTrack(t: Track) {
+    // Content the listener may not keep is streamed and never written down.
+    if (t.cacheable === false) return this.toRNTrack(t);
     const uri = await mediaCache.resolve(t.uri).catch(() => t.uri);
     return this.toRNTrack({ ...t, uri });
   }
@@ -198,6 +204,7 @@ class AudioManager {
   async play(
     id: number | string, uri: string, label: string,
     roomId: number | null = null, roomMeta: any = null, keepQueue = false,
+    cacheable = true,
   ) {
     const token = ++this.playToken;
     // A one-off play (a voice message) leaves any music playlist behind.
@@ -225,7 +232,7 @@ class AudioManager {
         if (token !== this.playToken) return;
         if (this.queueIndex > 0) await TrackPlayer.skip(this.queueIndex);
       } else {
-        await TrackPlayer.add(await this.toCachedTrack({ id, uri, title: label }));
+        await TrackPlayer.add(await this.toCachedTrack({ id, uri, title: label, cacheable }));
       }
       if (token !== this.playToken) return;
 
@@ -264,7 +271,7 @@ class AudioManager {
     this.queue = order;
     this.queueIndex = at;
 
-    await this.play(picked.id, picked.uri, picked.title, roomId, roomMeta, true);
+    await this.play(picked.id, picked.uri, picked.title, roomId, roomMeta, true, picked.cacheable !== false);
   }
 
   hasNext() {

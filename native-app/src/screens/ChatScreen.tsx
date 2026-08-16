@@ -34,6 +34,7 @@ import VideoBubble from '../components/VideoBubble';
 import EdgeBack from '../components/EdgeBack';
 import ExpiryRing from '../components/ExpiryRing';
 import TextViewer from '../components/TextViewer';
+import * as mediaCache from '../mediaCache';
 import {
   reduceSelection, initialSelection, LONG_PRESS_MS,
   type SelectionState, type MsgId,
@@ -131,6 +132,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // current image for the counter / save / screenshot-guard.
   const [viewer, setViewer] = useState<{ images: string[]; index: number } | null>(null);
   const [viewerIdx, setViewerIdx] = useState(0);
+  // Resolved once when the viewer opens: which of these photos must not be
+  // written to disk.
+  const [viewerNoCache, setViewerNoCache] = useState<Set<string>>(new Set());
   // Opened from the media gallery? Then closing the image must put the gallery
   // back, not dump the user in the chat. (Two RN Modals stacked on Android is
   // unreliable, so the gallery is closed on the way in and restored on the way
@@ -147,6 +151,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     let images = base;
     if (idx < 0) { images = [url, ...base]; idx = 0; }
     setViewerIdx(idx);
+    setViewerNoCache(noCacheUrls());
     setViewer({ images, index: idx });
   }
   function closeViewer() {
@@ -810,6 +815,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         // it so the picture vanishes from view too.
         const gone = messagesRef.current.find(m => m.id === messageId);
         if (gone && lightboxBelongsTo(gone)) closeViewer();
+        // The message is being destroyed, so any copy of its media on this
+        // device goes too. Without this a disappearing photo would live on in
+        // the cache after the message that carried it was gone.
+        if (gone) forgetCachedMedia(gone);
         setMessages(prev => prev.filter(m => m.id !== messageId));
       });
       sock.on('reactions_updated', ({ messageId, roomId, reactions: r }: any) => {
@@ -1048,6 +1057,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         id: m.id,
         uri: `${BASE_URL}${m.file_path}`,
         title: m.file_name || 'Audio',
+        cacheable: canTakeContent(m),
       }));
   }
 
@@ -1965,6 +1975,43 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // back to the shared-media list so "Show in chat" knows which message it
   // came from.
   const [viewerActions, setViewerActions] = useState<MediaItem | null>(null);
+  /**
+   * Full-size photos the device must NOT keep.
+   *
+   * The fullscreen viewer is handed bare URLs, with no message attached, so
+   * the rule has to be resolved into a set beforehand — from the messages we
+   * have loaded, and from the media browser's own listing, which the server
+   * marks because it covers history the chat never loaded.
+   */
+  /** Drop every cached file belonging to a message that no longer exists. */
+  function forgetCachedMedia(m: any) {
+    const paths: string[] = [];
+    if (m?.file_path && typeof m.file_path === 'string') {
+      if (m.file_path.startsWith('[')) {
+        try { paths.push(...JSON.parse(m.file_path)); } catch {}
+      } else {
+        paths.push(m.file_path);
+      }
+    }
+    paths.forEach(p => mediaCache.forget(`${BASE_URL}${p}`).catch(() => {}));
+  }
+
+  function noCacheUrls(): Set<string> {
+    const out = new Set<string>();
+    messagesRef.current.forEach((m: any) => {
+      if (canTakeContent(m)) return;
+      if (m.type === 'image' && m.file_path) out.add(`${BASE_URL}${m.file_path}`);
+      if (m.type === 'gallery' && m.file_path) {
+        try { JSON.parse(m.file_path).forEach((u: string) => out.add(`${BASE_URL}${u}`)); } catch {}
+      }
+    });
+    const listed: any[] = Array.isArray(mediaData?.images) ? mediaData.images : [];
+    listed.forEach((x: any) => {
+      if (x && typeof x === 'object' && x.cacheable === false) out.add(`${BASE_URL}${x.url}`);
+    });
+    return out;
+  }
+
   function openViewerActions() {
     if (!viewerUrl) return;
     const rel = viewerUrl.startsWith(BASE_URL) ? viewerUrl.slice(BASE_URL.length) : viewerUrl;
@@ -2351,7 +2398,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 disabled={msg._uploading}>
                 {msg._uploading
                   ? <Image source={{ uri }} style={s.msgImage} resizeMode="cover" />
-                  : <ImageWithSpinner uri={uri} style={s.msgImage} resizeMode="cover" onLoaded={onLoaded} />}
+                  : <ImageWithSpinner uri={uri} cache={canTakeContent(msg)} style={s.msgImage} resizeMode="cover" onLoaded={onLoaded} />}
               </TouchableOpacity>
             );
           })()}
@@ -2372,6 +2419,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             return (
               <GalleryGrid
                 uris={full}
+                cache={canTakeContent(msg)}
                 onLongPress={() => onMessageLongPress(msg)}
                 onOpen={(i) => { if (selectedIds.size) toggleSelected(msg); else openViewer(full[i]); }}
                 onFirstLoaded={msg.one_time_seconds && !mine ? () => startOneTimeClock(msg) : undefined}
@@ -2379,7 +2427,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             );
           })()}
           {!hiddenOneTime && msg.type === 'audio' && !msg._uploading && (
-            <VoicePlayer url={`${BASE_URL}${msg.file_path}`} peaks={msg.file_name || ''} mine={mine} msgId={msg.id} roomId={room.id} roomMeta={room} label={`🎙 ${msg.username} · voice message`}
+            <VoicePlayer url={`${BASE_URL}${msg.file_path}`} peaks={msg.file_name || ''} mine={mine} msgId={msg.id} roomId={room.id} roomMeta={room} cache={canTakeContent(msg)} label={`🎙 ${msg.username} · voice message`}
               played={!!msg.played}
               onPlayStart={() => {
                 if (mine) return;
@@ -2393,7 +2441,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             </View>
           )}
           {!hiddenOneTime && msg.type === 'music' && !msg._uploading && (
-            <MusicPlayer url={`${BASE_URL}${msg.file_path}`} fileName={msg.file_name || 'Audio'} mine={mine} msgId={msg.id} roomId={room.id} roomMeta={room}
+            <MusicPlayer url={`${BASE_URL}${msg.file_path}`} fileName={msg.file_name || 'Audio'} mine={mine} msgId={msg.id} roomId={room.id} roomMeta={room} cache={canTakeContent(msg)}
               playlist={chatTracks}
               onOpenPlayer={() => setShowPlayer(true)}
               onPlayStart={msg.one_time_seconds && !mine ? () => startOneTimeClock(msg) : undefined} />
@@ -2740,7 +2788,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 // Replaces the library's bare <Image>, which shows nothing but
                 // black while loading and stays black forever on failure.
                 renderItem={({ item, setImageDimensions }: any) => (
-                  <GalleryImage uri={item} setImageDimensions={setImageDimensions} />
+                  <GalleryImage
+                    uri={item}
+                    cache={!viewerNoCache.has(item)}
+                    setImageDimensions={setImageDimensions}
+                  />
                 )}
               />
               {/* Close and Download used to sit here as separate buttons. They

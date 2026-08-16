@@ -20,10 +20,19 @@
 import * as FileSystem from 'expo-file-system';
 import { localNameFor } from './download';
 
-const DIR = FileSystem.cacheDirectory + 'media/';
+// documentDirectory, not cacheDirectory: Android empties the cache directory
+// whenever the device is short of space, which would silently undo the whole
+// point of keeping media. This is storage the OS does not reclaim behind our
+// back, so what has been downloaded stays downloaded.
+const DIR = FileSystem.documentDirectory + 'media/';
 
-/** Roughly how much of the phone's storage this may hold. */
-export const MAX_BYTES = 400 * 1024 * 1024;
+/**
+ * How much media may be kept. Nothing expires on a timer — a file is only
+ * evicted when the cache is over this, and then the least recently used goes
+ * first, so the photos and voice notes someone actually revisits survive and
+ * the ones they opened once a year ago are what make room.
+ */
+export const MAX_BYTES = 2 * 1024 * 1024 * 1024;
 
 // url-key -> local uri. Only holds files confirmed to exist on disk.
 const have = new Map<string, string>();
@@ -52,16 +61,22 @@ function cacheable(url: string): boolean {
   return /^https?:\/\//i.test(url || '');
 }
 
+// Last time each file was actually used, so eviction can be least-recently-USED
+// rather than oldest-downloaded. A photo from last year that is opened weekly
+// should outlive one downloaded yesterday and never looked at again.
+const usedAt = new Map<string, number>();
+
 /** The local copy, if we already have one. Never downloads. */
 export async function peek(url: string): Promise<string | null> {
   if (!cacheable(url)) return null;
   const key = keyFor(url);
   const known = have.get(key);
-  if (known) return known;
+  if (known) { usedAt.set(key, Date.now()); return known; }
   try {
     const info = await FileSystem.getInfoAsync(pathFor(url));
     if (info.exists && (info as any).size > 0) {
       have.set(key, info.uri);
+      usedAt.set(key, Date.now());
       return info.uri;
     }
   } catch {}
@@ -95,6 +110,7 @@ export async function fetchAndKeep(url: string): Promise<string | null> {
       await FileSystem.moveAsync({ from: res.uri, to: pathFor(url) });
       const final = pathFor(url);
       have.set(key, final);
+      usedAt.set(key, Date.now());
       return final;
     } catch {
       try { await FileSystem.deleteAsync(tmp, { idempotent: true }); } catch {}
@@ -149,13 +165,49 @@ export async function prune(maxBytes = MAX_BYTES) {
     const files = [];
     for (const name of names) {
       const info: any = await FileSystem.getInfoAsync(DIR + name);
-      if (info?.exists) files.push({ name, size: info.size || 0, modified: info.modificationTime || 0 });
+      if (info?.exists) {
+        files.push({
+          name,
+          size: info.size || 0,
+          // A recent use beats the file's age on disk.
+          modified: usedAt.get(name) || (info.modificationTime || 0) * 1000,
+        });
+      }
     }
     for (const name of planPrune(files, maxBytes)) {
       have.delete(name);
+      usedAt.delete(name);
       await FileSystem.deleteAsync(DIR + name, { idempotent: true }).catch(() => {});
     }
   } catch {}
+}
+
+/**
+ * Forget one file.
+ *
+ * Called when the message it belongs to is destroyed: a disappearing photo
+ * must not survive on disk just because it was once on screen.
+ */
+export async function forget(url: string) {
+  const key = keyFor(url);
+  have.delete(key);
+  usedAt.delete(key);
+  try { await FileSystem.deleteAsync(DIR + key, { idempotent: true }); } catch {}
+}
+
+/** Bytes currently held, for showing the user what this costs them. */
+export async function usage(): Promise<number> {
+  try {
+    const names = await FileSystem.readDirectoryAsync(DIR).catch(() => [] as string[]);
+    let total = 0;
+    for (const name of names) {
+      const info: any = await FileSystem.getInfoAsync(DIR + name);
+      if (info?.exists) total += info.size || 0;
+    }
+    return total;
+  } catch {
+    return 0;
+  }
 }
 
 /** Everything, gone — for a "clear cache" action. */

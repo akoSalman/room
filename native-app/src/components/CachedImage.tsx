@@ -11,14 +11,23 @@ import React, { useEffect, useState } from 'react';
 import { Image, ImageProps } from 'react-native';
 import * as mediaCache from '../mediaCache';
 
-type Props = Omit<ImageProps, 'source'> & { uri: string };
+type Props = Omit<ImageProps, 'source'> & {
+  uri: string;
+  /**
+   * False for content the viewer is not allowed to keep — a disappearing
+   * message, or someone else's photo in a private room. Such an image is
+   * shown from the network and never written to disk.
+   */
+  cache?: boolean;
+};
 
-export default function CachedImage({ uri, ...rest }: Props) {
+export default function CachedImage({ uri, cache = true, ...rest }: Props) {
   const [src, setSrc] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
     setSrc(null);
+    if (!cache) { setSrc(uri); return; }
     (async () => {
       const local = await mediaCache.peek(uri);
       if (!alive) return;
@@ -28,7 +37,7 @@ export default function CachedImage({ uri, ...rest }: Props) {
       if (!local) mediaCache.fetchAndKeep(uri).catch(() => {});
     })();
     return () => { alive = false; };
-  }, [uri]);
+  }, [uri, cache]);
 
   // A single frame with nothing in it, while the disk is checked. Rendering
   // the remote URL first and swapping to the local file would load the same

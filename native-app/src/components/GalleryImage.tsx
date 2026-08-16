@@ -16,9 +16,11 @@ import {
 type Props = {
   uri: string;
   setImageDimensions: (d: { width: number; height: number }) => void;
+  /** False for content that must not be kept on the device. */
+  cache?: boolean;
 };
 
-export default function GalleryImage({ uri, setImageDimensions }: Props) {
+export default function GalleryImage({ uri, setImageDimensions, cache = true }: Props) {
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
   // The local copy, once we know there is one: a full-size photo is the most
@@ -43,9 +45,9 @@ export default function GalleryImage({ uri, setImageDimensions }: Props) {
     opacity.setValue(0);
     setLocal(null);
     let alive = true;
-    mediaCache.peek(uri).then(p => { if (alive && p) setLocal(p); }).catch(() => {});
+    if (cache) mediaCache.peek(uri).then(p => { if (alive && p) setLocal(p); }).catch(() => {});
     return () => { alive = false; };
-  }, [uri]);
+  }, [uri, cache]);
 
   return (
     <View style={StyleSheet.absoluteFill}>
@@ -66,7 +68,7 @@ export default function GalleryImage({ uri, setImageDimensions }: Props) {
           setFailed(false);
           setLoaded(true);
           // Keep it, so reopening this photo costs nothing.
-          if (!local) mediaCache.fetchAndKeep(uri).catch(() => {});
+          if (cache && !local) mediaCache.fetchAndKeep(uri).catch(() => {});
           Animated.timing(opacity, { toValue: 1, duration: 220, useNativeDriver: true }).start();
         }}
         onError={() => {
