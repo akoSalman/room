@@ -159,21 +159,53 @@ jobs:
           #
           # The max_children logic below is kept as a safety net for the case
           # where some pool really is unbounded.
+          #
+          # CORRECTION. The first version gave each php-fpm unit its OWN
+          # ${QUOTA}% quota. There are four of them here (7.4/8.0/8.1/8.2), so
+          # collectively they were still allowed 4 x 400% = 1600% on a box with
+          # 600% — which bounds nothing at all, and the machine went right back
+          # to 0.3% idle. A per-service limit cannot cap a group of services.
+          #
+          # One SLICE holding all of them, with a single quota, is what caps
+          # the group. The per-unit files are removed so there is one number
+          # in one place rather than two that disagree.
           if [ "$QUOTA" != "0" ]; then
+            echo "-- php.slice: ${QUOTA}% TOTAL across every php-fpm version (box has $(nproc)00%)"
+            if [ "$DO" = 1 ]; then
+              printf '%s\n' '# All php-fpm versions share this one budget.' \
+                '# A per-service quota does not bound a GROUP of services:' \
+                '# four services at 400% each is 1600% on a 600% machine.' \
+                '# Delete this file and daemon-reload to undo.' \
+                '[Slice]' "CPUQuota=${QUOTA}%" 'CPUAccounting=yes' \
+                > /etc/systemd/system/php.slice
+            fi
             for unit in $(systemctl list-units --type=service --no-legend 'php*fpm*' 2>/dev/null | awk '{print $1}'); do
               d="/etc/systemd/system/${unit}.d"
-              echo "-- $unit: limiting to ${QUOTA}% of one CPU (box has $(nproc)00%)"
               run "mkdir -p '$d'"
               if [ "$DO" = 1 ]; then
-                printf '%s\n' '# Added to stop PHP taking every CPU on the box and' \
-                  '# starving the web server that fronts the chat.' \
-                  '# Delete this file and daemon-reload to undo.' \
-                  '[Service]' "CPUQuota=${QUOTA}%" > "$d/quota.conf"
+                # Replaces the old per-unit quota rather than sitting beside it.
+                rm -f "$d/quota.conf"
+                printf '%s\n' '# Join the shared PHP budget; see /etc/systemd/system/php.slice' \
+                  '[Service]' 'Slice=php.slice' > "$d/slice.conf"
               fi
-              echo "   undo with:  rm $d/quota.conf && systemctl daemon-reload && systemctl restart $unit"
+              echo "   $unit -> php.slice"
+              echo "   undo with:  rm $d/slice.conf && systemctl daemon-reload && systemctl restart $unit"
             done
             run "systemctl daemon-reload"
           fi
+
+          # Apache is what has to ACCEPT the connection before the chat can
+          # answer, and on a contended box it was losing that race to PHP.
+          # Weight, not a quota: it costs nothing while the box is idle and
+          # only matters when something is competing. Applied live, so Apache
+          # is not restarted.
+          for w in httpd apache2; do
+            if systemctl is-active --quiet "$w" 2>/dev/null; then
+              echo "-- $w: raising scheduling weight"
+              run "systemctl set-property $w CPUWeight=800 IOWeight=800"
+              echo "   undo with:  systemctl revert $w"
+            fi
+          done
           if [ "$MAXKIDS" = "0" ]; then
             echo "max_children left alone by request"
           else
