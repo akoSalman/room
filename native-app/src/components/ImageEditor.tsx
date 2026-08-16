@@ -35,9 +35,15 @@ import {
 let ViewShot: any = null;
 let captureRef: any = null;
 try {
-  const mod = require('react-native-view-shot');
-  ViewShot = mod.default || mod.ViewShot;
-  captureRef = mod.captureRef;
+  // The JS half of this package imports fine even when the native half is
+  // missing — it only warns — so the native module is what actually gets
+  // checked. Otherwise the tools would appear and fail at the last step.
+  const { NativeModules } = require('react-native');
+  if (NativeModules?.RNViewShot) {
+    const mod = require('react-native-view-shot');
+    ViewShot = mod.default || mod.ViewShot;
+    captureRef = mod.captureRef;
+  }
 } catch {}
 
 type Tool = 'crop' | 'pen' | 'text';
