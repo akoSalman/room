@@ -142,6 +142,26 @@ jobs:
           for f in /sys/fs/cgroup/php.slice/cpu.max /sys/fs/cgroup/php.slice/cpu.stat; do
             [ -f "$f" ] && echo "   $f = $(tr '\n' ' ' < "$f" 2>/dev/null)"
           done
+          # A quota being CONFIGURED is not the same as a quota BINDING, and
+          # reporting the first as if it were the second is how a cap that does
+          # nothing gets called protection. ps says the workers average 53%
+          # each, which for ten of them is 530% against a 400% cap — yet
+          # nr_throttled is zero. One of those two numbers is wrong.
+          #
+          # The kernel's own accounting settles it: usage_usec is cumulative
+          # CPU time for the whole subtree, so the difference over a known
+          # interval IS the percentage, with no averaging trap.
+          if [ -f /sys/fs/cgroup/php.slice/cpu.stat ]; then
+            a=$(awk '/^usage_usec/{print $2}' /sys/fs/cgroup/php.slice/cpu.stat)
+            t0=$(date +%s%N); sleep 2; t1=$(date +%s%N)
+            b=$(awk '/^usage_usec/{print $2}' /sys/fs/cgroup/php.slice/cpu.stat)
+            echo "   measured over $(( (t1-t0)/1000000 ))ms: php.slice is using $(( (b-a) * 100000 / ((t1-t0)/1000) ))% of one cpu"
+            echo "   (cap is 400%; box has $(nproc)00%)"
+          fi
+          echo "-- is anything else outside the cap --"
+          for s in /sys/fs/cgroup/system.slice/cpu.stat /sys/fs/cgroup/user.slice/cpu.stat; do
+            [ -f "$s" ] && echo "   $s throttled=$(awk '/^nr_throttled/{print $2}' "$s")"
+          done
           for u in $(systemctl list-units --type=service --no-legend 'php*fpm*' 2>/dev/null | awk '{print $1}'); do
             echo "-- $u"
             systemctl show "$u" -p CPUQuotaPerSecUSec -p CPUAccounting -p ControlGroup 2>/dev/null
