@@ -144,6 +144,35 @@ jobs:
             done
           done
 
+          # ── WHICH site, and is this an attack or real work? ────────────
+          # The decisive question, and it has a decisive answer: a php-fpm
+          # worker's working directory IS the document root of the site it is
+          # serving, so /proc/<pid>/cwd names the site without guessing.
+          echo "-- what the busiest php workers are serving --"
+          for pid in $(ps -eo pid,comm --sort=-pcpu 2>/dev/null | awk '$2 ~ /php-fpm/ {print $1}' | head -6); do
+            echo "   pid $pid cwd=$(readlink /proc/$pid/cwd 2>/dev/null) started=$(ps -o lstart= -p $pid 2>/dev/null)"
+          done
+
+          # Signs of compromise rather than load. A miner or webshell usually
+          # runs from a temp directory, or is a process nobody installed.
+          echo "-- processes running from temp or dev-shm --"
+          for pid in $(ps -eo pid --no-headers 2>/dev/null); do
+            exe=$(readlink /proc/$pid/exe 2>/dev/null)
+            case "$exe" in
+              /tmp/*|/dev/shm/*|/var/tmp/*) echo "   SUSPICIOUS pid $pid -> $exe" ;;
+            esac
+          done | head -10
+          echo "-- top outbound connections (a miner talks to a pool) --"
+          ss -tnp state established 2>/dev/null \
+            | awk 'NR>1 {split($4,l,":"); split($5,r,":"); if (r[length(r)] != "") print r[length(r)]}' \
+            | sort | uniq -c | sort -rn | head -8
+          echo "-- php files changed in the last day under the busy roots --"
+          for pid in $(ps -eo pid,comm --sort=-pcpu 2>/dev/null | awk '$2 ~ /php-fpm/ {print $1}' | head -2); do
+            root=$(readlink /proc/$pid/cwd 2>/dev/null)
+            [ -n "$root" ] && [ -d "$root" ] || continue
+            find "$root" -name '*.php' -mtime -1 2>/dev/null | head -10
+          done
+
           echo "-- php-fpm pools --"
           ls /etc/php/*/fpm/pool.d/ /opt/*/php*/etc/php-fpm.d/ 2>/dev/null | head -20
           echo "-- mysql: what is running right now --"
