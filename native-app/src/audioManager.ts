@@ -17,6 +17,7 @@ import TrackPlayer, {
 } from 'react-native-track-player';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { orderFor, nextRepeat, Repeat } from './playlist';
+import * as mediaCache from './mediaCache';
 
 type Listener = () => void;
 type FinishHandler = (finishedId: number | string) => void;
@@ -182,6 +183,18 @@ class AudioManager {
     return { id: String(t.id), url: t.uri, title: t.title, artist: 'ChatRoom' };
   }
 
+  /**
+   * The same track, played from disk when we already have the file.
+   *
+   * A voice message re-listened to, or a song replayed, used to be streamed
+   * from the server every time. The first play caches it; every one after is
+   * local, which also means it still plays with no connection.
+   */
+  private async toCachedTrack(t: Track) {
+    const uri = await mediaCache.resolve(t.uri).catch(() => t.uri);
+    return this.toRNTrack({ ...t, uri });
+  }
+
   async play(
     id: number | string, uri: string, label: string,
     roomId: number | null = null, roomMeta: any = null, keepQueue = false,
@@ -208,11 +221,11 @@ class AudioManager {
       if (token !== this.playToken) return;
 
       if (keepQueue && this.queue.length) {
-        await TrackPlayer.add(this.queue.map(t => this.toRNTrack(t)));
+        await TrackPlayer.add(await Promise.all(this.queue.map(t => this.toCachedTrack(t))));
         if (token !== this.playToken) return;
         if (this.queueIndex > 0) await TrackPlayer.skip(this.queueIndex);
       } else {
-        await TrackPlayer.add(this.toRNTrack({ id, uri, title: label }));
+        await TrackPlayer.add(await this.toCachedTrack({ id, uri, title: label }));
       }
       if (token !== this.playToken) return;
 
@@ -332,8 +345,8 @@ class AudioManager {
       const others = rnQueue.map((_, i) => i).filter(i => i !== active);
       if (others.length) await TrackPlayer.remove(others);
       // The playing track is now the only one left, at position 0.
-      const before = order.slice(0, index).map(t => this.toRNTrack(t));
-      const after = order.slice(index + 1).map(t => this.toRNTrack(t));
+      const before = await Promise.all(order.slice(0, index).map(t => this.toCachedTrack(t)));
+      const after = await Promise.all(order.slice(index + 1).map(t => this.toCachedTrack(t)));
       if (after.length) await TrackPlayer.add(after);
       if (before.length) await TrackPlayer.add(before, 0);
     } catch {}

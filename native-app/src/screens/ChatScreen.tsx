@@ -800,6 +800,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content, edited: 1 } : m));
       });
       sock.on('message_deleted', ({ messageId, roomId }: any) => {
+        // Before the room filter: a live share running in ANOTHER chat is
+        // still mine, and deleting its message must stop it wherever I am.
+        locationManager.stopForMessage(messageId);
         if (roomId != null && roomId !== room.id) return; // now also personal-channel
 
         // If the lightbox is showing an image that belongs to the message

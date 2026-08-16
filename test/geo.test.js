@@ -180,6 +180,64 @@ test('remaining time reads naturally', () => {
   assert.strictEqual(G.formatRemaining(now - 1, now), 'ended');
 });
 
+
+// ── Pinch to zoom ────────────────────────────────────────────────────────────
+
+test('a pinch scale converts to whole zoom levels', () => {
+  // Doubling the distance between the fingers is exactly one zoom level.
+  assert.strictEqual(G.pinchZoomDelta(2), 1);
+  assert.strictEqual(G.pinchZoomDelta(4), 2);
+  assert.strictEqual(G.pinchZoomDelta(0.5), -1);
+  assert.strictEqual(G.pinchZoomDelta(1), 0);
+  // A nonsense scale must not produce NaN and send the map to nowhere.
+  assert.strictEqual(G.pinchZoomDelta(0), 0);
+  assert.strictEqual(G.pinchZoomDelta(-3), 0);
+});
+
+test('screen position round-trips back to the same place', () => {
+  const center = { lat: 35.6892, lng: 51.389 };  // Tehran
+  const W = 360, H = 640;
+  const pt = { x: 90, y: 500 };
+  const ll = G.screenToLatLng(pt, center, 14, W, H);
+  const back = G.pointToScreen(ll, center, 14, W, H);
+  assert.ok(Math.abs(back.x - pt.x) < 1e-6, `x drifted to ${back.x}`);
+  assert.ok(Math.abs(back.y - pt.y) < 1e-6, `y drifted to ${back.y}`);
+});
+
+test('the centre of the screen is the map centre', () => {
+  const center = { lat: 35.6892, lng: 51.389 };
+  const ll = G.screenToLatLng({ x: 180, y: 320 }, center, 14, 360, 640);
+  assert.ok(Math.abs(ll.lat - center.lat) < 1e-9);
+  assert.ok(Math.abs(ll.lng - center.lng) < 1e-9);
+});
+
+test('pinching keeps the place under your fingers under your fingers', () => {
+  // The behaviour that makes a map feel like a map: zoom in on a corner and
+  // that corner must not fly off towards the middle.
+  const center = { lat: 35.6892, lng: 51.389 };
+  const W = 360, H = 640;
+  const focal = { x: 60, y: 120 };   // well away from the centre
+  const before = G.screenToLatLng(focal, center, 14, W, H);
+  const newCenter = G.zoomAbout(center, 14, 16, focal, W, H);
+  const after = G.screenToLatLng(focal, newCenter, 16, W, H);
+  assert.ok(Math.abs(after.lat - before.lat) < 1e-9, `lat moved by ${after.lat - before.lat}`);
+  assert.ok(Math.abs(after.lng - before.lng) < 1e-9, `lng moved by ${after.lng - before.lng}`);
+});
+
+test('pinching about the centre leaves the centre alone', () => {
+  const center = { lat: 35.6892, lng: 51.389 };
+  const c2 = G.zoomAbout(center, 14, 17, { x: 180, y: 320 }, 360, 640);
+  assert.ok(Math.abs(c2.lat - center.lat) < 1e-9);
+  assert.ok(Math.abs(c2.lng - center.lng) < 1e-9);
+});
+
+test('zoom never leaves the range the tile server serves', () => {
+  assert.strictEqual(G.clampZoom(99), G.MAX_ZOOM);
+  assert.strictEqual(G.clampZoom(-4), G.MIN_ZOOM);
+  assert.strictEqual(G.clampZoom(14.4), 14);
+  assert.strictEqual(G.clampZoom(14.6), 15);
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

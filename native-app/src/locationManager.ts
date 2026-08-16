@@ -100,6 +100,17 @@ export async function startSharing(
   emit();
 }
 
+/**
+ * The message IS the share — deleting it must end the broadcast.
+ *
+ * Otherwise the message vanished from the chat while the phone kept sending
+ * positions, with the banner above the composer and the shade notification
+ * still up and no message left to stop them from.
+ */
+export async function stopForMessage(messageId: number | string) {
+  if (active && String(active.messageId) === String(messageId)) await stopSharing();
+}
+
 export async function stopSharing(opts: { silent?: boolean } = {}) {
   const cur = active;
   active = null;

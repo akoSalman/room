@@ -120,6 +120,47 @@ export function panCenter(
   };
 }
 
+/** Zoom, clamped to what the tile server actually serves. */
+export function clampZoom(zoom: number): number {
+  return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(zoom)));
+}
+
+/** The latitude/longitude under a pixel position in the viewport. */
+export function screenToLatLng(
+  pt: { x: number; y: number }, center: LatLng, zoom: number, width: number, height: number,
+): LatLng {
+  const z = clampZoom(zoom);
+  return {
+    lng: worldXToLng(lngToWorldX(center.lng, z) + pt.x - width / 2, z),
+    lat: worldYToLat(latToWorldY(center.lat, z) + pt.y - height / 2, z),
+  };
+}
+
+/** How many zoom levels a pinch of this scale is worth. Doubling = one level. */
+export function pinchZoomDelta(scale: number): number {
+  if (!(scale > 0)) return 0;
+  return Math.log2(scale);
+}
+
+/**
+ * The new centre after zooming about a fixed point on screen — pinching with
+ * two fingers on a street keeps THAT street under your fingers, rather than
+ * flying off towards the middle of the screen.
+ */
+export function zoomAbout(
+  center: LatLng, zoom: number, newZoom: number,
+  focal: { x: number; y: number }, width: number, height: number,
+): LatLng {
+  const z = clampZoom(newZoom);
+  // The place the fingers are on, before the zoom changes.
+  const anchor = screenToLatLng(focal, center, zoom, width, height);
+  // Put that same place back under the same pixel at the new zoom.
+  return {
+    lng: worldXToLng(lngToWorldX(anchor.lng, z) - (focal.x - width / 2), z),
+    lat: worldYToLat(latToWorldY(anchor.lat, z) - (focal.y - height / 2), z),
+  };
+}
+
 /**
  * Tiles come from OUR server, not from tile.openstreetmap.org directly.
  *

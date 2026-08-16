@@ -11,6 +11,7 @@ import * as Notifications from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
 import notifee, { EventType } from '@notifee/react-native';
 import { ringIncoming, stopRinging, ensureCallChannel } from './src/incomingCall';
+import * as mediaCache from './src/mediaCache';
 import AuthScreen from './src/screens/AuthScreen';
 import RoomsScreen from './src/screens/RoomsScreen';
 import CallOverlay from './src/components/CallOverlay';
@@ -166,6 +167,10 @@ export default function App() {
   // room list), and without this guard every later screen change — including
   // the setScreen('chat') that share targeting itself performs — re-ran it and
   // popped another copy of the picker on top of the previous one.
+  // Cached media is kept, but not without limit — trim it back at startup so
+  // a heavy chat history cannot quietly fill the phone.
+  useEffect(() => { mediaCache.prune().catch(() => {}); }, []);
+
   const sharePickerBuiltRef = React.useRef(false);
   useEffect(() => {
     if (!hasShareIntent) { sharePickerBuiltRef.current = false; return; } // armed for the next share

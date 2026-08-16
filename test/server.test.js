@@ -520,6 +520,42 @@ test('SECURITY: uploads need a valid, unexpired signature', async () => {
   fsMod.rmSync(require('path').join('uploads', name), { force: true });
 });
 
+test('a media URL is STABLE, so caches can actually hold on to it', async () => {
+  // The regression this guards: the expiry used to be `now + TTL`, so asking
+  // for the same message twice returned two different URLs and every cache —
+  // the phone's, the browser's, our own — missed every time. Thumbnails and
+  // audio were re-downloaded on every single visit to a chat.
+  const u = await signUp('mediastable20');
+  const sock = await connect(u.token);
+  const room = await api('/rooms', 'POST', { name: 'media-room-20' }, u.token);
+
+  const fsMod = require('fs');
+  const name = `stable-${Date.now()}.txt`;
+  fsMod.mkdirSync('uploads', { recursive: true });
+  fsMod.writeFileSync(require('path').join('uploads', name), 'bytes');
+
+  await emit(sock, 'send_message',
+    { roomId: room.id, type: 'file', content: '', filePath: `/uploads/${name}`, fileName: name });
+
+  const first = (await api(`/messages/${room.id}`, 'GET', null, u.token))
+    .find(m => m.file_name === name);
+  // A real gap between the two fetches: this is what used to change the URL.
+  await new Promise(r => setTimeout(r, 40));
+  const second = (await api(`/messages/${room.id}`, 'GET', null, u.token))
+    .find(m => m.file_name === name);
+
+  assert.strictEqual(second.file_path, first.file_path,
+    'the same file was served under two different URLs, so nothing can cache it');
+
+  // Still a working, unexpired link — stability must not have cost validity.
+  assert.strictEqual((await raw(first.file_path, 'GET', null, u.token)).status, 200);
+  const exp = Number(/[?&]e=(\d+)/.exec(first.file_path)[1]);
+  assert.ok(exp > Date.now() + 6 * 24 * 3600 * 1000,
+    'the link expires sooner than the week it promises');
+
+  fsMod.rmSync(require('path').join('uploads', name), { force: true });
+});
+
 test('live location updates in place, and only the sharer can move the pin', async () => {
   const sharer = await signUp('geoshare15');
   const watcher = await signUp('geowatch15');

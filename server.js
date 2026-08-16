@@ -91,12 +91,23 @@ function mediaSig(name, exp) {
     .update(`${name}:${exp}`).digest('base64url').slice(0, 32);
 }
 
+// The expiry is rounded UP to a day boundary, which makes the signed URL for a
+// given file STABLE for a day at a time instead of different on every request.
+//
+// This is not cosmetic. `Date.now() + TTL` produced a brand-new URL each time a
+// chat was opened, so every cache that keys on the URL — the phone's image
+// cache, the browser's, our own on-disk copies — missed every single time, and
+// the same thumbnails, photos and audio were downloaded again on every visit.
+// Rounding gives every client a key that stays put, at the cost of a link
+// living up to a day longer than the nominal window.
+const MEDIA_URL_BUCKET_MS = 24 * 60 * 60 * 1000;
+
 // '/uploads/x.jpg' -> '/uploads/x.jpg?e=...&s=...'   (anything else untouched)
 function signPath(p) {
   if (typeof p !== 'string' || !p.startsWith('/uploads/')) return p;
   const name = p.slice('/uploads/'.length).split('?')[0];
   if (!name) return p;
-  const exp = Date.now() + MEDIA_URL_TTL_MS;
+  const exp = Math.ceil((Date.now() + MEDIA_URL_TTL_MS) / MEDIA_URL_BUCKET_MS) * MEDIA_URL_BUCKET_MS;
   return `/uploads/${name}?e=${exp}&s=${mediaSig(name, exp)}`;
 }
 

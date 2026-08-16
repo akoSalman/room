@@ -8,6 +8,7 @@
 // It must call setImageDimensions() with the image's natural size, exactly as
 // the default renderer does, or the gallery cannot compute zoom/pan bounds.
 import React, { useEffect, useRef, useState } from 'react';
+import * as mediaCache from '../mediaCache';
 import {
   Animated, View, Text, StyleSheet, ActivityIndicator, TouchableOpacity,
 } from 'react-native';
@@ -20,6 +21,9 @@ type Props = {
 export default function GalleryImage({ uri, setImageDimensions }: Props) {
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
+  // The local copy, once we know there is one: a full-size photo is the most
+  // expensive thing in the app to re-fetch, and the one most often reopened.
+  const [local, setLocal] = useState<string | null>(null);
   // Bumped to force a fresh request for the same url: once automatically on
   // the first error, and again whenever the user presses Retry.
   const [attempt, setAttempt] = useState(0);
@@ -37,6 +41,10 @@ export default function GalleryImage({ uri, setImageDimensions }: Props) {
     setFailed(false);
     setAttempt(0);
     opacity.setValue(0);
+    setLocal(null);
+    let alive = true;
+    mediaCache.peek(uri).then(p => { if (alive && p) setLocal(p); }).catch(() => {});
+    return () => { alive = false; };
   }, [uri]);
 
   return (
@@ -44,7 +52,11 @@ export default function GalleryImage({ uri, setImageDimensions }: Props) {
       <Animated.Image
         // The cache-busting suffix is only added on an explicit retry, so the
         // normal path still hits the image cache.
-        source={{ uri: attempt ? `${uri}${uri.includes('?') ? '&' : '?'}retry=${attempt}` : uri }}
+        source={{ uri: attempt
+          // A retry always goes back to the network — a cached copy that
+          // failed to decode would just fail again.
+          ? `${uri}${uri.includes('?') ? '&' : '?'}retry=${attempt}`
+          : (local || uri) }}
         resizeMode="contain"
         style={[StyleSheet.absoluteFillObject, { opacity }]}
         onLoad={(e) => {
@@ -53,6 +65,8 @@ export default function GalleryImage({ uri, setImageDimensions }: Props) {
           settled.current = true;
           setFailed(false);
           setLoaded(true);
+          // Keep it, so reopening this photo costs nothing.
+          if (!local) mediaCache.fetchAndKeep(uri).catch(() => {});
           Animated.timing(opacity, { toValue: 1, duration: 220, useNativeDriver: true }).start();
         }}
         onError={() => {

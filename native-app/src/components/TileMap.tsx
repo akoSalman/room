@@ -17,6 +17,7 @@ import { BASE_URL } from '../api';
 import {
   LatLng, TILE_SIZE, MIN_ZOOM, MAX_ZOOM,
   tilesForViewport, pointToScreen, panCenter, tileUrl,
+  clampZoom, pinchZoomDelta, zoomAbout,
 } from '../geo';
 
 export type Marker = { at: LatLng; label: string; mine?: boolean; live?: boolean };
@@ -37,21 +38,123 @@ export default function TileMap({
   // React state would re-request tiles on every pixel of movement.
   const centerRef = useRef(center);
   centerRef.current = center;
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+  const sizeRef = useRef({ width, height });
+  sizeRef.current = { width, height };
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  // Pinch is shown by scaling what is already drawn; the tiles for the new
+  // zoom level are only fetched once the fingers lift. Re-tiling mid-pinch
+  // would mean a round trip per frame.
+  const [pinch, setPinch] = useState<{ scale: number; fx: number; fy: number } | null>(null);
+
+  // One gesture at a time: a pinch that starts must not turn into a pan when
+  // one finger lifts early, which used to fling the map sideways.
+  const mode = useRef<'none' | 'pan' | 'pinch'>('none');
+  const pinchStart = useRef({ dist: 0, fx: 0, fy: 0 });
+  // The PanResponder is built once, so its handlers close over the FIRST
+  // render's state forever. Anything they need to read at gesture time lives
+  // in a ref instead — reading `pinch` here would always have found null.
+  const liveScale = useRef(1);
+
+  const touchDistance = (touches: any[]) => {
+    const dx = touches[0].pageX - touches[1].pageX;
+    const dy = touches[0].pageY - touches[1].pageY;
+    return Math.sqrt(dx * dx + dy * dy) || 1;
+  };
+  // Focal point in the map's own coordinates, not the screen's.
+  const touchFocal = (touches: any[]) => ({
+    x: (touches[0].locationX + touches[1].locationX) / 2,
+    y: (touches[0].locationY + touches[1].locationY) / 2,
+  });
 
   const pan = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_, g) =>
-        interactive && (Math.abs(g.dx) > 3 || Math.abs(g.dy) > 3),
-      onPanResponderMove: (_, g) => setDragOffset({ x: g.dx, y: g.dy }),
-      onPanResponderRelease: (_, g) => {
-        setDragOffset({ x: 0, y: 0 });
-        onCenterChange?.(panCenter(centerRef.current, zoom, g.dx, g.dy));
+      // Two fingers down is a pinch immediately — waiting for movement lets
+      // an ancestor list claim the gesture first.
+      onStartShouldSetPanResponderCapture: (e) =>
+        interactive && e.nativeEvent.touches.length === 2,
+      onMoveShouldSetPanResponderCapture: (e, g) =>
+        interactive && (e.nativeEvent.touches.length === 2
+          || Math.abs(g.dx) > 3 || Math.abs(g.dy) > 3),
+      // Once the map has the gesture it keeps it. Without this the message
+      // list underneath reclaims the drag and the map never moves — which is
+      // exactly why dragging appeared to do nothing.
+      onPanResponderTerminationRequest: () => false,
+      onShouldBlockNativeResponder: () => true,
+
+      onPanResponderGrant: (e) => {
+        const t = e.nativeEvent.touches;
+        if (t.length === 2) {
+          mode.current = 'pinch';
+          const f = touchFocal(t);
+          pinchStart.current = { dist: touchDistance(t), fx: f.x, fy: f.y };
+          liveScale.current = 1;
+          setPinch({ scale: 1, fx: f.x, fy: f.y });
+        } else {
+          mode.current = 'pan';
+        }
       },
-      onPanResponderTerminate: () => setDragOffset({ x: 0, y: 0 }),
+
+      onPanResponderMove: (e, g) => {
+        const t = e.nativeEvent.touches;
+        if (t.length >= 2) {
+          // A second finger landing mid-drag switches to pinching.
+          if (mode.current !== 'pinch') {
+            mode.current = 'pinch';
+            const f = touchFocal(t);
+            pinchStart.current = { dist: touchDistance(t), fx: f.x, fy: f.y };
+            liveScale.current = 1;
+            setDragOffset({ x: 0, y: 0 });
+          }
+          const scale = touchDistance(t) / pinchStart.current.dist;
+          liveScale.current = scale;
+          setPinch({ scale, fx: pinchStart.current.fx, fy: pinchStart.current.fy });
+          return;
+        }
+        if (mode.current === 'pan') setDragOffset({ x: g.dx, y: g.dy });
+      },
+
+      onPanResponderRelease: (_, g) => {
+        const { width: w, height: h } = sizeRef.current;
+        if (mode.current === 'pinch') {
+          const p = pinchStart.current;
+          const scale = liveScale.current;
+          const next = clampZoom(zoomRef.current + pinchZoomDelta(scale));
+          if (next !== clampZoom(zoomRef.current)) {
+            onCenterChange?.(zoomAbout(
+              centerRef.current, zoomRef.current, next, { x: p.fx, y: p.fy }, w, h,
+            ));
+            onZoomChange?.(next);
+          }
+        } else if (mode.current === 'pan') {
+          onCenterChange?.(panCenter(centerRef.current, zoomRef.current, g.dx, g.dy));
+        }
+        mode.current = 'none';
+        liveScale.current = 1;
+        setDragOffset({ x: 0, y: 0 });
+        setPinch(null);
+      },
+
+      onPanResponderTerminate: () => {
+        mode.current = 'none';
+        setDragOffset({ x: 0, y: 0 });
+        setPinch(null);
+      },
     }),
   ).current;
+
+  // Scaling about the fingers rather than the middle of the view: shift the
+  // focal point to the centre, scale, shift it back.
+  const pinchTransform: any[] | undefined = pinch
+    ? [
+        { translateX: pinch.fx - width / 2 },
+        { translateY: pinch.fy - height / 2 },
+        { scale: pinch.scale },
+        { translateX: -(pinch.fx - width / 2) },
+        { translateY: -(pinch.fy - height / 2) },
+      ]
+    : undefined;
 
   const tiles = useMemo(
     () => tilesForViewport(center, zoom, width, height),
@@ -60,6 +163,9 @@ export default function TileMap({
 
   return (
     <View style={[s.wrap, { width, height }]} {...(interactive ? pan.panHandlers : {})}>
+      {/* Tiles and markers scale together during a pinch, so the pins stay on
+          the streets they belong to while the fingers are still moving. */}
+      <View style={[StyleSheet.absoluteFill, pinchTransform ? { transform: pinchTransform } : null]}>
       {/* Tiles */}
       <View style={StyleSheet.absoluteFill}>
         {tiles.map(t => (
@@ -96,6 +202,7 @@ export default function TileMap({
           </View>
         );
       })}
+      </View>
 
       {interactive && (
         <View style={s.zoomCol}>
