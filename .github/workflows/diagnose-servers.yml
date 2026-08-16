@@ -105,14 +105,36 @@ jobs:
           done
 
           echo
+          echo "══════════ WHAT PHP AND MYSQL ARE DOING ══════════"
+          # php-fpm and mysqld between them ate all six CPUs on bistbarg while
+          # the chat app used under a second. Naming the pool and the queries
+          # is the difference between "PHP is busy" and knowing which site.
+          ps -eo pcpu,user,args --sort=-pcpu 2>/dev/null | head -12 | cut -c1-200
+          echo "-- php-fpm pools --"
+          ls /etc/php/*/fpm/pool.d/ /opt/*/php*/etc/php-fpm.d/ 2>/dev/null | head -20
+          echo "-- mysql: what is running right now --"
+          mysql -e 'SHOW FULL PROCESSLIST;' 2>/dev/null | head -20 \
+            || mysqladmin processlist 2>/dev/null | head -20 \
+            || echo "could not query mysql without credentials"
+
+          echo
           echo "══════════ WHO IS CALLING ══════════"
           # A flood shows up here as one or two addresses with an implausible
           # share of the requests. Top 12 only.
-          for l in /var/log/apache2/access.log /var/log/httpd/access_log \
-                   /usr/local/apache/domlogs/* /var/log/nginx/access.log; do
-            [ -f "$l" ] || continue
-            echo "-- $l ($(wc -l < "$l") lines) --"
-            awk '{print $1}' "$l" | sort | uniq -c | sort -rn | head -12
-            break
-          done
+          # The first pass matched an EMPTY apache2 log and stopped there, so
+          # it reported nothing while the real traffic was logged elsewhere.
+          # Take the biggest non-empty log rather than the first one that
+          # happens to exist.
+          biggest=$(ls -S /var/log/httpd/*access* /var/log/apache2/*access* \
+                          /var/log/nginx/*access* /home/*/logs/* 2>/dev/null \
+                    | head -1)
+          if [ -n "$biggest" ] && [ -s "$biggest" ]; then
+            echo "-- $biggest ($(wc -l < "$biggest") lines) --"
+            echo "top callers:"
+            awk '{print $1}' "$biggest" | sort | uniq -c | sort -rn | head -12
+            echo "most requested:"
+            awk '{print $7}' "$biggest" | sort | uniq -c | sort -rn | head -12
+          else
+            echo "no non-empty access log found in the usual places"
+          fi
           EOF
