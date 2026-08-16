@@ -125,7 +125,10 @@ jobs:
           # useless for "what is it doing now" and can look like a quota is
           # being ignored when it is not. Take a real instantaneous sample.
           echo "-- instantaneous cpu (top, second sample) --"
-          top -bn2 -d1 2>/dev/null | awk '/^%Cpu|^top -/{h=1} h' | tail -12
+          # The second sample only: the first is a lifetime average, same trap
+          # as ps. And HEAD after the marker, not tail — tail returns the
+          # idlest processes, which is the opposite of what is wanted.
+          top -bn2 -d1 2>/dev/null | awk '/^top -/{n++} n==2' | head -14
 
           # Did the CPU quota actually take? Ask systemd and the kernel rather
           # than inferring it from process averages.
@@ -168,4 +171,16 @@ jobs:
           else
             echo "no non-empty access log found in the usual places"
           fi
+
+          echo
+          echo "══════════ SUMMARY ══════════"
+          # Everything above is detail. This is the answer, and it is last so
+          # that reading the tail of the log is enough.
+          echo "load:        $(uptime | sed 's/.*load average: //') on $(nproc) cpus"
+          echo "chat:        port ${NPORT:-?} -> $(curl -sS -o /dev/null -m 10 -w '%{http_code}' "http://127.0.0.1:${NPORT:-3000}/" 2>/dev/null || echo unreachable)"
+          for u in $(systemctl list-units --type=service --no-legend 'php*fpm*' 2>/dev/null | awk '{print $1}'); do
+            cg=$(systemctl show "$u" -p ControlGroup --value 2>/dev/null)
+            echo "php quota:   $u $(cat /sys/fs/cgroup${cg}/cpu.max 2>/dev/null || echo 'none') (period 100000 = 1 cpu)"
+          done
+          echo "csf deny:    $(wc -l < /etc/csf/csf.deny 2>/dev/null || echo '?') entries, limit $(grep -oP '^DENY_IP_LIMIT\s*=\s*"\K[0-9]+' /etc/csf/csf.conf 2>/dev/null || echo '?')"
           EOF

@@ -25,6 +25,10 @@ on:
         description: 'PHP-FPM pm.max_children ceiling (0 = leave alone)'
         required: false
         default: '12'
+      deny_limit:
+        description: 'csf DENY_IP_LIMIT to raise to (0 = leave alone)'
+        required: false
+        default: '500'
       php_cpu_quota:
         description: 'Percent of ONE cpu php-fpm may use in total; 400 = four of six cores (0 = no limit)'
         required: false
@@ -54,6 +58,7 @@ jobs:
           APPLY: ${{ inputs.apply || 'APPLY' }}
           MAXKIDS: ${{ inputs.max_children || '12' }}
           QUOTA: ${{ inputs.php_cpu_quota || '400' }}
+          DENYLIMIT: ${{ inputs.deny_limit || '500' }}
         run: |
           if [ "$WANTED" != "both" ] && [ "$WANTED" != "${{ matrix.name }}" ]; then
             echo "Not selected — skipping ${{ matrix.name }}."
@@ -67,13 +72,39 @@ jobs:
           echo "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "root@$HOST" \
-            "SERVICE='$SERVICE' APPLY='$APPLY' MAXKIDS='$MAXKIDS' QUOTA='$QUOTA' bash -s" <<'EOF'
+            "SERVICE='$SERVICE' APPLY='$APPLY' MAXKIDS='$MAXKIDS' QUOTA='$QUOTA' DENYLIMIT='$DENYLIMIT' bash -s" <<'EOF'
           set +e
           STAMP=$(date -u +%Y%m%d-%H%M%S)
           DO=1; [ "$APPLY" = "APPLY" ] || DO=0
           [ "$DO" = 1 ] || echo "*** DRY RUN — nothing will be changed ***"
           run() { if [ "$DO" = 1 ]; then eval "$@"; else echo "   would run: $@"; fi; }
 
+          echo "══════════ 0. ROOM IN THE DENY LIST ══════════"
+          # Blocking is pointless if the list is full. csf.deny is capped by
+          # DENY_IP_LIMIT, and when it is reached csf EVICTS the oldest entry
+          # to make room — the four scanners added earlier today pushed out
+          # four existing blocks, one of them an SSH brute-forcer. Raising the
+          # cap first means new blocks are additions rather than swaps.
+          CONF=/etc/csf/csf.conf
+          if [ -f "$CONF" ]; then
+            cur=$(grep -oP '^DENY_IP_LIMIT\s*=\s*"\K[0-9]+' "$CONF" 2>/dev/null)
+            used=$(grep -cv '^#' /etc/csf/csf.deny 2>/dev/null)
+            echo "deny list: ${used:-?} entries, limit ${cur:-unset}, target $DENYLIMIT"
+            if [ -n "$cur" ] && [ "$cur" -lt "$DENYLIMIT" ]; then
+              run "cp -n '$CONF' '$CONF.bak-$STAMP'"
+              run "sed -i 's/^DENY_IP_LIMIT *= *\"[0-9]*\"/DENY_IP_LIMIT = \"$DENYLIMIT\"/' '$CONF'"
+              # csf -r rereads the config; without it the running firewall keeps
+              # the old limit and nothing has actually changed.
+              run "csf -r >/dev/null 2>&1"
+              echo "   raised to $DENYLIMIT; undo with:  cp '$CONF.bak-$STAMP' '$CONF' && csf -r"
+            else
+              echo "   already at or above $DENYLIMIT — leaving it"
+            fi
+          else
+            echo "csf not installed here"
+          fi
+
+          echo
           echo "══════════ 1. BLOCK THE SCANNERS ══════════"
           # Deliberately NOT a hand-copied list of addresses. An address that
           # merely appears a lot might be a real user, a CDN or an uptime
