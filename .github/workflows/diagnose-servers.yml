@@ -195,6 +195,45 @@ jobs:
               | grep -E '\.php$|/tmp/|/dev/shm/' | sort -u | head -6 | sed 's/^/      /'
           done
 
+          # ── WHAT IS PHP ACTUALLY EXECUTING ────────────────────────────
+          # The numbers stopped adding up: php-fpm workers burning ~350% with
+          # 42% of it in the KERNEL, MySQL with every connection asleep, and an
+          # access log holding four thousand requests for a whole day. There is
+          # no flood and no database work, so the CPU is not coming from
+          # ordinary traffic.
+          #
+          # php-fpm workers only run when the web server hands them a request,
+          # and Apache logs a request when it FINISHES. A request that never
+          # finishes never appears in the log — which is exactly what a webshell
+          # told to loop looks like. mod_status lists requests still in flight,
+          # so it can see what the log cannot.
+          echo "-- apache: requests in flight --"
+          timeout 15 curl -sS -m 10 'http://127.0.0.1/server-status?auto' 2>/dev/null \
+            | head -12 || echo "   mod_status not reachable on 127.0.0.1"
+          timeout 15 curl -sS -m 10 'http://127.0.0.1/server-status' 2>/dev/null \
+            | sed -e 's/<[^>]*>/ /g' -e '/^ *$/d' | grep -iE '^ *[0-9]+ .*(GET|POST)' | head -12
+          echo "-- what the busy workers are blocked on --"
+          for pid in $(ps -eo pid,comm --sort=-pcpu 2>/dev/null | awk '$2 ~ /php-fpm/ {print $1}' | head -3); do
+            echo "   pid $pid wchan=$(cat /proc/$pid/wchan 2>/dev/null) state=$(awk '/^State/{print $2}' /proc/$pid/status 2>/dev/null) threads=$(awk '/^Threads/{print $2}' /proc/$pid/status 2>/dev/null)"
+            # The FastCGI request parameters land in the worker's environment,
+            # so this names the script and the caller when it works.
+            tr '\0' '\n' < /proc/$pid/environ 2>/dev/null \
+              | grep -E '^(SCRIPT_FILENAME|REQUEST_URI|REMOTE_ADDR|QUERY_STRING|HTTP_HOST)=' | sed 's/^/      /'
+            echo "      open: $(ls -l /proc/$pid/fd 2>/dev/null | awk '{print $NF}' | grep -v '^$' | sort -u | tr '\n' ' ' | cut -c1-300)"
+          done
+          echo "-- outbound connections owned by php --"
+          ss -tnp state established 2>/dev/null | grep -c 'php-fpm' \
+            | sed 's/^/   php-fpm sockets: /'
+
+          # Persistence lives in cron as often as in a file, and a cron job
+          # explains CPU with no matching web traffic.
+          echo "-- user crontabs --"
+          for c in /var/spool/cron/* /var/spool/cron/crontabs/*; do
+            [ -f "$c" ] || continue
+            body=$(grep -vE '^\s*(#|$)' "$c" 2>/dev/null | head -5)
+            [ -n "$body" ] && { echo "   $c:"; echo "$body" | cut -c1-160 | sed 's/^/      /'; }
+          done
+
           echo "-- mysql: what is running right now --"
           # root has no my.cnf here, but DirectAdmin keeps credentials in a
           # known place — without them this section printed nothing at all and
