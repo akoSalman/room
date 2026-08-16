@@ -143,6 +143,24 @@ jobs:
           echo "── memory ──";         free -m 2>/dev/null | head -3 || true
           echo "── node ──";           node -v 2>/dev/null || true
           echo "── biggest dirs ──";   du -sh "$APP_DIR"/* 2>/dev/null | sort -h | tail -6 || true
+          echo "── uptime / reboots ──"
+          uptime 2>/dev/null || true
+          last -x reboot 2>/dev/null | head -5 || true
+          echo "── kernel: out-of-memory kills ──"
+          journalctl -k --no-pager 2>/dev/null | grep -i -m5 'out of memory\|oom-killer' || echo "none"
+          # The app can be perfectly healthy while nothing in front of it is.
+          # "Not reachable" is at least as likely to be the web server, the
+          # certificate or the firewall as it is to be node.
+          echo "── front door ──"
+          for p in nginx apache2 caddy; do
+            systemctl is-active --quiet "$p" 2>/dev/null && echo "$p: active"
+          done
+          ss -ltnp 2>/dev/null | grep -E ':(80|443|3000)\b' || echo "nothing listening on 80/443/3000"
+          echo "── certificate ──"
+          for c in /etc/letsencrypt/live/*/fullchain.pem; do
+            [ -f "$c" ] || continue
+            echo "$(basename "$(dirname "$c")"): $(openssl x509 -enddate -noout -in "$c" 2>/dev/null)"
+          done
           echo "── journal before restart ──"
           journalctl -u "$SERVICE" -n 40 --no-pager 2>/dev/null || true
 
