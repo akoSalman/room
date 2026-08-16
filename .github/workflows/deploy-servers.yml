@@ -146,6 +146,9 @@ jobs:
           echo "── uptime / reboots ──"
           uptime 2>/dev/null || true
           last -x reboot 2>/dev/null | head -5 || true
+          echo "── cpus / busiest processes ──"
+          echo "cpus: $(nproc 2>/dev/null)"
+          ps -eo pcpu,pmem,etimes,user,comm --sort=-pcpu 2>/dev/null | head -12 || true
           echo "── kernel: out-of-memory kills ──"
           journalctl -k --no-pager 2>/dev/null | grep -i -m5 'out of memory\|oom-killer' || echo "none"
           # The app can be perfectly healthy while nothing in front of it is.
@@ -157,10 +160,13 @@ jobs:
           done
           ss -ltnp 2>/dev/null | grep -E ':(80|443|3000)\b' || echo "nothing listening on 80/443/3000"
           echo "── certificate ──"
-          for c in /etc/letsencrypt/live/*/fullchain.pem; do
+          found=0
+          for c in /etc/letsencrypt/live/*/fullchain.pem /etc/ssl/certs/*chat*.crt /usr/local/lsws/conf/cert/*.crt /etc/pki/tls/certs/*.crt; do
             [ -f "$c" ] || continue
-            echo "$(basename "$(dirname "$c")"): $(openssl x509 -enddate -noout -in "$c" 2>/dev/null)"
+            found=1
+            echo "$c: $(openssl x509 -enddate -noout -in "$c" 2>/dev/null)"
           done
+          [ "$found" = 1 ] || echo "no certificate found in the usual places (a panel may manage them elsewhere)"
           echo "── journal before restart ──"
           journalctl -u "$SERVICE" -n 40 --no-pager 2>/dev/null || true
 
