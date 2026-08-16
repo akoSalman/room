@@ -45,6 +45,7 @@
     "react-native-screens": "3.34.0",
     "react-native-track-player": "^4.1.2",
     "react-native-video-trim": "^3.0.0",
+    "react-native-view-shot": "3.8.0",
     "react-native-webrtc": "^118.0.7",
     "socket.io-client": "^4.7.5",
     "tweetnacl": "^1.0.3"

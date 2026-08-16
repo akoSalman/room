@@ -45,7 +45,8 @@ type Props = {
   mentionables?: string[];
   onToggleQuickEmoji: (open: boolean) => void;
   onRemoveMedia: (index: number) => void;
-  onPreviewMedia: (uri: string) => void;
+  /** Opens the staged item for a look — and for editing. */
+  onPreviewMedia: (uri: string, index: number) => void;
 };
 
 function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
@@ -221,7 +222,7 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, alignItems: 'center' }}>
             {pendingMedia.map((m, i) => (
               <View key={`${m.uri}-${i}`} style={s.pendingMediaItem}>
-                <TouchableOpacity onPress={() => m.mime.startsWith('image/') && onPreviewMedia(m.uri)}>
+                <TouchableOpacity onPress={() => m.mime.startsWith('image/') && onPreviewMedia(m.uri, i)}>
                   {m.mime.startsWith('image/') ? (
                     <Image source={{ uri: m.uri }} style={s.pendingMediaThumb} />
                   ) : (

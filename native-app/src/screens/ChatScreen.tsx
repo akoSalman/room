@@ -37,6 +37,7 @@ import TextViewer from '../components/TextViewer';
 import * as mediaCache from '../mediaCache';
 import * as offline from '../offlineStore';
 import ConnectionBanner from '../components/ConnectionBanner';
+import ImageEditor from '../components/ImageEditor';
 import {
   reduceSelection, initialSelection, LONG_PRESS_MS,
   type SelectionState, type MsgId,
@@ -137,6 +138,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // Resolved once when the viewer opens: which of these photos must not be
   // written to disk.
   const [viewerNoCache, setViewerNoCache] = useState<Set<string>>(new Set());
+  // A photo staged for sending, opened for a look. Deliberately NOT the chat's
+  // media viewer: that one offers "Show in chat", Download and Share, none of
+  // which mean anything for a picture that has not been sent yet.
+  const [pendingPreview, setPendingPreview] = useState<{ uri: string; index: number } | null>(null);
+  // The photo currently open in the editor, and where it came from.
+  const [editing, setEditing] = useState<{ uri: string; index?: number } | null>(null);
   // Opened from the media gallery? Then closing the image must put the gallery
   // back, not dump the user in the chat. (Two RN Modals stacked on Android is
   // unreliable, so the gallery is closed on the way in and restored on the way
@@ -3360,11 +3367,102 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         </View>
       </Modal>
 
+      {/* A staged photo, before it is sent. Close, keep a copy, or edit —
+          nothing about a chat message, because it is not one yet. */}
+      <Modal visible={!!pendingPreview} animationType="fade" onRequestClose={() => setPendingPreview(null)}>
+        <View style={s.pendingScreen}>
+          <Image
+            source={{ uri: pendingPreview?.uri || '' }}
+            style={StyleSheet.absoluteFill}
+            resizeMode="contain"
+          />
+          <View style={s.pendingTop}>
+            <TouchableOpacity onPress={() => setPendingPreview(null)} style={s.pendingIcon} hitSlop={hitSlop10}>
+              <Ionicons name="close" size={26} color="#fff" />
+            </TouchableOpacity>
+          </View>
+          <View style={s.pendingBar}>
+            <TouchableOpacity
+              style={s.pendingAction}
+              onPress={async () => {
+                const uri = pendingPreview?.uri;
+                if (!uri) return;
+                try {
+                  const { status } = await MediaLibrary.requestPermissionsAsync();
+                  if (status !== 'granted') { Alert.alert('Permission required', 'Allow media access to save photos.'); return; }
+                  await MediaLibrary.saveToLibraryAsync(uri);
+                  toast('Saved to your gallery');
+                } catch { Alert.alert('Error', 'Could not save this photo.'); }
+              }}
+            >
+              <Ionicons name="download-outline" size={20} color="#fff" />
+              <Text style={s.pendingActionText}>Save</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[s.pendingAction, s.pendingActionPrimary]}
+              onPress={() => {
+                const p = pendingPreview;
+                setPendingPreview(null);
+                if (p) setEditing({ uri: p.uri, index: p.index });
+              }}
+            >
+              <Ionicons name="create-outline" size={20} color="#fff" />
+              <Text style={s.pendingActionText}>Edit</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Crop / draw / add text. A photo already in the chat gets a Send
+          button too — annotating one is nearly always for someone else. */}
+      {editing && (
+        <ImageEditor
+          uri={editing.uri}
+          sendLabel={editing.index === undefined ? 'Send' : undefined}
+          onCancel={() => setEditing(null)}
+          onDone={async ({ uri: out, action }) => {
+            const from = editing;
+            setEditing(null);
+            if (action === 'save') {
+              try {
+                const { status } = await MediaLibrary.requestPermissionsAsync();
+                if (status !== 'granted') { Alert.alert('Permission required', 'Allow media access to save photos.'); return; }
+                await MediaLibrary.saveToLibraryAsync(out);
+                toast('Saved to your gallery');
+              } catch { Alert.alert('Error', 'Could not save this photo.'); }
+              return;
+            }
+            if (action === 'send') {
+              closeViewer();
+              uploadFile(out, `edited-${Date.now()}.jpg`, 'image/jpeg', null, undefined);
+              return;
+            }
+            // 'replace': the edited version takes the staged one's place, so
+            // the composer shows what will actually be sent.
+            if (from?.index !== undefined) {
+              setPendingMedia(prev => prev.map((m, i) => (
+                i === from.index ? { ...m, uri: out, name: `edited-${Date.now()}.jpg`, mime: 'image/jpeg' } : m
+              )));
+            }
+          }}
+        />
+      )}
+
       <Modal visible={!!viewerActions} transparent animationType="fade" onRequestClose={() => setViewerActions(null)}>
         <View style={s.overlay}>
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setViewerActions(null)} />
           <View style={s.attachSheet}>
             <View style={s.sheetHandle} />
+            {/* Editing a one-time photo would produce a permanent copy of
+                something meant to vanish, so it is offered on nothing else. */}
+            {!isOneTimeUrl(viewerUrl) && (
+              <TouchableOpacity style={s.attachOption} onPress={() => {
+                setViewerActions(null);
+                if (viewerUrl) setEditing({ uri: viewerUrl });
+              }}>
+                <Text style={s.attachOptionText}>✏️  Edit</Text>
+              </TouchableOpacity>
+            )}
             {(([
               ['showInChat', '💬  Show in chat'],
               // Saving a one-time photo would defeat it.
@@ -3583,7 +3681,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           mentionables={mentionables}
           onToggleQuickEmoji={setQuickEmoji}
           onRemoveMedia={(i) => setPendingMedia(prev => prev.filter((_, j) => j !== i))}
-          onPreviewMedia={(uri) => openViewer(uri)}
+          onPreviewMedia={(uri, index) => setPendingPreview({ uri, index })}
         />
       )}
       {burst.key > 0 && burst.emoji ? (
@@ -3908,6 +4006,20 @@ const s = StyleSheet.create({
   emojiBtn: { padding: 6 },
   emoji: { fontSize: 22 },
   typingBar: { color: C.success, fontSize: 12, textAlign: 'center', paddingVertical: 4, paddingHorizontal: 12 },
+  pendingScreen: { flex: 1, backgroundColor: '#000' },
+  pendingTop: { position: 'absolute', top: 0, left: 0, right: 0, paddingTop: 42, paddingHorizontal: 10 },
+  pendingIcon: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  pendingBar: {
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    flexDirection: 'row', gap: 12, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 30,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  pendingAction: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    borderRadius: 12, paddingVertical: 13, backgroundColor: 'rgba(255,255,255,0.14)',
+  },
+  pendingActionPrimary: { backgroundColor: C.accent },
+  pendingActionText: { color: '#fff', fontSize: 14.5, fontWeight: '700' },
   recordingBar: { color: C.danger, fontSize: 12, textAlign: 'center', paddingVertical: 4, paddingHorizontal: 12, fontWeight: '600' },
   editBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(82,136,193,0.12)', borderTopWidth: 1, borderTopColor: C.accent, padding: 10, paddingHorizontal: 14 },
   editText: { flex: 1, color: C.accent, fontSize: 13 },
