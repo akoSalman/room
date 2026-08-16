@@ -16,7 +16,7 @@ import {
   PinchGestureHandler, PanGestureHandler, State as GHState, GestureHandlerRootView,
 } from 'react-native-gesture-handler';
 import { C, isRTL } from '../theme';
-import { isOnline, onNetworkChange, apiFetch, getSocket, getToken, getUsername, getAvatar, BASE_URL, ensureSocketAlive } from '../api';
+import { apiFetch, getSocket, getToken, getUsername, getAvatar, BASE_URL, ensureSocketAlive } from '../api';
 import { e2eReady, e2eDMPeerKey, e2eEncrypt, e2eDecrypt, e2eIsEncrypted, e2eSetup, e2eVerifyIdentity } from '../e2e';
 import { callManager } from '../callManager';
 import { audioManager } from '../audioManager';
@@ -36,6 +36,7 @@ import ExpiryRing from '../components/ExpiryRing';
 import TextViewer from '../components/TextViewer';
 import * as mediaCache from '../mediaCache';
 import * as offline from '../offlineStore';
+import ConnectionBanner from '../components/ConnectionBanner';
 import {
   reduceSelection, initialSelection, LONG_PRESS_MS,
   type SelectionState, type MsgId,
@@ -621,9 +622,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // A chat that was readable a minute ago should still be readable with the
   // network down — and even with a working connection, showing history
   // instantly beats showing a spinner for a second.
-  const [offlineNow, setOfflineNow] = useState(!isOnline());
-  useEffect(() => onNetworkChange(up => setOfflineNow(!up)), []);
-
   useEffect(() => {
     let alive = true;
     offline.loadMessages(room.id).then(cached => {
@@ -3000,9 +2998,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       )}
 
       {/* Saying so, rather than letting saved history pass for live history. */}
-      {offlineNow && (
-        <Text style={s.offlineBar}>No connection — showing saved messages</Text>
-      )}
+      <ConnectionBanner />
 
       {fabVisible && (
         <TouchableOpacity
@@ -3912,11 +3908,6 @@ const s = StyleSheet.create({
   emojiBtn: { padding: 6 },
   emoji: { fontSize: 22 },
   typingBar: { color: C.success, fontSize: 12, textAlign: 'center', paddingVertical: 4, paddingHorizontal: 12 },
-  offlineBar: {
-    color: '#d97706', fontSize: 12, textAlign: 'center', fontWeight: '600',
-    paddingVertical: 5, paddingHorizontal: 12,
-    backgroundColor: 'rgba(217,119,6,0.15)',
-  },
   recordingBar: { color: C.danger, fontSize: 12, textAlign: 'center', paddingVertical: 4, paddingHorizontal: 12, fontWeight: '600' },
   editBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(82,136,193,0.12)', borderTopWidth: 1, borderTopColor: C.accent, padding: 10, paddingHorizontal: 14 },
   editText: { flex: 1, color: C.accent, fontSize: 13 },

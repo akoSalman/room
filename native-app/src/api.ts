@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { io, Socket } from 'socket.io-client';
+import * as connection from './connection';
 
 export const BASE_URL = 'https://chat.akosalman.com';
 // Stamped per-brand by CI (build-native-apk.yml) from native-app/brands/<brand>.json
@@ -57,22 +58,13 @@ function sessionExpired() {
   onSessionExpired?.();
 }
 
-// ── Offline ──────────────────────────────────────────────────────────────────
-// Whether the last request could reach the server at all, so screens can say
-// "offline" rather than "empty" — the two look identical otherwise.
-let online = true;
-const netListeners = new Set<(up: boolean) => void>();
-
-export function isOnline() { return online; }
+// Reachability lives in connection.ts so the socket and requests feed the same
+// answer; re-exported here because callers already import from api.
+export function isOnline() { return connection.isOnline(); }
 export function onNetworkChange(fn: (up: boolean) => void) {
-  netListeners.add(fn);
-  return () => { netListeners.delete(fn); };
+  return connection.subscribe(s => fn(s === 'online'));
 }
-function setOnline(up: boolean) {
-  if (online === up) return;
-  online = up;
-  netListeners.forEach(f => { try { f(up); } catch {} });
-}
+const setOnline = (up: boolean) => connection.report(up);
 
 /**
  * A failed request RESOLVES with an error rather than throwing.
@@ -132,6 +124,15 @@ export async function getSocket(): Promise<Socket> {
   // treat it as an expired session.
   socket.on('connect_error', (err: any) => {
     if (String(err?.message || '').toLowerCase().includes('unauthorized')) sessionExpired();
+    // Could not reach the server. This is the signal that lets the app notice
+    // a connection dropping while the user is sitting there reading, with no
+    // request of our own to piggyback on.
+    else connection.report(false);
+  });
+  socket.on('connect', () => connection.report(true));
+  socket.on('disconnect', (reason: string) => {
+    // 'io client disconnect' is us leaving on purpose (sign-out), not a fault.
+    if (reason !== 'io client disconnect') connection.report(false);
   });
   return socket;
 }

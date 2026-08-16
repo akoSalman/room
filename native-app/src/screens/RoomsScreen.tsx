@@ -10,7 +10,8 @@ import * as offline from '../offlineStore';
 import { fmtBytes } from '../download';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { C, isRTL } from '../theme';
-import { apiFetch, getUsername, getUserId, getSocket, setAuth, getAvatar, isOnline, onNetworkChange, RELEASE_TAG, RELEASE_FILE } from '../api';
+import { apiFetch, getUsername, getUserId, getSocket, setAuth, getAvatar, RELEASE_TAG, RELEASE_FILE } from '../api';
+import ConnectionBanner from '../components/ConnectionBanner';
 import { BUILD_VERSION } from '../version';
 
 const AVATAR_EMOJIS = ['🦄','🐉','🧙‍♂️','🧚‍♀️','🧛‍♂️','🧞‍♂️','🦊','🐺','🦁','🐯','🐼','🐸','🦉','🐙','🦋','🤖','👽','🐲','🦅','🐬','🔥','⚡','🌙','⭐'];
@@ -118,9 +119,6 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   }, []);
 
   useEffect(() => { load(); }, [load]);
-
-  const [offlineNow, setOfflineNow] = useState(!isOnline());
-  useEffect(() => onNetworkChange(up => setOfflineNow(!up)), []);
 
   // Check for a newer build once on mount: drives the header update badge.
   useEffect(() => { checkLatestVersion(); }, []);
@@ -335,12 +333,8 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
 
       {/* Search users & rooms; + creates a room */}
       {/* Offline is not the same as empty, and the two look identical unless
-          one of them says so. */}
-      {offlineNow && (
-        <View style={s.offlineBar}>
-          <Text style={s.offlineText}>No connection — showing your saved chats</Text>
-        </View>
-      )}
+          one of them says so — and coming back is worth saying too. */}
+      <ConnectionBanner />
 
       <View style={s.createRow}>
         <TextInput
@@ -786,11 +780,6 @@ const s = StyleSheet.create({
   renameCancelText: { color: C.muted, fontWeight: '600' },
   renameSave: { flex: 1, backgroundColor: C.accent, borderRadius: 8, padding: 12, alignItems: 'center' },
   renameSaveOff: { opacity: 0.45 },
-  offlineBar: {
-    backgroundColor: 'rgba(217,119,6,0.15)', borderBottomWidth: 1, borderBottomColor: 'rgba(217,119,6,0.4)',
-    paddingVertical: 6, paddingHorizontal: 14,
-  },
-  offlineText: { color: '#d97706', fontSize: 12, fontWeight: '600', textAlign: 'center' },
   cacheHint: { color: C.muted, fontSize: 12, lineHeight: 17, marginBottom: 10 },
   cacheRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   cacheSize: { flex: 1, color: C.text, fontSize: 15, fontWeight: '700' },
