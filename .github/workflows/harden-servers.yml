@@ -33,6 +33,10 @@ on:
         description: 'Quarantine detected web malware (yes/no)'
         required: false
         default: 'no'
+      watchdog:
+        description: 'Install/remove the 10-minute re-infection watchdog (yes/no/remove)'
+        required: false
+        default: 'no'
       php_cpu_quota:
         description: 'Percent of ONE cpu php-fpm may use in total; 400 = four of six cores (0 = no limit)'
         required: false
@@ -64,6 +68,7 @@ jobs:
           QUOTA: ${{ inputs.php_cpu_quota || '400' }}
           DENYLIMIT: ${{ inputs.deny_limit || '500' }}
           QUARANTINE: ${{ inputs.quarantine || 'no' }}
+          WATCHDOG: ${{ inputs.watchdog || 'no' }}
         run: |
           if [ "$WANTED" != "both" ] && [ "$WANTED" != "${{ matrix.name }}" ]; then
             echo "Not selected — skipping ${{ matrix.name }}."
@@ -77,7 +82,7 @@ jobs:
           echo "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "root@$HOST" \
-            "SERVICE='$SERVICE' APPLY='$APPLY' MAXKIDS='$MAXKIDS' QUOTA='$QUOTA' DENYLIMIT='$DENYLIMIT' QUARANTINE='$QUARANTINE' bash -s" <<'EOF'
+            "SERVICE='$SERVICE' APPLY='$APPLY' MAXKIDS='$MAXKIDS' QUOTA='$QUOTA' DENYLIMIT='$DENYLIMIT' QUARANTINE='$QUARANTINE' WATCHDOG='$WATCHDOG' bash -s" <<'EOF'
           set +e
           STAMP=$(date -u +%Y%m%d-%H%M%S)
           DO=1; [ "$APPLY" = "APPLY" ] || DO=0
@@ -96,20 +101,32 @@ jobs:
           # into, and if I have misjudged a file it can be put straight back.
           Q="/root/quarantine-$STAMP"
           found=0
-          for f in $(find /home/*/domains/*/public_html -maxdepth 12 \
-                       \( -name 'cache.php' -o -name 'index.php' \) -mtime -14 2>/dev/null); do
-            d=$(dirname "$f")
-            # Only inside a directory whose path repeats a segment back to back,
-            # AND only where the tell-tale cache.php sits beside it. Both
-            # conditions, so an ordinary index.php is never touched.
+          # CORRECTION. The first version walked the FILES and asked, for each
+          # one, whether cache.php was beside it. That answer changes as the
+          # loop runs: once cache.php has been moved, the index.php next to it
+          # no longer qualifies and is left behind — so whether the dropper was
+          # fully removed came down to the order `find` happened to return two
+          # files in. Proven by a local test where cache.php came first and the
+          # index.php survived.
+          #
+          # Decide the DIRECTORIES first, on evidence that nothing in the loop
+          # modifies, then take both files out of each. Deterministic.
+          for d in $(find /home/*/domains/*/public_html -maxdepth 12 \
+                       -name 'cache.php' -mtime -14 2>/dev/null \
+                     | xargs -r -n1 dirname | sort -u); do
+            # Only a directory whose path repeats a segment back to back. That
+            # plus the cache.php that found it is two conditions, so an
+            # ordinary index.php is never touched.
             echo "$d" | grep -qE '/([^/]+)/\1(/|$)' || continue
-            [ -f "$d/cache.php" ] || continue
-            found=$((found+1))
-            echo "   $f"
-            if [ "$DO" = 1 ]; then
-              mkdir -p "$Q$d"
-              mv "$f" "$Q$d/" 2>/dev/null && echo "      -> quarantined"
-            fi
+            for f in "$d/cache.php" "$d/index.php"; do
+              [ -f "$f" ] || continue
+              found=$((found+1))
+              echo "   $f"
+              if [ "$DO" = 1 ]; then
+                mkdir -p "$Q$d"
+                mv "$f" "$Q$d/" 2>/dev/null && echo "      -> quarantined"
+              fi
+            done
           done
           if [ "$found" = 0 ]; then
             echo "   nothing matched"
@@ -341,9 +358,95 @@ jobs:
           echo "   undo with:  rm $DROPIN/priority.conf && systemctl daemon-reload && systemctl restart $SERVICE"
 
           echo
+          echo "══════════ 5. RE-INFECTION WATCHDOG ══════════"
+          # Quarantining once buys hours, not a fix. Whatever let the attacker
+          # write into these document roots is still open, so the droppers come
+          # back — and the first sign of that, without this, is the site going
+          # down again.
+          #
+          # This installs the SAME conservative detection on a 10-minute timer:
+          # a directory whose path repeats a segment back to back, with
+          # cache.php sitting beside the file. It moves, never deletes, and it
+          # writes down every file it touched, so the log doubles as the answer
+          # to "is the attacker still getting in".
+          #
+          # It is a standing change to the server, so it is opt-in and it comes
+          # with its own removal.
+          WD=/usr/local/sbin/web-malware-watch
+          if [ "$WATCHDOG" = "remove" ]; then
+            run "systemctl disable --now web-malware-watch.timer"
+            run "rm -f /etc/systemd/system/web-malware-watch.timer /etc/systemd/system/web-malware-watch.service '$WD'"
+            run "systemctl daemon-reload"
+            echo "   watchdog removed; quarantined files and their log are left in place"
+          elif [ "$WATCHDOG" = "yes" ]; then
+            if [ "$DO" = 1 ]; then
+              # Single-quoted heredoc terminators are unusable here (this whole
+              # script is already inside one), so the script is written with
+              # printf, one line per argument.
+              printf '%s\n' \
+                '#!/bin/sh' \
+                '# Re-quarantines dropped PHP malware. Installed by harden-servers.yml.' \
+                '# Remove with: harden-servers.yml, watchdog=remove' \
+                'LOG=/var/log/web-malware-watch.log' \
+                'Q="/root/quarantine-$(date -u +%Y%m%d-%H%M%S)"' \
+                'n=0' \
+                '# Directories first, then both files out of each. Walking the' \
+                '# files instead makes the result depend on find order: move' \
+                '# cache.php first and the index.php beside it stops matching.' \
+                'for d in $(find /home/*/domains/*/public_html -maxdepth 12 \' \
+                '             -name cache.php -mmin -1440 2>/dev/null \' \
+                '           | xargs -r -n1 dirname | sort -u); do' \
+                '  echo "$d" | grep -qE "/([^/]+)/\1(/|$)" || continue' \
+                '  for f in "$d/cache.php" "$d/index.php"; do' \
+                '    [ -f "$f" ] || continue' \
+                '    mkdir -p "$Q$d"' \
+                '    mv "$f" "$Q$d/" 2>/dev/null || continue' \
+                '    n=$((n+1))' \
+                '    echo "$(date -u +%FT%TZ) quarantined $f" >> "$LOG"' \
+                '  done' \
+                'done' \
+                '# Only disturb the running workers when something was actually' \
+                '# found; a restart every ten minutes for nothing is its own' \
+                '# outage.' \
+                'if [ "$n" -gt 0 ]; then' \
+                '  echo "$(date -u +%FT%TZ) $n file(s) -> $Q; restarting php-fpm" >> "$LOG"' \
+                '  # One at a time: systemctl given a unit that does not exist' \
+                '  # here fails the whole call and restarts none of the others.' \
+                '  for u in $(systemctl list-units --type=service --no-legend "php*fpm*" 2>/dev/null | awk "{print \$1}"); do' \
+                '    systemctl restart "$u" 2>/dev/null' \
+                '  done' \
+                'fi' \
+                > "$WD"
+              chmod 700 "$WD"
+              printf '%s\n' '[Unit]' 'Description=Quarantine dropped PHP malware' \
+                '[Service]' 'Type=oneshot' "ExecStart=$WD" 'Nice=10' 'IOSchedulingClass=idle' \
+                > /etc/systemd/system/web-malware-watch.service
+              printf '%s\n' '[Unit]' 'Description=Run the PHP malware quarantine every 10 minutes' \
+                '[Timer]' 'OnBootSec=5min' 'OnUnitActiveSec=10min' 'AccuracySec=1min' \
+                '[Install]' 'WantedBy=timers.target' \
+                > /etc/systemd/system/web-malware-watch.timer
+              systemctl daemon-reload
+              systemctl enable --now web-malware-watch.timer
+            fi
+            echo "   installed; every 10 min, log at /var/log/web-malware-watch.log"
+            echo "   undo with:  systemctl disable --now web-malware-watch.timer && rm $WD /etc/systemd/system/web-malware-watch.*"
+          else
+            echo "not requested"
+          fi
+          # Whatever the watchdog has caught since it was installed is the
+          # honest answer to whether the break-in is still live.
+          if [ -f /var/log/web-malware-watch.log ]; then
+            echo "-- watchdog log, last 15 lines --"
+            tail -15 /var/log/web-malware-watch.log
+          fi
+
+          echo
           echo "══════════ RESULT ══════════"
           uptime
           ps -eo pcpu,comm --sort=-pcpu 2>/dev/null | head -6
-          code=$(curl -sS -o /dev/null -m 10 -w '%{http_code}' http://127.0.0.1:3000/ 2>/dev/null || echo 000)
-          echo "local HTTP check: $code"
+          # Ask the process which port it is on. This check was hardcoded to
+          # 3000 and reported akosalman — which serves on 3001 — as dead.
+          NPORT=$(ss -ltnp 2>/dev/null | awk '/"node"/ {split($4,a,":"); print a[length(a)]; exit}')
+          code=$(curl -sS -o /dev/null -m 10 -w '%{http_code}' "http://127.0.0.1:${NPORT:-3000}/" 2>/dev/null || echo 000)
+          echo "local HTTP check: port ${NPORT:-3000} -> $code"
           EOF
