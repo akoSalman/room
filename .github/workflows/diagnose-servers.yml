@@ -228,11 +228,22 @@ jobs:
           # Persistence lives in cron as often as in a file, and a cron job
           # explains CPU with no matching web traffic.
           echo "-- user crontabs --"
+          # head -5 showed MAILTO and PATH and stopped, which is exactly the
+          # part that says nothing. Drop the variable assignments and print the
+          # actual jobs.
           for c in /var/spool/cron/* /var/spool/cron/crontabs/*; do
             [ -f "$c" ] || continue
-            body=$(grep -vE '^\s*(#|$)' "$c" 2>/dev/null | head -5)
-            [ -n "$body" ] && { echo "   $c:"; echo "$body" | cut -c1-160 | sed 's/^/      /'; }
+            body=$(grep -vE '^\s*(#|$|[A-Z_]+=)' "$c" 2>/dev/null | head -12)
+            [ -n "$body" ] && { echo "   $c:"; echo "$body" | cut -c1-180 | sed 's/^/      /'; }
           done
+
+          # How long the busy workers have been on this ONE request. php-fpm
+          # requests are normally milliseconds; minutes means something is
+          # looping or scanning, and it also explains an empty access log,
+          # since Apache only logs a request once it finishes.
+          echo "-- how long php workers have been running --"
+          ps -eo etimes,pcpu,pid,comm --sort=-pcpu 2>/dev/null \
+            | awk 'NR==1 || $4 ~ /php-fpm/' | head -8
 
           echo "-- mysql: what is running right now --"
           # root has no my.cnf here, but DirectAdmin keeps credentials in a
@@ -242,8 +253,29 @@ jobs:
           if [ -f "$DACNF" ]; then
             DAU=$(awk -F= '/^user=/{print $2}' "$DACNF" 2>/dev/null)
             DAP=$(awk -F= '/^passwd=/{print $2}' "$DACNF" 2>/dev/null)
-            MYSQL_PWD="$DAP" mysql -u"$DAU" -e 'SHOW FULL PROCESSLIST;' 2>/dev/null \
-              | cut -c1-200 | head -20 || echo "   directadmin credentials did not work"
+            m() { MYSQL_PWD="$DAP" timeout 20 mysql -u"$DAU" --connect-timeout=5 "$@" 2>/dev/null; }
+            # Three samples, because one snapshot of a processlist is a
+            # coincidence. What repeats is what is costing the machine.
+            for i in 1 2 3; do
+              m -e 'SHOW FULL PROCESSLIST;' | awk -F'\t' '$5=="Query" && $8!~/PROCESSLIST/ {print "   " $6 "s " substr($8,1,150)}'
+              sleep 2
+            done
+            echo "   -- what those queries are scanning --"
+            DB=$(m -N -e "SELECT table_schema FROM information_schema.tables
+                          WHERE table_name LIKE '%postmeta' GROUP BY table_schema
+                          ORDER BY SUM(data_length+index_length) DESC LIMIT 1")
+            if [ -n "$DB" ]; then
+              echo "   biggest wordpress db: $DB"
+              m -e "SELECT table_name, table_rows,
+                           ROUND((data_length+index_length)/1048576) AS mb
+                    FROM information_schema.tables WHERE table_schema='$DB'
+                    ORDER BY (data_length+index_length) DESC LIMIT 6;" | sed 's/^/   /'
+              # WooCommerce queues its background work here. A queue that only
+              # grows is a job that never finishes and restarts for ever.
+              m -e "SELECT status, COUNT(*) FROM ${DB}.wp_actionscheduler_actions
+                    GROUP BY status;" 2>/dev/null | sed 's/^/   scheduler: /' \
+                || echo "   (no action scheduler table)"
+            fi
           else
             mysql -e 'SHOW FULL PROCESSLIST;' 2>/dev/null | cut -c1-200 | head -20 \
               || echo "could not query mysql without credentials"
