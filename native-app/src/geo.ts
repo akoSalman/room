@@ -233,6 +233,48 @@ export function isLiveNow(p: LocationPayload | null, now = Date.now()): boolean 
   return !!(p && p.liveUntil && p.liveUntil > now);
 }
 
+/**
+ * One pin per person, so a map does not fill up with the same person over and
+ * over.
+ *
+ * Every location message is a pin, and a live share keeps posting updates — so
+ * after sharing live a few times the map showed "You", "You" and "You" again,
+ * standing at three places the user had been rather than the one they are.
+ * An expired share is the worst of them: it is frozen wherever the sharing
+ * stopped and looks exactly as authoritative as a current one.
+ *
+ * The pick, per person:
+ *   • a share that is live right now beats one that has ended — it is the only
+ *     one still telling the truth about where they are
+ *   • otherwise the most recently updated one
+ *
+ * `keepId` is always kept whatever else wins: it is the pin the user tapped to
+ * open the map, and hiding the thing they asked to see would be worse than
+ * showing one extra.
+ */
+export function dedupePins<T extends { id: number | string; username: string; mine?: boolean; payload: LocationPayload }>(
+  pins: T[], keepId?: number | string | null, now = Date.now(),
+): T[] {
+  const best = new Map<string, T>();
+  const score = (p: T) => ({
+    live: isLiveNow(p.payload, now) ? 1 : 0,
+    at: p.payload.updatedAt || p.payload.liveUntil || 0,
+  });
+
+  for (const p of pins) {
+    // The viewer is one person however their messages are labelled.
+    const key = p.mine ? ' me' : p.username;
+    const cur = best.get(key);
+    if (!cur) { best.set(key, p); continue; }
+    const a = score(p), b = score(cur);
+    if (a.live !== b.live ? a.live > b.live : a.at > b.at) best.set(key, p);
+  }
+
+  const chosen = new Set(Array.from(best.values()).map(p => String(p.id)));
+  // Preserve the caller's ordering rather than the map's insertion order.
+  return pins.filter(p => chosen.has(String(p.id)) || (keepId != null && String(p.id) === String(keepId)));
+}
+
 export function formatRemaining(untilMs: number, now = Date.now()): string {
   const s = Math.max(0, Math.floor((untilMs - now) / 1000));
   if (s <= 0) return 'ended';

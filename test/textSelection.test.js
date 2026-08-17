@@ -28,12 +28,14 @@ function run(events) {
   let state = S.initialSelection;
   let last = null;
   const actions = [];
+  const cleared = [];
   for (const ev of events) {
     const r = S.reduceSelection(state, last, ev);
     state = r.state; last = r.last;
     actions.push(r.action);
+    cleared.push(r.clearId);
   }
-  return { state, actions };
+  return { state, actions, cleared };
 }
 
 test('an ordinary tap opens the message menu', () => {
@@ -144,6 +146,88 @@ test('clear drops the selection without asking for any action', () => {
   assert.strictEqual(state.selecting, null);
   assert.strictEqual(actions[2], null);
   assert.strictEqual(state.pendingId, null);
+});
+
+// ── Selecting a word on a SECOND message ─────────────────────────────────────
+//
+// Reported as: double-tap works on the first message, then stops working on
+// every message after it, until you tap outside several times. The cause is
+// that the OS spends the first tap dismissing the selection that is still up
+// on the previous message, so the double-tap is read as dismiss + single tap.
+
+test('THE BUG: touching another message clears the selection still up on the first', () => {
+  const { cleared, actions } = run([
+    { type: 'down', id: 1, at: 1000 },
+    { type: 'tap' },
+    { type: 'down', id: 1, at: 1150 },   // double tap → message 1 is selected
+    { type: 'down', id: 2, at: 5000 },   // now reach for message 2
+  ]);
+  assert.strictEqual(cleared[3], 1,
+    'message 1 kept its selection, so the OS will spend the next tap dismissing it');
+  assert.strictEqual(actions[3], 'dismiss');
+});
+
+test('and a double tap on that second message then selects it first time', () => {
+  const { state, cleared } = run([
+    { type: 'down', id: 1, at: 1000 },
+    { type: 'tap' },
+    { type: 'down', id: 1, at: 1150 },   // message 1 selected
+    { type: 'down', id: 2, at: 5000 },   // first tap of the double on message 2
+    { type: 'down', id: 2, at: 5150 },   // second tap
+  ]);
+  assert.strictEqual(state.selecting, 2, 'the second message never got selected');
+  // And the clear happened once, on the way in — not again on the second tap.
+  assert.deepStrictEqual(cleared, [null, null, null, 1, null]);
+});
+
+test('touching the SAME selected message again does not clear it', () => {
+  // Adjusting your own selection with the handles must not wipe it.
+  const { cleared } = run([
+    { type: 'down', id: 1, at: 1000 },
+    { type: 'tap' },
+    { type: 'down', id: 1, at: 1150 },   // selected
+    { type: 'down', id: 1, at: 9000 },   // touch it again, slowly
+  ]);
+  assert.strictEqual(cleared[3], null);
+});
+
+test('with nothing selected, touching a message clears nothing', () => {
+  const { cleared } = run([
+    { type: 'down', id: 1, at: 1000 },
+    { type: 'down', id: 2, at: 5000 },
+  ]);
+  assert.deepStrictEqual(cleared, [null, null]);
+});
+
+test('after the stale selection is cleared, the next tap opens the menu', () => {
+  // If `selecting` were left pointing at the old message, this tap would be
+  // eaten as another dismiss and the menu would never open.
+  const { actions } = run([
+    { type: 'down', id: 1, at: 1000 },
+    { type: 'tap' },
+    { type: 'down', id: 1, at: 1150 },   // message 1 selected
+    { type: 'down', id: 2, at: 5000 },   // clears message 1
+    { type: 'tap' },
+  ]);
+  assert.strictEqual(actions[4], 'menu');
+});
+
+test('a tap outside reports WHICH message to wipe', () => {
+  const { cleared } = run([
+    { type: 'down', id: 7, at: 1000 },
+    { type: 'held', id: 7 },
+    { type: 'tap' },
+  ]);
+  assert.strictEqual(cleared[2], 7);
+});
+
+test('clear reports the message to wipe as well', () => {
+  const { cleared } = run([
+    { type: 'down', id: 7, at: 1000 },
+    { type: 'held', id: 7 },
+    { type: 'clear' },
+  ]);
+  assert.strictEqual(cleared[2], 7);
 });
 
 let passed = 0, failed = 0;

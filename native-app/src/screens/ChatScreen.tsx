@@ -36,7 +36,6 @@ import ExpiryRing from '../components/ExpiryRing';
 import TextViewer from '../components/TextViewer';
 import * as mediaCache from '../mediaCache';
 import * as offline from '../offlineStore';
-import ConnectionBanner from '../components/ConnectionBanner';
 import ImageEditor from '../components/ImageEditor';
 import {
   reduceSelection, initialSelection, LONG_PRESS_MS,
@@ -631,9 +630,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // instantly beats showing a spinner for a second.
   useEffect(() => {
     let alive = true;
-    offline.loadMessages(room.id).then(cached => {
+    // The username has to be in hand BEFORE the cached messages are painted.
+    // Which side a bubble sits on is decided by `msg.username === me`, and
+    // `me` starts empty — so painting the cache first put every message,
+    // including the user's own, on the same side, and they all jumped across
+    // the screen a moment later when the username resolved. Both come from
+    // local storage, so waiting for the second costs nothing.
+    Promise.all([offline.loadMessages(room.id), getUsername()]).then(([cached, u]) => {
+      if (!alive) return;
+      if (u) { setMe(u); meRef.current = u; }
       // Anything the server has already returned wins; this only fills a void.
-      if (!alive || !cached || messagesRef.current.length) return;
+      if (!cached || messagesRef.current.length) return;
       setMessages(cached);
       messagesRef.current = cached;
       setLoading(false);
@@ -1786,6 +1793,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     const r = reduceSelection(selState.current, selLast.current, ev);
     selState.current = r.state;
     selLast.current = r.last;
+    // The reducer says which message to wipe, and it is not always the one the
+    // event was about: a touch on message B is what clears a leftover
+    // selection on message A. Doing it here means every caller gets it,
+    // instead of each one having to remember the id from before the event.
+    if (r.clearId !== null) dismissTextSelection(r.clearId);
     return r.action;
   }
 
@@ -1851,9 +1863,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
   function onMessageLongPress(msg: Message) {
     clearTimeout(holdTimer.current);
-    const selecting = selState.current.selecting;
     selectionEvent({ type: 'clear' });
-    if (selecting !== null) dismissTextSelection(selecting);
     enterSelectMode(msg);
   }
 
@@ -1864,12 +1874,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // wait to find out whether a second one is coming. The menu opens at once.
   function onMessageTap(msg: Message, e: any, _fromText: boolean) {
     clearTimeout(holdTimer.current);
-    const selecting = selState.current.selecting;
+    // selectionEvent does the clearing itself now, from the id the reducer
+    // returns.
     const action = selectionEvent({ type: 'tap' });
     // A tap outside a live text selection means "never mind" — it clears the
     // selection and stops there. Opening the message menu on that same tap
     // made dismissing a selection impossible without also being interrupted.
-    if (action === 'dismiss') { if (selecting !== null) dismissTextSelection(selecting); return; }
+    if (action === 'dismiss') return;
     if (selectedIds.size) { toggleSelected(msg); return; }
     openMenuFor(msg, e);
   }
@@ -3005,7 +3016,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       )}
 
       {/* Saying so, rather than letting saved history pass for live history. */}
-      <ConnectionBanner />
 
       {fabVisible && (
         <TouchableOpacity
@@ -3630,19 +3640,36 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
       {/* Streaming a live location is easy to forget about, so it stays
           visible with Stop one tap away. */}
-      {liveShare ? (
+      {liveShare ? (() => {
+        // Tapping the bar goes to the message it is about — the bar names a
+        // specific live share, so the obvious thing to do with it is look at
+        // it. Only when that message is in THIS chat, though; there is nothing
+        // to scroll to when the share belongs to another conversation.
+        const here = String(liveShare.roomId) === String(room.id);
+        const target = Number(liveShare.messageId);
+        const canJump = here && Number.isFinite(target);
+        return (
         <View style={s.liveBar}>
           <Ionicons name="navigate" size={15} color="#22c55e" />
-          <Text style={s.liveBarText} numberOfLines={1}>
-            {String(liveShare.roomId) === String(room.id)
-              ? `Sharing your live location · ${formatRemaining(liveShare.until)}`
-              : `Sharing live location in another chat · ${formatRemaining(liveShare.until)}`}
-          </Text>
+          {/* Only the label is pressable. Wrapping the whole bar would put the
+              Stop button inside the jump target. */}
+          <TouchableOpacity
+            style={{ flex: 1, minWidth: 0 }}
+            disabled={!canJump}
+            onPress={() => jumpToMessage(target)}
+          >
+            <Text style={s.liveBarText} numberOfLines={1}>
+              {here
+                ? `Sharing your live location · ${formatRemaining(liveShare.until)}`
+                : `Sharing live location in another chat · ${formatRemaining(liveShare.until)}`}
+            </Text>
+          </TouchableOpacity>
           <TouchableOpacity onPress={stopLiveShare} hitSlop={hitSlop10}>
             <Text style={s.liveBarStop}>Stop</Text>
           </TouchableOpacity>
         </View>
-      ) : null}
+        );
+      })() : null}
 
       {/* Not a member: the room is read-only, so the Join bar REPLACES the
           composer rather than sitting above it. The server enforces the same
@@ -3866,7 +3893,9 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(34,197,94,0.14)',
     borderTopWidth: 1, borderTopColor: 'rgba(34,197,94,0.3)',
   },
-  liveBarText: { flex: 1, color: C.text, fontSize: 12.5, fontWeight: '600' },
+  // The pressable wrapper owns the flex now, so the text must not also
+  // claim it — inside a column it would stretch vertically instead.
+  liveBarText: { color: C.text, fontSize: 12.5, fontWeight: '600' },
   liveBarStop: { color: '#f87171', fontSize: 12.5, fontWeight: '800' },
 
   joinBar: {

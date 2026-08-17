@@ -160,6 +160,61 @@ test('a single point is not a stroke', () => {
   assert.deepStrictEqual(E.strokeSegments([], 4), []);
 });
 
+// ── Undo ─────────────────────────────────────────────────────────────────────
+//
+// The editor holds edits in two places at once: pending on screen (a crop box,
+// strokes, captions) and already applied, each of which produced a file. Undo
+// walks back through both, newest first.
+//
+// The previous version compared a caption's Date.now() id against the NUMBER
+// of strokes — two quantities with nothing to do with each other — so which of
+// the two it removed was effectively arbitrary.
+
+const undoOf = (o) => E.nextUndo({ cropped: false, committed: 0, ...o });
+
+test('nothing to undo when nothing has been done', () => {
+  assert.strictEqual(undoOf({}), null);
+});
+
+test('THE BUG: the most recent of a stroke and a caption is the one removed', () => {
+  // Caption added after the stroke.
+  assert.strictEqual(undoOf({ lastStrokeSeq: 1, lastTextSeq: 2 }), 'text');
+  // Stroke added after the caption.
+  assert.strictEqual(undoOf({ lastStrokeSeq: 5, lastTextSeq: 2 }), 'stroke');
+});
+
+test('the count of strokes has no bearing on which is newer', () => {
+  // Ten strokes then one caption: the caption is still the most recent thing,
+  // and the old id-versus-count comparison got exactly this case wrong.
+  assert.strictEqual(undoOf({ lastStrokeSeq: 10, lastTextSeq: 11 }), 'text');
+});
+
+test('whichever kind exists alone is the one removed', () => {
+  assert.strictEqual(undoOf({ lastStrokeSeq: 3 }), 'stroke');
+  assert.strictEqual(undoOf({ lastTextSeq: 3 }), 'text');
+  assert.strictEqual(undoOf({ lastStrokeSeq: null, lastTextSeq: null }), null);
+});
+
+test('sequence zero still counts as an edit', () => {
+  // A plain truthiness check here would treat the very first stroke as absent.
+  assert.strictEqual(undoOf({ lastStrokeSeq: 0 }), 'stroke');
+});
+
+test('with the annotations gone, the crop box is next', () => {
+  assert.strictEqual(undoOf({ cropped: true }), 'crop');
+  // But only once nothing newer is outstanding.
+  assert.strictEqual(undoOf({ cropped: true, lastStrokeSeq: 1 }), 'stroke');
+});
+
+test('with nothing pending, undo steps back through the applied versions', () => {
+  assert.strictEqual(undoOf({ committed: 2 }), 'revert');
+  assert.strictEqual(undoOf({ committed: 0 }), null);
+});
+
+test('a pending crop is undone before an applied one is reverted', () => {
+  assert.strictEqual(undoOf({ cropped: true, committed: 3 }), 'crop');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

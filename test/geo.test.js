@@ -231,6 +231,119 @@ test('pinching about the centre leaves the centre alone', () => {
   assert.ok(Math.abs(c2.lng - center.lng) < 1e-9);
 });
 
+// ── One pin per person ───────────────────────────────────────────────────────
+//
+// Reported as: after a live location expires, the map shows two or three
+// "You". Every share is its own message, and an expired one stays frozen where
+// the sharing stopped while looking exactly as current as a live one.
+
+const pin = (id, username, payload, mine = false) => ({ id, username, payload, mine });
+const NOW = 1_700_000_000_000;
+
+test('THE BUG: expired shares from the same person collapse to one pin', () => {
+  const out = G.dedupePins([
+    pin(1, 'ako', { lat: 1, lng: 1, liveUntil: NOW - 60_000, updatedAt: NOW - 70_000 }, true),
+    pin(2, 'ako', { lat: 2, lng: 2, liveUntil: NOW - 30_000, updatedAt: NOW - 40_000 }, true),
+    pin(3, 'ako', { lat: 3, lng: 3, liveUntil: NOW - 10_000, updatedAt: NOW - 20_000 }, true),
+  ], null, NOW);
+  assert.strictEqual(out.length, 1, `showed ${out.length} pins for one person`);
+  assert.strictEqual(out[0].id, 3, 'kept an older pin instead of the most recent');
+});
+
+test('a live share wins over a newer expired one', () => {
+  // Freshness is not the point — being true right now is.
+  const out = G.dedupePins([
+    pin(1, 'ako', { lat: 1, lng: 1, liveUntil: NOW + 600_000, updatedAt: NOW - 500_000 }, true),
+    pin(2, 'ako', { lat: 2, lng: 2, liveUntil: NOW - 1, updatedAt: NOW - 10 }, true),
+  ], null, NOW);
+  assert.deepStrictEqual(out.map(p => p.id), [1]);
+});
+
+test('different people each keep their own pin', () => {
+  const out = G.dedupePins([
+    pin(1, 'ako', { lat: 1, lng: 1, updatedAt: 10 }),
+    pin(2, 'soran', { lat: 2, lng: 2, updatedAt: 20 }),
+    pin(3, 'sahar', { lat: 3, lng: 3, updatedAt: 30 }),
+  ], null, NOW);
+  assert.strictEqual(out.length, 3);
+});
+
+test('my own pins collapse together however they are named', () => {
+  // `mine` is the fact that matters; the username on an old message may differ.
+  const out = G.dedupePins([
+    pin(1, 'ako', { lat: 1, lng: 1, updatedAt: 10 }, true),
+    pin(2, 'ako.old', { lat: 2, lng: 2, updatedAt: 20 }, true),
+  ], null, NOW);
+  assert.deepStrictEqual(out.map(p => p.id), [2]);
+});
+
+test('the pin the user actually tapped is never hidden', () => {
+  // Opening the map from an old location message must show that message.
+  const out = G.dedupePins([
+    pin(1, 'ako', { lat: 1, lng: 1, updatedAt: 10 }, true),
+    pin(2, 'ako', { lat: 2, lng: 2, updatedAt: 99 }, true),
+  ], 1, NOW);
+  assert.deepStrictEqual(out.map(p => p.id), [1, 2]);
+});
+
+test('pins come back in the order they were given', () => {
+  const out = G.dedupePins([
+    pin(5, 'zed', { lat: 1, lng: 1, updatedAt: 10 }),
+    pin(6, 'amy', { lat: 2, lng: 2, updatedAt: 20 }),
+  ], null, NOW);
+  assert.deepStrictEqual(out.map(p => p.id), [5, 6]);
+});
+
+test('pins with no timestamps at all still collapse to one', () => {
+  const out = G.dedupePins([
+    pin(1, 'ako', { lat: 1, lng: 1 }, true),
+    pin(2, 'ako', { lat: 2, lng: 2 }, true),
+  ], null, NOW);
+  assert.strictEqual(out.length, 1);
+});
+
+test('zooming a level at a time lands where zooming straight there would', () => {
+  // The map now commits each zoom level DURING the pinch instead of saving the
+  // whole gesture for the release, so the picture sharpens as the fingers
+  // move. That is only safe if stepping 14→15→16 about a focal point puts the
+  // map exactly where 14→16 in one go would — otherwise the map creeps a
+  // little further off target with every level a pinch happens to cross.
+  const center = { lat: 35.6892, lng: 51.389 };
+  const W = 360, H = 640;
+  const focal = { x: 60, y: 120 };
+
+  const direct = G.zoomAbout(center, 14, 16, focal, W, H);
+  const step1 = G.zoomAbout(center, 14, 15, focal, W, H);
+  const stepped = G.zoomAbout(step1, 15, 16, focal, W, H);
+
+  assert.ok(Math.abs(stepped.lat - direct.lat) < 1e-9,
+    `lat drifted by ${stepped.lat - direct.lat} when zooming in steps`);
+  assert.ok(Math.abs(stepped.lng - direct.lng) < 1e-9,
+    `lng drifted by ${stepped.lng - direct.lng} when zooming in steps`);
+});
+
+test('zooming back out about the same point returns to the start', () => {
+  // Pinch in past a level and back out again — a very ordinary thing to do
+  // mid-gesture — and the map must not have wandered.
+  const center = { lat: 35.6892, lng: 51.389 };
+  const W = 360, H = 640;
+  const focal = { x: 300, y: 500 };
+  const inOne = G.zoomAbout(center, 14, 15, focal, W, H);
+  const back = G.zoomAbout(inOne, 15, 14, focal, W, H);
+  assert.ok(Math.abs(back.lat - center.lat) < 1e-9, `lat off by ${back.lat - center.lat}`);
+  assert.ok(Math.abs(back.lng - center.lng) < 1e-9, `lng off by ${back.lng - center.lng}`);
+});
+
+test('half a zoom level of pinch is enough to move a level', () => {
+  // The old behaviour rounded the whole gesture at release, so anything short
+  // of a full 2x pinch rounded back to the level it started on and the pinch
+  // did nothing at all. ~1.41x is half a level and must round up.
+  assert.strictEqual(G.clampZoom(14 + G.pinchZoomDelta(1.5)), 15);
+  assert.strictEqual(G.clampZoom(14 + G.pinchZoomDelta(0.67)), 13);
+  // And a nudge really is still a nudge.
+  assert.strictEqual(G.clampZoom(14 + G.pinchZoomDelta(1.1)), 14);
+});
+
 test('zoom never leaves the range the tile server serves', () => {
   assert.strictEqual(G.clampZoom(99), G.MAX_ZOOM);
   assert.strictEqual(G.clampZoom(-4), G.MIN_ZOOM);

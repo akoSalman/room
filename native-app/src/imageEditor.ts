@@ -84,8 +84,51 @@ export function isWholeImage(box: Rect, displayed: Rect, tolerance = 1): boolean
 // ── Freehand strokes ─────────────────────────────────────────────────────────
 
 export type Point = { x: number; y: number };
-export type Stroke = { color: string; width: number; points: Point[] };
+export type Stroke = { color: string; width: number; points: Point[]; seq: number };
 export type Segment = { x: number; y: number; length: number; angle: number };
+
+// ── Undo ─────────────────────────────────────────────────────────────────────
+
+/** What a press of undo should take back, given everything outstanding. */
+export type UndoStep = 'text' | 'stroke' | 'crop' | 'revert' | null;
+
+/**
+ * What undo does next.
+ *
+ * The editor holds two different kinds of change at once: edits still pending
+ * on screen (a crop box being dragged, strokes and captions not yet burnt in)
+ * and edits already APPLIED, each of which produced a real file. Undo has to
+ * walk back through both, newest first, and the previous version got the order
+ * wrong — it compared a caption's `Date.now()` id against the NUMBER of
+ * strokes, two quantities with nothing to do with each other, so undo removed
+ * whichever it happened to pick.
+ *
+ * Strokes and captions therefore carry a shared sequence number, and the
+ * larger one is simply the more recent.
+ */
+export function nextUndo(o: {
+  /** Sequence of the newest stroke not yet applied, if any. */
+  lastStrokeSeq?: number | null;
+  /** Sequence of the newest caption not yet applied, if any. */
+  lastTextSeq?: number | null;
+  /** Whether the crop box currently differs from the whole picture. */
+  cropped: boolean;
+  /** How many applied steps sit behind the current image. */
+  committed: number;
+}): UndoStep {
+  const st = o.lastStrokeSeq ?? null;
+  const tx = o.lastTextSeq ?? null;
+  if (st !== null || tx !== null) {
+    if (st === null) return 'text';
+    if (tx === null) return 'stroke';
+    return tx > st ? 'text' : 'stroke';
+  }
+  // Pending annotations gone; the crop box is the next-most-recent thing.
+  if (o.cropped) return 'crop';
+  // Nothing pending at all, so step back through the applied versions.
+  if (o.committed > 0) return 'revert';
+  return null;
+}
 
 /**
  * A freehand stroke as a list of straight segments to draw.

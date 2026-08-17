@@ -26,7 +26,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { C } from '../theme';
 import {
-  fitRect, clampCrop, toNaturalCrop, isWholeImage, strokeSegments,
+  fitRect, clampCrop, toNaturalCrop, isWholeImage, strokeSegments, nextUndo,
   Rect, Size, Stroke, Point,
 } from '../imageEditor';
 
@@ -48,7 +48,7 @@ try {
 
 type Tool = 'crop' | 'pen' | 'text';
 
-type TextItem = { id: number; text: string; x: number; y: number; color: string };
+type TextItem = { id: number; text: string; x: number; y: number; color: string; seq: number };
 
 const COLORS = ['#ffffff', '#111827', '#ef4444', '#f59e0b', '#22c55e', '#3b82f6'];
 const PEN_WIDTHS = [3, 6, 12];
@@ -63,6 +63,17 @@ export default function ImageEditor({
   /** When set, a Send button is offered alongside Save. */
   sendLabel?: string;
 }) {
+  // Every APPLIED edit produces a real file, and they stack. The last entry is
+  // what is on screen and what everything new is applied to.
+  //
+  // This is the fix for a crop that silently vanished. The picture on screen
+  // was always the original, so the moment anything was drawn the export
+  // photographed the UNCROPPED view and threw the cropped file away. Applying
+  // a crop for real, and drawing on the result, is the only arrangement where
+  // "crop, then draw, then crop again" means what it looks like it means.
+  const [history, setHistory] = useState<string[]>([uri]);
+  const working = history[history.length - 1];
+
   const [natural, setNatural] = useState<Size | null>(null);
   const [area, setArea] = useState<Size>({ width: 0, height: 0 });
   const [tool, setTool] = useState<Tool>('crop');
@@ -75,24 +86,34 @@ export default function ImageEditor({
   const [penWidth, setPenWidth] = useState(PEN_WIDTHS[1]);
   const [typing, setTyping] = useState('');
   const [askText, setAskText] = useState(false);
+  // One counter across strokes and captions, so undo can tell which of the two
+  // was actually the most recent.
+  const seq = useRef(0);
 
   const shotRef = useRef<any>(null);
   const drawing = useRef<Point[]>([]);
   const [live, setLive] = useState<Point[]>([]);
 
+  // Re-measured for every applied version: a crop changes the picture's real
+  // size, and every screen-to-pixel conversion after it depends on the new one.
   useEffect(() => {
-    Image.getSize(uri,
-      (width, height) => setNatural({ width, height }),
-      () => setNatural({ width: 1000, height: 1000 }));
-  }, [uri]);
+    let alive = true;
+    setNatural(null);
+    Image.getSize(working,
+      (width, height) => { if (alive) setNatural({ width, height }); },
+      () => { if (alive) setNatural({ width: 1000, height: 1000 }); });
+    return () => { alive = false; };
+  }, [working]);
 
   const displayed = natural ? fitRect(natural, area) : null;
 
   // The crop box starts as the whole photo, so dragging a corner is the only
-  // gesture needed to begin.
+  // gesture needed to begin. It resets whenever the picture changes, since a
+  // box measured against the previous version means nothing against this one.
+  useEffect(() => { setCrop(null); }, [working]);
   useEffect(() => {
     if (displayed && displayed.width > 0 && !crop) setCrop({ ...displayed });
-  }, [displayed?.width, displayed?.height]);
+  }, [displayed?.width, displayed?.height, crop]);
 
   // ── Gestures ───────────────────────────────────────────────────────────────
   // Which corner is being dragged, decided once when the finger lands.
@@ -150,7 +171,10 @@ export default function ImageEditor({
       drawing.current = [];
       setLive([]);
       if (points.length > 1) {
-        setStrokes(prev => [...prev, { color: colorRef.current, width: widthRef.current, points }]);
+        seq.current += 1;
+        setStrokes(prev => [...prev, {
+          color: colorRef.current, width: widthRef.current, points, seq: seq.current,
+        }]);
       }
     },
   })).current;
@@ -164,48 +188,107 @@ export default function ImageEditor({
 
   const annotated = strokes.length > 0 || texts.length > 0;
   const cropped = !!(crop && displayed && !isWholeImage(crop, displayed));
-  const touched = annotated || cropped;
+  // Changes made since the last Apply.
+  const pending = annotated || cropped;
+  // Anything at all to save, applied or not.
+  const touched = pending || history.length > 1;
+
+  const step = nextUndo({
+    lastStrokeSeq: strokes.length ? strokes[strokes.length - 1].seq : null,
+    lastTextSeq: texts.length ? texts[texts.length - 1].seq : null,
+    cropped,
+    committed: history.length - 1,
+  });
 
   function undo() {
-    if (texts.length && (!strokes.length || texts[texts.length - 1].id > strokes.length)) {
-      setTexts(prev => prev.slice(0, -1));
-      return;
+    switch (step) {
+      case 'text': setTexts(prev => prev.slice(0, -1)); break;
+      case 'stroke': setStrokes(prev => prev.slice(0, -1)); break;
+      case 'crop': if (displayed) setCrop({ ...displayed }); break;
+      // Step back to the previous applied version. The crop box is dropped
+      // with it; the effect on `working` puts a fresh one over the whole of
+      // whatever we land on.
+      case 'revert': setHistory(h => h.slice(0, -1)); break;
     }
-    if (strokes.length) { setStrokes(prev => prev.slice(0, -1)); return; }
-    if (displayed) setCrop({ ...displayed });
   }
 
-  async function build(): Promise<string | null> {
+  /**
+   * Turn the pending edits into a real image file.
+   *
+   * Order matters and is the whole point: the crop is applied to the file
+   * first, and only then is the result photographed with the drawing on top.
+   * Doing it the other way — which is what used to happen by accident —
+   * captures the uncropped picture and loses the crop entirely.
+   */
+  async function rasterise(): Promise<string | null> {
     if (!natural || !displayed || !crop) return null;
+    if (!pending) return working;
 
-    // Nothing was changed — hand back the original rather than re-encoding it.
-    if (!touched) return uri;
-
-    let working = uri;
+    // A crop is done on the FILE, so it keeps the photo's full resolution.
+    // Switching tools flushes whatever is pending (see selectTool), so a crop
+    // is never outstanding at the same time as a drawing — which matters,
+    // because the capture below can only ever photograph what is on screen,
+    // and on screen the crop has not happened yet.
     if (cropped) {
       const box = toNaturalCrop(crop, displayed, natural);
       const out = await ImageManipulator.manipulateAsync(
-        uri, [{ crop: { originX: box.x, originY: box.y, width: box.width, height: box.height } }],
+        working, [{ crop: { originX: box.x, originY: box.y, width: box.width, height: box.height } }],
         { compress: 0.95, format: ImageManipulator.SaveFormat.JPEG },
       );
-      working = out.uri;
+      return out.uri;
     }
-    if (!annotated) return working;
 
     if (!captureRef || !shotRef.current) {
       Alert.alert('Not available', 'Drawing needs a newer version of the app.');
-      return cropped ? working : null;
+      return null;
     }
-    // Captures the on-screen composite, so the drawing and text are burnt in.
+    // Captures the on-screen picture, so drawing and captions are burnt in.
     return await captureRef(shotRef.current, { format: 'jpg', quality: 0.95 });
+  }
+
+  /** Make the current edits permanent and start a fresh step on top. */
+  async function apply(): Promise<boolean> {
+    if (busy || !pending) return true;
+    setBusy(true);
+    try {
+      const out = await rasterise();
+      if (!out) return false;
+      setHistory(h => [...h, out]);
+      setCrop(null);
+      setStrokes([]);
+      setTexts([]);
+      return true;
+    } catch {
+      Alert.alert('Could not edit', 'That change could not be applied.');
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Switching tool applies whatever the current one left outstanding.
+   *
+   * Not a convenience — it is what keeps a crop and a drawing from ever being
+   * pending together. The exporter can crop a file or photograph the screen,
+   * and the screen always shows the picture BEFORE the pending crop; so if
+   * both were outstanding at once one of them would necessarily be lost. That
+   * is precisely how the crop used to disappear the moment anything was drawn.
+   */
+  async function selectTool(next: Tool) {
+    if (next === tool || busy) return;
+    if (pending && !(await apply())) return;
+    setTool(next);
   }
 
   async function finish(action: 'send' | 'save' | 'replace') {
     if (busy) return;
     setBusy(true);
     try {
-      const out = await build();
-      if (out) onDone({ uri: out, action });
+      // Forgetting to press Apply must not silently throw the last edit away.
+      // At most one kind of edit can be pending here, so one pass is enough.
+      const out = pending ? await rasterise() : working;
+      onDone({ uri: out || working, action });
     } catch {
       Alert.alert('Could not edit', 'The photo could not be saved.');
     } finally {
@@ -213,19 +296,22 @@ export default function ImageEditor({
     }
   }
 
-  // While cropping, the photo is shown whole with the box over it; once the
-  // pen is picked the crop is committed visually so drawing lines up with what
-  // will actually be produced.
-  const canvas = (
-    <View style={s.canvas} onLayout={e => setArea({
-      width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height,
-    })}>
-      {displayed && (
-        <View style={{
-          position: 'absolute',
-          left: displayed.x, top: displayed.y, width: displayed.width, height: displayed.height,
-        }}>
-          <Image source={{ uri }} style={StyleSheet.absoluteFill} resizeMode="contain" />
+  // Only the picture itself is captured. The previous version wrapped the
+  // whole canvas, which is letterboxed with black to fill the screen — so an
+  // exported annotation came back padded with bars and at the wrong aspect
+  // ratio. `collapsable={false}` is what guarantees the view survives as a
+  // real native view for captureRef to photograph.
+  const picture = displayed && (
+    <View style={{
+      position: 'absolute',
+      left: displayed.x, top: displayed.y, width: displayed.width, height: displayed.height,
+    }}>
+      <View
+        ref={shotRef}
+        collapsable={false}
+        style={StyleSheet.absoluteFill}
+      >
+          <Image source={{ uri: working }} style={StyleSheet.absoluteFill} resizeMode="contain" />
 
           {/* Finished strokes, then the one under the finger. */}
           {strokes.map((st, i) => (
@@ -252,8 +338,15 @@ export default function ImageEditor({
               left: t.x - displayed.x, top: t.y - displayed.y, color: t.color,
             }]}>{t.text}</Text>
           ))}
-        </View>
-      )}
+      </View>
+    </View>
+  );
+
+  const canvas = (
+    <View style={s.canvas} onLayout={e => setArea({
+      width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height,
+    })}>
+      {picture}
     </View>
   );
 
@@ -265,19 +358,13 @@ export default function ImageEditor({
             <Ionicons name="close" size={24} color="#fff" />
           </TouchableOpacity>
           <Text style={s.title}>Edit photo</Text>
-          <TouchableOpacity onPress={undo} style={s.iconBtn} hitSlop={hit} disabled={!touched}>
-            <Ionicons name="arrow-undo" size={21} color={touched ? '#fff' : 'rgba(255,255,255,0.3)'} />
+          <TouchableOpacity onPress={undo} style={s.iconBtn} hitSlop={hit} disabled={!step}>
+            <Ionicons name="arrow-undo" size={21} color={step ? '#fff' : 'rgba(255,255,255,0.3)'} />
           </TouchableOpacity>
         </View>
 
         <View style={{ flex: 1 }}>
-          {/* view-shot wraps only the picture, so the toolbars are not
-              captured into the exported image. */}
-          {ViewShot ? (
-            <ViewShot ref={shotRef} style={{ flex: 1 }} options={{ format: 'jpg', quality: 0.95 }}>
-              {canvas}
-            </ViewShot>
-          ) : canvas}
+          {canvas}
 
           {/* Gesture layers sit above the picture, one per tool. */}
           {tool === 'crop' && displayed && (
@@ -320,10 +407,28 @@ export default function ImageEditor({
           </View>
         )}
 
+        {/* Each edit gets its own Done, so a crop becomes part of the picture
+            the moment it is confirmed rather than being carried invisibly
+            until the very end — where it used to get lost. It appears only
+            when there is something to confirm. */}
+        {pending && (
+          <View style={s.applyRow}>
+            <Text style={s.applyHint} numberOfLines={1}>
+              {cropped ? 'Crop ready' : 'Drawing ready'}
+            </Text>
+            <TouchableOpacity style={s.applyBtn} onPress={apply} disabled={busy}>
+              {busy
+                ? <ActivityIndicator size="small" color="#fff" />
+                : <Ionicons name="checkmark" size={17} color="#fff" />}
+              <Text style={s.applyText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         <View style={s.tools}>
-          <Tool2 icon="crop" label="Crop" on={tool === 'crop'} onPress={() => setTool('crop')} />
-          {!!ViewShot && <Tool2 icon="brush" label="Draw" on={tool === 'pen'} onPress={() => setTool('pen')} />}
-          {!!ViewShot && <Tool2 icon="text" label="Text" on={tool === 'text'} onPress={() => setTool('text')} />}
+          <Tool2 icon="crop" label="Crop" on={tool === 'crop'} onPress={() => selectTool('crop')} />
+          {!!ViewShot && <Tool2 icon="brush" label="Draw" on={tool === 'pen'} onPress={() => selectTool('pen')} />}
+          {!!ViewShot && <Tool2 icon="text" label="Text" on={tool === 'text'} onPress={() => selectTool('text')} />}
         </View>
 
         <View style={s.actions}>
@@ -374,8 +479,10 @@ export default function ImageEditor({
                     if (!v || !displayed) return;
                     // Dropped in the middle; the picture is small enough that
                     // placing it precisely matters less than placing it at all.
+                    seq.current += 1;
                     setTexts(prev => [...prev, {
                       id: Date.now(),
+                      seq: seq.current,
                       text: v,
                       x: displayed.x + displayed.width / 2 - 60,
                       y: displayed.y + displayed.height / 2,
@@ -441,6 +548,17 @@ const s = StyleSheet.create({
   swatch: { width: 26, height: 26, borderRadius: 13, borderWidth: 2, borderColor: 'transparent' },
   swatchOn: { borderColor: C.accent, transform: [{ scale: 1.15 }] },
   widthBtn: { paddingHorizontal: 6, paddingVertical: 8 },
+
+  applyRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 14, paddingVertical: 8, backgroundColor: '#0b0b0b',
+  },
+  applyHint: { flex: 1, color: '#9ca3af', fontSize: 12.5, fontWeight: '600' },
+  applyBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: C.accent, borderRadius: 18, paddingHorizontal: 16, paddingVertical: 8,
+  },
+  applyText: { color: '#fff', fontSize: 13.5, fontWeight: '800' },
 
   tools: {
     flexDirection: 'row', justifyContent: 'center', gap: 10,

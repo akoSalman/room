@@ -41,6 +41,21 @@ export type SelectionEvent =
 /** What the component should do about this event. */
 export type SelectionAction = 'menu' | 'dismiss' | null;
 
+/** The reducer's answer: new state, new `last`, what to do, and what to clear. */
+export type SelectionResult = {
+  state: SelectionState;
+  last: LastDown;
+  action: SelectionAction;
+  /**
+   * The message whose on-screen selection must be wiped, if any.
+   *
+   * Returned explicitly rather than left for the caller to remember, because
+   * the message being cleared is often NOT the one the event is about — a
+   * touch on message B is what clears a stale selection on message A.
+   */
+  clearId: MsgId | null;
+};
+
 export const initialSelection: SelectionState = { selecting: null, pendingId: null };
 
 // Kept outside the state so a caller cannot forget to thread it through; it is
@@ -49,35 +64,64 @@ type LastDown = { id: MsgId; at: number } | null;
 
 export function reduceSelection(
   state: SelectionState, last: LastDown, ev: SelectionEvent,
-): { state: SelectionState; last: LastDown; action: SelectionAction } {
+): SelectionResult {
   switch (ev.type) {
     case 'down': {
       // A second tap on the same message within the double-tap window is how
       // the OS starts a word selection, so we know one is coming.
       const isDouble = !!last && last.id === ev.id && ev.at - last.at < DOUBLE_TAP_MS;
+
+      // A selection still showing on a DIFFERENT message has to go, right now,
+      // on the way down.
+      //
+      // This is what made double-tap work on the first message and then stop
+      // working on every message after it. The OS will not start a new
+      // selection while an old one is up: it spends the first tap dismissing
+      // the old selection instead. So the user's double-tap on message B was
+      // read as "dismiss A" followed by one ordinary tap, nothing was
+      // selected, and it took a further two taps to get anywhere — exactly the
+      // "tap several times outside first" workaround people found.
+      //
+      // Clearing it here, before the OS sees the tap, means there is no old
+      // selection for the first tap to be spent on.
+      const stale = state.selecting !== null && state.selecting !== ev.id ? state.selecting : null;
+
       return {
         state: isDouble
           ? { selecting: ev.id, pendingId: null }
-          : { ...state, pendingId: ev.id },
+          // Once the stale selection is cleared nothing is selected any more,
+          // so `selecting` must drop — keeping the old id would leave the next
+          // tap thinking it still had a selection to dismiss.
+          : { selecting: stale ? null : state.selecting, pendingId: ev.id },
         last: { id: ev.id, at: ev.at },
-        action: null,
+        action: stale ? 'dismiss' : null,
+        clearId: stale,
       };
     }
     case 'held': {
       // Only the touch we are actually waiting on can turn into a hold.
-      if (state.pendingId !== ev.id) return { state, last, action: null };
-      return { state: { selecting: ev.id, pendingId: null }, last, action: null };
+      if (state.pendingId !== ev.id) return { state, last, action: null, clearId: null };
+      return { state: { selecting: ev.id, pendingId: null }, last, action: null, clearId: null };
     }
     case 'tap': {
-      // The fix: while a selection is up, a tap outside it clears the
-      // selection and does nothing else. The menu is NOT opened — otherwise
-      // dismissing a selection and opening a menu are the same gesture.
+      // While a selection is up, a tap outside it clears the selection and
+      // does nothing else. The menu is NOT opened — otherwise dismissing a
+      // selection and opening a menu are the same gesture.
       if (state.selecting !== null) {
-        return { state: { selecting: null, pendingId: null }, last, action: 'dismiss' };
+        return {
+          state: { selecting: null, pendingId: null },
+          last, action: 'dismiss', clearId: state.selecting,
+        };
       }
-      return { state: { ...state, pendingId: null }, last, action: 'menu' };
+      return { state: { ...state, pendingId: null }, last, action: 'menu', clearId: null };
     }
     case 'clear':
-      return { state: { selecting: null, pendingId: null }, last, action: null };
+      // Dropping the selection means dropping what is drawn too, so hand back
+      // whatever was selected. Without this the state said "nothing selected"
+      // while the highlight stayed on screen.
+      return {
+        state: { selecting: null, pendingId: null },
+        last, action: null, clearId: state.selecting,
+      };
   }
 }

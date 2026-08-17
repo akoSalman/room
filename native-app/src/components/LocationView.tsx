@@ -9,7 +9,7 @@ import { C } from '../theme';
 import TileMap, { Marker } from './TileMap';
 import {
   LatLng, LocationPayload, distanceMeters, formatDistance, formatCoords,
-  formatRemaining, isLiveNow, geoUri, webMapUrl, centerOf, zoomToFit,
+  formatRemaining, isLiveNow, geoUri, webMapUrl, centerOf, zoomToFit, dedupePins,
 } from '../geo';
 import { currentPosition, ensurePermission } from '../locationManager';
 
@@ -56,16 +56,28 @@ export default function LocationView({
     return () => { alive = false; };
   }, []);
 
+  // One pin per person. Without this, every live share the user had ever
+  // started left its own frozen "You" behind once it expired, so the map ended
+  // up with two or three of them standing in different places.
+  const shown = useMemo(
+    () => dedupePins(pins, focusId, now),
+    [pins, focusId, now],
+  );
+
   const markers: Marker[] = useMemo(() => {
-    const list: Marker[] = pins.map(p => ({
+    const list: Marker[] = shown.map(p => ({
       at: { lat: p.payload.lat, lng: p.payload.lng },
       label: p.mine ? 'You' : p.username,
       mine: p.mine,
       live: isLiveNow(p.payload, now),
     }));
-    if (me) list.push({ at: me, label: 'Your position', mine: true });
+    // Where the viewer actually is, which is a different fact from any pin
+    // they have shared — but only worth a marker of its own when no live share
+    // of theirs is already saying the same thing.
+    const liveMine = shown.some(p => p.mine && isLiveNow(p.payload, now));
+    if (me && !liveMine) list.push({ at: me, label: 'Your position', mine: true });
     return list;
-  }, [pins, me, now]);
+  }, [shown, me, now]);
 
   function fitAll() {
     const points = markers.map(m => m.at);
@@ -120,7 +132,7 @@ export default function LocationView({
       <View style={s.sheet}>
         {/* Everyone on this map, and how far away they are. */}
         <ScrollView style={{ maxHeight: 168 }} showsVerticalScrollIndicator={false}>
-          {pins.map(p => {
+          {shown.map(p => {
             const at = { lat: p.payload.lat, lng: p.payload.lng };
             const away = me ? distanceMeters(me, at) : null;
             const isLive = isLiveNow(p.payload, now);

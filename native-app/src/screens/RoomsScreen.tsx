@@ -11,7 +11,6 @@ import { fmtBytes } from '../download';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { C, isRTL } from '../theme';
 import { apiFetch, getUsername, getUserId, getSocket, setAuth, getAvatar, RELEASE_TAG, RELEASE_FILE } from '../api';
-import ConnectionBanner from '../components/ConnectionBanner';
 import { BUILD_VERSION } from '../version';
 
 const AVATAR_EMOJIS = ['🦄','🐉','🧙‍♂️','🧚‍♀️','🧛‍♂️','🧞‍♂️','🦊','🐺','🦁','🐯','🐼','🐸','🦉','🐙','🦋','🤖','👽','🐲','🦅','🐬','🔥','⚡','🌙','⭐'];
@@ -334,7 +333,6 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
       {/* Search users & rooms; + creates a room */}
       {/* Offline is not the same as empty, and the two look identical unless
           one of them says so — and coming back is worth saying too. */}
-      <ConnectionBanner />
 
       <View style={s.createRow}>
         <TextInput
