@@ -1184,15 +1184,62 @@ app.get('/message-context/:roomId/:msgId', authMiddleware, (req, res) => {
     ORDER BY m.id ${order} LIMIT ?`;
 
   const older = db.prepare(sql('<=', 'DESC')).all(room.id, msgId, HALF + 1);
-  const newer = db.prepare(sql('>', 'ASC')).all(room.id, msgId, HALF);
-  const messages = [...older.reverse(), ...newer].map(signMessage);
-  res.json({ messages, targetId: msgId, hasOlder: older.length > HALF });
+  const newer = db.prepare(sql('>', 'ASC')).all(room.id, msgId, HALF + 1);
+  // One row past the window in each direction, purely to answer "is there
+  // more?", then dropped. Without hasNewer the client cannot tell a jump into
+  // the middle of a chat from a jump that happens to land near the end, and it
+  // treated both as "everything after this is already loaded".
+  const hasOlder = older.length > HALF;
+  const hasNewer = newer.length > HALF;
+  const messages = [
+    ...older.slice(0, HALF + 1).reverse(),
+    ...newer.slice(0, HALF),
+  ].map(signMessage);
+  res.json({ messages, targetId: msgId, hasOlder, hasNewer });
 });
 
 app.get('/messages/:roomId', authMiddleware, (req, res) => {
   const roomRow = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
   if (!canAccessRoom(req.user.id, roomRow)) return res.status(403).json({ error: 'Not a member of this room' });
   const before = parseInt(req.query.before);
+  const after = parseInt(req.query.after);
+
+  // Paged by id, not by created_at.
+  //
+  // created_at has one-second resolution, so a burst of messages — forwarding
+  // several at once, or any busy moment — all carry the same timestamp and
+  // SQLite is free to order them however it likes. The page boundary then falls
+  // in an arbitrary place inside that burst, and "the newest 50" can genuinely
+  // omit the newest message while including older ones. Caught by a test that
+  // sent 90 messages in one go and found the chat's last message was not its
+  // last message.
+  //
+  // Ids are assigned in order and never tie, so paging on them is stable, and
+  // it matches what /message-context and the forward page below already use.
+
+  // Forwards, for a client that jumped into the middle of a chat and is now
+  // scrolling back towards the present. Without this the only way to get from
+  // an old message to a recent one was to load the whole history between them.
+  //
+  // Ordered by id ASC — the oldest of the messages that follow, so each page
+  // joins directly onto what is already loaded. ORDER BY created_at would put
+  // two messages sent in the same second in an order the client cannot predict,
+  // and a page boundary in the middle of that pair loses one of them.
+  if (after) {
+    const rows = db.prepare(`
+      SELECT m.*, u.username, u.avatar,
+        rm.content AS reply_content, rm.type AS reply_type, rm.file_name AS reply_file_name,
+        ru.username AS reply_username
+      FROM messages m
+      JOIN users u ON m.user_id = u.id
+      LEFT JOIN messages rm ON m.reply_to_id = rm.id
+      LEFT JOIN users ru ON rm.user_id = ru.id
+      WHERE m.room_id = ? AND m.id > ?
+      ORDER BY m.id ASC LIMIT ?
+    `).all(req.params.roomId, after, MESSAGES_PAGE_SIZE);
+    return res.json(rows.map(signMessage));
+  }
+
   const messages = before
     ? db.prepare(`
         SELECT m.*, u.username, u.avatar,
@@ -1203,7 +1250,7 @@ app.get('/messages/:roomId', authMiddleware, (req, res) => {
         LEFT JOIN messages rm ON m.reply_to_id = rm.id
         LEFT JOIN users ru ON rm.user_id = ru.id
         WHERE m.room_id = ? AND m.id < ?
-        ORDER BY m.created_at DESC LIMIT ?
+        ORDER BY m.id DESC LIMIT ?
       `).all(req.params.roomId, before, MESSAGES_PAGE_SIZE)
     : db.prepare(`
         SELECT m.*, u.username, u.avatar,
@@ -1214,7 +1261,7 @@ app.get('/messages/:roomId', authMiddleware, (req, res) => {
         LEFT JOIN messages rm ON m.reply_to_id = rm.id
         LEFT JOIN users ru ON rm.user_id = ru.id
         WHERE m.room_id = ?
-        ORDER BY m.created_at DESC LIMIT ?
+        ORDER BY m.id DESC LIMIT ?
       `).all(req.params.roomId, MESSAGES_PAGE_SIZE);
   res.json(messages.reverse().map(signMessage));
 });

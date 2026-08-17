@@ -40,6 +40,7 @@ import ImageEditor from '../components/ImageEditor';
 import SelectedRow, { useSelectionCount } from '../components/SelectedRow';
 import * as selection from '../selection';
 import { searchLocal, mergeResults } from '../localSearch';
+import * as win from '../messageWindow';
 import {
   reduceSelection, initialSelection, LONG_PRESS_MS,
   type SelectionState, type MsgId,
@@ -331,6 +332,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
   const [loadingOlder, setLoadingOlder] = useState(false);
   const hasMoreOlderRef = useRef(true);
+  // True only after jumping to an old message: the loaded window sits in the
+  // MIDDLE of the chat, with history both behind and ahead of it. Normally a
+  // chat is loaded from its newest message backwards and the only direction
+  // that can run out is older, which is why this did not exist before.
+  const hasMoreNewerRef = useRef(false);
+  const loadingNewerRef = useRef(false);
+  const [loadingNewer, setLoadingNewer] = useState(false);
   const loadingOlderRef = useRef(false);
   const [backStackSize, setBackStackSize] = useState(0);
   const flatListRef = useRef<FlatList>(null);
@@ -392,11 +400,47 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
   useEffect(() => { messagesRef.current = messages; }, [messages]);
 
-  function scrollToId(messageId: number) {
-    const index = messagesRef.current.findIndex(m => m.id === messageId);
-    if (index === -1) return false;
-    const invertedIndex = messagesRef.current.length - 1 - index;
-    flatListRef.current?.scrollToIndex({ index: invertedIndex, animated: true, viewPosition: 0.5 });
+  // A scroll to a message that is still being corrected. Cancelled the moment
+  // the user touches the list, so the app never fights their finger.
+  const settleTimers = useRef<any[]>([]);
+  function cancelSettling() {
+    settleTimers.current.forEach(clearTimeout);
+    settleTimers.current = [];
+  }
+
+  /**
+   * Put a message in the middle of the screen — and keep it there.
+   *
+   * One scrollToIndex is not enough, and that is why "Show in chat" landed
+   * near the message rather than on it. The rows are different heights and
+   * there is no getItemLayout, so FlatList can only ESTIMATE the offset of a
+   * row it has never measured; the first scroll goes to a guessed position,
+   * and rows measured on the way there move the target out from under it.
+   * Photos make it worse: a picture bubble is one height until the image
+   * loads and taller afterwards, which shifts everything below it.
+   *
+   * So the scroll is repeated as the layout settles. Each repeat uses the
+   * measurements taken by the one before, so the target converges instead of
+   * being left wherever the first estimate happened to point.
+   */
+  function scrollToId(messageId: number | string) {
+    const find = () => messagesRef.current.findIndex(m => String(m.id) === String(messageId));
+    if (find() === -1) return false;
+
+    cancelSettling();
+    const go = (animated: boolean) => {
+      const index = find();
+      if (index === -1) return;
+      const invertedIndex = messagesRef.current.length - 1 - index;
+      flatListRef.current?.scrollToIndex({ index: invertedIndex, animated, viewPosition: 0.5 });
+    };
+
+    go(true);
+    // Spread out rather than repeated quickly: the later ones are for images
+    // that finish loading and change the height of what is above the target.
+    [120, 320, 700].forEach(ms => {
+      settleTimers.current.push(setTimeout(() => go(false), ms));
+    });
     return true;
   }
 
@@ -415,14 +459,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           toast(ctx?.error || 'That message is no longer here');
           return;
         }
-        // Merge, keeping whatever is already on screen, so returning to the
-        // bottom afterwards still works.
-        setMessages(prev => {
-          const seen = new Set(prev.map(m => String(m.id)));
-          const add = ctx.messages.filter((m: any) => !seen.has(String(m.id)));
-          return [...add, ...prev].sort((a: any, b: any) => Number(a.id) - Number(b.id));
-        });
-        hasMoreOlderRef.current = !!ctx.hasOlder;
+        // REPLACES what was loaded rather than merging with it.
+        //
+        // Merging is what produced the hole. The jump's window and the recent
+        // block are not adjacent, and once both are in one array sorted by id
+        // nothing marks the join — a message from March sits directly above one
+        // from August with thousands missing in between, and scrolling down
+        // skips all of them in a single step. A window that is contiguous by
+        // construction, plus a flag saying more follows, is what lets the rest
+        // be loaded a screen at a time.
+        applyWindow(win.aroundMessage(ctx.messages, !!ctx.hasOlder, !!ctx.hasNewer));
       } catch {
         setJumping(false);
         toast('Could not open that message');
@@ -435,7 +481,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     jumpBackStackRef.current.push(isNearBottomRef.current ? 'bottom' : (visibleIdRef.current ?? 'bottom'));
     setBackStackSize(jumpBackStackRef.current.length);
     // Give freshly prepended rows a moment to render before scrolling
-    setTimeout(() => scrollToId(messageId), 50);
+    // The window may have just been replaced wholesale, so give the new rows
+    // a frame to mount; scrollToId corrects itself from there.
+    setTimeout(() => scrollToId(messageId), 60);
     setHighlightId(messageId);
     setTimeout(() => setHighlightId(null), 1500);
   }
@@ -448,7 +496,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       setTimeout(() => setHighlightId(null), 1500);
       return;
     }
-    scrollBottom();
+    // Going to the bottom is a direct request, not a walk: fetch the newest
+    // page in one go rather than paging forward through months of history the
+    // user has said they do not want to read.
+    jumpToBottom();
   }
 
   // Messages the user has actually LOOKED at. A disappearing message's clock
@@ -491,26 +542,90 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const viewabilityConfigRef = useRef({ itemVisiblePercentThreshold: 50 }).current;
 
   function onMessagesScroll(e: any) {
-    // Inverted list: offset 0 == visual bottom (latest message)
-    const nearBottom = e.nativeEvent.contentOffset.y < 80;
+    // Inverted list: offset 0 == visual bottom (latest LOADED message).
+    //
+    // "Latest loaded" and "latest" are the same thing until a jump leaves the
+    // window in the middle of the chat. While that gap is open the end of the
+    // list is not the present, so being there must not count as being at the
+    // bottom — it would hide the button that is the way back, and mark
+    // messages read that the user has not reached.
+    const atEnd = e.nativeEvent.contentOffset.y < 80;
+    const nearBottom = atEnd && !hasMoreNewerRef.current;
     isNearBottomRef.current = nearBottom;
     setShowScrollFab(!nearBottom);
     if (nearBottom && missedCount) setMissedCount(0);
+  }
+
+  /** The loaded slice, as messageWindow sees it. */
+  function currentWindow(): win.Window<Message> {
+    return {
+      messages: messagesRef.current,
+      hasOlder: hasMoreOlderRef.current,
+      hasNewer: hasMoreNewerRef.current,
+    };
+  }
+  /** Adopt a window: the array and both flags move together, or not at all. */
+  function applyWindow(next: win.Window<Message>) {
+    // The ref is synced immediately so callers awaiting a page (the reply
+    // backfill, for one) see it without waiting for a render.
+    messagesRef.current = next.messages;
+    hasMoreOlderRef.current = next.hasOlder;
+    hasMoreNewerRef.current = next.hasNewer;
+    setMessages(next.messages);
   }
 
   async function loadOlderMessages() {
     if (loadingOlderRef.current || !hasMoreOlderRef.current || !messagesRef.current.length) return;
     loadingOlderRef.current = true;
     setLoadingOlder(true);
-    const oldestId = messagesRef.current[0].id;
+    const oldestId = win.oldestId(currentWindow());
     const older = await apiFetch(`/messages/${room.id}?before=${oldestId}`);
     loadingOlderRef.current = false;
     setLoadingOlder(false);
-    if (!Array.isArray(older) || !older.length) { hasMoreOlderRef.current = false; return; }
-    hasMoreOlderRef.current = older.length >= MESSAGES_PAGE_SIZE;
-    // Sync the ref immediately so callers awaiting this (e.g. reply backfill) see the new page
-    messagesRef.current = [...older, ...messagesRef.current];
-    setMessages(messagesRef.current);
+    if (!Array.isArray(older)) { hasMoreOlderRef.current = false; return; }
+    applyWindow(win.prependOlder(currentWindow(), older, MESSAGES_PAGE_SIZE));
+  }
+
+  /**
+   * One page towards the present, for a window left in the middle of the chat
+   * by a jump. Reaching the newest end of the list asks for the next screenful
+   * rather than everything between here and now.
+   */
+  async function loadNewerMessages() {
+    if (loadingNewerRef.current || !hasMoreNewerRef.current || !messagesRef.current.length) return;
+    loadingNewerRef.current = true;
+    setLoadingNewer(true);
+    const newestId = win.newestId(currentWindow());
+    const newer = await apiFetch(`/messages/${room.id}?after=${newestId}`);
+    loadingNewerRef.current = false;
+    setLoadingNewer(false);
+    if (!Array.isArray(newer)) { hasMoreNewerRef.current = false; return; }
+    // appendNewer decides the flag: a short page means we have caught up with
+    // the present, and live messages can be appended again from here on.
+    applyWindow(win.appendNewer(currentWindow(), newer, MESSAGES_PAGE_SIZE));
+  }
+
+  /**
+   * Straight to the newest messages, in one request.
+   *
+   * Walking forward page by page is right when the user is reading their way
+   * back through the history, and wrong when they have simply asked to go to
+   * the bottom — that would be dozens of requests to reach somewhere they can
+   * be taken directly. So the window is thrown away and the newest page
+   * fetched, exactly as it is when the chat is first opened.
+   */
+  async function jumpToBottom() {
+    if (!hasMoreNewerRef.current) { scrollBottom(); return; }
+    setJumping(true);
+    try {
+      const latest = await apiFetch(`/messages/${room.id}`);
+      if (Array.isArray(latest) && latest.length) {
+        applyWindow(win.atBottom(latest, MESSAGES_PAGE_SIZE));
+      }
+    } catch {}
+    setJumping(false);
+    // After the list has re-rendered with the new window.
+    setTimeout(() => flatListRef.current?.scrollToOffset({ offset: 0, animated: false }), 50);
   }
 
   const fabVisible = showScrollFab || backStackSize > 0;
@@ -727,6 +842,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         setMessages(msgs);
         messagesRef.current = msgs;
         hasMoreOlderRef.current = msgs.length >= MESSAGES_PAGE_SIZE;
+        hasMoreNewerRef.current = false;
         if (msgs.length) sock.emit('mark_read', { roomId: room.id, lastMsgId: msgs[msgs.length - 1].id });
         offline.saveMessages(room.id, msgs);
         // Emoji effect received while we were away: if the newest message is a
@@ -855,6 +971,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             next[idx] = msg;
             return next;
           });
+        } else if (!win.acceptsLive(currentWindow())) {
+          // The window is parked in the middle of the chat after a jump, so a
+          // message arriving now belongs thousands of messages later. Appending
+          // it would draw it directly beneath the one being read, as though it
+          // were the next thing said. It is not lost — going back to the bottom
+          // fetches it with everything else.
         } else {
           setMessages(prev => [...prev, msg]);
         }
@@ -1917,7 +2039,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     openMenuFor(msg, e);
   }
 
-  useEffect(() => () => { clearTimeout(tapTimer.current); clearTimeout(holdTimer.current); }, []);
+  useEffect(() => () => {
+    clearTimeout(tapTimer.current); clearTimeout(holdTimer.current); cancelSettling();
+  }, []);
 
   useEffect(() => locationManager.subscribe(() => setLiveShare(locationManager.activeShare())), []);
   useEffect(() => {
@@ -3048,14 +3172,23 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           // "dismiss" that has nothing to dismiss. That is why double-tapping
           // another message stopped working after a scroll and only came back
           // after tapping around a few times.
-          onScrollBeginDrag={() => selectionEvent({ type: 'clear' })}
+          onScrollBeginDrag={() => { cancelSettling(); selectionEvent({ type: 'clear' }); }}
           onScroll={onMessagesScroll}
           scrollEventThrottle={100}
           onViewableItemsChanged={onViewableItemsChanged}
           viewabilityConfig={viewabilityConfigRef}
           onEndReached={loadOlderMessages}
           onEndReachedThreshold={1.5}
+          // The list is inverted, so its START is the NEWEST end. This is the
+          // way back to the present after jumping to an old message, and it
+          // fetches one screenful at a time rather than everything in between.
+          onStartReached={loadNewerMessages}
+          onStartReachedThreshold={1.5}
           ListFooterComponent={loadingOlder ? (
+            <ActivityIndicator color={C.accent} size="small" style={{ marginVertical: 10 }} />
+          ) : null}
+          // Inverted, so the header sits at the newest end.
+          ListHeaderComponent={loadingNewer ? (
             <ActivityIndicator color={C.accent} size="small" style={{ marginVertical: 10 }} />
           ) : null}
           onScrollToIndexFailed={info => {

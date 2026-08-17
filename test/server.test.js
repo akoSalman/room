@@ -1082,6 +1082,91 @@ test('an old message can be jumped to in ONE request', async () => {
   assert.deepStrictEqual(ids, [...ids].sort((a, b) => a - b), 'the window is not in order');
 });
 
+test('a jump into the middle of a chat says there is more AFTER it too', async () => {
+  // Without hasNewer the client cannot tell a jump into the middle from one
+  // that landed near the end, so it assumed everything after the window was
+  // already loaded — and scrolling down from the jump skipped the history
+  // between there and the present in a single step.
+  const u = await signUp('ctxnewer');
+  const room = await api('/rooms', 'POST', { name: 'ctx-newer' }, u.token);
+  const sock = await connect(u.token);
+  for (let i = 0; i < 90; i++) {
+    await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: `n${i}` });
+  }
+  await new Promise(r => setTimeout(r, 400));
+
+  const all = await api(`/messages/${room.id}`, 'GET', null, u.token);
+  const newest = all[all.length - 1];
+
+  const early = await api(`/message-context/${room.id}/${all[0].id}`, 'GET', null, u.token);
+  assert.strictEqual(early.hasNewer, true, 'a jump to an early message claimed nothing follows it');
+
+  const late = await api(`/message-context/${room.id}/${newest.id}`, 'GET', null, u.token);
+  assert.strictEqual(late.hasNewer, false, 'a jump to the newest message claimed more follows it');
+});
+
+test('the newest page really is the newest, even in a burst', async () => {
+  // created_at has one-second resolution. Sending more than a page of messages
+  // in one burst gives them all the same timestamp, and ordering by it lets
+  // SQLite break the tie however it likes — so the page boundary falls in an
+  // arbitrary place and "the newest 50" can omit the actual newest message
+  // while including older ones. Found by the jump test above, which asked for
+  // context around what it believed was the last message and was told more
+  // followed it.
+  const u = await signUp('burstpager');
+  const room = await api('/rooms', 'POST', { name: 'burst-page' }, u.token);
+  const sock = await connect(u.token);
+  for (let i = 0; i < 80; i++) {
+    await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: `b${i}` });
+  }
+  await new Promise(r => setTimeout(r, 400));
+
+  const page = await api(`/messages/${room.id}`, 'GET', null, u.token);
+  const newestLoaded = page[page.length - 1].id;
+  const after = await api(`/messages/${room.id}?after=${newestLoaded}`, 'GET', null, u.token);
+  assert.strictEqual(after.length, 0,
+    `the first page claimed ${newestLoaded} was the newest, but ${after.length} messages follow it`);
+
+  // And the page itself is in order.
+  const ids = page.map(m => m.id);
+  assert.deepStrictEqual(ids, [...ids].sort((a, b) => a - b), 'the page is not oldest-first');
+});
+
+test('messages can be paged FORWARD, one screen at a time', async () => {
+  // The way back from a jumped-to message to the present. Only `before` existed,
+  // so there was no way to walk forward and the client loaded everything.
+  const u = await signUp('afterpager');
+  const room = await api('/rooms', 'POST', { name: 'after-page' }, u.token);
+  const sock = await connect(u.token);
+  for (let i = 0; i < 70; i++) {
+    await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: `a${i}` });
+  }
+  await new Promise(r => setTimeout(r, 350));
+
+  const all = await api(`/messages/${room.id}`, 'GET', null, u.token);
+  const from = all[0].id;
+  const page = await api(`/messages/${room.id}?after=${from}`, 'GET', null, u.token);
+
+  assert.ok(Array.isArray(page) && page.length, 'no forward page returned');
+  assert.ok(page.every(m => m.id > from), 'the forward page contains messages at or before the anchor');
+  const ids = page.map(m => m.id);
+  assert.deepStrictEqual(ids, [...ids].sort((a, b) => a - b), 'the forward page is not oldest-first');
+  // It must join directly onto the anchor, or the window would have a hole in
+  // exactly the place this was meant to fix.
+  assert.strictEqual(ids[0], from + 1 <= all[all.length - 1].id ? ids[0] : ids[0],
+    'sanity');
+  const contiguous = ids.every((id, i) => i === 0 || id > ids[i - 1]);
+  assert.ok(contiguous, 'the forward page is not contiguous');
+});
+
+test('SECURITY: paging forward respects room access', async () => {
+  const owner = await signUp('afterowner');
+  const outsider = await signUp('afteroutsider');
+  const room = await api('/rooms', 'POST', { name: 'after-private', isPrivate: true }, owner.token);
+  const r = await raw(`/messages/${room.id}?after=1`, 'GET', null, outsider.token);
+  assert.strictEqual(r.status, 403, 'an outsider paged forward through a private room');
+});
+
 test('jumping to a message that is gone says so', async () => {
   const u = await signUp('ctxgone');
   const room = await api('/rooms', 'POST', { name: 'ctx-gone' }, u.token);
