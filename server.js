@@ -1113,6 +1113,44 @@ app.get('/search-messages/:roomId', authMiddleware, (req, res) => {
   res.json({ results: rows, encryptedSkipped });
 });
 
+// The encrypted messages of a chat, so the DEVICE can search them.
+//
+// The server cannot search these and never will: it holds ciphertext and no
+// key. But it can hand them over — the caller is already entitled to read this
+// room, and this is the same ciphertext /messages returns. The device decrypts
+// in memory and matches locally, so no plaintext and no search term ever
+// reaches the server.
+//
+// This is the same division of labour Telegram uses for Secret Chats and Signal
+// uses for everything: either the server can read the text and can therefore
+// index it, or the device does the work. There is no third option.
+app.get('/encrypted-messages/:roomId', authMiddleware, (req, res) => {
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
+  if (!canAccessRoom(req.user.id, room)) return res.status(403).json({ error: 'No access' });
+
+  // Capped. Handing over an unbounded history would turn a search into a
+  // multi-megabyte download on a connection that cannot afford it.
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 2000, 1), 5000);
+  const rows = db.prepare(`
+    SELECT m.id, m.content, m.created_at, m.user_id, u.username, u.avatar
+    FROM messages m
+    JOIN users u ON m.user_id = u.id
+    WHERE m.room_id = ?
+      AND m.type = 'text'
+      AND m.content LIKE 'e2e:%'
+    ORDER BY m.id DESC
+    LIMIT ?
+  `).all(room.id, limit);
+
+  // The total, so the client can say when it is searching only part of a very
+  // long history rather than quietly searching less than the user thinks.
+  const total = db.prepare(
+    "SELECT COUNT(*) c FROM messages WHERE room_id = ? AND type = 'text' AND content LIKE 'e2e:%'"
+  ).get(room.id).c;
+
+  res.json({ messages: rows, total });
+});
+
 // Messages AROUND one particular message.
 //
 // "Show in chat" used to work by paging backwards from the newest message

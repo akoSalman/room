@@ -39,6 +39,7 @@ import * as offline from '../offlineStore';
 import ImageEditor from '../components/ImageEditor';
 import SelectedRow, { useSelectionCount } from '../components/SelectedRow';
 import * as selection from '../selection';
+import { searchLocal, mergeResults } from '../localSearch';
 import {
   reduceSelection, initialSelection, LONG_PRESS_MS,
   type SelectionState, type MsgId,
@@ -2736,8 +2737,40 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           onClose={() => { setSearching(false); setHighlightId(null); }}
           onSearch={async (q) => {
             const r = await apiFetch(`/search-messages/${room.id}?q=${encodeURIComponent(q)}`);
-            if (!r || r.error) return { results: [], encryptedSkipped: 0 };
-            return { results: r.results || [], encryptedSkipped: r.encryptedSkipped || 0 };
+            const server = r && !r.error ? (r.results || []) : [];
+            const skipped = r && !r.error ? (r.encryptedSkipped || 0) : 0;
+
+            // Encrypted messages are searched HERE, on the device.
+            //
+            // The server holds ciphertext and no key, so it cannot match them
+            // and reported how many it had skipped instead — honest, but the
+            // user still could not find their own messages. So it hands the
+            // ciphertext over and we decrypt it in memory: no plaintext and no
+            // search term leaves the phone. Same arrangement Telegram uses for
+            // Secret Chats.
+            if (!skipped || !dmPeerPk.current) {
+              return { results: server, encryptedSkipped: skipped };
+            }
+            try {
+              const enc = await apiFetch(`/encrypted-messages/${room.id}`);
+              const rows: any[] = enc && !enc.error && Array.isArray(enc.messages) ? enc.messages : [];
+              const plain = rows.map(m => ({
+                ...m,
+                content: e2eIsEncrypted(m.content)
+                  ? (e2eDecrypt(m.content, dmPeerPk.current) ?? '')
+                  : String(m.content || ''),
+              }));
+              const local = searchLocal(plain, q);
+              return {
+                results: mergeResults(server, local),
+                // Only what we could NOT reach: anything beyond the server's
+                // handover cap. Reporting the whole encrypted count here would
+                // warn about messages that were, in fact, searched.
+                encryptedSkipped: Math.max(0, (enc?.total || 0) - rows.length),
+              };
+            } catch {
+              return { results: server, encryptedSkipped: skipped };
+            }
           }}
           onJump={(id) => jumpToMessage(id)}
         />
@@ -2884,7 +2917,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                   style={s.lightboxMore}
                   hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 >
-                  <Ionicons name="ellipsis-horizontal" size={20} color="#fff" />
+                  <Ionicons name="ellipsis-vertical" size={19} color="#fff" />
                 </TouchableOpacity>
               )}
               {viewer.images.length > 1 && (
@@ -3173,13 +3206,24 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             const close = () => setActionsMsg(null);
             // Whole row is the button — the label used to be the only thing
             // that reacted, so a tap an inch to its right did nothing.
+            // Ionicons outline set rather than emoji. Emoji are drawn by the
+            // system font, so they arrive in whatever colour and weight the
+            // device feels like — full-colour glyphs of wildly different
+            // widths sitting in a column that is meant to read as one control
+            // surface. An icon font inherits size and colour, so the whole
+            // menu is one family at one weight.
             const Row = ({ icon, label, onPress, danger }: any) => (
               <Pressable
                 style={({ pressed }) => [s.sheetRow, pressed && s.sheetRowPressed]}
                 android_ripple={{ color: 'rgba(128,128,128,0.18)' }}
                 onPress={onPress}
               >
-                <Text style={s.sheetRowIcon}>{icon}</Text>
+                <Ionicons
+                  name={icon}
+                  size={20}
+                  color={danger ? '#ef4444' : C.text}
+                  style={s.sheetRowIcon}
+                />
                 <Text style={[s.sheetRowText, danger && s.sheetRowDanger]}>{label}</Text>
               </Pressable>
             );
@@ -3189,8 +3233,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               return (
                 <View style={s.actionSheet}>
                   <View style={s.sheetGrip} />
-                  <Row icon="🔄" label="Retry" onPress={() => { close(); retryUpload(m, true); }} />
-                  <Row icon="🗑" label="Delete" danger onPress={() => {
+                  <Row icon="refresh-outline" label="Retry" onPress={() => { close(); retryUpload(m, true); }} />
+                  <Row icon="trash-outline" label="Delete" danger onPress={() => {
                     close();
                     Alert.alert('Delete message?', '', [
                       { text: 'Cancel', style: 'cancel' },
@@ -3223,7 +3267,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 </ScrollView>
                 <View style={s.sheetDivider} />
 
-                <Row icon="↩" label="Reply" onPress={() => {
+                <Row icon="arrow-undo-outline" label="Reply" onPress={() => {
                   close();
                   setReplyTo({ id: m.id, username: m.username, content: m.content, type: m.type });
                   composerRef.current?.focus();
@@ -3233,13 +3277,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                     pressable spans and swallow the long-press. This always
                     works, whatever the message contains. */}
                 {m.type === 'text' && !hidden && !!m.content && canTakeContent(m) && (
-                  <Row icon="✏️" label="Select text" onPress={() => {
+                  <Row icon="text-outline" label="Select text" onPress={() => {
                     close();
                     setSelectTextOf(m.content || '');
                   }} />
                 )}
                 {(m.type === 'text' || (m.file_path && !m.one_time_seconds)) && !hidden && canTakeContent(m) && (
-                  <Row icon="📋" label="Copy" onPress={() => {
+                  <Row icon="copy-outline" label="Copy" onPress={() => {
                     let fp = m.file_path || '';
                     if (m.type === 'gallery') { try { fp = JSON.parse(fp)[0] || ''; } catch {} }
                     const t = m.type === 'text' ? (m.content || '') : `${BASE_URL}${fp}`;
@@ -3248,22 +3292,22 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                   }} />
                 )}
                 {m.type !== 'invite' && !m.one_time_seconds && (
-                  <Row icon="↪" label="Forward" onPress={() => { close(); openForwardPicker(m); }} />
+                  <Row icon="arrow-redo-outline" label="Forward" onPress={() => { close(); openForwardPicker(m); }} />
                 )}
                 {m.file_path && !hidden && !m.one_time_seconds && canTakeContent(m) && (
-                  <Row icon="⬇" label="Download" onPress={() => { close(); downloadMedia(m); }} />
+                  <Row icon="download-outline" label="Download" onPress={() => { close(); downloadMedia(m); }} />
                 )}
                 {m.file_path && !hidden && !m.one_time_seconds && canTakeContent(m) && (
-                  <Row icon="📤" label="Share to another app" onPress={() => { close(); shareOut(m); }} />
+                  <Row icon="share-outline" label="Share to another app" onPress={() => { close(); shareOut(m); }} />
                 )}
                 {mineMsg && m.type === 'text' && (
-                  <Row icon="✏️" label="Edit" onPress={() => {
+                  <Row icon="create-outline" label="Edit" onPress={() => {
                     close();
                     composerRef.current?.setText(m.content || ''); setEditingId(m.id);
                   }} />
                 )}
                 {mineMsg && (
-                  <Row icon="🗑" label="Delete" danger onPress={() => { close(); deleteMsg(m.id); }} />
+                  <Row icon="trash-outline" label="Delete" danger onPress={() => { close(); deleteMsg(m.id); }} />
                 )}
                 <TouchableOpacity style={s.sheetCancel} onPress={close}>
                   <Text style={s.sheetCancelText}>Cancel</Text>
@@ -3500,36 +3544,39 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setViewerActions(null)} />
           <View style={s.attachSheet}>
             <View style={s.sheetHandle} />
-            {/* Editing a one-time photo would produce a permanent copy of
-                something meant to vanish, so it is offered on nothing else. */}
-            {!isOneTimeUrl(viewerUrl) && (
-              <TouchableOpacity style={s.attachOption} onPress={() => {
-                setViewerActions(null);
-                if (viewerUrl) setEditing({ uri: viewerUrl });
-              }}>
-                <Text style={s.attachOptionText}>✏️  Edit</Text>
-              </TouchableOpacity>
-            )}
+            {/* Same rows, same icon family and same weights as the message
+                menu — the two are the same kind of thing and used to look like
+                two different apps, one drawn in emoji and one in icons. */}
             {(([
-              ['showInChat', '💬  Show in chat'],
-              // Saving a one-time photo would defeat it.
-              ...(isOneTimeUrl(viewerUrl) ? [] : [['download', '⬇  Download'] as [MediaAction, string]]),
-              ...(isOneTimeUrl(viewerUrl) ? [] : [['share', '📤  Share'] as [MediaAction, string]]),
-            ] as [MediaAction, string][])).map(([action, label]) => (
-              <TouchableOpacity key={action} style={s.attachOption} onPress={() => {
-                const it = viewerActions; setViewerActions(null);
-                if (!it) return;
-                setViewer(null);
-                onMediaAction(action, it);
-              }}>
-                <Text style={s.attachOptionText}>{label}</Text>
-              </TouchableOpacity>
+              // Editing a one-time photo would produce a permanent copy of
+              // something meant to vanish, so it is offered on nothing else.
+              ...(isOneTimeUrl(viewerUrl) ? [] : [['edit', 'create-outline', 'Edit']]),
+              ['showInChat', 'chatbubble-outline', 'Show in chat'],
+              // Saving or sharing a one-time photo would defeat it.
+              ...(isOneTimeUrl(viewerUrl) ? [] : [['download', 'download-outline', 'Download']]),
+              ...(isOneTimeUrl(viewerUrl) ? [] : [['share', 'share-outline', 'Share']]),
+              ['close', 'close-outline', 'Close photo'],
+            ] as [string, string, string][])).map(([action, icon, label]) => (
+              <Pressable
+                key={action}
+                style={({ pressed }) => [s.sheetRow, pressed && s.sheetRowPressed]}
+                android_ripple={{ color: 'rgba(128,128,128,0.18)' }}
+                onPress={() => {
+                  const it = viewerActions;
+                  setViewerActions(null);
+                  if (action === 'edit') { if (viewerUrl) setEditing({ uri: viewerUrl }); return; }
+                  if (action === 'close') { closeViewer(); return; }
+                  if (!it) return;
+                  setViewer(null);
+                  onMediaAction(action as MediaAction, it);
+                }}
+              >
+                <Ionicons name={icon as any} size={20} color={C.text} style={s.sheetRowIcon} />
+                <Text style={s.sheetRowText}>{label}</Text>
+              </Pressable>
             ))}
-            <TouchableOpacity style={s.attachOption} onPress={() => { setViewerActions(null); closeViewer(); }}>
-              <Text style={s.attachOptionText}>✕  Close photo</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={s.attachCancel} onPress={() => setViewerActions(null)}>
-              <Text style={s.attachCancelText}>Cancel</Text>
+            <TouchableOpacity style={s.sheetCancel} onPress={() => setViewerActions(null)}>
+              <Text style={s.sheetCancelText}>Cancel</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -4000,7 +4047,7 @@ const s = StyleSheet.create({
     paddingHorizontal: 22, paddingVertical: 16, width: '100%', minHeight: 54,
   },
   sheetRowPressed: { backgroundColor: 'rgba(128,128,128,0.14)' },
-  sheetRowIcon: { fontSize: 19, width: 26, textAlign: 'center' },
+  sheetRowIcon: { width: 26, textAlign: 'center' },
   // flex:1 so the label fills the row — nothing dead to the right of the text.
   sheetRowText: { color: C.text, fontSize: 16, fontWeight: '500', flex: 1 },
   sheetRowDanger: { color: '#f87171' },
@@ -4172,7 +4219,15 @@ const s = StyleSheet.create({
   memberRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.border },
   memberName: { color: C.text, fontSize: 14 },
   memberOwnerTag: { color: C.accent, fontSize: 11, fontWeight: '700', backgroundColor: 'rgba(59,125,216,0.1)', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8 },
-  lightboxMore: { position: 'absolute', top: 50, end: 108, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
+  // Top RIGHT corner. It used to sit at end:108 — a legacy of the two
+  // buttons that were once beside it — which left it stranded in the middle
+  // of the top edge with nothing either side of it.
+  lightboxMore: {
+    position: 'absolute', top: 46, end: 12, width: 40, height: 40, borderRadius: 20,
+    backgroundColor: 'rgba(18,20,26,0.55)',
+    borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.22)',
+    alignItems: 'center', justifyContent: 'center', zIndex: 10,
+  },
   lightboxClose: { position: 'absolute', top: 50, end: 20, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
   lightboxSave: { position: 'absolute', top: 50, end: 68, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
   lightboxCloseText: { color: '#fff', fontSize: 18 },

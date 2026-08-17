@@ -1165,6 +1165,57 @@ test('search reports how much of a chat is encrypted and unsearchable', async ()
   assert.strictEqual(r.encryptedSkipped, 1, 'the client was not told anything was skipped');
 });
 
+test('the encrypted messages are handed over so the DEVICE can search them', async () => {
+  // The server cannot search ciphertext and never will — it has no key. What it
+  // can do is give the device the ciphertext it already stores, and let the
+  // device decrypt and match locally. Same division of labour as Telegram's
+  // Secret Chats: either the server can read the text, or the device does the
+  // work.
+  const u = await signUp('encsearch');
+  const room = await api('/rooms', 'POST', { name: 'enc-search' }, u.token);
+  const sock = await connect(u.token);
+  await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: 'e2e:ciphertextone' });
+  await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: 'e2e:ciphertexttwo' });
+  await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: 'plain and readable' });
+  await new Promise(r => setTimeout(r, 200));
+
+  const r = await api(`/encrypted-messages/${room.id}`, 'GET', null, u.token);
+  assert.strictEqual(r.messages.length, 2, 'not every encrypted message was handed over');
+  assert.ok(r.messages.every(m => String(m.content).startsWith('e2e:')),
+    'a plaintext message was included, which the server can already search');
+  assert.strictEqual(r.total, 2);
+  // Newest first, so a capped fetch keeps the recent history rather than the
+  // oldest — the same order the search endpoint returns.
+  assert.ok(r.messages[0].id > r.messages[1].id, 'not newest first');
+});
+
+test('the handover is capped, and the cap is honest about the total', async () => {
+  const u = await signUp('encsearchcap');
+  const room = await api('/rooms', 'POST', { name: 'enc-cap' }, u.token);
+  const sock = await connect(u.token);
+  for (let i = 0; i < 5; i++) {
+    await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: `e2e:c${i}` });
+  }
+  await new Promise(r => setTimeout(r, 250));
+  const r = await api(`/encrypted-messages/${room.id}?limit=2`, 'GET', null, u.token);
+  assert.strictEqual(r.messages.length, 2, 'the limit was ignored');
+  assert.strictEqual(r.total, 5,
+    'the client cannot tell it is searching part of the history');
+});
+
+test('SECURITY: the encrypted handover respects room access', async () => {
+  // Handing ciphertext to someone who cannot read the room would be a leak even
+  // though they have no key — the metadata alone says who talked and when.
+  const owner = await signUp('encowner');
+  const outsider = await signUp('encoutsider');
+  const room = await api('/rooms', 'POST', { name: 'enc-private', isPrivate: true }, owner.token);
+  const sock = await connect(owner.token);
+  await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: 'e2e:secret' });
+  await new Promise(r => setTimeout(r, 150));
+  const r = await raw(`/encrypted-messages/${room.id}`, 'GET', null, outsider.token);
+  assert.strictEqual(r.status, 403, 'an outsider was handed the ciphertext');
+});
+
 test('SECURITY: search respects room access', async () => {
   const owner = await signUp('searchowner');
   const outsider = await signUp('searchoutsider');

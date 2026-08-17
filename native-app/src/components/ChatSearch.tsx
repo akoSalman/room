@@ -115,7 +115,9 @@ export default function ChatSearch({
               "no matches" for a chat whose messages are encrypted. */}
           {!!skipped && (
             <Text style={s.skipped} numberOfLines={1}>
-              {skipped} encrypted {skipped === 1 ? 'message' : 'messages'} can’t be searched
+              {/* Encrypted messages ARE searched now, on the device. This is
+                  only the very old ones, beyond what the phone fetched. */}
+              {skipped} older {skipped === 1 ? 'message' : 'messages'} not searched
             </Text>
           )}
           <View style={{ flex: 1 }} />
