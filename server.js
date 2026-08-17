@@ -625,8 +625,23 @@ async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
           message: {
             token: t,
             ...(android.dataOnly ? {} : { notification: { title, body } }),
-            data: Object.fromEntries(Object.entries({ ...data, title, body })
-              .map(([k, v]) => [k, String(v)])),
+            // `title` and `body` are kept OUT of the data payload for a call.
+            //
+            // Leaving the top-level `notification` block off is not enough on
+            // its own: expo-notifications builds and presents a notification
+            // of its OWN whenever the data payload carries title/body, using
+            // the default channel and the default sound. So a call arrived as a
+            // plain notification that chimed once — "it doesn't ring, I just
+            // get a notification" — while the ringing notification the app was
+            // supposed to raise never got the chance.
+            //
+            // Nothing is lost by omitting them: the ringing notification is
+            // built on the device from `fromUsername` and `kind`, which travel
+            // as their own fields.
+            data: Object.fromEntries(
+              Object.entries(android.dataOnly ? data : { ...data, title, body })
+                .map(([k, v]) => [k, String(v)]),
+            ),
             android: {
               priority: 'high',
               // Tag the tray notification with the message id so a later

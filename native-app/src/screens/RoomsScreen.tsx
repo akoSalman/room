@@ -54,6 +54,10 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   // ordinary traffic — being addressed by name is not the same as a busy room.
   const [mentions, setMentions] = useState<Record<number, boolean>>({});
   const [latestVersion, setLatestVersion] = useState<number | null>(null);
+  // An APK already on the phone that was downloaded but never installed —
+  // backing out of Android's installer is easy to do and easy not to notice.
+  const [downloadedUpdate, setDownloadedUpdate] =
+    useState<{ version: number; uri: string } | null>(null);
   const [versionCheckFailed, setVersionCheckFailed] = useState(false);
   // Mirrors the module-scope download, so re-opening this screen mid-download
   // shows the real progress instead of starting again.
@@ -63,7 +67,15 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   useEffect(() => appUpdate.subscribe(() => {
     const st = appUpdate.current();
     setUpdateProgress(st.status === 'downloading' ? st.progress : null);
+    // A finished download becomes an offer to install it.
+    if (st.status !== 'downloading') appUpdate.downloaded().then(setDownloadedUpdate);
   }), []);
+  useEffect(() => { appUpdate.downloaded().then(setDownloadedUpdate).catch(() => {}); }, []);
+  const updateChoice = appUpdate.installChoice({
+    downloadedVersion: downloadedUpdate?.version ?? null,
+    latestVersion,
+    currentVersion: BUILD_VERSION,
+  });
   const [myAvatar, setMyAvatar] = useState<string | null>(null);
   // What the kept media actually costs, so the number is visible rather than
   // something the user has to guess at from the phone's storage screen.
@@ -272,7 +284,24 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
     if (Platform.OS !== 'android') { Linking.openURL(LATEST_APK_URL); return; }
     // Owned by appUpdate at module scope: closing this screen, or the app,
     // no longer cancels the download.
-    appUpdate.start(LATEST_APK_URL).catch(() => {});
+    // The version travels with it so a download the user never installs can be
+    // offered as Install next time instead of being fetched all over again.
+    appUpdate.start(LATEST_APK_URL, latestVersion ?? undefined).catch(() => {});
+  }
+
+  /** Hand the already-downloaded APK back to Android's installer. */
+  async function installDownloadedUpdate() {
+    const rec = downloadedUpdate;
+    if (!rec) return;
+    try {
+      await appUpdate.install(rec.uri);
+    } catch {
+      // The file may have been swept out of the cache since it was checked, in
+      // which case downloading is the only way forward.
+      await appUpdate.forgetDownloaded();
+      setDownloadedUpdate(null);
+      Alert.alert('Could not install', 'The downloaded file is no longer available.');
+    }
   }
 
   async function setAvatarEmoji(emoji: string | null) {
@@ -531,17 +560,31 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
                   <Text style={s.versionValue}>{latestVersion !== null ? `v${latestVersion}` : '…'}</Text>
                 </View>
               </View>
-              {latestVersion !== null && BUILD_VERSION === latestVersion ? (
-                <View style={s.upToDateBox}>
-                  <Text style={s.upToDateText}>✓ You are up to date</Text>
-                </View>
-              ) : updateProgress !== null ? (
+              {/* A download in progress always wins; otherwise the choice is
+                  decided by installChoice, which offers an APK already on the
+                  phone rather than fetching it a second time. */}
+              {updateProgress !== null ? (
                 <View style={s.updateProgressWrap}>
                   <View style={s.updateProgressTrack}>
                     <View style={[s.updateProgressFill, { width: `${Math.round(updateProgress * 100)}%` }]} />
                   </View>
                   <Text style={s.updateProgressText}>Downloading update… {Math.round(updateProgress * 100)}%</Text>
                 </View>
+              ) : updateChoice === 'up-to-date' ? (
+                <View style={s.upToDateBox}>
+                  <Text style={s.upToDateText}>✓ You are up to date</Text>
+                </View>
+              ) : updateChoice === 'install' ? (
+                <>
+                  <TouchableOpacity style={s.updateBtn} onPress={installDownloadedUpdate}>
+                    <Text style={s.updateBtnText}>
+                      ⬇ Install version {downloadedUpdate?.version}
+                    </Text>
+                  </TouchableOpacity>
+                  <Text style={s.alreadyDownloadedHint}>
+                    Already downloaded — no data needed to install it.
+                  </Text>
+                </>
               ) : (
                 <TouchableOpacity style={s.updateBtn} onPress={downloadAndInstallUpdate}>
                   <Text style={s.updateBtnText}>
@@ -757,6 +800,9 @@ const s = StyleSheet.create({
   updateBtn: { backgroundColor: C.accent, borderRadius: 10, padding: 13, alignItems: 'center' },
   updateBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
   upToDateBox: { backgroundColor: 'rgba(22,163,74,0.12)', borderWidth: 1, borderColor: C.success, borderRadius: 10, padding: 13, alignItems: 'center' },
+  alreadyDownloadedHint: {
+    color: C.muted, fontSize: 11.5, textAlign: 'center', marginTop: 7,
+  },
   upToDateText: { color: C.success, fontWeight: '700', fontSize: 15 },
   versionCheckError: { color: C.muted, fontSize: 12, marginTop: 8, textAlign: 'center' },
   versionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 14, marginBottom: 12 },

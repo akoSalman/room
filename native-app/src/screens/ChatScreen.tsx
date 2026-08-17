@@ -37,6 +37,8 @@ import TextViewer from '../components/TextViewer';
 import * as mediaCache from '../mediaCache';
 import * as offline from '../offlineStore';
 import ImageEditor from '../components/ImageEditor';
+import SelectedRow, { useSelectionCount } from '../components/SelectedRow';
+import * as selection from '../selection';
 import {
   reduceSelection, initialSelection, LONG_PRESS_MS,
   type SelectionState, type MsgId,
@@ -227,7 +229,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [actionsMsg, setActionsMsg] = useState<{ msg: Message; x: number; y: number } | null>(null); // tap menu for a message
   // Long press puts the chat into multi-select: pick several messages and
   // forward or delete them in one go.
-  const [selectedIds, setSelectedIds] = useState<Set<Message['id']>>(new Set());
+  // Whether select mode is ON — the one part of selection that genuinely
+  // changes the whole screen (toolbar appears, taps mean "tick"). WHICH
+  // messages are ticked lives in src/selection.ts, outside React, because
+  // keeping it here re-rendered every mounted row on every tick.
+  const [selectMode, setSelectMode] = useState(false);
+  // Subscribes to the selection directly, so ticking a message redraws this
+  // number and the one row involved — not the list.
+  const selectedCount = useSelectionCount();
   // The one message whose text is currently being selected in place.
   // Controlled selection range, used only to preselect the whole message the
   // instant double-tap turns it into a selectable field; released a moment
@@ -345,12 +354,35 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // to clear it. `selKey` is what forces that remount.
   const selState = useRef<SelectionState>(initialSelection);
   const selLast = useRef<{ id: MsgId; at: number } | null>(null);
+  // Changing chat throws away every message on screen, and any selection with
+  // them — but the belief that one is live would survive into the new chat and
+  // eat the first tap there. `selLast` goes too: a stale "you just tapped
+  // message 12" from the previous chat could pair up with a first tap here and
+  // read as a double tap on a completely different message.
+  useEffect(() => {
+    selState.current = initialSelection;
+    selLast.current = null;
+    // Ticked messages belong to the chat they were ticked in. The store lives
+    // outside React and outlives this screen, so it has to be emptied here or
+    // a forward in the next chat would carry ids from the last one.
+    selection.clear();
+    setSelectMode(false);
+    return () => { selection.clear(); };
+  }, [room.id]);
+
+  // Drop ticks for messages that are no longer here — deleted by their sender,
+  // or gone with a reload. Leaving them would delete or forward something the
+  // user can no longer see.
+  useEffect(() => {
+    if (!selectMode) return;
+    if (selection.retain(messages.map(m => m.id))) setSelectMode(false);
+  }, [messages, selectMode]);
   const holdTimer = useRef<any>(null);
   const [selCleared, setSelCleared] = useState<{ id: MsgId; key: number } | null>(null);
 
   const rowExtraData = useMemo(
-    () => ({ maxOtherReadMsgId, uploadProgress, reactions, highlightId, online, revealedOneTime, e2eActive, selectedIds, selCleared }),
-    [maxOtherReadMsgId, uploadProgress, reactions, highlightId, online, revealedOneTime, e2eActive, selectedIds, selCleared],
+    () => ({ maxOtherReadMsgId, uploadProgress, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode, selCleared }),
+    [maxOtherReadMsgId, uploadProgress, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode, selCleared],
   );
 
   const scrollBottom = useCallback(() => {
@@ -1674,7 +1706,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // so they arrive in the order they were written.
     const ids = forwardMsg
       ? [forwardMsg.id]
-      : messagesRef.current.filter(m => selectedIds.has(m.id)).map(m => m.id);
+      : messagesRef.current.filter(m => selection.has(m.id)).map(m => m.id);
     if (!ids.length) return;
     // Sequentially, waiting for each ack: firing them all at once let the
     // server insert them in whatever order they happened to arrive, so a
@@ -1706,7 +1738,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   function deleteSelected() {
-    const ids = [...selectedIds];
+    const ids = selection.all();
     if (!ids.length) return;
     Alert.alert(
       `Delete ${ids.length} message${ids.length > 1 ? 's' : ''}?`, '',
@@ -1849,17 +1881,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
   // ── Multi-select ───────────────────────────────────────────────────────────
   function toggleSelected(msg: Message) {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      if (next.has(msg.id)) next.delete(msg.id); else next.add(msg.id);
-      return next;
-    });
+    // Unticking the last one leaves select mode, which is the only part of this
+    // that the screen as a whole needs to know about.
+    if (selection.toggle(msg.id) === 0) setSelectMode(false);
   }
   function enterSelectMode(msg: Message) {
     clearTimeout(tapTimer.current);
-    setSelectedIds(new Set([msg.id]));
+    selection.begin(msg.id);
+    setSelectMode(true);
   }
-  function exitSelectMode() { setSelectedIds(new Set()); }
+  function exitSelectMode() { selection.clear(); setSelectMode(false); }
 
   function onMessageLongPress(msg: Message) {
     clearTimeout(holdTimer.current);
@@ -1881,7 +1912,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // selection and stops there. Opening the message menu on that same tap
     // made dismissing a selection impossible without also being interrupted.
     if (action === 'dismiss') return;
-    if (selectedIds.size) { toggleSelected(msg); return; }
+    if (selectMode) { toggleSelected(msg); return; }
     openMenuFor(msg, e);
   }
 
@@ -1930,13 +1961,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // Hardware back gets out of a selection first, rather than leaving the chat
   // with messages still picked.
   useEffect(() => {
-    if (!selectedIds.size) return;
+    if (!selectMode) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (selectedIds.size) { exitSelectMode(); return true; }
+      if (selectMode) { exitSelectMode(); return true; }
       return false;
     });
     return () => sub.remove();
-  }, [selectedIds.size]);
+  }, [selectMode]);
 
   // Membership gates posting, so it must be known as soon as the room opens —
   // not only when the info sheet is opened.
@@ -2273,9 +2304,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       if (r.username === me) grouped[r.emoji].mine = true;
     });
 
-    const picked = selectedIds.has(msg.id);
     return (
-      <View style={[s.msgRow, picked && s.msgRowPicked]}>
+      <SelectedRow id={msg.id} base={s.msgRow} picked={s.msgRowPicked}>
       {/* Press-catcher across the WHOLE row, behind the bubble: the empty
           space beside a message reacts exactly like the message does. It sits
           behind, so the bubble's own taps, media taps and swipe-to-reply all
@@ -2318,7 +2348,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         )}
         <View style={[s.bubbleRow, mine && s.bubbleRowMine]}>
         <SwipeableMessage
-          enabled={!selectedIds.size}
+          enabled={!selectMode}
           onSwipeRight={() => { setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type }); composerRef.current?.focus(); }}
           onSwipeLeft={mine ? () => deleteMsg(msg.id) : undefined}
         >
@@ -2344,7 +2374,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               },
             }
           : {
-              onPress: selectedIds.size ? () => toggleSelected(msg) : undefined,
+              onPress: selectMode ? () => toggleSelected(msg) : undefined,
               activeOpacity: 1,
               onLongPress: () => onMessageLongPress(msg),
               delayLongPress: 350,
@@ -2436,7 +2466,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             return (
               <TouchableOpacity
                 onPress={() => {
-                  if (selectedIds.size) { toggleSelected(msg); return; }
+                  if (selectMode) { toggleSelected(msg); return; }
                   if (!msg._uploading) openViewer(uri);
                 }}
                 onLongPress={() => onMessageLongPress(msg)}
@@ -2467,7 +2497,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 uris={full}
                 cache={canTakeContent(msg)}
                 onLongPress={() => onMessageLongPress(msg)}
-                onOpen={(i) => { if (selectedIds.size) toggleSelected(msg); else openViewer(full[i]); }}
+                onOpen={(i) => { if (selectMode) toggleSelected(msg); else openViewer(full[i]); }}
                 onFirstLoaded={msg.one_time_seconds && !mine ? () => startOneTimeClock(msg) : undefined}
               />
             );
@@ -2502,7 +2532,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 // `playUrl` is the downloaded copy when there is one, so a
                 // saved video opens instantly and works with no signal.
                 onOpen={(playUrl) => {
-                  if (selectedIds.size) { toggleSelected(msg); return; }
+                  if (selectMode) { toggleSelected(msg); return; }
                   setVideoPlaylist(chatVideos());
                   setVideoItem({ id: msg.id, url: playUrl, name: msg.file_name || 'Video' });
                   setVideoMini(false);
@@ -2520,7 +2550,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               <TouchableOpacity
                 activeOpacity={0.85}
                 onPress={() => {
-                  if (selectedIds.size) { toggleSelected(msg); return; }
+                  if (selectMode) { toggleSelected(msg); return; }
                   setOpenLocationId(msg.id);
                 }}
                 onLongPress={() => onMessageLongPress(msg)}
@@ -2648,7 +2678,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
 
       </View>
-      </View>
+      </SelectedRow>
     );
   }
 
@@ -2661,7 +2691,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       onBack={onBack}
       enabled={
         !videoItem && openLocationId == null && !cameraMode
-        && !selectedIds.size && !searching
+        && !selectMode && !searching
         && !forwardOpen && !showPlayer && !recording
       }
     >
@@ -2683,12 +2713,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       {/* Multi-select action bar. Replaces the header while messages are
           picked, the way every chat app does it, so the count and the actions
           sit where the user is already looking. */}
-      {selectedIds.size > 0 && (
+      {selectMode && (
         <View style={s.selBar}>
           <TouchableOpacity onPress={exitSelectMode} style={s.selBarBtn} hitSlop={hitSlop10}>
             <Ionicons name="close" size={24} color={C.text} />
           </TouchableOpacity>
-          <Text style={s.selBarCount}>{selectedIds.size} selected</Text>
+          <Text style={s.selBarCount}>{selectedCount} selected</Text>
           <TouchableOpacity onPress={openForwardPickerForSelection} style={s.selBarBtn} hitSlop={hitSlop10}>
             <Ionicons name="arrow-redo-outline" size={23} color={C.accent} />
           </TouchableOpacity>
@@ -2701,7 +2731,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       {/* Search takes over the header while it is open, like every chat app
           people already use — the chat stays visible underneath so results can
           be scrolled to as they are stepped through. */}
-      {selectedIds.size === 0 && searching && (
+      {!selectMode && searching && (
         <ChatSearch
           onClose={() => { setSearching(false); setHighlightId(null); }}
           onSearch={async (q) => {
@@ -2714,7 +2744,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       )}
 
       {/* Header */}
-      {selectedIds.size === 0 && !searching && (
+      {!selectMode && !searching && (
       <View style={s.header}>
         <TouchableOpacity onPress={onBack} style={s.backBtn} activeOpacity={0.6}
           hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}>
@@ -2979,6 +3009,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           // That is what made the One-time menu feel slow to open and close.
           extraData={rowExtraData}
           contentContainerStyle={s.messagesList}
+          // Scrolling wipes a native text selection — the OS does that itself,
+          // without telling us. Our belief that a message is still selected
+          // then outlives the selection, and the next tap gets eaten as a
+          // "dismiss" that has nothing to dismiss. That is why double-tapping
+          // another message stopped working after a scroll and only came back
+          // after tapping around a few times.
+          onScrollBeginDrag={() => selectionEvent({ type: 'clear' })}
           onScroll={onMessagesScroll}
           scrollEventThrottle={100}
           onViewableItemsChanged={onViewableItemsChanged}
@@ -3423,8 +3460,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         </View>
       </Modal>
 
-      {/* Crop / draw / add text. A photo already in the chat gets a Send
-          button too — annotating one is nearly always for someone else. */}
+      {/* Crop and draw. A photo already in the chat gets a Send button too —
+          annotating one is nearly always for someone else. */}
       {editing && (
         <ImageEditor
           uri={editing.uri}
@@ -3522,7 +3559,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           <Pressable style={StyleSheet.absoluteFill} onPress={() => { setForwardOpen(false); setForwardMsg(null); }} />
           <View style={s.attachSheet}>
             <View style={s.sheetHandle} />
-            <Text style={s.forwardTitle}>{forwardMsg ? 'Forward to…' : `Forward ${selectedIds.size} message${selectedIds.size > 1 ? 's' : ''} to…`}</Text>
+            <Text style={s.forwardTitle}>{forwardMsg ? 'Forward to…' : `Forward ${selectedCount} message${selectedCount > 1 ? 's' : ''} to…`}</Text>
             <ScrollView style={{ maxHeight: 380 }} nestedScrollEnabled>
               {forwardTargets.map(t => (
                 <TouchableOpacity key={`${t.is_dm ? 'd' : 'r'}${t.id}`} style={s.attachOption} onPress={() => doForward(t)}>

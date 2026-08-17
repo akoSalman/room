@@ -14,8 +14,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { Platform } from 'react-native';
 import notifee, { AndroidImportance } from '@notifee/react-native';
+// Re-exported so callers have one place to look.
+export { installChoice, UpdateChoice } from './updateChoice';
 
 const RESUME_KEY = 'appUpdateResume';
+/** A download that finished but was never installed. */
+const DOWNLOADED_KEY = 'appUpdateDownloaded';
 const CHANNEL = 'updates-v1';
 const NOTIFICATION_ID = 'app-update';
 
@@ -75,10 +79,38 @@ export async function install(uri: string) {
 }
 
 /**
+ * A finished download waiting to be installed, if the file is still there.
+ *
+ * The cache directory is the OS's to reclaim, so the record is only trusted
+ * when the file it names actually exists — otherwise the button would offer to
+ * install something that had been swept away.
+ */
+export async function downloaded(): Promise<{ version: number; uri: string } | null> {
+  if (Platform.OS !== 'android') return null;
+  try {
+    const raw = await AsyncStorage.getItem(DOWNLOADED_KEY);
+    if (!raw) return null;
+    const rec = JSON.parse(raw);
+    if (typeof rec?.version !== 'number' || typeof rec?.uri !== 'string') return null;
+    const info = await FileSystem.getInfoAsync(rec.uri);
+    if (!info.exists || !info.size) { await forgetDownloaded(); return null; }
+    return rec;
+  } catch { return null; }
+}
+
+/** Drop the record — after a successful install, or when it is superseded. */
+export async function forgetDownloaded(): Promise<void> {
+  try { await AsyncStorage.removeItem(DOWNLOADED_KEY); } catch {}
+}
+
+/**
  * Start (or resume) the download. Safe to call twice — the second call is a
  * no-op while one is running.
+ *
+ * `version` is what is being downloaded, remembered so that a download the user
+ * never installed can be offered as Install rather than downloaded again.
  */
-export async function start(url: string): Promise<void> {
+export async function start(url: string, version?: number): Promise<void> {
   if (state.status === 'downloading') return;
   state = { progress: 0, status: 'downloading' };
   emit();
@@ -117,6 +149,13 @@ export async function start(url: string): Promise<void> {
     if (!res?.uri) throw new Error('no file');
     state = { progress: 1, status: 'done', uri: res.uri };
     emit();
+    // Remembered BEFORE the installer is opened, because the user may well
+    // back out of it — and that is exactly the case this record exists for.
+    if (typeof version === 'number') {
+      try {
+        await AsyncStorage.setItem(DOWNLOADED_KEY, JSON.stringify({ version, uri: res.uri }));
+      } catch {}
+    }
     await install(res.uri);
   } catch {
     // Keep enough to resume: an interrupted 40 MB download should not start
@@ -140,6 +179,7 @@ export async function cancel() {
   try { await t?.cancelAsync(); } catch {}
   await AsyncStorage.removeItem(RESUME_KEY);
   await clearNotification();
+  await forgetDownloaded();
   try { await FileSystem.deleteAsync(dest(), { idempotent: true }); } catch {}
 }
 

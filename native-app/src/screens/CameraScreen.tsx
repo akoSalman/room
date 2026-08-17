@@ -25,6 +25,7 @@ import {
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import { C } from '../theme';
+import { pinchToLinear, linearToFactor, formatFactor, zoomStops } from '../cameraZoom';
 
 export type Shot = { uri: string; name: string; mime: string };
 
@@ -87,10 +88,12 @@ export default function CameraScreen({ onClose, onDone, initialMode = 'photo' }:
   const pinch = Gesture.Pinch()
     .onStart(() => { zoomStart.current = zoom; })
     .onUpdate(e => {
-      // Damped so a normal pinch travels the range smoothly rather than
-      // slamming to maximum.
-      const next = zoomStart.current + (e.scale - 1) * 0.35;
-      setZoom(Math.min(1, Math.max(0, next)));
+      // Multiplies the magnification instead of adding to the 0..1 value.
+      // Adding to it meant a pinch barely moved at 1x and slammed to maximum
+      // near the top, because that value is linear in field of view, not in
+      // the zoom factor. Damping is no longer needed — pinching to twice the
+      // size now simply doubles the zoom.
+      setZoom(pinchToLinear(zoomStart.current, e.scale));
     })
     .runOnJS(true);
 
@@ -191,20 +194,17 @@ export default function CameraScreen({ onClose, onDone, initialMode = 'photo' }:
     setShots(prev => prev.filter((_, j) => j !== i));
   }
 
-  // Quick zoom stops beside the shutter. expo-camera's `zoom` is 0..1 across
-  // whatever range the device has, not an optical factor, so these are evenly
-  // spaced approximations of 1x/2x/3x rather than exact focal lengths.
-  const ZOOM_STOPS = [
-    { label: '1x', value: 0 },
-    { label: '2x', value: 0.25 },
-    { label: '3x', value: 0.5 },
-  ];
+  // Quick zoom stops beside the shutter, each at the value that really produces
+  // its factor. They used to be spaced evenly along the 0..1 range, which made
+  // "2x" about 1.3x — the button looked broken rather than like a 2x zoom.
+  // See src/cameraZoom.ts for why the spacing is uneven.
+  const ZOOM_STOPS = zoomStops();
   const activeStop = ZOOM_STOPS.reduce((best, st) =>
     Math.abs(st.value - zoom) < Math.abs(best.value - zoom) ? st : best, ZOOM_STOPS[0]);
 
   const fmt = (n: number) => `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`;
   const flashIcon = flash === 'on' ? 'flash' : flash === 'auto' ? 'flash-outline' : 'flash-off';
-  const zoomLabel = `${(1 + zoom * 4).toFixed(1)}x`;
+  const zoomLabel = formatFactor(linearToFactor(zoom));
 
   // ── Permission states ──────────────────────────────────────────────────────
   if (!perm) {

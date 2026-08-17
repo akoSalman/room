@@ -1,38 +1,43 @@
-// ── Editing a photo: crop, draw, add text ────────────────────────────────────
+// ── Editing a photo: crop and draw ───────────────────────────────────────────
 //
 // Two ways out on purpose. A photo you are about to send should be editable and
 // then SENT, without going back to find it again; a photo already in a chat
 // should be editable and then sent onward or saved, because the reason to
 // annotate one is almost always to give it to someone.
 //
-// How the result is produced depends on what was done to it:
+// Each edit is APPLIED for real, producing a file, and they stack. That is not
+// bookkeeping for its own sake — it is the only arrangement in which "crop,
+// then draw" means what it looks like. A crop is done on the file by
+// expo-image-manipulator, so the photo keeps its full resolution; a drawing
+// exists only as views on screen and has to be photographed with
+// react-native-view-shot at screen resolution. The two cannot happen in one
+// pass, because the capture can only ever photograph what is on screen and on
+// screen the pending crop has not happened yet. So switching tool applies
+// whatever the last one left outstanding, and a crop and a drawing are never
+// pending together.
 //
-//  • Crop only — expo-image-manipulator crops the ORIGINAL file, so an 8
-//    megapixel photo stays 8 megapixel.
-//  • Drawing or text — those exist only as views on screen, so the composite
-//    has to be rasterised with react-native-view-shot, which captures at
-//    screen resolution. Some detail is lost, and that is the honest trade for
-//    annotation without a native canvas. Cropping is applied first so the
-//    capture is of the cropped photo, not of a shrunken whole.
+// The crop box is stored as a FRACTION of the picture, never in screen pixels.
+// See src/imageEditor.ts — pixels made the editor invent crops nobody asked
+// for whenever the layout moved.
 //
-// If view-shot is missing from the build, drawing and text are hidden rather
-// than offered and then failing at the last step.
+// If view-shot is missing from the build, drawing is hidden rather than offered
+// and then failing at the last step.
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  View, Text, Image, TextInput, TouchableOpacity, StyleSheet,
+  View, Text, Image, TouchableOpacity, StyleSheet,
   PanResponder, ActivityIndicator, Alert, Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { C } from '../theme';
 import {
-  fitRect, clampCrop, toNaturalCrop, isWholeImage, strokeSegments, nextUndo,
-  Rect, Size, Stroke, Point,
+  fitRect, strokeSegments, nextUndo,
+  fracToScreen, screenToFrac, clampFrac, isWholeFrac, fracToNatural, WHOLE_IMAGE,
+  Rect, Size, Stroke, Point, FracRect,
 } from '../imageEditor';
 
 // Loaded defensively: a build without the native module must lose the drawing
 // tools, not crash the moment someone opens the editor.
-let ViewShot: any = null;
 let captureRef: any = null;
 try {
   // The JS half of this package imports fine even when the native half is
@@ -40,15 +45,11 @@ try {
   // checked. Otherwise the tools would appear and fail at the last step.
   const { NativeModules } = require('react-native');
   if (NativeModules?.RNViewShot) {
-    const mod = require('react-native-view-shot');
-    ViewShot = mod.default || mod.ViewShot;
-    captureRef = mod.captureRef;
+    captureRef = require('react-native-view-shot').captureRef;
   }
 } catch {}
 
-type Tool = 'crop' | 'pen' | 'text';
-
-type TextItem = { id: number; text: string; x: number; y: number; color: string; seq: number };
+type Tool = 'crop' | 'pen';
 
 const COLORS = ['#ffffff', '#111827', '#ef4444', '#f59e0b', '#22c55e', '#3b82f6'];
 const PEN_WIDTHS = [3, 6, 12];
@@ -63,14 +64,8 @@ export default function ImageEditor({
   /** When set, a Send button is offered alongside Save. */
   sendLabel?: string;
 }) {
-  // Every APPLIED edit produces a real file, and they stack. The last entry is
-  // what is on screen and what everything new is applied to.
-  //
-  // This is the fix for a crop that silently vanished. The picture on screen
-  // was always the original, so the moment anything was drawn the export
-  // photographed the UNCROPPED view and threw the cropped file away. Applying
-  // a crop for real, and drawing on the result, is the only arrangement where
-  // "crop, then draw, then crop again" means what it looks like it means.
+  // Every applied edit produces a real file. The last entry is what is on
+  // screen and what anything new is applied to.
   const [history, setHistory] = useState<string[]>([uri]);
   const working = history[history.length - 1];
 
@@ -79,26 +74,24 @@ export default function ImageEditor({
   const [tool, setTool] = useState<Tool>('crop');
   const [busy, setBusy] = useState(false);
 
-  const [crop, setCrop] = useState<Rect | null>(null);
+  const [crop, setCrop] = useState<FracRect>({ ...WHOLE_IMAGE });
   const [strokes, setStrokes] = useState<Stroke[]>([]);
-  const [texts, setTexts] = useState<TextItem[]>([]);
   const [color, setColor] = useState(COLORS[2]);
   const [penWidth, setPenWidth] = useState(PEN_WIDTHS[1]);
-  const [typing, setTyping] = useState('');
-  const [askText, setAskText] = useState(false);
-  // One counter across strokes and captions, so undo can tell which of the two
-  // was actually the most recent.
   const seq = useRef(0);
 
   const shotRef = useRef<any>(null);
   const drawing = useRef<Point[]>([]);
   const [live, setLive] = useState<Point[]>([]);
 
-  // Re-measured for every applied version: a crop changes the picture's real
-  // size, and every screen-to-pixel conversion after it depends on the new one.
+  // Re-measured for each applied version, because a crop changes the photo's
+  // real size and the final pixel crop depends on it.
+  //
+  // The old size is deliberately KEPT until the new one arrives. Blanking it
+  // first removed the picture from the screen for a frame or two, and pressing
+  // undo a few times in a row made the whole editor flash.
   useEffect(() => {
     let alive = true;
-    setNatural(null);
     Image.getSize(working,
       (width, height) => { if (alive) setNatural({ width, height }); },
       () => { if (alive) setNatural({ width: 1000, height: 1000 }); });
@@ -106,16 +99,16 @@ export default function ImageEditor({
   }, [working]);
 
   const displayed = natural ? fitRect(natural, area) : null;
-
-  // The crop box starts as the whole photo, so dragging a corner is the only
-  // gesture needed to begin. It resets whenever the picture changes, since a
-  // box measured against the previous version means nothing against this one.
-  useEffect(() => { setCrop(null); }, [working]);
-  useEffect(() => {
-    if (displayed && displayed.width > 0 && !crop) setCrop({ ...displayed });
-  }, [displayed?.width, displayed?.height, crop]);
+  const cropBox = displayed ? fracToScreen(crop, displayed) : null;
 
   // ── Gestures ───────────────────────────────────────────────────────────────
+  // The PanResponders are built once, so anything they read at gesture time
+  // has to come from a ref rather than from a closed-over render value.
+  const cropRef = useRef<FracRect>(crop); cropRef.current = crop;
+  const displayedRef = useRef<Rect | null>(null); displayedRef.current = displayed;
+  const colorRef = useRef(color); colorRef.current = color;
+  const widthRef = useRef(penWidth); widthRef.current = penWidth;
+
   // Which corner is being dragged, decided once when the finger lands.
   const grab = useRef<{ corner: string; start: Rect } | null>(null);
 
@@ -123,9 +116,9 @@ export default function ImageEditor({
     onStartShouldSetPanResponder: () => true,
     onMoveShouldSetPanResponder: () => true,
     onPanResponderGrant: (e) => {
-      const box = cropRef.current;
       const bounds = displayedRef.current;
-      if (!box || !bounds) return;
+      if (!bounds) return;
+      const box = fracToScreen(cropRef.current, bounds);
       const { locationX: x, locationY: y } = e.nativeEvent;
       // Nearest corner within reach; otherwise the whole box moves.
       const near = (px: number, py: number) => Math.hypot(x - px, y - py) < 48;
@@ -135,7 +128,7 @@ export default function ImageEditor({
         : near(box.x, box.y + box.height) ? 'bl'
         : near(box.x + box.width, box.y + box.height) ? 'br'
         : 'move';
-      grab.current = { corner, start: { ...box } };
+      grab.current = { corner, start: box };
     },
     onPanResponderMove: (_, g) => {
       const held = grab.current;
@@ -150,7 +143,8 @@ export default function ImageEditor({
         case 'br': next = { x: s.x, y: s.y, width: s.width + g.dx, height: s.height + g.dy }; break;
         default: next = { ...s, x: s.x + g.dx, y: s.y + g.dy };
       }
-      setCrop(clampCrop(next, bounds));
+      // Straight back to a fraction: nothing is ever stored in screen pixels.
+      setCrop(clampFrac(screenToFrac(next, bounds)));
     },
     onPanResponderRelease: () => { grab.current = null; },
   })).current;
@@ -179,58 +173,37 @@ export default function ImageEditor({
     },
   })).current;
 
-  // The PanResponders are built once, so anything they read at gesture time
-  // has to come from a ref rather than from a closed-over render value.
-  const cropRef = useRef<Rect | null>(null); cropRef.current = crop;
-  const displayedRef = useRef<Rect | null>(null); displayedRef.current = displayed;
-  const colorRef = useRef(color); colorRef.current = color;
-  const widthRef = useRef(penWidth); widthRef.current = penWidth;
-
-  const annotated = strokes.length > 0 || texts.length > 0;
-  const cropped = !!(crop && displayed && !isWholeImage(crop, displayed));
-  // Changes made since the last Apply.
+  const annotated = strokes.length > 0;
+  const cropped = !isWholeFrac(crop);
+  /** Changes made since the last Done. */
   const pending = annotated || cropped;
-  // Anything at all to save, applied or not.
-  const touched = pending || history.length > 1;
 
   const step = nextUndo({
     lastStrokeSeq: strokes.length ? strokes[strokes.length - 1].seq : null,
-    lastTextSeq: texts.length ? texts[texts.length - 1].seq : null,
     cropped,
     committed: history.length - 1,
   });
 
   function undo() {
     switch (step) {
-      case 'text': setTexts(prev => prev.slice(0, -1)); break;
       case 'stroke': setStrokes(prev => prev.slice(0, -1)); break;
-      case 'crop': if (displayed) setCrop({ ...displayed }); break;
-      // Step back to the previous applied version. The crop box is dropped
-      // with it; the effect on `working` puts a fresh one over the whole of
-      // whatever we land on.
-      case 'revert': setHistory(h => h.slice(0, -1)); break;
+      case 'crop': setCrop({ ...WHOLE_IMAGE }); break;
+      case 'revert':
+        setHistory(h => h.slice(0, -1));
+        setCrop({ ...WHOLE_IMAGE });
+        setStrokes([]);
+        break;
     }
   }
 
-  /**
-   * Turn the pending edits into a real image file.
-   *
-   * Order matters and is the whole point: the crop is applied to the file
-   * first, and only then is the result photographed with the drawing on top.
-   * Doing it the other way — which is what used to happen by accident —
-   * captures the uncropped picture and loses the crop entirely.
-   */
+  /** Turn the pending edits into a real image file. */
   async function rasterise(): Promise<string | null> {
-    if (!natural || !displayed || !crop) return null;
+    if (!natural) return null;
     if (!pending) return working;
 
-    // A crop is done on the FILE, so it keeps the photo's full resolution.
-    // Switching tools flushes whatever is pending (see selectTool), so a crop
-    // is never outstanding at the same time as a drawing — which matters,
-    // because the capture below can only ever photograph what is on screen,
-    // and on screen the crop has not happened yet.
+    // A crop is done on the FILE, so the photo keeps its full resolution.
     if (cropped) {
-      const box = toNaturalCrop(crop, displayed, natural);
+      const box = fracToNatural(crop, natural);
       const out = await ImageManipulator.manipulateAsync(
         working, [{ crop: { originX: box.x, originY: box.y, width: box.width, height: box.height } }],
         { compress: 0.95, format: ImageManipulator.SaveFormat.JPEG },
@@ -242,7 +215,7 @@ export default function ImageEditor({
       Alert.alert('Not available', 'Drawing needs a newer version of the app.');
       return null;
     }
-    // Captures the on-screen picture, so drawing and captions are burnt in.
+    // Photographs the picture on screen, so the drawing is burnt in.
     return await captureRef(shotRef.current, { format: 'jpg', quality: 0.95 });
   }
 
@@ -254,9 +227,8 @@ export default function ImageEditor({
       const out = await rasterise();
       if (!out) return false;
       setHistory(h => [...h, out]);
-      setCrop(null);
+      setCrop({ ...WHOLE_IMAGE });
       setStrokes([]);
-      setTexts([]);
       return true;
     } catch {
       Alert.alert('Could not edit', 'That change could not be applied.');
@@ -267,13 +239,8 @@ export default function ImageEditor({
   }
 
   /**
-   * Switching tool applies whatever the current one left outstanding.
-   *
-   * Not a convenience — it is what keeps a crop and a drawing from ever being
-   * pending together. The exporter can crop a file or photograph the screen,
-   * and the screen always shows the picture BEFORE the pending crop; so if
-   * both were outstanding at once one of them would necessarily be lost. That
-   * is precisely how the crop used to disappear the moment anything was drawn.
+   * Switching tool applies whatever the current one left outstanding, which is
+   * what keeps a crop and a drawing from ever being pending together.
    */
   async function selectTool(next: Tool) {
     if (next === tool || busy) return;
@@ -285,8 +252,8 @@ export default function ImageEditor({
     if (busy) return;
     setBusy(true);
     try {
-      // Forgetting to press Apply must not silently throw the last edit away.
-      // At most one kind of edit can be pending here, so one pass is enough.
+      // Forgetting to press Done must not throw the last edit away. At most one
+      // kind of edit can be pending, so one pass is enough.
       const out = pending ? await rasterise() : working;
       onDone({ uri: out || working, action });
     } catch {
@@ -296,57 +263,38 @@ export default function ImageEditor({
     }
   }
 
-  // Only the picture itself is captured. The previous version wrapped the
-  // whole canvas, which is letterboxed with black to fill the screen — so an
-  // exported annotation came back padded with bars and at the wrong aspect
-  // ratio. `collapsable={false}` is what guarantees the view survives as a
-  // real native view for captureRef to photograph.
+  // Only the picture goes inside the capture. Wrapping the whole canvas caught
+  // its black letterbox too, so an exported drawing came back padded with bars
+  // at the wrong aspect ratio. `collapsable={false}` keeps it a real native
+  // view for captureRef to photograph.
   const picture = displayed && (
     <View style={{
       position: 'absolute',
       left: displayed.x, top: displayed.y, width: displayed.width, height: displayed.height,
     }}>
-      <View
-        ref={shotRef}
-        collapsable={false}
-        style={StyleSheet.absoluteFill}
-      >
-          <Image source={{ uri: working }} style={StyleSheet.absoluteFill} resizeMode="contain" />
+      <View ref={shotRef} collapsable={false} style={StyleSheet.absoluteFill}>
+        <Image source={{ uri: working }} style={StyleSheet.absoluteFill} resizeMode="contain" />
 
-          {/* Finished strokes, then the one under the finger. */}
-          {strokes.map((st, i) => (
-            <React.Fragment key={`st${i}`}>
-              {strokeSegments(st.points, st.width).map((sg, j) => (
-                <View key={j} style={{
-                  position: 'absolute', left: sg.x - displayed.x, top: sg.y - displayed.y,
-                  width: sg.length, height: st.width, borderRadius: st.width / 2,
-                  backgroundColor: st.color, transform: [{ rotate: `${sg.angle}deg` }],
-                }} />
-              ))}
-            </React.Fragment>
-          ))}
-          {strokeSegments(live, penWidth).map((sg, j) => (
-            <View key={`live${j}`} style={{
-              position: 'absolute', left: sg.x - displayed.x, top: sg.y - displayed.y,
-              width: sg.length, height: penWidth, borderRadius: penWidth / 2,
-              backgroundColor: color, transform: [{ rotate: `${sg.angle}deg` }],
-            }} />
-          ))}
-
-          {texts.map(t => (
-            <Text key={t.id} style={[s.overlayText, {
-              left: t.x - displayed.x, top: t.y - displayed.y, color: t.color,
-            }]}>{t.text}</Text>
-          ))}
+        {/* Finished strokes, then the one under the finger. */}
+        {strokes.map(st => (
+          <React.Fragment key={`st${st.seq}`}>
+            {strokeSegments(st.points, st.width).map((sg, j) => (
+              <View key={j} style={{
+                position: 'absolute', left: sg.x - displayed.x, top: sg.y - displayed.y,
+                width: sg.length, height: st.width, borderRadius: st.width / 2,
+                backgroundColor: st.color, transform: [{ rotate: `${sg.angle}deg` }],
+              }} />
+            ))}
+          </React.Fragment>
+        ))}
+        {strokeSegments(live, penWidth).map((sg, j) => (
+          <View key={`live${j}`} style={{
+            position: 'absolute', left: sg.x - displayed.x, top: sg.y - displayed.y,
+            width: sg.length, height: penWidth, borderRadius: penWidth / 2,
+            backgroundColor: color, transform: [{ rotate: `${sg.angle}deg` }],
+          }} />
+        ))}
       </View>
-    </View>
-  );
-
-  const canvas = (
-    <View style={s.canvas} onLayout={e => setArea({
-      width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height,
-    })}>
-      {picture}
     </View>
   );
 
@@ -355,156 +303,106 @@ export default function ImageEditor({
       <View style={s.screen}>
         <View style={s.header}>
           <TouchableOpacity onPress={onCancel} style={s.iconBtn} hitSlop={hit}>
-            <Ionicons name="close" size={24} color="#fff" />
+            <Ionicons name="close" size={22} color="#fff" />
           </TouchableOpacity>
           <Text style={s.title}>Edit photo</Text>
           <TouchableOpacity onPress={undo} style={s.iconBtn} hitSlop={hit} disabled={!step}>
-            <Ionicons name="arrow-undo" size={21} color={step ? '#fff' : 'rgba(255,255,255,0.3)'} />
+            <Ionicons name="arrow-undo-outline" size={20}
+              color={step ? '#fff' : 'rgba(255,255,255,0.28)'} />
           </TouchableOpacity>
         </View>
 
         <View style={{ flex: 1 }}>
-          {canvas}
+          <View style={s.canvas} onLayout={e => setArea({
+            width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height,
+          })}>
+            {picture}
+          </View>
 
           {/* Gesture layers sit above the picture, one per tool. */}
-          {tool === 'crop' && displayed && (
+          {tool === 'crop' && cropBox && (
             <View style={StyleSheet.absoluteFill} {...cropPan.panHandlers}>
-              {crop && (
-                <View pointerEvents="none" style={[s.cropBox, {
-                  left: crop.x, top: crop.y, width: crop.width, height: crop.height,
-                }]}>
-                  {['tl', 'tr', 'bl', 'br'].map(cn => (
-                    <View key={cn} style={[s.handle, handleStyle(cn)]} />
-                  ))}
-                </View>
-              )}
+              <View pointerEvents="none" style={[s.cropBox, {
+                left: cropBox.x, top: cropBox.y, width: cropBox.width, height: cropBox.height,
+              }]}>
+                {['tl', 'tr', 'bl', 'br'].map(cn => (
+                  <View key={cn} style={[s.handle, handleStyle(cn)]} />
+                ))}
+              </View>
             </View>
           )}
           {tool === 'pen' && (
             <View style={StyleSheet.absoluteFill} {...penPan.panHandlers} />
           )}
-          {tool === 'text' && (
-            <TouchableOpacity
-              style={StyleSheet.absoluteFill}
-              activeOpacity={1}
-              onPress={() => setAskText(true)}
-            />
+
+          {/* Each edit has its own Done, and it FLOATS over the picture.
+              Inserting it into the column made the canvas shorter the instant
+              it appeared, which moved the picture — and back when the crop box
+              was measured in screen pixels, that alone was read as a crop. */}
+          {pending && (
+            <View style={s.applyRow} pointerEvents="box-none">
+              <TouchableOpacity style={s.applyBtn} onPress={apply} disabled={busy}>
+                {busy
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <Ionicons name="checkmark" size={16} color="#fff" />}
+                <Text style={s.applyText}>{cropped ? 'Apply crop' : 'Apply drawing'}</Text>
+              </TouchableOpacity>
+            </View>
           )}
         </View>
 
-        {/* Colour and thickness, only for the tools they apply to. */}
-        {(tool === 'pen' || tool === 'text') && (
+        {/* Colour and thickness, only for the tool they apply to. */}
+        {tool === 'pen' && (
           <View style={s.optionRow}>
             {COLORS.map(c => (
               <TouchableOpacity key={c} onPress={() => setColor(c)}
                 style={[s.swatch, { backgroundColor: c }, color === c && s.swatchOn]} />
             ))}
-            {tool === 'pen' && PEN_WIDTHS.map(w => (
+            {PEN_WIDTHS.map(w => (
               <TouchableOpacity key={w} onPress={() => setPenWidth(w)} style={s.widthBtn}>
-                <View style={{ width: w + 8, height: w, borderRadius: w, backgroundColor: penWidth === w ? C.accent : '#9ca3af' }} />
+                <View style={{
+                  width: w + 8, height: w, borderRadius: w,
+                  backgroundColor: penWidth === w ? C.accent : '#9ca3af',
+                }} />
               </TouchableOpacity>
             ))}
           </View>
         )}
 
-        {/* Each edit gets its own Done, so a crop becomes part of the picture
-            the moment it is confirmed rather than being carried invisibly
-            until the very end — where it used to get lost. It appears only
-            when there is something to confirm. */}
-        {pending && (
-          <View style={s.applyRow}>
-            <Text style={s.applyHint} numberOfLines={1}>
-              {cropped ? 'Crop ready' : 'Drawing ready'}
-            </Text>
-            <TouchableOpacity style={s.applyBtn} onPress={apply} disabled={busy}>
-              {busy
-                ? <ActivityIndicator size="small" color="#fff" />
-                : <Ionicons name="checkmark" size={17} color="#fff" />}
-              <Text style={s.applyText}>Done</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-
         <View style={s.tools}>
-          <Tool2 icon="crop" label="Crop" on={tool === 'crop'} onPress={() => selectTool('crop')} />
-          {!!ViewShot && <Tool2 icon="brush" label="Draw" on={tool === 'pen'} onPress={() => selectTool('pen')} />}
-          {!!ViewShot && <Tool2 icon="text" label="Text" on={tool === 'text'} onPress={() => selectTool('text')} />}
+          <ToolBtn icon="crop-outline" label="Crop" on={tool === 'crop'} onPress={() => selectTool('crop')} />
+          {!!captureRef && (
+            <ToolBtn icon="brush-outline" label="Draw" on={tool === 'pen'} onPress={() => selectTool('pen')} />
+          )}
         </View>
 
         <View style={s.actions}>
           <TouchableOpacity style={[s.action, s.actionGhost]} onPress={() => finish('save')} disabled={busy}>
-            <Ionicons name="download-outline" size={18} color="#fff" />
+            <Ionicons name="download-outline" size={17} color="#fff" />
             <Text style={s.actionText}>Save</Text>
           </TouchableOpacity>
           {/* The reason to annotate a photo is nearly always to give it to
               someone, so sending is one tap from the editor. */}
-          {!!sendLabel && (
-            <TouchableOpacity style={[s.action, s.actionPrimary]} onPress={() => finish('send')} disabled={busy}>
-              {busy ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="send" size={17} color="#fff" />}
-              <Text style={s.actionText}>{sendLabel}</Text>
-            </TouchableOpacity>
-          )}
-          {!sendLabel && (
-            <TouchableOpacity style={[s.action, s.actionPrimary]} onPress={() => finish('replace')} disabled={busy}>
-              {busy ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="checkmark" size={19} color="#fff" />}
-              <Text style={s.actionText}>Done</Text>
-            </TouchableOpacity>
-          )}
+          <TouchableOpacity
+            style={[s.action, s.actionPrimary]}
+            onPress={() => finish(sendLabel ? 'send' : 'replace')}
+            disabled={busy}
+          >
+            {busy
+              ? <ActivityIndicator size="small" color="#fff" />
+              : <Ionicons name={sendLabel ? 'arrow-up' : 'checkmark'} size={17} color="#fff" />}
+            <Text style={s.actionText}>{sendLabel || 'Done'}</Text>
+          </TouchableOpacity>
         </View>
-
-        {/* Typing the caption before it is placed, rather than editing it in
-            place on top of the picture. */}
-        <Modal visible={askText} transparent animationType="fade" onRequestClose={() => setAskText(false)}>
-          <View style={s.textOverlay}>
-            <View style={s.textCard}>
-              <Text style={s.textCardTitle}>Add text</Text>
-              <TextInput
-                style={s.textInput}
-                value={typing}
-                onChangeText={setTyping}
-                autoFocus
-                placeholder="Type something…"
-                placeholderTextColor={C.muted}
-              />
-              <View style={s.textCardRow}>
-                <TouchableOpacity style={s.textCancel} onPress={() => { setAskText(false); setTyping(''); }}>
-                  <Text style={s.textCancelText}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={s.textAdd}
-                  onPress={() => {
-                    const v = typing.trim();
-                    setAskText(false);
-                    setTyping('');
-                    if (!v || !displayed) return;
-                    // Dropped in the middle; the picture is small enough that
-                    // placing it precisely matters less than placing it at all.
-                    seq.current += 1;
-                    setTexts(prev => [...prev, {
-                      id: Date.now(),
-                      seq: seq.current,
-                      text: v,
-                      x: displayed.x + displayed.width / 2 - 60,
-                      y: displayed.y + displayed.height / 2,
-                      color: colorRef.current,
-                    }]);
-                  }}
-                >
-                  <Text style={s.textAddText}>Add</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
-        </Modal>
       </View>
     </Modal>
   );
 }
 
-function Tool2({ icon, label, on, onPress }: any) {
+function ToolBtn({ icon, label, on, onPress }: any) {
   return (
     <TouchableOpacity style={[s.tool, on && s.toolOn]} onPress={onPress}>
-      <Ionicons name={icon} size={19} color={on ? '#fff' : '#9ca3af'} />
+      <Ionicons name={icon} size={18} color={on ? '#fff' : '#9ca3af'} />
       <Text style={[s.toolText, on && s.toolTextOn]}>{label}</Text>
     </TouchableOpacity>
   );
@@ -533,13 +431,23 @@ const s = StyleSheet.create({
   iconBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
 
   canvas: { flex: 1, backgroundColor: '#000' },
-  overlayText: { position: 'absolute', fontSize: 26, fontWeight: '800' },
 
   cropBox: { position: 'absolute', borderWidth: 2, borderColor: '#fff' },
   handle: {
     position: 'absolute', width: 18, height: 18, borderRadius: 3,
     backgroundColor: '#fff', borderWidth: 2, borderColor: C.accent,
   },
+
+  // Floats over the picture rather than taking a row of its own, so nothing
+  // re-lays-out when it appears.
+  applyRow: {
+    position: 'absolute', left: 0, right: 0, bottom: 14, alignItems: 'center',
+  },
+  applyBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 7,
+    backgroundColor: C.accent, borderRadius: 20, paddingHorizontal: 18, paddingVertical: 9,
+  },
+  applyText: { color: '#fff', fontSize: 13.5, fontWeight: '700' },
 
   optionRow: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
@@ -549,27 +457,16 @@ const s = StyleSheet.create({
   swatchOn: { borderColor: C.accent, transform: [{ scale: 1.15 }] },
   widthBtn: { paddingHorizontal: 6, paddingVertical: 8 },
 
-  applyRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    paddingHorizontal: 14, paddingVertical: 8, backgroundColor: '#0b0b0b',
-  },
-  applyHint: { flex: 1, color: '#9ca3af', fontSize: 12.5, fontWeight: '600' },
-  applyBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: C.accent, borderRadius: 18, paddingHorizontal: 16, paddingVertical: 8,
-  },
-  applyText: { color: '#fff', fontSize: 13.5, fontWeight: '800' },
-
   tools: {
     flexDirection: 'row', justifyContent: 'center', gap: 10,
     paddingVertical: 10, backgroundColor: '#0b0b0b',
   },
   tool: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20,
+    paddingHorizontal: 18, paddingVertical: 8, borderRadius: 20,
   },
   toolOn: { backgroundColor: 'rgba(255,255,255,0.14)' },
-  toolText: { color: '#9ca3af', fontSize: 13, fontWeight: '700' },
+  toolText: { color: '#9ca3af', fontSize: 13, fontWeight: '600' },
   toolTextOn: { color: '#fff' },
 
   actions: {
@@ -583,17 +480,4 @@ const s = StyleSheet.create({
   actionGhost: { backgroundColor: 'rgba(255,255,255,0.12)' },
   actionPrimary: { backgroundColor: C.accent },
   actionText: { color: '#fff', fontSize: 14.5, fontWeight: '700' },
-
-  textOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 24 },
-  textCard: { backgroundColor: C.sidebar, borderRadius: 16, padding: 18 },
-  textCardTitle: { color: C.text, fontSize: 16, fontWeight: '800', marginBottom: 12 },
-  textInput: {
-    backgroundColor: C.inputBg, borderRadius: 10, padding: 12, color: C.text,
-    fontSize: 15, borderWidth: 1, borderColor: C.border, marginBottom: 14,
-  },
-  textCardRow: { flexDirection: 'row', gap: 10 },
-  textCancel: { flex: 1, borderRadius: 10, paddingVertical: 12, alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.08)' },
-  textCancelText: { color: C.text, fontSize: 14, fontWeight: '700' },
-  textAdd: { flex: 1, borderRadius: 10, paddingVertical: 12, alignItems: 'center', backgroundColor: C.accent },
-  textAddText: { color: '#fff', fontSize: 14, fontWeight: '700' },
 });

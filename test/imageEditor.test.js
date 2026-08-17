@@ -42,77 +42,6 @@ test('a degenerate size does not produce NaN', () => {
     { x: 0, y: 0, width: 0, height: 0 });
 });
 
-test('cropping the whole photo gives back the whole photo', () => {
-  const natural = { width: 4000, height: 2000 };
-  const displayed = E.fitRect(natural, { width: 400, height: 400 });
-  const crop = E.toNaturalCrop(displayed, displayed, natural);
-  assert.deepStrictEqual(crop, { x: 0, y: 0, width: 4000, height: 2000 });
-});
-
-test('a crop is translated into the photo’s own pixels', () => {
-  // Photo drawn 10x smaller. A box over the middle quarter of the drawing must
-  // land on the middle quarter of the real picture, not on its top-left.
-  const natural = { width: 4000, height: 2000 };
-  const displayed = E.fitRect(natural, { width: 400, height: 400 }); // 400x200 at y=100
-  const box = { x: 100, y: 150, width: 200, height: 100 };
-  assert.deepStrictEqual(E.toNaturalCrop(box, displayed, natural),
-    { x: 1000, y: 500, width: 2000, height: 1000 });
-});
-
-test('the letterbox offset is subtracted, not ignored', () => {
-  // The regression this guards: forgetting displayed.y crops from the wrong
-  // height, and the error grows with how letterboxed the photo is.
-  const natural = { width: 4000, height: 2000 };
-  const displayed = E.fitRect(natural, { width: 400, height: 400 });
-  // A box at the very TOP of the drawn photo is y=100 on screen, but 0 in the
-  // photo. Ignoring the offset would put it 1000 pixels down.
-  const box = { x: 0, y: 100, width: 40, height: 20 };
-  assert.strictEqual(E.toNaturalCrop(box, displayed, natural).y, 0);
-});
-
-test('a crop cannot run off the edge of the photo', () => {
-  // Native image code rejects an out-of-bounds crop outright rather than
-  // trimming it, so this has to be clamped here.
-  const natural = { width: 1000, height: 1000 };
-  const displayed = { x: 0, y: 0, width: 500, height: 500 };
-  const crop = E.toNaturalCrop({ x: -50, y: -50, width: 600, height: 600 }, displayed, natural);
-  assert.strictEqual(crop.x, 0);
-  assert.strictEqual(crop.y, 0);
-  assert.ok(crop.x + crop.width <= natural.width, `right edge at ${crop.x + crop.width}`);
-  assert.ok(crop.y + crop.height <= natural.height, `bottom edge at ${crop.y + crop.height}`);
-});
-
-test('a crop is never zero-sized', () => {
-  const crop = E.toNaturalCrop({ x: 10, y: 10, width: 0, height: 0 },
-    { x: 0, y: 0, width: 500, height: 500 }, { width: 1000, height: 1000 });
-  assert.ok(crop.width >= 1 && crop.height >= 1);
-});
-
-test('the crop box is kept inside the photo', () => {
-  const bounds = { x: 10, y: 20, width: 100, height: 100 };
-  const c = E.clampCrop({ x: -50, y: -50, width: 60, height: 60 }, bounds);
-  assert.strictEqual(c.x, 10);
-  assert.strictEqual(c.y, 20);
-  const d = E.clampCrop({ x: 500, y: 500, width: 60, height: 60 }, bounds);
-  assert.strictEqual(d.x, 10 + 100 - 60);
-  assert.strictEqual(d.y, 20 + 100 - 60);
-});
-
-test('the crop box cannot be shrunk to nothing', () => {
-  const bounds = { x: 0, y: 0, width: 100, height: 100 };
-  const c = E.clampCrop({ x: 0, y: 0, width: 1, height: 1 }, bounds, 40);
-  assert.strictEqual(c.width, 40);
-  assert.strictEqual(c.height, 40);
-});
-
-test('an untouched box is recognised as "no crop"', () => {
-  // Used to skip the crop step entirely, so an unedited photo is sent as-is
-  // rather than re-encoded for nothing.
-  const displayed = { x: 10, y: 20, width: 300, height: 200 };
-  assert.strictEqual(E.isWholeImage({ ...displayed }, displayed), true);
-  assert.strictEqual(E.isWholeImage({ ...displayed, width: 250 }, displayed), false);
-});
-
 // ── Pen strokes ──────────────────────────────────────────────────────────────
 
 test('a stroke becomes one segment per movement', () => {
@@ -160,6 +89,81 @@ test('a single point is not a stroke', () => {
   assert.deepStrictEqual(E.strokeSegments([], 4), []);
 });
 
+// ── The crop box as a fraction ───────────────────────────────────────────────
+//
+// Reported as: no crop was made, but after drawing on the photo and sending it,
+// the photo came back cropped.
+//
+// The box was stored in screen pixels and started equal to the whole displayed
+// picture, and "did the user crop?" compared the two. The displayed picture is
+// only as big as the space left on screen — so when the confirm button appeared
+// after the first pen stroke, the canvas got shorter, the picture shrank, and
+// the box no longer matched it. The editor concluded a crop had been made.
+
+test('THE BUG: the layout changing does not turn an untouched box into a crop', () => {
+  // The picture as first laid out, and again after the canvas lost 60px to a
+  // button that appeared underneath it.
+  const tall = E.fitRect({ width: 4000, height: 3000 }, { width: 360, height: 640 });
+  const short = E.fitRect({ width: 4000, height: 3000 }, { width: 360, height: 580 });
+
+  const box = { ...E.WHOLE_IMAGE };
+  assert.ok(E.isWholeFrac(box), 'the untouched box did not read as the whole picture');
+
+  // The same fraction on either layout is still the whole picture.
+  assert.ok(E.isWholeFrac(E.screenToFrac(E.fracToScreen(box, tall), tall)));
+  assert.ok(E.isWholeFrac(E.screenToFrac(E.fracToScreen(box, short), short)));
+
+  // And this is what used to happen: a box measured against the TALL layout,
+  // compared against the SHORT one, looks like a deliberate crop.
+  const stale = E.screenToFrac(E.fracToScreen(box, tall), short);
+  assert.ok(!E.isWholeFrac(stale),
+    'the fixture is wrong — the two layouts must actually differ for this to prove anything');
+});
+
+test('a fractional box survives a round trip through screen coordinates', () => {
+  const displayed = E.fitRect({ width: 4000, height: 3000 }, { width: 360, height: 640 });
+  const f = { x: 0.25, y: 0.1, w: 0.5, h: 0.4 };
+  const back = E.screenToFrac(E.fracToScreen(f, displayed), displayed);
+  for (const k of ['x', 'y', 'w', 'h']) {
+    assert.ok(Math.abs(back[k] - f[k]) < 1e-9, `${k} drifted: ${back[k]} vs ${f[k]}`);
+  }
+});
+
+test('a real crop is still recognised as one', () => {
+  assert.ok(!E.isWholeFrac({ x: 0.1, y: 0, w: 0.9, h: 1 }));
+  assert.ok(!E.isWholeFrac({ x: 0, y: 0, w: 0.5, h: 1 }));
+  assert.ok(!E.isWholeFrac({ x: 0, y: 0.2, w: 1, h: 0.8 }));
+});
+
+test('a fractional box stays inside the picture', () => {
+  assert.deepStrictEqual(E.clampFrac({ x: -0.5, y: -0.5, w: 1, h: 1 }), { x: 0, y: 0, w: 1, h: 1 });
+  assert.deepStrictEqual(E.clampFrac({ x: 0.9, y: 0.9, w: 0.5, h: 0.5 }),
+    { x: 0.5, y: 0.5, w: 0.5, h: 0.5 });
+  // Never collapses to nothing.
+  const tiny = E.clampFrac({ x: 0.5, y: 0.5, w: 0, h: 0 });
+  assert.ok(tiny.w >= 0.05 && tiny.h >= 0.05);
+  // Never larger than the picture.
+  assert.deepStrictEqual(E.clampFrac({ x: 0, y: 0, w: 3, h: 3 }), { x: 0, y: 0, w: 1, h: 1 });
+});
+
+test('the whole picture converts to the whole picture in real pixels', () => {
+  assert.deepStrictEqual(E.fracToNatural(E.WHOLE_IMAGE, { width: 4000, height: 3000 }),
+    { x: 0, y: 0, width: 4000, height: 3000 });
+});
+
+test('a fractional crop lands on the right pixels', () => {
+  assert.deepStrictEqual(E.fracToNatural({ x: 0.25, y: 0.5, w: 0.5, h: 0.5 },
+    { width: 4000, height: 3000 }), { x: 1000, y: 1500, width: 2000, height: 1500 });
+});
+
+test('a crop can never run past the edge of the photo', () => {
+  // The native cropper rejects an out-of-bounds rectangle outright rather than
+  // trimming it, so this has to be exact.
+  const box = E.fracToNatural({ x: 0.9, y: 0.9, w: 0.5, h: 0.5 }, { width: 1000, height: 800 });
+  assert.ok(box.x + box.width <= 1000, `runs ${box.x + box.width - 1000}px past the right edge`);
+  assert.ok(box.y + box.height <= 800, `runs ${box.y + box.height - 800}px past the bottom`);
+});
+
 // ── Undo ─────────────────────────────────────────────────────────────────────
 //
 // The editor holds edits in two places at once: pending on screen (a crop box,
@@ -172,27 +176,14 @@ test('a single point is not a stroke', () => {
 
 const undoOf = (o) => E.nextUndo({ cropped: false, committed: 0, ...o });
 
+test('a pending stroke is always the newest thing', () => {
+  assert.strictEqual(undoOf({ lastStrokeSeq: 3 }), 'stroke');
+  assert.strictEqual(undoOf({ lastStrokeSeq: 3, cropped: true }), 'stroke');
+  assert.strictEqual(undoOf({ lastStrokeSeq: 3, cropped: true, committed: 5 }), 'stroke');
+});
+
 test('nothing to undo when nothing has been done', () => {
   assert.strictEqual(undoOf({}), null);
-});
-
-test('THE BUG: the most recent of a stroke and a caption is the one removed', () => {
-  // Caption added after the stroke.
-  assert.strictEqual(undoOf({ lastStrokeSeq: 1, lastTextSeq: 2 }), 'text');
-  // Stroke added after the caption.
-  assert.strictEqual(undoOf({ lastStrokeSeq: 5, lastTextSeq: 2 }), 'stroke');
-});
-
-test('the count of strokes has no bearing on which is newer', () => {
-  // Ten strokes then one caption: the caption is still the most recent thing,
-  // and the old id-versus-count comparison got exactly this case wrong.
-  assert.strictEqual(undoOf({ lastStrokeSeq: 10, lastTextSeq: 11 }), 'text');
-});
-
-test('whichever kind exists alone is the one removed', () => {
-  assert.strictEqual(undoOf({ lastStrokeSeq: 3 }), 'stroke');
-  assert.strictEqual(undoOf({ lastTextSeq: 3 }), 'text');
-  assert.strictEqual(undoOf({ lastStrokeSeq: null, lastTextSeq: null }), null);
 });
 
 test('sequence zero still counts as an edit', () => {

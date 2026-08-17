@@ -32,53 +32,87 @@ export function fitRect(natural: Size, container: Size): Rect {
   };
 }
 
-/** Keep a crop box inside its bounds, and never smaller than `min`. */
-export function clampCrop(rect: Rect, bounds: Rect, min = 40): Rect {
-  // A box larger than what contains it is pinned to the container.
-  const width = Math.max(Math.min(rect.width, bounds.width), Math.min(min, bounds.width));
-  const height = Math.max(Math.min(rect.height, bounds.height), Math.min(min, bounds.height));
-  const x = Math.min(Math.max(rect.x, bounds.x), bounds.x + bounds.width - width);
-  const y = Math.min(Math.max(rect.y, bounds.y), bounds.y + bounds.height - height);
-  return { x, y, width, height };
-}
+// ── The crop box, as a fraction of the picture ───────────────────────────────
+//
+// The box is stored as fractions of the photo (0..1), never as screen pixels.
+//
+// It WAS stored in screen pixels, and that produced a crop nobody asked for.
+// The box starts out equal to the whole displayed picture, and "has the user
+// cropped anything?" was answered by comparing the two. But the displayed
+// picture is only as big as the space left over on screen — so the moment
+// anything else appeared and the canvas got shorter, the picture shrank, the
+// stored box no longer matched it, and the editor concluded the user had
+// cropped. Drawing a single line was enough to trigger it, because the button
+// that confirms the drawing takes up room.
+//
+// As a fraction the box means the same thing at every screen size, and "the
+// whole picture" is 0,0,1,1 no matter what the layout does.
 
-/**
- * A crop box drawn on the SCREEN, expressed in the photo's own pixels.
- *
- * `displayed` is where the photo is drawn (from fitRect) and `natural` is its
- * real size; the box is given in the same coordinate space as `displayed`.
- * Results are rounded and clamped, because a crop that runs one pixel past the
- * edge is rejected outright by the native image code rather than trimmed.
- */
-export function toNaturalCrop(box: Rect, displayed: Rect, natural: Size): Rect {
-  if (!(displayed.width > 0) || !(displayed.height > 0)) {
-    return { x: 0, y: 0, width: 0, height: 0 };
-  }
-  const scaleX = natural.width / displayed.width;
-  const scaleY = natural.height / displayed.height;
+export type FracRect = { x: number; y: number; w: number; h: number };
 
-  // Relative to the photo's top-left corner, not the screen's.
-  const left = Math.round((box.x - displayed.x) * scaleX);
-  const top = Math.round((box.y - displayed.y) * scaleY);
-  const width = Math.round(box.width * scaleX);
-  const height = Math.round(box.height * scaleY);
+export const WHOLE_IMAGE: FracRect = { x: 0, y: 0, w: 1, h: 1 };
 
-  const x = Math.min(Math.max(0, left), Math.max(0, natural.width - 1));
-  const y = Math.min(Math.max(0, top), Math.max(0, natural.height - 1));
+/** Where a fractional box sits on screen, given where the photo is drawn. */
+export function fracToScreen(f: FracRect, displayed: Rect): Rect {
   return {
-    x,
-    y,
-    width: Math.max(1, Math.min(width, natural.width - x)),
-    height: Math.max(1, Math.min(height, natural.height - y)),
+    x: displayed.x + f.x * displayed.width,
+    y: displayed.y + f.y * displayed.height,
+    width: f.w * displayed.width,
+    height: f.h * displayed.height,
   };
 }
 
-/** Has the user actually cropped anything, or is the box still the whole photo? */
-export function isWholeImage(box: Rect, displayed: Rect, tolerance = 1): boolean {
-  return Math.abs(box.x - displayed.x) <= tolerance
-    && Math.abs(box.y - displayed.y) <= tolerance
-    && Math.abs(box.width - displayed.width) <= tolerance
-    && Math.abs(box.height - displayed.height) <= tolerance;
+/** The reverse: a box drawn on screen as a fraction of the photo. */
+export function screenToFrac(rect: Rect, displayed: Rect): FracRect {
+  if (!(displayed.width > 0) || !(displayed.height > 0)) return { ...WHOLE_IMAGE };
+  return {
+    x: (rect.x - displayed.x) / displayed.width,
+    y: (rect.y - displayed.y) / displayed.height,
+    w: rect.width / displayed.width,
+    h: rect.height / displayed.height,
+  };
+}
+
+/** Keep a fractional box inside the picture, and never below `min` of it. */
+export function clampFrac(f: FracRect, min = 0.05): FracRect {
+  const w = Math.min(Math.max(f.w, min), 1);
+  const h = Math.min(Math.max(f.h, min), 1);
+  return {
+    x: Math.min(Math.max(f.x, 0), 1 - w),
+    y: Math.min(Math.max(f.y, 0), 1 - h),
+    w,
+    h,
+  };
+}
+
+/**
+ * Has the user actually cropped anything?
+ *
+ * The tolerance is in fractions, so it is a proportion of the picture rather
+ * than a number of screen pixels — the same answer on any display.
+ */
+export function isWholeFrac(f: FracRect, tolerance = 0.005): boolean {
+  return Math.abs(f.x) <= tolerance
+    && Math.abs(f.y) <= tolerance
+    && Math.abs(f.w - 1) <= tolerance
+    && Math.abs(f.h - 1) <= tolerance;
+}
+
+/**
+ * A fractional box in the photo's own pixels, ready for the cropper.
+ *
+ * Rounded and clamped, because native image code rejects a rectangle that runs
+ * even one pixel past the edge rather than trimming it.
+ */
+export function fracToNatural(f: FracRect, natural: Size): Rect {
+  const x = Math.min(Math.max(0, Math.round(f.x * natural.width)), Math.max(0, natural.width - 1));
+  const y = Math.min(Math.max(0, Math.round(f.y * natural.height)), Math.max(0, natural.height - 1));
+  return {
+    x,
+    y,
+    width: Math.max(1, Math.min(Math.round(f.w * natural.width), natural.width - x)),
+    height: Math.max(1, Math.min(Math.round(f.h * natural.height), natural.height - y)),
+  };
 }
 
 // ── Freehand strokes ─────────────────────────────────────────────────────────
@@ -90,40 +124,34 @@ export type Segment = { x: number; y: number; length: number; angle: number };
 // ── Undo ─────────────────────────────────────────────────────────────────────
 
 /** What a press of undo should take back, given everything outstanding. */
-export type UndoStep = 'text' | 'stroke' | 'crop' | 'revert' | null;
+export type UndoStep = 'stroke' | 'crop' | 'revert' | null;
 
 /**
  * What undo does next.
  *
  * The editor holds two different kinds of change at once: edits still pending
- * on screen (a crop box being dragged, strokes and captions not yet burnt in)
- * and edits already APPLIED, each of which produced a real file. Undo has to
- * walk back through both, newest first, and the previous version got the order
- * wrong — it compared a caption's `Date.now()` id against the NUMBER of
- * strokes, two quantities with nothing to do with each other, so undo removed
- * whichever it happened to pick.
+ * on screen (a crop box being dragged, strokes not yet burnt in) and edits
+ * already APPLIED, each of which produced a real file. Undo has to walk back
+ * through both, newest first.
  *
- * Strokes and captions therefore carry a shared sequence number, and the
- * larger one is simply the more recent.
+ * Strokes carry a sequence number rather than being counted. An earlier version
+ * compared a caption's `Date.now()` id against the NUMBER of strokes — two
+ * quantities with nothing to do with each other — so which edit came off was
+ * effectively arbitrary.
  */
 export function nextUndo(o: {
   /** Sequence of the newest stroke not yet applied, if any. */
   lastStrokeSeq?: number | null;
-  /** Sequence of the newest caption not yet applied, if any. */
-  lastTextSeq?: number | null;
   /** Whether the crop box currently differs from the whole picture. */
   cropped: boolean;
   /** How many applied steps sit behind the current image. */
   committed: number;
 }): UndoStep {
   const st = o.lastStrokeSeq ?? null;
-  const tx = o.lastTextSeq ?? null;
-  if (st !== null || tx !== null) {
-    if (st === null) return 'text';
-    if (tx === null) return 'stroke';
-    return tx > st ? 'text' : 'stroke';
-  }
-  // Pending annotations gone; the crop box is the next-most-recent thing.
+  // A stroke on screen is always the most recent thing. `!== null` and not a
+  // truthiness check, or the very first stroke — sequence 0 — reads as absent.
+  if (st !== null) return 'stroke';
+  // Then the crop box.
   if (o.cropped) return 'crop';
   // Nothing pending at all, so step back through the applied versions.
   if (o.committed > 0) return 'revert';

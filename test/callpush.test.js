@@ -101,6 +101,15 @@ test('an incoming call is pushed DATA-ONLY, so the app wakes up and rings', asyn
     'the callee would have nothing to show as the caller');
   assert.ok(!msg.android.notification,
     'the android block still declared a notification');
+  // THE SECOND HALF OF THE SAME BUG. Omitting the top-level notification block
+  // is not enough: expo-notifications presents a notification of its own
+  // whenever the DATA payload carries title/body, on the default channel with
+  // the default sound. That is a single chime, and it is what arrived instead
+  // of a ring.
+  assert.ok(!('title' in msg.data),
+    'the call push carries data.title — expo-notifications will draw its own '
+    + 'plain notification from it and the phone chimes once instead of ringing');
+  assert.ok(!('body' in msg.data), 'the call push carries data.body');
   callee && sock.close();
 });
 
