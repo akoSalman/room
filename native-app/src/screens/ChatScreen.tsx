@@ -41,6 +41,7 @@ import SelectedRow, { useSelectionCount } from '../components/SelectedRow';
 import * as selection from '../selection';
 import { searchLocal, mergeResults } from '../localSearch';
 import * as win from '../messageWindow';
+import { fabMode, atPresent, clearsUnseenOnTap } from '../scrollFab';
 import {
   reduceSelection, initialSelection, LONG_PRESS_MS,
   type SelectionState, type MsgId,
@@ -489,6 +490,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   function handleScrollFabPress() {
+    const mode = fabMode({
+      backStackSize: jumpBackStackRef.current.length,
+      atEndOfWindow: isNearBottomRef.current,
+      hasNewer: hasMoreNewerRef.current,
+    });
+    // Going to the newest messages is a statement of intent: the unseen count
+    // and the button itself go NOW, rather than waiting for a scroll event to
+    // confirm it. That wait is what left the badge sitting over a chat the user
+    // was already looking at — onScroll is throttled and the animated scroll
+    // finished between two of its ticks.
+    if (clearsUnseenOnTap(mode)) markCaughtUp();
+
     const marker = jumpBackStackRef.current.pop();
     setBackStackSize(jumpBackStackRef.current.length);
     if (marker && marker !== 'bottom' && scrollToId(marker)) {
@@ -549,11 +562,31 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // list is not the present, so being there must not count as being at the
     // bottom — it would hide the button that is the way back, and mark
     // messages read that the user has not reached.
-    const atEnd = e.nativeEvent.contentOffset.y < 80;
-    const nearBottom = atEnd && !hasMoreNewerRef.current;
+    applyScrollPosition(e.nativeEvent.contentOffset.y);
+  }
+
+  /**
+   * Update everything that depends on where the list is.
+   *
+   * Called from onScroll AND from onMomentumScrollEnd. onScroll is throttled,
+   * so the event carrying the FINAL resting position is not guaranteed to be
+   * delivered — an animated scroll can finish between two ticks, leaving the
+   * button up over a chat that is already at the bottom. onMomentumScrollEnd
+   * fires once, when the list has actually stopped, and corrects it.
+   */
+  function applyScrollPosition(offsetY: number) {
+    const atEnd = offsetY < 80;
+    const nearBottom = atPresent({ atEndOfWindow: atEnd, hasNewer: hasMoreNewerRef.current });
     isNearBottomRef.current = nearBottom;
     setShowScrollFab(!nearBottom);
-    if (nearBottom && missedCount) setMissedCount(0);
+    if (nearBottom) setMissedCount(n => (n ? 0 : n));
+  }
+
+  /** Everything is caught up: at the newest message, nothing unseen. */
+  function markCaughtUp() {
+    isNearBottomRef.current = true;
+    setShowScrollFab(false);
+    setMissedCount(0);
   }
 
   /** The loaded slice, as messageWindow sees it. */
@@ -621,6 +654,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       const latest = await apiFetch(`/messages/${room.id}`);
       if (Array.isArray(latest) && latest.length) {
         applyWindow(win.atBottom(latest, MESSAGES_PAGE_SIZE));
+        markCaughtUp();
       }
     } catch {}
     setJumping(false);
@@ -628,8 +662,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     setTimeout(() => flatListRef.current?.scrollToOffset({ offset: 0, animated: false }), 50);
   }
 
-  const fabVisible = showScrollFab || backStackSize > 0;
-  const fabIsBack = backStackSize > 0;
+  // What the button is, decided in one place (src/scrollFab.ts) so the rules
+  // the tests describe are the rules that run. `showScrollFab` is the negation
+  // of "at the present", which already accounts for a window left short of the
+  // newest message by a jump.
+  const currentFabMode = fabMode({
+    backStackSize,
+    atEndOfWindow: !showScrollFab,
+    hasNewer: hasMoreNewerRef.current,
+  });
+  const fabVisible = currentFabMode !== 'hidden';
+  const fabIsBack = currentFabMode === 'back';
 
   // When a voice message finishes, auto-play the next voice message in this chat
   useEffect(() => {
@@ -3175,6 +3218,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           onScrollBeginDrag={() => { cancelSettling(); selectionEvent({ type: 'clear' }); }}
           onScroll={onMessagesScroll}
           scrollEventThrottle={100}
+          // The throttled onScroll can miss the final resting position; this
+          // fires once the list has actually stopped.
+          onMomentumScrollEnd={(e: any) => applyScrollPosition(e.nativeEvent.contentOffset.y)}
           onViewableItemsChanged={onViewableItemsChanged}
           viewabilityConfig={viewabilityConfigRef}
           onEndReached={loadOlderMessages}
