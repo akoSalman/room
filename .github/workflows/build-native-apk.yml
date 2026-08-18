@@ -5,6 +5,13 @@ on:
     branches: ['claude/**', main, master]
     paths: ['native-app/**']
   workflow_dispatch:
+    inputs:
+      brand:
+        description: 'Which app to build (both, bistbarg, akosalman)'
+        required: false
+        default: 'both'
+        type: choice
+        options: [both, bistbarg, akosalman]
 
 jobs:
   build:
@@ -33,23 +40,46 @@ jobs:
         working-directory: native-app
 
     steps:
+      # One brand at a time when asked for.
+      #
+      # The matrix is fixed rather than computed, because a computed matrix has
+      # to be built by a separate job and read back as JSON — more machinery
+      # than this needs. The unwanted job still starts, but it stops here, in a
+      # couple of seconds, instead of spending a quarter of an hour on an APK
+      # nobody asked for.
+      - name: Skip ${{ matrix.brand }}?
+        id: want
+        run: |
+          WANTED="${{ inputs.brand || 'both' }}"
+          if [ "$WANTED" != "both" ] && [ "$WANTED" != "${{ matrix.brand }}" ]; then
+            echo "Only $WANTED was requested — skipping ${{ matrix.brand }}."
+            echo "build=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=yes" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.want.outputs.build == 'yes'
 
       - name: Set up Node.js
+        if: steps.want.outputs.build == 'yes'
         uses: actions/setup-node@v4
         with:
           node-version: '22'
 
       - name: Set up JDK 17
+        if: steps.want.outputs.build == 'yes'
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
       - name: Setup Android SDK
+        if: steps.want.outputs.build == 'yes'
         uses: android-actions/setup-android@v3
 
       - name: Apply brand config (name, package, API server)
+        if: steps.want.outputs.build == 'yes'
         run: |
           BRAND_FILE="brands/${{ matrix.brand }}.json"
           BASE_URL=$(node -p "require('./${BRAND_FILE}').baseUrl")
@@ -91,6 +121,7 @@ jobs:
           "
 
       - name: Stamp build version
+        if: steps.want.outputs.build == 'yes'
         run: |
           echo "// Stamped by CI (build-native-apk.yml) with the GitHub Actions run number." > src/version.ts
           echo "export const BUILD_VERSION = ${{ github.run_number }};" >> src/version.ts
@@ -114,9 +145,11 @@ jobs:
           "
 
       - name: Install dependencies
+        if: steps.want.outputs.build == 'yes'
         run: npm install
 
       - name: Generate native Android project
+        if: steps.want.outputs.build == 'yes'
         run: npx expo prebuild --platform android --no-install --clean
 
       # The release APK packed native libraries for all four ABIs; x86/x86_64
@@ -126,6 +159,7 @@ jobs:
       # files for every ABI. Real packaging filtering needs ndk.abiFilters in
       # the app module, injected here because prebuild regenerates the project.
       - name: Limit to real-device architectures
+        if: steps.want.outputs.build == 'yes'
         run: |
           sed -i '/^reactNativeArchitectures=/d' android/gradle.properties
           echo 'reactNativeArchitectures=armeabi-v7a,arm64-v8a' >> android/gradle.properties
@@ -145,6 +179,7 @@ jobs:
           grep -A 2 'defaultConfig {' android/app/build.gradle | head -5
 
       - name: Make gradlew executable
+        if: steps.want.outputs.build == 'yes'
         run: chmod +x android/gradlew
 
       # Use the persistent keystore committed to the repo so every build has the
@@ -153,9 +188,11 @@ jobs:
       # Safe to share across brands: Android app identity is (package name +
       # signature), and each brand has its own package name.
       - name: Copy persistent signing keystore
+        if: steps.want.outputs.build == 'yes'
         run: cp signing/chatroom.keystore android/app/chatroom.keystore
 
       - name: Cache Gradle
+        if: steps.want.outputs.build == 'yes'
         uses: actions/cache@v4
         with:
           path: |
@@ -165,6 +202,7 @@ jobs:
           restore-keys: gradle-
 
       - name: Build release APK
+        if: steps.want.outputs.build == 'yes'
         run: |
           KEYSTORE=$(pwd)/android/app/chatroom.keystore
           cd android && ./gradlew assembleRelease --no-daemon \
@@ -175,6 +213,7 @@ jobs:
             -Pandroid.injected.signing.key.password=chatroom123
 
       - name: Report APK size
+        if: steps.want.outputs.build == 'yes'
         run: |
           APK=android/app/build/outputs/apk/release/app-release.apk
           SIZE=$(du -h "$APK" | cut -f1)
@@ -186,6 +225,7 @@ jobs:
       # is only a convenience copy. Short retention keeps it inside GitHub's
       # storage quota, and a quota failure must never block the release publish.
       - name: Upload APK
+        if: steps.want.outputs.build == 'yes'
         uses: actions/upload-artifact@v4
         continue-on-error: true
         with:
@@ -194,6 +234,7 @@ jobs:
           retention-days: 2
 
       - name: Publish latest APK to public releases repo
+        if: steps.want.outputs.build == 'yes'
         env:
           GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
         run: |
