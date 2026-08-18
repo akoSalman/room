@@ -49,6 +49,10 @@ jobs:
       # nobody asked for.
       - name: Skip ${{ matrix.brand }}?
         id: want
+        # The job defaults every `run` to native-app/, which does not exist
+        # until checkout — and this step runs BEFORE checkout, so it has to be
+        # told to run from the workspace root or it cannot start at all.
+        working-directory: ${{ github.workspace }}
         run: |
           WANTED="${{ inputs.brand || 'both' }}"
           if [ "$WANTED" != "both" ] && [ "$WANTED" != "${{ matrix.brand }}" ]; then
