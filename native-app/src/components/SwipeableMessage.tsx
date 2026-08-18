@@ -6,13 +6,21 @@ import { C } from '../theme';
 const SWIPE_THRESHOLD = 64;
 const MAX_SWIPE = 90;
 
-export default function SwipeableMessage({ children, onSwipeRight, onSwipeLeft, enabled = true }: {
+export default function SwipeableMessage({
+  children, onSwipeRight, onSwipeLeft, onSwipeStart, enabled = true,
+}: {
   children: React.ReactNode;
   onSwipeRight?: () => void;
   onSwipeLeft?: () => void;
-  // Suspended while the message's text is being selected: dragging a
-  // selection handle sideways is the same gesture as a swipe, so the swipe
-  // would steal it and the user could never adjust their selection.
+  /**
+   * The swipe has taken the gesture over.
+   *
+   * Fired as it ACTIVATES, not when it finishes, because the thing that has to
+   * be undone by then has already happened: the finger started on the text, the
+   * OS ran its long-press timer, and a word is selected behind the swipe.
+   */
+  onSwipeStart?: () => void;
+  /** Suspended in multi-select, where a sideways drag means something else. */
   enabled?: boolean;
 }) {
   const translateX = useRef(new Animated.Value(0)).current;
@@ -33,6 +41,9 @@ export default function SwipeableMessage({ children, onSwipeRight, onSwipeLeft, 
   );
 
   function onHandlerStateChange(e: any) {
+    if (e.nativeEvent.state === State.ACTIVE && e.nativeEvent.oldState !== State.ACTIVE) {
+      onSwipeStart?.();
+    }
     if (e.nativeEvent.oldState === State.ACTIVE) {
       const dx = e.nativeEvent.translationX;
       if (dx > SWIPE_THRESHOLD && onSwipeRight) onSwipeRight();
@@ -65,7 +76,11 @@ export default function SwipeableMessage({ children, onSwipeRight, onSwipeLeft, 
         enabled={enabled}
         onGestureEvent={onGestureEvent}
         onHandlerStateChange={onHandlerStateChange}
-        activeOffsetX={[-10, 10]}
+        // Eight rather than ten: every pixel of travel before the swipe claims
+        // the gesture is time in which the OS's long-press timer can fire and
+        // start selecting the text under the finger. It cannot go much lower
+        // without a vertical scroll occasionally reading as a swipe.
+        activeOffsetX={[-8, 8]}
         failOffsetY={[-8, 8]}
         hitSlop={{ left: 80, right: 80, top: 6, bottom: 6 }}
       >

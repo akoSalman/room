@@ -230,6 +230,89 @@ test('clear reports the message to wipe as well', () => {
   assert.strictEqual(cleared[2], 7);
 });
 
+// ── Swiping to reply with a finger that started on the text ──────────────────
+//
+// Reported as: swiping right to reply sometimes selects the text instead.
+//
+// The swipe only claims the gesture after ten pixels of sideways movement, and
+// the OS starts its long-press timer the moment the finger lands. Rest briefly
+// before pulling, or pull slowly, and the timer wins: a word is selected, the
+// handles and the copy bar appear, and they are still there once the reply box
+// has opened. Nothing can un-fire that timer, so the selection is wiped.
+
+test('THE BUG: a swipe wipes the selection the OS started under the finger', () => {
+  const { cleared, state } = run([
+    { type: 'down', id: 4, at: 1000 },   // finger lands on the text
+    { type: 'swipe', id: 4 },            // and pulls sideways
+  ]);
+  assert.strictEqual(cleared[1], 4,
+    'the word the OS selected mid-swipe was left highlighted');
+  assert.strictEqual(state.selecting, null);
+  assert.strictEqual(state.pendingId, null, 'the touch is still pending after becoming a swipe');
+});
+
+test('a swipe also wipes a selection left on another message', () => {
+  const { cleared } = run([
+    { type: 'down', id: 1, at: 1000 },
+    { type: 'tap' },
+    { type: 'down', id: 1, at: 1150 },   // message 1 selected
+    { type: 'swipe', id: 9 },            // swipe a different message
+  ]);
+  assert.strictEqual(cleared[3], 1);
+});
+
+test('a swipe with nothing to wipe does not remount anything', () => {
+  // Remounting on every swipe would flicker the text of every message anyone
+  // ever replies to.
+  const { cleared } = run([
+    { type: 'swipe', id: 4 },
+  ]);
+  assert.strictEqual(cleared[0], null);
+});
+
+test('a swipe on a message OTHER than the pending touch wipes nothing', () => {
+  const { cleared } = run([
+    { type: 'down', id: 4, at: 1000 },
+    { type: 'swipe', id: 5 },
+  ]);
+  assert.strictEqual(cleared[1], null);
+});
+
+test('the touch that became a swipe cannot go on to be a tap', () => {
+  // The gesture ends when the finger lifts. Without forgetting it, that lift
+  // arrives as a tap and opens the message menu on top of the reply box.
+  const { actions } = run([
+    { type: 'down', id: 4, at: 1000 },
+    { type: 'swipe', id: 4 },
+    { type: 'tap' },
+  ]);
+  assert.strictEqual(actions[2], 'menu',
+    'a tap after a swipe should be an ordinary tap, not a dismiss');
+});
+
+test('a swipe cannot leave a stale double-tap primed', () => {
+  // `last` is forgotten, so the next touch on this message is a first tap
+  // rather than the second half of a double tap that never happened.
+  const { state } = run([
+    { type: 'down', id: 4, at: 1000 },
+    { type: 'swipe', id: 4 },
+    { type: 'down', id: 4, at: 1100 },   // would be "double" if last survived
+  ]);
+  assert.strictEqual(state.selecting, null,
+    'the swipe left a half-finished double tap behind, so the next touch selected a word');
+});
+
+test('a late hold timer after a swipe is ignored', () => {
+  // The long-press timer is still running when the swipe takes over; it must
+  // not arm a selection behind the reply box.
+  const { state } = run([
+    { type: 'down', id: 4, at: 1000 },
+    { type: 'swipe', id: 4 },
+    { type: 'held', id: 4 },
+  ]);
+  assert.strictEqual(state.selecting, null);
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

@@ -36,6 +36,8 @@ export type SelectionEvent =
   /** The pending touch never became a tap: the finger was held. */
   | { type: 'held'; id: MsgId }
   | { type: 'tap' }
+  /** A swipe-to-reply took the gesture over on this message. */
+  | { type: 'swipe'; id: MsgId }
   | { type: 'clear' };
 
 /** What the component should do about this event. */
@@ -114,6 +116,35 @@ export function reduceSelection(
         };
       }
       return { state: { ...state, pendingId: null }, last, action: 'menu', clearId: null };
+    }
+    case 'swipe': {
+      // Swiping to reply with a finger that started on the text.
+      //
+      // The swipe only claims the gesture after ten pixels of sideways
+      // movement, and the OS starts its long-press timer the instant the finger
+      // lands. Rest for a moment before pulling, or pull slowly, and the timer
+      // wins the race: a word is selected, the handles and the copy bar appear,
+      // and they are still there after the reply box has opened.
+      //
+      // Nothing can un-fire that timer, so the selection is wiped instead. The
+      // message is named so the component can remount its text, which is the
+      // only way to drop a native selection.
+      //
+      // Only when a selection could actually exist: one we already know about,
+      // or a touch on THIS message that has not resolved yet, which is exactly
+      // the case where the OS may have just started one. Remounting on every
+      // swipe would flicker the text of every message anyone ever replies to.
+      const wipe = state.selecting !== null ? state.selecting
+        : state.pendingId === ev.id ? ev.id
+        : null;
+      return {
+        state: { selecting: null, pendingId: null },
+        // The touch is spent: it became a swipe, so it must not go on to be
+        // read as a tap or a hold when it ends.
+        last: null,
+        action: null,
+        clearId: wipe,
+      };
     }
     case 'clear':
       // Dropping the selection means dropping what is drawn too, so hand back

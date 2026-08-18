@@ -2517,6 +2517,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         <View style={[s.bubbleRow, mine && s.bubbleRowMine]}>
         <SwipeableMessage
           enabled={!selectMode}
+          // The swipe has won the gesture, so anything the OS started under the
+          // finger on its way here — a long-press that selected a word — is
+          // undone. It also spends the touch, so the finger lifting at the end
+          // of the swipe is not read as a tap on the message.
+          onSwipeStart={() => {
+            clearTimeout(holdTimer.current);
+            selectionEvent({ type: 'swipe', id: msg.id });
+          }}
           onSwipeRight={() => { setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type }); composerRef.current?.focus(); }}
           onSwipeLeft={mine ? () => deleteMsg(msg.id) : undefined}
         >
