@@ -871,49 +871,115 @@ function mayKeepContent(msg, room, viewerId) {
   return true;
 }
 
-// Shared media of a room, categorized for the media browser tabs.
-app.get('/room-media/:roomId', authMiddleware, (req, res) => {
-  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
-  if (!room || !canAccessRoom(req.user.id, room)) return res.status(404).json({ error: 'Not found' });
+// How many photos one page of the gallery grid holds. Enough to fill a few
+// screens of a 3-column grid without the first paint waiting on the last one.
+const MEDIA_PAGE = 90;
+
+const LINK_RE = /(https?:\/\/[^\s]+|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:\/[^\s]*)?)/g;
+
+/**
+ * Files, audio and links — the three small tabs, sent whole.
+ *
+ * They are capped at 200 each and read from the rows that can actually hold
+ * them, so unlike the photo list there is nothing here worth paging.
+ */
+function collectOther(room, viewerId) {
   const rows = db.prepare(`
-    SELECT id, type, content, file_path, file_name, created_at, user_id, disappear_seconds
+    SELECT id, type, content, file_path, file_name, user_id, disappear_seconds
     FROM messages
     WHERE room_id = ? AND one_time_seconds IS NULL
+      AND (type IN ('video','file','music') OR type = 'text')
     ORDER BY id DESC LIMIT 5000
   `).all(room.id);
-  const media = { images: [], files: [], music: [], links: [] };
-  const LINK_RE = /(https?:\/\/[^\s]+|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:\/[^\s]*)?)/g;
-  // Every item carries the id of the message it came from, so the browser can
-  // offer "Show in chat" and jump straight to it.
+  const files = [], music = [], links = [];
   rows.forEach(m => {
-    // Whether the viewer's device may hold on to this after it is shown.
-    const keep = mayKeepContent(m, room, req.user.id);
-    if (m.type === 'image' && m.file_path) {
-      media.images.push({ url: signPath(m.file_path), msgId: m.id, name: m.file_name || 'Photo', cacheable: keep });
-    } else if (m.type === 'gallery' && m.file_path) {
-      try {
-        JSON.parse(m.file_path).forEach(u =>
-          media.images.push({ url: signPath(u), msgId: m.id, name: m.file_name || 'Photo', cacheable: keep }));
-      } catch {}
-    } else if (m.type === 'video' && m.file_path) {
-      media.files.push({ url: signPath(m.file_path), name: m.file_name || 'Video', msgId: m.id, kind: 'video', cacheable: keep });
+    const keep = mayKeepContent(m, room, viewerId);
+    if (m.type === 'video' && m.file_path) {
+      files.push({ url: signPath(m.file_path), name: m.file_name || 'Video', msgId: m.id, kind: 'video', cacheable: keep });
     } else if (m.type === 'file' && m.file_path) {
-      media.files.push({ url: signPath(m.file_path), name: m.file_name || 'File', msgId: m.id, kind: 'file', cacheable: keep });
+      files.push({ url: signPath(m.file_path), name: m.file_name || 'File', msgId: m.id, kind: 'file', cacheable: keep });
     } else if (m.type === 'music' && m.file_path) {
-      media.music.push({ url: signPath(m.file_path), name: m.file_name || 'Audio', msgId: m.id, kind: 'music', cacheable: keep });
-    }
-    if (m.type === 'text' && m.content && !m.content.startsWith('e2e:')) {
+      music.push({ url: signPath(m.file_path), name: m.file_name || 'Audio', msgId: m.id, kind: 'music', cacheable: keep });
+    } else if (m.type === 'text' && m.content && !m.content.startsWith('e2e:')) {
       (m.content.match(LINK_RE) || []).forEach(l => {
-        if (media.links.length < 200 && !media.links.some(x => x.url === l)) {
-          media.links.push({ url: l, msgId: m.id });
-        }
+        if (links.length < 200 && !links.some(x => x.url === l)) links.push({ url: l, msgId: m.id });
       });
     }
   });
-  media.images = media.images.slice(0, 2000);
-  media.files = media.files.slice(0, 200);
-  media.music = media.music.slice(0, 200);
-  res.json(media);
+  return { files: files.slice(0, 200), music: music.slice(0, 200), links };
+}
+
+/** Every image a message contributes, appended to `out`. */
+function collectImages(out, m, room, viewerId) {
+  const keep = mayKeepContent(m, room, viewerId);
+  if (m.type === 'image' && m.file_path) {
+    out.push({ url: signPath(m.file_path), msgId: m.id, name: m.file_name || 'Photo', cacheable: keep });
+  } else if (m.type === 'gallery' && m.file_path) {
+    // One message, several photos: they all belong to the same message, so
+    // "Show in chat" from any of them lands on it.
+    try {
+      JSON.parse(m.file_path).forEach(u =>
+        out.push({ url: signPath(u), msgId: m.id, name: m.file_name || 'Photo', cacheable: keep }));
+    } catch {}
+  }
+}
+
+// Shared media of a room, categorized for the media browser tabs.
+//
+// Two shapes, chosen by the caller:
+//
+//  • `?v=2` — photos come one page at a time. Opening the gallery used to mean
+//    scanning five thousand messages and sending back up to two thousand photo
+//    entries before anything could be drawn, every single time. A page is a
+//    page: the grid draws immediately and asks for more as it is scrolled.
+//  • no `v` — the whole lot, as before. Versions of the app that are already
+//    installed ask this way and must keep getting what they expect.
+//
+// `?before=<messageId>` (with v=2) asks only for the next page of photos.
+app.get('/room-media/:roomId', authMiddleware, (req, res) => {
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
+  if (!room || !canAccessRoom(req.user.id, room)) return res.status(404).json({ error: 'Not found' });
+
+  if (req.query.v === '2') {
+    const before = parseInt(req.query.before, 10) || 0;
+    const imgRows = db.prepare(`
+      SELECT id, type, file_path, file_name, user_id, disappear_seconds
+      FROM messages
+      WHERE room_id = ? AND one_time_seconds IS NULL
+        AND type IN ('image','gallery') AND file_path IS NOT NULL
+        ${before ? 'AND id < ?' : ''}
+      ORDER BY id DESC LIMIT ?
+    `).all(...(before ? [room.id, before, MEDIA_PAGE] : [room.id, MEDIA_PAGE]));
+    const images = [];
+    imgRows.forEach(m => collectImages(images, m, room, req.user.id));
+    // Paged by MESSAGE, so a gallery message is never split across a page
+    // boundary — the cursor is a message id and every photo of that message is
+    // already on this side of it.
+    const page = {
+      images,
+      imagesCursor: imgRows.length ? imgRows[imgRows.length - 1].id : null,
+      imagesHasMore: imgRows.length === MEDIA_PAGE,
+    };
+    // A follow-on page is photos only; the other tabs were sent with the first.
+    if (before) return res.json(page);
+
+    const rest = collectOther(room, req.user.id);
+    return res.json({ ...page, ...rest });
+  }
+
+  // The unpaged shape, for app versions already in people's hands. Every item
+  // carries the id of the message it came from, so the browser can offer
+  // "Show in chat" and jump straight to it.
+  const imgRows = db.prepare(`
+    SELECT id, type, file_path, file_name, user_id, disappear_seconds
+    FROM messages
+    WHERE room_id = ? AND one_time_seconds IS NULL
+      AND type IN ('image','gallery') AND file_path IS NOT NULL
+    ORDER BY id DESC LIMIT 5000
+  `).all(room.id);
+  const images = [];
+  imgRows.forEach(m => collectImages(images, m, room, req.user.id));
+  res.json({ images: images.slice(0, 2000), ...collectOther(room, req.user.id) });
 });
 
 // Read positions of every member of a room, so the client can render

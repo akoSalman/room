@@ -51,6 +51,16 @@ try {
 
 type Tool = 'crop' | 'pen';
 
+/**
+ * One applied version of the photo, with the size it really is.
+ *
+ * The size travels WITH the file rather than being looked up afterwards. Every
+ * version here is produced by the manipulator or by a screen capture, both of
+ * which report their own dimensions and neither of which carries an EXIF
+ * orientation — so this number is the one the picture is actually drawn at.
+ */
+type Version = { uri: string; width: number; height: number };
+
 const COLORS = ['#ffffff', '#111827', '#ef4444', '#f59e0b', '#22c55e', '#3b82f6'];
 const PEN_WIDTHS = [3, 6, 12];
 
@@ -66,10 +76,13 @@ export default function ImageEditor({
 }) {
   // Every applied edit produces a real file. The last entry is what is on
   // screen and what anything new is applied to.
-  const [history, setHistory] = useState<string[]>([uri]);
-  const working = history[history.length - 1];
-
-  const [natural, setNatural] = useState<Size | null>(null);
+  //
+  // Each entry carries its OWN pixel size, measured when the file was made,
+  // rather than being looked up later — see the note on normalising below.
+  const [history, setHistory] = useState<Version[]>([]);
+  const current = history[history.length - 1] || null;
+  const working = current?.uri || uri;
+  const natural: Size | null = current ? { width: current.width, height: current.height } : null;
   const [area, setArea] = useState<Size>({ width: 0, height: 0 });
   const [tool, setTool] = useState<Tool>('crop');
   const [busy, setBusy] = useState(false);
@@ -84,19 +97,39 @@ export default function ImageEditor({
   const drawing = useRef<Point[]>([]);
   const [live, setLive] = useState<Point[]>([]);
 
-  // Re-measured for each applied version, because a crop changes the photo's
-  // real size and the final pixel crop depends on it.
+  // The photo is NORMALISED before anything is measured on it.
   //
-  // The old size is deliberately KEPT until the new one arrives. Blanking it
-  // first removed the picture from the screen for a frame or two, and pressing
-  // undo a few times in a row made the whole editor flash.
+  // This is why crops landed on the wrong part of the picture. Image.getSize
+  // reports the size the file is STORED at, while <Image> draws it with its
+  // EXIF orientation applied — and a phone photo taken in portrait is very
+  // often stored landscape with a "rotate 90" flag. The editor was then fitting
+  // a landscape rectangle to a portrait picture and converting the crop box
+  // into coordinates of an image nobody could see. It looked plausible and cut
+  // out the wrong thing.
+  //
+  // Passing the file through the manipulator with no operations decodes it,
+  // applies the rotation, and writes it back with no orientation flag at all —
+  // and hands back the real width and height. After that the picture on screen
+  // and the pixels being cropped cannot disagree, because there is only one
+  // interpretation of the file left.
   useEffect(() => {
     let alive = true;
-    Image.getSize(working,
-      (width, height) => { if (alive) setNatural({ width, height }); },
-      () => { if (alive) setNatural({ width: 1000, height: 1000 }); });
+    (async () => {
+      try {
+        const out = await ImageManipulator.manipulateAsync(uri, [], {
+          compress: 1, format: ImageManipulator.SaveFormat.JPEG,
+        });
+        if (alive) setHistory([{ uri: out.uri, width: out.width, height: out.height }]);
+      } catch {
+        // Fall back to measuring the original. The crop may be wrong on a
+        // rotated photo, but an editor that opens beats one that does not.
+        Image.getSize(uri,
+          (width, height) => { if (alive) setHistory([{ uri, width, height }]); },
+          () => { if (alive) setHistory([{ uri, width: 1000, height: 1000 }]); });
+      }
+    })();
     return () => { alive = false; };
-  }, [working]);
+  }, [uri]);
 
   const displayed = natural ? fitRect(natural, area) : null;
   const cropBox = displayed ? fracToScreen(crop, displayed) : null;
@@ -196,27 +229,37 @@ export default function ImageEditor({
     }
   }
 
-  /** Turn the pending edits into a real image file. */
-  async function rasterise(): Promise<string | null> {
-    if (!natural) return null;
-    if (!pending) return working;
+  /** Turn the pending edits into a real image file, and measure it. */
+  async function rasterise(): Promise<Version | null> {
+    if (!natural || !current) return null;
+    if (!pending) return current;
 
-    // A crop is done on the FILE, so the photo keeps its full resolution.
+    // A crop is done on the FILE, so the photo keeps its full resolution. The
+    // manipulator reports the size of what it produced, which is what the next
+    // crop will be measured against.
     if (cropped) {
       const box = fracToNatural(crop, natural);
       const out = await ImageManipulator.manipulateAsync(
         working, [{ crop: { originX: box.x, originY: box.y, width: box.width, height: box.height } }],
         { compress: 0.95, format: ImageManipulator.SaveFormat.JPEG },
       );
-      return out.uri;
+      return { uri: out.uri, width: out.width, height: out.height };
     }
 
     if (!captureRef || !shotRef.current) {
       Alert.alert('Not available', 'Drawing needs a newer version of the app.');
       return null;
     }
-    // Photographs the picture on screen, so the drawing is burnt in.
-    return await captureRef(shotRef.current, { format: 'jpg', quality: 0.95 });
+    // Photographs the picture on screen, so the drawing is burnt in. A capture
+    // has no orientation flag, and it is exactly the rectangle the picture
+    // occupies, so its size follows from the layout.
+    const shot = await captureRef(shotRef.current, { format: 'jpg', quality: 0.95 });
+    const size = await new Promise<Size>(resolve => {
+      Image.getSize(shot,
+        (width, height) => resolve({ width, height }),
+        () => resolve({ width: Math.round(displayed?.width || 1000), height: Math.round(displayed?.height || 1000) }));
+    });
+    return { uri: shot, width: size.width, height: size.height };
   }
 
   /** Make the current edits permanent and start a fresh step on top. */
@@ -254,8 +297,8 @@ export default function ImageEditor({
     try {
       // Forgetting to press Done must not throw the last edit away. At most one
       // kind of edit can be pending, so one pass is enough.
-      const out = pending ? await rasterise() : working;
-      onDone({ uri: out || working, action });
+      const out = pending ? await rasterise() : current;
+      onDone({ uri: out?.uri || working, action });
     } catch {
       Alert.alert('Could not edit', 'The photo could not be saved.');
     } finally {
@@ -317,6 +360,15 @@ export default function ImageEditor({
             width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height,
           })}>
             {picture}
+            {/* Normalising the photo takes a moment on a large one, and until
+                it finishes there is nothing that can honestly be drawn: the
+                size the picture will turn out to be is exactly what is being
+                established. */}
+            {!current && (
+              <View style={s.loading}>
+                <ActivityIndicator size="large" color="#fff" />
+              </View>
+            )}
           </View>
 
           {/* Gesture layers sit above the picture, one per tool. */}
@@ -431,6 +483,7 @@ const s = StyleSheet.create({
   iconBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
 
   canvas: { flex: 1, backgroundColor: '#000' },
+  loading: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
 
   cropBox: { position: 'absolute', borderWidth: 2, borderColor: '#fff' },
   handle: {

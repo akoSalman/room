@@ -26,7 +26,8 @@ import { Ionicons } from '@expo/vector-icons';
 import Composer, { ComposerHandle } from '../components/Composer';
 import AwesomeGallery from 'react-native-awesome-gallery';
 import GalleryGrid from '../components/GalleryGrid';
-import MediaBrowser, { MediaAction, MediaItem } from '../components/MediaBrowser';
+import MediaBrowser, { MediaAction, MediaItem, MediaTab } from '../components/MediaBrowser';
+import * as rm from '../roomMedia';
 import ImageWithSpinner from '../components/ImageWithSpinner';
 import GalleryImage from '../components/GalleryImage';
 import VideoPlayer, { VideoItem } from '../components/VideoPlayer';
@@ -38,10 +39,11 @@ import * as mediaCache from '../mediaCache';
 import * as offline from '../offlineStore';
 import ImageEditor from '../components/ImageEditor';
 import SelectedRow, { useSelectionCount } from '../components/SelectedRow';
+import SelectableText, { clearSelectionOf } from '../components/SelectableText';
 import * as selection from '../selection';
 import { searchLocal, mergeResults } from '../localSearch';
 import * as win from '../messageWindow';
-import { fabMode, atPresent, clearsUnseenOnTap } from '../scrollFab';
+import { fabMode, atPresent, clearsUnseenOnTap, showsGoToNewest } from '../scrollFab';
 import {
   reduceSelection, initialSelection, LONG_PRESS_MS,
   type SelectionState, type MsgId,
@@ -159,7 +161,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // urls often weren't found in the chat's list, so the viewer opened at
   // index 0 — the wrong image — and swiping went somewhere unrelated.
   function openViewer(url: string, list?: string[]) {
-    const base = list ?? (allImages.includes(url) ? allImages : chatImageUrls());
+    const base = list ?? chatImageUrls();
     let idx = base.indexOf(url);
     let images = base;
     if (idx < 0) { images = [url, ...base]; idx = 0; }
@@ -172,7 +174,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // scrolls to this index when it reappears.
     setMediaFocusIndex(viewerIdx);
     setViewer(null);
-    if (viewerFromMedia) { setViewerFromMedia(false); setShowMedia(true); }
+    // Coming back from a photo is a fresh open of the gallery as far as the
+    // grid is concerned: that is what entitles it to restore its position once.
+    if (viewerFromMedia) { setViewerFromMedia(false); setMediaOpenId(n => n + 1); setShowMedia(true); }
   }
   const [replyTo, setReplyTo] = useState<ReplyTo | null>(null);
   const [showOnline, setShowOnline] = useState(false);
@@ -271,8 +275,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [oneTimeExpiry, setOneTimeExpiry] = useState<Record<number, number>>({});
   const [, setOtTick] = useState(0); // 1s ticker while one-time countdowns run
   const [showMedia, setShowMedia] = useState(false);
-  const [mediaTab, setMediaTab] = useState<'images' | 'files' | 'music' | 'links'>('images');
-  const [mediaData, setMediaData] = useState<any>(null);
+  const [mediaTab, setMediaTab] = useState<MediaTab>('images');
+  // What the gallery knows about this room. Held in a module cache too
+  // (src/roomMedia.ts), so closing and reopening it does not refetch the room.
+  const [mediaState, setMediaState] = useState<rm.MediaState | null>(null);
+  const [mediaLoadingMore, setMediaLoadingMore] = useState(false);
+  const mediaLoadingRef = useRef(false);
+  // Counts opens of the gallery. The grid restores its position once per open
+  // and only for this number, which is what stopped it scrolling by itself.
+  const [mediaOpenId, setMediaOpenId] = useState(0);
   // The photo the media grid should return to. Set when the viewer closes,
   // so dismissing an image from the middle of a long gallery puts you back
   // where you were rather than at the top.
@@ -304,9 +315,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // Who is in this chat, for the composer's @ suggestions. Loaded once per
   // chat: a request per keystroke would be absurd for a list this small.
   const [mentionables, setMentionables] = useState<string[]>([]);
-  // Every image ever sent in this chat (chronological), from /room-media —
-  // lets the lightbox traverse the whole chat, not just loaded messages.
-  const [allImages, setAllImages] = useState<string[]>([]);
   // A message arrived in ANOTHER chat while this one is open → dot on "Chats"
   const [otherUnread, setOtherUnread] = useState(false);
   // Quick-emoji bar above the composer (closable; reopens from the strip)
@@ -339,6 +347,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // that can run out is older, which is why this did not exist before.
   const hasMoreNewerRef = useRef(false);
   const loadingNewerRef = useRef(false);
+  // Has the user dragged the list since the window was last replaced?
+  //
+  // The list is INVERTED, so its "start" is the newest end — and after a jump
+  // the target sits about half a window from it, comfortably inside any
+  // sensible threshold. onStartReached therefore fired the instant the jump
+  // finished, loaded a page, fired again, and walked the entire history to the
+  // present on its own, dragging the view along with it. Loading forward is
+  // something the user asks for by scrolling towards it, never something that
+  // happens because a jump landed nearby.
+  const userDraggedRef = useRef(false);
   const [loadingNewer, setLoadingNewer] = useState(false);
   const loadingOlderRef = useRef(false);
   const [backStackSize, setBackStackSize] = useState(0);
@@ -388,11 +406,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     if (selection.retain(messages.map(m => m.id))) setSelectMode(false);
   }, [messages, selectMode]);
   const holdTimer = useRef<any>(null);
-  const [selCleared, setSelCleared] = useState<{ id: MsgId; key: number } | null>(null);
 
   const rowExtraData = useMemo(
-    () => ({ maxOtherReadMsgId, uploadProgress, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode, selCleared }),
-    [maxOtherReadMsgId, uploadProgress, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode, selCleared],
+    () => ({ maxOtherReadMsgId, uploadProgress, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode }),
+    [maxOtherReadMsgId, uploadProgress, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode],
   );
 
   const scrollBottom = useCallback(() => {
@@ -431,9 +448,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     cancelSettling();
     const go = (animated: boolean) => {
       const index = find();
-      if (index === -1) return;
+      if (index === -1) return;   // the window changed under us
       const invertedIndex = messagesRef.current.length - 1 - index;
-      flatListRef.current?.scrollToIndex({ index: invertedIndex, animated, viewPosition: 0.5 });
+      if (invertedIndex < 0 || invertedIndex >= messagesRef.current.length) return;
+      // scrollToIndex throws on an out-of-range index rather than ignoring it,
+      // and these run from timers, long after the list they were computed for.
+      try {
+        flatListRef.current?.scrollToIndex({ index: invertedIndex, animated, viewPosition: 0.5 });
+      } catch {}
     };
 
     go(true);
@@ -470,6 +492,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         // construction, plus a flag saying more follows, is what lets the rest
         // be loaded a screen at a time.
         applyWindow(win.aroundMessage(ctx.messages, !!ctx.hasOlder, !!ctx.hasNewer));
+        userDraggedRef.current = false;
       } catch {
         setJumping(false);
         toast('Could not open that message');
@@ -625,6 +648,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
    * rather than everything between here and now.
    */
   async function loadNewerMessages() {
+    if (!userDraggedRef.current) return;
     if (loadingNewerRef.current || !hasMoreNewerRef.current || !messagesRef.current.length) return;
     loadingNewerRef.current = true;
     setLoadingNewer(true);
@@ -635,7 +659,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     if (!Array.isArray(newer)) { hasMoreNewerRef.current = false; return; }
     // appendNewer decides the flag: a short page means we have caught up with
     // the present, and live messages can be appended again from here on.
-    applyWindow(win.appendNewer(currentWindow(), newer, MESSAGES_PAGE_SIZE));
+    // Trimmed from the far end: walking forward through months of history one
+    // page at a time would otherwise hold every page in memory at once, on
+    // phones that do not have it. The flag says the dropped end can be
+    // re-fetched, so nothing is lost.
+    applyWindow(win.trim(
+      win.appendNewer(currentWindow(), newer, MESSAGES_PAGE_SIZE),
+      MESSAGES_PAGE_SIZE * 6, 'older',
+    ));
   }
 
   /**
@@ -673,6 +704,27 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   });
   const fabVisible = currentFabMode !== 'hidden';
   const fabIsBack = currentFabMode === 'back';
+  const goToNewestVisible = showsGoToNewest({
+    backStackSize,
+    atEndOfWindow: !showScrollFab,
+    hasNewer: hasMoreNewerRef.current,
+  });
+
+  /**
+   * Out of a search (or a trail of jumps) and back to the newest messages.
+   *
+   * The trail is dropped rather than walked: asking for the end of the chat is
+   * leaving the excursion, and keeping the trail would leave a back button
+   * hovering at the bottom of a chat pointing into search results the user has
+   * finished with.
+   */
+  function goToNewest() {
+    jumpBackStackRef.current.length = 0;
+    setBackStackSize(0);
+    setHighlightId(null);
+    markCaughtUp();
+    jumpToBottom();
+  }
 
   // When a voice message finishes, auto-play the next voice message in this chat
   useEffect(() => {
@@ -964,6 +1016,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       sock.on('connect', reconnectHandlerRef.current);
 
       sock.on('message_received', (msg: Message) => {
+        // The gallery's memory of this room is now one message out of date.
+        // Marked, not dropped: the next open still draws instantly from what
+        // is held and picks up the new photo behind it.
+        if (rm.affectsMedia(msg)) rm.markDirty(msg.room_id);
         if (msg.room_id !== room.id) {
           // meRef, not the `me` state: this listener is bound once, and on the
           // first render `me` is still ''. Every message from another room —
@@ -1168,18 +1224,64 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     [images[viewerIdx - 1], images[viewerIdx + 1]].forEach(u => { if (u && u.startsWith('http')) Image.prefetch(u).catch(() => {}); });
   }, [viewer, viewerIdx]);
 
+  // Opening a chat used to fetch the room's ENTIRE media list — a scan of
+  // thousands of messages — to build a list of every photo, so that the
+  // lightbox could swipe past the loaded messages. It cost that on every chat
+  // open and, since the endpoint started returning objects rather than bare
+  // paths, produced a list of "[object Object]" urls that never matched
+  // anything. The gallery is where the whole history belongs, and it now
+  // fetches it a page at a time when it is actually opened.
+  useEffect(() => { setOtherUnread(false); }, [room.id]);
+
+  // The gallery's own state follows the room, from the cache when there is one
+  // so that reopening a chat does not empty it.
   useEffect(() => {
-    let alive = true;
-    setOtherUnread(false);
-    apiFetch(`/room-media/${room.id}`)
-      .then((m: any) => {
-        if (alive && m && Array.isArray(m.images)) {
-          setAllImages(m.images.slice().reverse().map((p: string) => `${BASE_URL}${p}`));
-        }
-      })
-      .catch(() => {});
-    return () => { alive = false; };
+    setMediaState(rm.getCached(room.id));
+    setMediaFocusIndex(0);
   }, [room.id]);
+
+  /**
+   * Open the shared-media gallery.
+   *
+   * Whatever is remembered goes up immediately; the server is asked only if
+   * that memory is stale or something has arrived since. The old version put a
+   * spinner up and waited for the whole room, every time.
+   */
+  async function openMediaBrowser(tab: MediaTab = 'images') {
+    const cached = rm.getCached(room.id);
+    setMediaState(cached);
+    setMediaTab(tab);
+    setMediaFocusIndex(0);
+    setMediaOpenId(n => n + 1);
+    setShowMedia(true);
+    if (!rm.shouldRefresh(cached, rm.isDirty(room.id), Date.now())) return;
+    const first = await apiFetch(`/room-media/${room.id}?v=2`);
+    if (!first || first.error) return;
+    // Merged rather than replaced: pages the user had already scrolled through
+    // stay loaded, and their place in the grid does not move.
+    const next = cached ? rm.mergeRefresh(cached, first, Date.now()) : rm.fromFirstPage(first, Date.now());
+    rm.putCached(room.id, next);
+    setMediaState(next);
+  }
+
+  /** The next page of photos, asked for by the grid as it is scrolled. */
+  async function loadMoreMedia() {
+    const cur = rm.getCached(room.id) || mediaState;
+    if (!cur || !cur.imagesHasMore || !cur.imagesCursor) return;
+    if (mediaLoadingRef.current) return;
+    mediaLoadingRef.current = true;
+    setMediaLoadingMore(true);
+    try {
+      const page = await apiFetch(`/room-media/${room.id}?v=2&before=${cur.imagesCursor}`);
+      if (page && !page.error) {
+        const next = rm.appendImages(cur, page);
+        rm.putCached(room.id, next);
+        setMediaState(next);
+      }
+    } catch {}
+    mediaLoadingRef.current = false;
+    setMediaLoadingMore(false);
+  }
 
   // Optimistic text send: the bubble appears on first tap; if the server
   // doesn't ack within the timeout the bubble shows a retry button.
@@ -1941,20 +2043,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     });
   }
 
-  // The media endpoint returns objects now; older servers returned bare
-  // strings. Both are handled so a stale server does not empty the gallery.
-  const normaliseMediaUrls = (list: any): string[] =>
-    (Array.isArray(list) ? list : []).map((x: any) => (typeof x === 'string' ? x : x?.url)).filter(Boolean);
-
   const roomLink = `${BASE_URL}/join/${room.id}`;
   // Server-rendered, disk-cached thumbnail for an /uploads path. Media paths
   // now carry a signature (?e=&s=); /thumb checks the same one, so it has to
   // be carried across rather than dropped with the rest of the path.
-  const thumbUrl = (uploadPath: string, w: number) => {
+  // useCallback because the gallery's thumbnails are memoised on it: a new
+  // function every render would re-render every tile in the grid on every
+  // render of the chat, which is most of what made the gallery lag.
+  const thumbUrl = useCallback((uploadPath: string, w: number) => {
     const [bare, query] = String(uploadPath).split('?');
     const name = encodeURIComponent(bare.replace(/^\/uploads\//, ''));
     return `${BASE_URL}/thumb/${name}?w=${w}${query ? '&' + query : ''}`;
-  };
+  }, []);
   // Public rooms are readable by anyone but writable only by members.
   const notMember = !room.is_dm && !!roomInfo && !roomInfo.is_member;
 
@@ -2008,9 +2108,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     holdTimer.current = setTimeout(() => selectionEvent({ type: 'held', id }), LONG_PRESS_MS);
   }
 
-  /** Wipe the on-screen selection by remounting the message's Text. */
+  /** Wipe the on-screen selection by remounting that message's Text. */
   function dismissTextSelection(id: MsgId) {
-    setSelCleared(prev => ({ id, key: (prev?.key || 0) + 1 }));
+    clearSelectionOf(id);
   }
 
   function openMenuFor(msg: Message, e?: any) {
@@ -2250,9 +2350,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         try { JSON.parse(m.file_path).forEach((u: string) => out.add(`${BASE_URL}${u}`)); } catch {}
       }
     });
-    const listed: any[] = Array.isArray(mediaData?.images) ? mediaData.images : [];
-    listed.forEach((x: any) => {
-      if (x && typeof x === 'object' && x.cacheable === false) out.add(`${BASE_URL}${x.url}`);
+    (mediaState?.images || []).forEach((x) => {
+      if (x.cacheable === false) out.add(`${BASE_URL}${x.url}`);
     });
     return out;
   }
@@ -2260,11 +2359,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   function openViewerActions() {
     if (!viewerUrl) return;
     const rel = viewerUrl.startsWith(BASE_URL) ? viewerUrl.slice(BASE_URL.length) : viewerUrl;
-    const list: any[] = Array.isArray(mediaData?.images) ? mediaData.images : [];
-    const hit = list.find((x: any) => (typeof x === 'string' ? x : x?.url) === rel);
-    setViewerActions(hit && typeof hit === 'object'
-      ? hit
-      : { url: rel, name: rel.split('/').pop() || 'photo' });
+    const hit = (mediaState?.images || []).find((x) => x.url === rel);
+    setViewerActions(hit || { url: rel, name: rel.split('/').pop() || 'photo' });
   }
 
   // What the media browser's long-press menu does. Everything routes through
@@ -2282,7 +2378,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       return;
     }
     if (action === 'open') {
-      const images = normaliseMediaUrls(mediaData?.images);
+      const images = (mediaState?.images || []).map(i => i.url);
       const idx = images.indexOf(item.url);
       if (idx >= 0) {
         setShowMedia(false);
@@ -2593,14 +2689,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             // Native selection on a selectable Text does the job: long-press or
             // double-tap picks the word under the finger, the handles adjust it,
             // and the system Copy appears. Nothing re-lays-out, so nothing moves.
-            <Text
-              // Remounting is the only way to drop a native selection: React
-              // Native exposes no API to clear one. The key changes only for
-              // the message being dismissed, so no other bubble is touched.
-              key={selCleared?.id === msg.id ? `sel${selCleared.key}` : 'sel'}
+            <SelectableText
+              // Subscribes to clears aimed at itself and remounts, which is
+              // the only way to drop a native selection. It used to be done by
+              // putting the cleared id into the list's extraData, which
+              // re-rendered every mounted row to remount one — including,
+              // between the two taps of a double-tap, the message being
+              // tapped. That is why double-tap was unreliable until you tapped
+              // some other message first.
+              msgId={msg.id}
               style={s.msgText}
               selectable={canTakeContent(msg)}
-            >{renderTextWithLinks(msg.content || '')}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}{msg.one_time_seconds ? <Text style={s.oneTimeTag}> 🔥{msg.one_time_seconds}s</Text> : null}</Text>
+            >{renderTextWithLinks(msg.content || '')}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}{msg.one_time_seconds ? <Text style={s.oneTimeTag}> 🔥{msg.one_time_seconds}s</Text> : null}</SelectableText>
           )}
           {msg.type === 'call' && (() => {
             let c: any = {};
@@ -2961,14 +3061,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           {otherUnread && <View style={s.unreadDot} />}
         </TouchableOpacity>
         <TouchableOpacity style={s.headerCenter} activeOpacity={0.7}
-          onPress={async () => {
-            if (room.is_dm) {
-              setShowMedia(true);
-              setMediaTab('images');
-              const m = await apiFetch(`/room-media/${room.id}`);
-              if (!m.error) setMediaData(m);
-              return;
-            }
+          onPress={() => {
+            if (room.is_dm) { openMediaBrowser('images'); return; }
             setShowRoomInfo(true);
             loadRoomInfo();
           }}>
@@ -3223,7 +3317,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           // "dismiss" that has nothing to dismiss. That is why double-tapping
           // another message stopped working after a scroll and only came back
           // after tapping around a few times.
-          onScrollBeginDrag={() => { cancelSettling(); selectionEvent({ type: 'clear' }); }}
+          onScrollBeginDrag={() => {
+            userDraggedRef.current = true;
+            cancelSettling();
+            selectionEvent({ type: 'clear' });
+          }}
           onScroll={onMessagesScroll}
           scrollEventThrottle={100}
           // The throttled onScroll can miss the final resting position; this
@@ -3237,7 +3335,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           // way back to the present after jumping to an old message, and it
           // fetches one screenful at a time rather than everything in between.
           onStartReached={loadNewerMessages}
-          onStartReachedThreshold={1.5}
+          // Small on purpose: a screenful and a half reaches back past the
+          // message a jump just landed on.
+          onStartReachedThreshold={0.1}
           ListFooterComponent={loadingOlder ? (
             <ActivityIndicator color={C.accent} size="small" style={{ marginVertical: 10 }} />
           ) : null}
@@ -3246,8 +3346,19 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             <ActivityIndicator color={C.accent} size="small" style={{ marginVertical: 10 }} />
           ) : null}
           onScrollToIndexFailed={info => {
+            // Retried against the list as it is A HUNDRED MILLISECONDS LATER,
+            // not as it was when the scroll failed. In between, a jump can
+            // replace the whole window with a shorter one — and asking
+            // FlatList for an index past the end of its data throws, which is
+            // the crash that showed up while searching. Clamped, and dropped
+            // entirely if there is nothing left to scroll to.
             setTimeout(() => {
-              flatListRef.current?.scrollToIndex({ index: info.index, animated: true, viewPosition: 0.5 });
+              const len = messagesRef.current.length;
+              if (!len) return;
+              const index = Math.max(0, Math.min(info.index, len - 1));
+              try {
+                flatListRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.5 });
+              } catch {}
             }, 100);
           }}
         />
@@ -3285,6 +3396,22 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               <Text style={s.scrollFabBadgeText}>{missedCount > 99 ? '99+' : missedCount}</Text>
             </View>
           )}
+        </TouchableOpacity>
+      )}
+
+      {/* Straight out of a search, or a trail of jumps, to the newest messages.
+          It sits BESIDE the back button rather than replacing it, so neither
+          way out costs the other — and it stays put once the search box is
+          cleared and the search closed, which is exactly when someone wants
+          to get back to the present. */}
+      {goToNewestVisible && (
+        <TouchableOpacity
+          style={[s.newestFab, (replyTo || editingId) && s.scrollFabRaised]}
+          onPress={goToNewest}
+          accessibilityLabel="Go to the newest messages"
+        >
+          <Ionicons name="play-skip-forward" size={17} color={C.accent}
+            style={{ transform: [{ rotate: '90deg' }] }} />
         </TouchableOpacity>
       )}
 
@@ -3509,13 +3636,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       <MediaBrowser
         visible={showMedia}
         title={room.other_username || room.name}
-        data={mediaData}
+        state={mediaState}
         tab={mediaTab}
         onTab={setMediaTab}
         onClose={() => setShowMedia(false)}
+        onLoadMore={loadMoreMedia}
+        loadingMore={mediaLoadingMore}
         thumbUrl={thumbUrl}
         baseUrl={BASE_URL}
         focusIndex={mediaFocusIndex}
+        openId={mediaOpenId}
         onOpenImage={(i, all) => {
           setShowMedia(false);
           setViewerFromMedia(true);
@@ -3738,7 +3868,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               // Editing a one-time photo would produce a permanent copy of
               // something meant to vanish, so it is offered on nothing else.
               ...(isOneTimeUrl(viewerUrl) ? [] : [['edit', 'create-outline', 'Edit']]),
-              ['showInChat', 'chatbubble-outline', 'Show in chat'],
+              // Only when the photo was opened from the media browser. Opening
+              // it from the chat means the message is already on screen behind
+              // the viewer, so "Show in chat" closes the picture to reveal
+              // what was there all along.
+              ...(viewerFromMedia ? [['showInChat', 'chatbubble-outline', 'Show in chat']] : []),
               // Saving or sharing a one-time photo would defeat it.
               ...(isOneTimeUrl(viewerUrl) ? [] : [['download', 'download-outline', 'Download']]),
               ...(isOneTimeUrl(viewerUrl) ? [] : [['share', 'share-outline', 'Share']]),
@@ -3816,6 +3950,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             <View style={s.sheetHandle} />
             <Text style={s.forwardTitle}>{(roomInfo?.is_private ?? room.is_private) ? '🔒 ' : '# '}{room.name}</Text>
             <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled>
+              {/* The gallery was reachable only from a direct chat's header,
+                  so in a group there was no way into it at all. */}
+              <TouchableOpacity
+                style={s.infoAction}
+                onPress={() => { setShowRoomInfo(false); openMediaBrowser('images'); }}
+              >
+                <Ionicons name="images-outline" size={19} color={C.accent} />
+                <Text style={s.infoActionText}>Shared photos & files</Text>
+                <View style={{ flex: 1 }} />
+                <Ionicons name="chevron-forward" size={17} color={C.muted} />
+              </TouchableOpacity>
+
               <View style={s.roomLinkBox}>
                 <View style={s.roomMetaRow}>
                   <Text style={s.roomMetaLabel}>TYPE</Text>
@@ -4057,11 +4203,12 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.5)', paddingHorizontal: 12, paddingVertical: 4,
     borderRadius: 12, overflow: 'hidden',
   },
-  mediaTabs: { flexDirection: 'row', gap: 6, paddingHorizontal: 12, paddingBottom: 10, flexWrap: 'wrap' },
-  mediaTab: { borderRadius: 14, paddingHorizontal: 10, paddingVertical: 5, backgroundColor: 'rgba(59,125,216,0.08)' },
-  mediaTabActive: { backgroundColor: C.accent },
-  mediaTabText: { color: C.accent, fontSize: 12.5, fontWeight: '600' },
-  mediaTabTextActive: { color: '#fff' },
+  infoAction: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    marginHorizontal: 14, marginBottom: 10, paddingHorizontal: 14, paddingVertical: 13,
+    borderRadius: 12, backgroundColor: 'rgba(59,125,216,0.08)',
+  },
+  infoActionText: { color: C.text, fontSize: 14.5, fontWeight: '700' },
   mediaGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, paddingHorizontal: 12 },
   mediaThumb: { width: 100, height: 100, borderRadius: 8 },
   mediaEmpty: { color: C.muted, textAlign: 'center', paddingVertical: 24, width: '100%' },
@@ -4353,6 +4500,14 @@ const s = StyleSheet.create({
     borderWidth: 2, borderColor: C.bg,
   },
   scrollFabBadgeText: { color: '#fff', fontSize: 10.5, fontWeight: '800' },
+  // Beside the scroll button, not above it: the slot above belongs to the
+  // mention button, and all three can be up at once.
+  newestFab: {
+    position: 'absolute', end: 68, bottom: 148, width: 40, height: 40, borderRadius: 20,
+    backgroundColor: C.sidebar, borderWidth: 1, borderColor: C.border,
+    alignItems: 'center', justifyContent: 'center',
+    elevation: 4, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 6, shadowOffset: { width: 0, height: 2 },
+  },
   // Sits above the scroll-to-bottom button so the two never overlap.
   mentionFab: {
     position: 'absolute', end: 16, bottom: 200, width: 44, height: 44, borderRadius: 22,

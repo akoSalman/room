@@ -35,6 +35,29 @@ export function fabMode(o: {
 }
 
 /**
+ * Should a SEPARATE "straight to the newest messages" button be offered?
+ *
+ * Reported as: while searching there is no way to get back to the end of the
+ * chat. Stepping through search results pushes a jump onto the trail each
+ * time, so the button turns into the back-walking one — and walking back
+ * through ten results one tap at a time is not a way out of a search, it is a
+ * way to be stuck in it. The trail is still worth keeping, so rather than
+ * taking the button away from it, a second one is offered beside it.
+ *
+ * Only while the back-walking button is in the way, and only while there is
+ * somewhere to go: at the present there is nothing to offer, and with an empty
+ * trail the ordinary button already means "bottom" — a second one saying the
+ * same thing would just be two buttons doing one job.
+ */
+export function showsGoToNewest(o: {
+  backStackSize: number;
+  atEndOfWindow: boolean;
+  hasNewer: boolean;
+}): boolean {
+  return fabMode(o) === 'back' && !atPresent(o);
+}
+
+/**
  * Does tapping the button mean "I have seen the new messages"?
  *
  * Only when it is the go-to-newest button. In its back-walking mode the tap

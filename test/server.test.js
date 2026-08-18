@@ -1710,4 +1710,108 @@ test('SECURITY: new accounts require a minimum password length', async () => {
   assert.ok(r.error && /at least/i.test(r.error), `short password accepted: ${JSON.stringify(r)}`);
 });
 
+test('the gallery is paged, so opening it does not fetch the whole room', async () => {
+  // Reported as: "gallery does not work good at all — it lags all the time and
+  // loads every time opening it." Every open used to scan thousands of
+  // messages and hand back up to two thousand photo entries before the grid
+  // could draw anything. `?v=2` asks for one page.
+  const owner = await signUp('galowner40');
+  const sock = await connect(owner.token);
+  const room = await api('/rooms', 'POST', { name: 'gallery-room-40' }, owner.token);
+
+  // A hundred photos: more than one page, so paging is actually exercised.
+  const TOTAL = 100;
+  for (let i = 0; i < TOTAL; i++) {
+    await emit(sock, 'send_message',
+      { roomId: room.id, type: 'image', content: '', filePath: `/uploads/g${i}.jpg`, fileName: `g${i}.jpg` });
+  }
+  await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: 'see https://example.com/x' });
+  await emit(sock, 'send_message',
+    { roomId: room.id, type: 'file', content: '', filePath: '/uploads/doc40.pdf', fileName: 'doc40.pdf' });
+
+  const first = await api(`/room-media/${room.id}?v=2`, 'GET', null, owner.token);
+  assert.ok(first.images.length > 0, 'no photos on the first page');
+  assert.ok(first.images.length < TOTAL,
+    `the whole room came back in one page (${first.images.length}) — the gallery is not paged`);
+  assert.strictEqual(first.imagesHasMore, true, 'a full page did not say there was more');
+  assert.ok(first.imagesCursor, 'no cursor to ask for the next page with');
+  // Newest first: a gallery opens on what was just sent.
+  assert.ok(first.images[0].url.includes(`g${TOTAL - 1}.jpg`),
+    `first page starts at ${first.images[0].url}, not the newest photo`);
+  // The small tabs come with the first page — they are never paged.
+  assert.strictEqual(first.files.length, 1);
+  assert.strictEqual(first.links.length, 1);
+
+  // The next page continues where the first stopped, with no overlap.
+  const second = await api(`/room-media/${room.id}?v=2&before=${first.imagesCursor}`, 'GET', null, owner.token);
+  assert.ok(second.images.length > 0, 'the second page was empty');
+  const firstUrls = new Set(first.images.map(i => i.url));
+  assert.ok(!second.images.some(i => firstUrls.has(i.url)),
+    'the second page repeats photos from the first — the grid would show duplicates');
+  // A follow-on page is photos only; sending the other tabs again is waste.
+  assert.strictEqual(second.files, undefined, 'a photo page carried the file list too');
+
+  // Every photo is reachable by paging to the end, and only once.
+  const all = new Set();
+  let cursor = null, guard = 0;
+  do {
+    const page = await api(
+      `/room-media/${room.id}?v=2${cursor ? `&before=${cursor}` : ''}`, 'GET', null, owner.token);
+    page.images.forEach(i => all.add(i.url.split('?')[0]));
+    cursor = page.imagesCursor;
+    if (!page.imagesHasMore) break;
+  } while (++guard < 20);
+  assert.strictEqual(all.size, TOTAL, `paged through ${all.size} photos, expected ${TOTAL}`);
+});
+
+test('the gallery still answers the old way for apps already installed', async () => {
+  // Versions in people's hands ask without ?v=2 and expect the whole list.
+  const owner = await signUp('galold41');
+  const sock = await connect(owner.token);
+  const room = await api('/rooms', 'POST', { name: 'gallery-room-41' }, owner.token);
+  for (let i = 0; i < 5; i++) {
+    await emit(sock, 'send_message',
+      { roomId: room.id, type: 'image', content: '', filePath: `/uploads/o${i}.jpg`, fileName: `o${i}.jpg` });
+  }
+  // …including albums, which are one message holding several photos.
+  await emit(sock, 'send_message', {
+    roomId: room.id, type: 'gallery', content: '',
+    filePath: JSON.stringify(['/uploads/oa.jpg', '/uploads/ob.jpg']), fileName: 'Album',
+  });
+  const media = await api(`/room-media/${room.id}`, 'GET', null, owner.token);
+  assert.strictEqual(media.images.length, 7, 'the unpaged shape stopped returning everything');
+  assert.ok(media.images.some(i => i.url.includes('oa.jpg')),
+    'an album\'s photos vanished from the shape older apps ask for');
+  assert.ok(Array.isArray(media.files) && Array.isArray(media.music) && Array.isArray(media.links));
+  assert.strictEqual(media.imagesHasMore, undefined, 'the old shape grew paging fields');
+});
+
+test('a gallery message contributes all its photos, and is never split across pages', async () => {
+  // One message can hold several photos. Paging by MESSAGE id means a page
+  // boundary can never fall inside one, so no photo is lost or repeated.
+  const owner = await signUp('galmulti42');
+  const sock = await connect(owner.token);
+  const room = await api('/rooms', 'POST', { name: 'gallery-room-42' }, owner.token);
+  await emit(sock, 'send_message', {
+    roomId: room.id, type: 'gallery', content: '',
+    filePath: JSON.stringify(['/uploads/m1.jpg', '/uploads/m2.jpg', '/uploads/m3.jpg']),
+    fileName: 'Album',
+  });
+  const media = await api(`/room-media/${room.id}?v=2`, 'GET', null, owner.token);
+  assert.strictEqual(media.images.length, 3, 'a multi-photo message lost photos');
+  // All three point back at the same message, so "Show in chat" works from any.
+  assert.strictEqual(new Set(media.images.map(i => i.msgId)).size, 1);
+});
+
+test('the gallery refuses a room the viewer is not in', async () => {
+  const owner = await signUp('galpriv43');
+  const stranger = await signUp('galout43');
+  const sock = await connect(owner.token);
+  const room = await api('/rooms', 'POST', { name: 'gallery-room-43', isPrivate: true }, owner.token);
+  await emit(sock, 'send_message',
+    { roomId: room.id, type: 'image', content: '', filePath: '/uploads/p43.jpg', fileName: 'p43.jpg' });
+  const r = await api(`/room-media/${room.id}?v=2`, 'GET', null, stranger.token);
+  assert.ok(r.error, 'a stranger was handed a private room\'s photos');
+});
+
 main().catch(err => { console.error(err); process.exit(1); });
