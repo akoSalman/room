@@ -52,12 +52,20 @@ const peerKeys: Record<string, Uint8Array | null> = {};
 async function loadLocal(): Promise<boolean> {
   if (myKeys) return true;
   const [pk, sk] = await Promise.all([AsyncStorage.getItem('e2e_pk'), AsyncStorage.getItem('e2e_sk')]);
-  if (pk && sk) myKeys = { publicKey: b64dec(pk), secretKey: b64dec(sk) };
+  if (pk && sk) {
+    myKeys = { publicKey: b64dec(pk), secretKey: b64dec(sk) };
+    // Decrypted text is cached against the PEER's key, so a change to OUR key
+    // would not invalidate it on its own — and a plaintext produced under a
+    // different key pair is somebody else's conversation. Cheap to drop:
+    // nothing has been decrypted yet at this point anyway.
+    e2eForgetPlaintext();
+  }
   return !!myKeys;
 }
 
 async function storeLocal(keys: nacl.BoxKeyPair) {
   myKeys = keys;
+  e2eForgetPlaintext();   // same reason as in loadLocal
   await AsyncStorage.setItem('e2e_pk', b64enc(keys.publicKey));
   await AsyncStorage.setItem('e2e_sk', b64enc(keys.secretKey));
 }
@@ -150,12 +158,74 @@ export async function e2eDMPeerKey(roomId: number): Promise<Uint8Array | null> {
 // ONCE per peer with box.before and reuse the shared key for every message —
 // otherwise a DM with history freezes the whole app while it decrypts.
 let sharedCache: { pk: string; sk: Uint8Array; key: Uint8Array } | null = null;
-function sharedKey(peerPk: Uint8Array): Uint8Array {
-  const tag = b64enc(peerPk);
+function sharedKey(peerPk: Uint8Array, tag = b64enc(peerPk)): Uint8Array {
   if (!sharedCache || sharedCache.pk !== tag || sharedCache.sk !== myKeys!.secretKey) {
     sharedCache = { pk: tag, sk: myKeys!.secretKey, key: nacl.box.before(peerPk, myKeys!.secretKey) };
   }
   return sharedCache.key;
+}
+
+// ── Decrypting the same message over and over ────────────────────────────────
+//
+// Asked as: does a chat really have to decrypt everything again every time it
+// is opened, even without leaving the app?
+//
+// It was worse than that. Decryption happened inside the message list's
+// renderItem, so it ran on every RENDER of every visible row — not once per
+// message. Scrolling decrypted each row as it mounted; a reaction arriving, a
+// read receipt landing, a highlight or a selection changing re-rendered the
+// visible window and decrypted all of it again; and leaving the chat and
+// coming back decrypted everything from scratch. tweetnacl is pure
+// JavaScript, so each of those is real work on the same thread that is trying
+// to scroll.
+//
+// The answer is no: a message's plaintext cannot change. Decrypt it once.
+//
+// Keyed by peer AND ciphertext, so a message can never be served plaintext
+// that was decrypted under a different identity. Bounded, because a long chat
+// would otherwise hold every message it has ever shown.
+const PLAIN_CACHE_MAX = 3000;
+const plainCache = new Map<string, string | null>();
+
+function rememberPlain(key: string, value: string | null): string | null {
+  plainCache.set(key, value);
+  // Map iterates in insertion order, so the front is the oldest.
+  while (plainCache.size > PLAIN_CACHE_MAX) {
+    const oldest = plainCache.keys().next().value;
+    if (oldest === undefined) break;
+    plainCache.delete(oldest);
+  }
+  return value;
+}
+
+/**
+ * Drop every decrypted message held in memory.
+ *
+ * Called when the keys go. Plaintext must not outlive the ability to produce
+ * it — a cache that survived a sign-out would be a copy of a private
+ * conversation belonging to nobody.
+ */
+export function e2eForgetPlaintext() {
+  plainCache.clear();
+}
+
+/**
+ * Install a key pair directly. Tests only.
+ *
+ * The keys are module-private and every other way in touches storage or the
+ * network, so without this the decryption cache — the part most able to go
+ * wrong in a way users would see — could not be tested at all. It grants
+ * nothing: anything able to call it is already running inside the app with
+ * full access to the real keys.
+ */
+export function _setKeysForTest(keys: { publicKey: Uint8Array; secretKey: Uint8Array } | null) {
+  myKeys = keys as any;
+  sharedCache = null;
+  // Deliberately does NOT touch the plaintext cache. The real key-change paths
+  // (loadLocal, storeLocal, e2eClear) each clear it explicitly, and a test hook
+  // that cleared it too would make those clears impossible to test — every
+  // assertion about plaintext outliving a sign-out would pass whether the
+  // production code cleared anything or not.
 }
 
 export function e2eEncrypt(text: string, peerPk: Uint8Array | null): string | null {
@@ -169,12 +239,26 @@ export function e2eEncrypt(text: string, peerPk: Uint8Array | null): string | nu
 
 export function e2eDecrypt(content: string | null, peerPk: Uint8Array | null): string | null {
   if (!content || !content.startsWith('e2e:')) return content;
+  // Not a failed decryption — a decryption that has not been attempted,
+  // because the keys are not loaded yet. Deliberately NOT remembered: caching
+  // it would leave the message reading "cannot decrypt on this device" for the
+  // rest of the session, seconds after the keys arrived.
   if (!myKeys || !peerPk) return null;
+
+  const tag = b64enc(peerPk);
+  const cacheKey = `${tag}|${content}`;
+  const hit = plainCache.get(cacheKey);
+  // `undefined` means "not tried"; a stored null means "tried, and it failed" —
+  // which with these keys it will fail again, so it is worth remembering too.
+  if (hit !== undefined) return hit;
+
   try {
     const packed = b64dec(content.slice(4));
-    const opened = nacl.box.open.after(packed.subarray(24), packed.subarray(0, 24), sharedKey(peerPk));
-    return opened ? td.decode(new Uint8Array(opened)) : null;
-  } catch { return null; }
+    const opened = nacl.box.open.after(packed.subarray(24), packed.subarray(0, 24), sharedKey(peerPk, tag));
+    return rememberPlain(cacheKey, opened ? td.decode(new Uint8Array(opened)) : null);
+  } catch {
+    return rememberPlain(cacheKey, null);
+  }
 }
 
 export const e2eIsEncrypted = (content: string | null | undefined) =>
@@ -183,5 +267,6 @@ export const e2eIsEncrypted = (content: string | null | undefined) =>
 export async function e2eClear() {
   myKeys = null;
   sharedCache = null;
+  e2eForgetPlaintext();
   await AsyncStorage.multiRemove(['e2e_pk', 'e2e_sk']);
 }
