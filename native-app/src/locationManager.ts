@@ -40,9 +40,19 @@ export async function ensurePermission(): Promise<boolean> {
   return asked.granted;
 }
 
+/**
+ * One fix, as good as the phone can make it.
+ *
+ * Accuracy.High, not Balanced. Balanced asks Android for roughly a hundred
+ * metres and is the right trade for the live tracker below, which takes a
+ * reading every few seconds for hours. This is a SINGLE reading for a message
+ * saying where someone is, and a hundred metres is the difference between a
+ * street and a neighbourhood — which is exactly the complaint. The extra
+ * battery for one fix is not worth defending.
+ */
 export async function currentPosition(): Promise<{ lat: number; lng: number; accuracy: number | null } | null> {
   try {
-    const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+    const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
     return { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy ?? null };
   } catch {
     // A last known fix is far better than nothing when the sky is blocked.

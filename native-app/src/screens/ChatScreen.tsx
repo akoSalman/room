@@ -30,6 +30,8 @@ import MediaBrowser, { MediaAction, MediaItem, MediaTab } from '../components/Me
 import * as rm from '../roomMedia';
 import * as up from '../uploadProgress';
 import UploadOverlay from '../components/UploadOverlay';
+import LocationPicker from '../components/LocationPicker';
+import * as pick from '../locationPick';
 import { uploadResumable } from '../chunkedUpload';
 
 /**
@@ -67,6 +69,7 @@ import LocationView, { LocationPin } from '../components/LocationView';
 import * as locationManager from '../locationManager';
 import {
   parseLocation, isLiveNow, formatRemaining, formatCoords, distanceMeters, formatDistance,
+  type LatLng,
 } from '../geo';
 import CameraScreen from './CameraScreen';
 import * as Sharing from 'expo-sharing';
@@ -2487,19 +2490,64 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     else if (action === 'share') shareOut(asMessage);
   }
 
-  // Post a location. `liveMinutes` 0 = a one-off pin; anything else starts a
-  // live share that keeps updating the SAME message.
-  async function sendLocation(liveMinutes: number) {
+  // Where the phone thinks we are, kept while the picker is open so a fix that
+  // arrives late can still centre the map.
+  const [locFix, setLocFix] = useState<pick.Fix>(null);
+  const [locating, setLocating] = useState(false);
+  const [showLocationPicker, setShowLocationPicker] = useState(false);
+
+  /** Ask the phone where it is, and remember the answer. */
+  async function refreshFix(): Promise<pick.Fix> {
+    setLocating(true);
+    try {
+      const pos = await locationManager.currentPosition();
+      setLocFix(pos);
+      return pos;
+    } finally {
+      setLocating(false);
+    }
+  }
+
+  /**
+   * Open the map so the pin can be placed by hand.
+   *
+   * The map goes up FIRST and the fix arrives into it, rather than the other
+   * way round. Waiting for a fix before showing anything meant staring at a
+   * closed sheet for however long the phone took, and a phone that never got
+   * a fix used to mean no location could be shared at all — which is the worst
+   * possible outcome for someone who knows perfectly well where they are.
+   */
+  async function openLocationPicker() {
     setShowLocationMenu(false);
     if (!(await locationManager.ensurePermission())) {
       Alert.alert('Location needed', 'Allow location access to share where you are.');
       return;
     }
-    const pos = await locationManager.currentPosition();
-    if (!pos) { Alert.alert('No position', 'Could not get your location. Try again outdoors.'); return; }
+    setLocFix(null);
+    setShowLocationPicker(true);
+    refreshFix();
+  }
+
+  // Post a location. `liveMinutes` 0 = a one-off pin; anything else starts a
+  // live share that keeps updating the SAME message.
+  //
+  // `chosen` is where the user put the pin. A live share ignores it: live
+  // means "follow me", and the tracker overwrites the coordinates within
+  // seconds — see locationPayload for why placing one by hand would be a lie
+  // that quietly corrects itself.
+  async function sendLocation(liveMinutes: number, chosen?: LatLng) {
+    setShowLocationMenu(false);
+    setShowLocationPicker(false);
+    if (!(await locationManager.ensurePermission())) {
+      Alert.alert('Location needed', 'Allow location access to share where you are.');
+      return;
+    }
+    const fix = chosen ? locFix : await refreshFix();
+    const at = chosen || (fix ? { lat: fix.lat, lng: fix.lng } : null);
+    if (!at) { Alert.alert('No position', 'Could not get your location. Try again outdoors.'); return; }
 
     const liveUntil = liveMinutes > 0 ? Date.now() + liveMinutes * 60_000 : null;
-    const payload = { lat: pos.lat, lng: pos.lng, accuracy: pos.accuracy, liveUntil, updatedAt: Date.now() };
+    const payload = pick.locationPayload({ chosen: at, fix, liveUntil, now: Date.now() });
 
     socketRef.current?.emit('send_message', {
       roomId: room.id, type: 'location', content: JSON.stringify(payload),
@@ -3816,6 +3864,20 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         </View>
       )}
 
+      {/* Placing the pin by hand, because the phone's own answer is sometimes
+          a neighbourhood rather than a street. */}
+      <LocationPicker
+        visible={showLocationPicker}
+        fix={locFix}
+        locating={locating}
+        // Somewhere sensible to open when the phone cannot say where it is:
+        // the last place anyone pinned in this chat.
+        nearby={locationPins.map(p => ({ lat: p.payload.lat, lng: p.payload.lng }))}
+        onCancel={() => setShowLocationPicker(false)}
+        onRecentre={refreshFix}
+        onSend={(chosen) => sendLocation(0, chosen)}
+      />
+
       {/* Share location */}
       <Modal visible={showLocationMenu} transparent animationType="slide" onRequestClose={() => setShowLocationMenu(false)}>
         <View style={s.overlay}>
@@ -3823,8 +3885,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           <View style={s.attachSheet}>
             <View style={s.sheetHandle} />
             <Text style={s.forwardTitle}>📍 Share location</Text>
-            <TouchableOpacity style={s.attachOption} onPress={() => sendLocation(0)}>
-              <Text style={s.attachOptionText}>Send my current location</Text>
+            {/* The map, not a straight send. A phone's fix is a guess with an
+                error bar, and indoors that error is a neighbourhood. It opens
+                centred on the fix, so when the fix is right this is one tap
+                more than it used to be and nothing else. */}
+            <TouchableOpacity style={s.attachOption} onPress={openLocationPicker}>
+              {/* The row is laid out horizontally, so the two lines need their
+                  own column inside it. */}
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={s.attachOptionText}>Choose on map & send</Text>
+                <Text style={s.attachOptionHint}>Opens where your phone thinks you are</Text>
+              </View>
+              <Ionicons name="map-outline" size={19} color={C.accent} />
             </TouchableOpacity>
             <Text style={s.oneTimeHint}>
               Live location keeps updating for everyone in this chat until it ends or you stop it.
@@ -4587,6 +4659,7 @@ const s = StyleSheet.create({
   attachSheet: { backgroundColor: C.sidebar, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingBottom: 24 },
   attachOption: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingHorizontal: 22, paddingVertical: 14 },
   attachOptionIcon: { fontSize: 22, width: 28, textAlign: 'center' },
+  attachOptionHint: { color: C.muted, fontSize: 11.5, marginTop: 2 },
   attachOptionText: { color: C.text, fontSize: 16, fontWeight: '500' },
   attachCancel: { marginTop: 8, marginHorizontal: 16, backgroundColor: C.inputBg, borderRadius: 12, padding: 14, alignItems: 'center' },
   attachCancelText: { color: C.muted, fontSize: 15, fontWeight: '600' },
