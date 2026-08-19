@@ -29,6 +29,22 @@ export type SelectionState = {
   selecting: MsgId | null;
   /** A touch that went down and has not yet resolved into a tap. */
   pendingId: MsgId | null;
+  /**
+   * The last message a finger landed on, whatever came of it.
+   *
+   * Not the same as `selecting`, and that difference is the whole point.
+   * `selecting` is a GUESS about the OS, assembled from the two signals we get
+   * — a touch going down, and a tap failing to arrive — and a guess made from
+   * incomplete evidence is sometimes wrong. When it is wrong in the direction
+   * of "there is no selection" while the OS actually has one, the user's next
+   * double-tap is spent by the OS dismissing that selection, and nothing gets
+   * selected. That is the "tap another message first, then it works" bug.
+   *
+   * So the clearing no longer waits to be sure. Any message that has been
+   * touched might be holding a selection, and remounting a Text with no
+   * selection in it costs nothing and shows nothing.
+   */
+  touchedId: MsgId | null;
 };
 
 export type SelectionEvent =
@@ -58,7 +74,7 @@ export type SelectionResult = {
   clearId: MsgId | null;
 };
 
-export const initialSelection: SelectionState = { selecting: null, pendingId: null };
+export const initialSelection: SelectionState = { selecting: null, pendingId: null, touchedId: null };
 
 // Kept outside the state so a caller cannot forget to thread it through; it is
 // only ever read to spot a second tap on the same message.
@@ -73,37 +89,53 @@ export function reduceSelection(
       // the OS starts a word selection, so we know one is coming.
       const isDouble = !!last && last.id === ev.id && ev.at - last.at < DOUBLE_TAP_MS;
 
-      // A selection still showing on a DIFFERENT message has to go, right now,
-      // on the way down.
+      // Whatever the PREVIOUS message may be showing has to go, right now, on
+      // the way down — and without first checking whether we think it is
+      // showing anything.
       //
-      // This is what made double-tap work on the first message and then stop
-      // working on every message after it. The OS will not start a new
-      // selection while an old one is up: it spends the first tap dismissing
-      // the old selection instead. So the user's double-tap on message B was
-      // read as "dismiss A" followed by one ordinary tap, nothing was
-      // selected, and it took a further two taps to get anywhere — exactly the
-      // "tap several times outside first" workaround people found.
+      // The OS will not start a new selection while an old one is up: it
+      // spends the first tap dismissing the old selection instead. So a
+      // double-tap on message B is read as "dismiss A" plus one ordinary tap,
+      // nothing is selected, and it takes further taps to get anywhere. That
+      // is the reported bug, and it kept coming back because the clearing was
+      // conditional on `selecting`, which is only ever an inference.
       //
-      // Clearing it here, before the OS sees the tap, means there is no old
-      // selection for the first tap to be spent on.
-      const stale = state.selecting !== null && state.selecting !== ev.id ? state.selecting : null;
+      // The inference has holes. A tap that lands on the text itself never
+      // reaches a press handler, so nothing cancels the hold timer and nothing
+      // confirms the tap — we can end up believing there is a selection when
+      // there is not, and believing there is none when there is. Scrolling
+      // makes it worse: a drag that starts on a message looks exactly like a
+      // touch that went down and never became a tap.
+      //
+      // Clearing by TOUCH rather than by belief has no holes in it. The cost
+      // is remounting one <Text> that may have had nothing selected, which
+      // renders identically and is invisible.
+      const stale = state.touchedId !== null && state.touchedId !== ev.id
+        ? state.touchedId : null;
 
       return {
         state: isDouble
-          ? { selecting: ev.id, pendingId: null }
-          // Once the stale selection is cleared nothing is selected any more,
+          ? { selecting: ev.id, pendingId: null, touchedId: ev.id }
+          // Once the previous message is cleared nothing is selected any more,
           // so `selecting` must drop — keeping the old id would leave the next
           // tap thinking it still had a selection to dismiss.
-          : { selecting: stale ? null : state.selecting, pendingId: ev.id },
+          : { selecting: stale ? null : state.selecting, pendingId: ev.id, touchedId: ev.id },
         last: { id: ev.id, at: ev.at },
-        action: stale ? 'dismiss' : null,
+        // Never 'dismiss'. This clear is speculative — the previous message
+        // may well have had nothing selected — so it must not be reported as
+        // a gesture that got consumed dismissing something. 'dismiss' means
+        // "that touch was spent", and this one was not.
+        action: null,
         clearId: stale,
       };
     }
     case 'held': {
       // Only the touch we are actually waiting on can turn into a hold.
       if (state.pendingId !== ev.id) return { state, last, action: null, clearId: null };
-      return { state: { selecting: ev.id, pendingId: null }, last, action: null, clearId: null };
+      return {
+        state: { selecting: ev.id, pendingId: null, touchedId: ev.id },
+        last, action: null, clearId: null,
+      };
     }
     case 'tap': {
       // While a selection is up, a tap outside it clears the selection and
@@ -111,7 +143,7 @@ export function reduceSelection(
       // selection and opening a menu are the same gesture.
       if (state.selecting !== null) {
         return {
-          state: { selecting: null, pendingId: null },
+          state: { selecting: null, pendingId: null, touchedId: state.touchedId },
           last, action: 'dismiss', clearId: state.selecting,
         };
       }
@@ -138,7 +170,7 @@ export function reduceSelection(
         : state.pendingId === ev.id ? ev.id
         : null;
       return {
-        state: { selecting: null, pendingId: null },
+        state: { selecting: null, pendingId: null, touchedId: ev.id },
         // The touch is spent: it became a swipe, so it must not go on to be
         // read as a tap or a hold when it ends.
         last: null,
@@ -150,8 +182,14 @@ export function reduceSelection(
       // Dropping the selection means dropping what is drawn too, so hand back
       // whatever was selected. Without this the state said "nothing selected"
       // while the highlight stayed on screen.
+      //
+      // `touchedId` deliberately SURVIVES a clear. A scroll clears the state
+      // but cannot clear what the OS has drawn, so the message under the
+      // finger when the scroll began is still the one that might be holding a
+      // selection — and forgetting it here is precisely what left a selection
+      // on screen that the next double-tap then had to be spent dismissing.
       return {
-        state: { selecting: null, pendingId: null },
+        state: { selecting: null, pendingId: null, touchedId: state.touchedId },
         last, action: null, clearId: state.selecting,
       };
   }

@@ -43,12 +43,18 @@ export default function UploadOverlay({ msgId }: { msgId: string | number }) {
           <ActivityIndicator size="small" color={C.accent} style={{ marginRight: 2 }} />
         )}
         <Text style={s.pct}>{view.percent}%</Text>
-        <Text style={s.status} numberOfLines={1}>
+        {/* flex:1 with minWidth:0 so the line SHRINKS to whatever room is left
+            instead of demanding room of its own. Without the minWidth a text
+            child refuses to go below its content width, and this line is at
+            its longest right at the end of the upload ("11.4 MB / 11.4 MB ·
+            2.1 MB/s · almost done") — which is exactly when the bubble was
+            seen to stretch, and why it snapped back once the upload finished
+            and the overlay went away. */}
+        <Text style={s.status} numberOfLines={1} ellipsizeMode="tail">
           {statusLine({
             phase: view.phase, sent: view.sent, total: view.total, bytesPerSec: view.bytesPerSec,
           })}
         </Text>
-        <View style={{ flex: 1 }} />
 
         {pausable && (
           <TouchableOpacity onPress={() => up.pause(id)} style={s.btn} hitSlop={hit}
@@ -76,13 +82,16 @@ export default function UploadOverlay({ msgId }: { msgId: string | number }) {
 const hit = { top: 10, bottom: 10, left: 8, right: 8 };
 
 const s = StyleSheet.create({
-  wrap: { marginTop: 6, gap: 4 },
+  // A percentage width resolves against the bubble's final width without
+  // contributing to it, so the overlay can never be what decides how wide a
+  // message is.
+  wrap: { marginTop: 6, gap: 4, width: '100%' },
   track: { height: 3, borderRadius: 2, backgroundColor: 'rgba(0,0,0,0.12)', overflow: 'hidden' },
   fill: { height: '100%', backgroundColor: C.accent, borderRadius: 2 },
   fillPaused: { backgroundColor: C.muted },
   row: { flexDirection: 'row', alignItems: 'center', gap: 7 },
   pct: { color: C.text, fontSize: 11.5, fontWeight: '800', minWidth: 30 },
-  status: { color: C.muted, fontSize: 11, flexShrink: 1 },
+  status: { color: C.muted, fontSize: 11, flex: 1, minWidth: 0 },
   btn: {
     width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center',
     backgroundColor: 'rgba(0,0,0,0.06)',

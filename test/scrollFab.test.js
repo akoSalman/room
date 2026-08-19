@@ -27,7 +27,7 @@ const F = require(path.join(OUT, 'scrollFab.js'));
 
 const tests = [];
 const test = (n, f) => tests.push({ n, f });
-const mode = (o) => F.fabMode({ backStackSize: 0, atEndOfWindow: false, hasNewer: false, ...o });
+const mode = (o) => F.fabMode({ atEndOfWindow: false, hasNewer: false, unseen: 0, ...o });
 
 test('scrolled up in a normal chat, the button offers the bottom', () => {
   assert.strictEqual(mode({ atEndOfWindow: false }), 'bottom');
@@ -41,12 +41,6 @@ test('THE BUG: tapping the go-to-bottom button clears the unseen count', () => {
   // Without this the count waits for a scroll event that may never arrive with
   // the final position, and sits over messages the user is already reading.
   assert.strictEqual(F.clearsUnseenOnTap('bottom'), true);
-});
-
-test('walking back to a previous message does NOT clear the count', () => {
-  // That tap goes to an OLD message. Clearing would hide the fact that
-  // something new is still waiting at the bottom.
-  assert.strictEqual(F.clearsUnseenOnTap('back'), false);
   assert.strictEqual(F.clearsUnseenOnTap('hidden'), false);
 });
 
@@ -64,65 +58,59 @@ test('at the end of a jumped-to window, the button still offers the present', ()
   assert.strictEqual(mode({ atEndOfWindow: true, hasNewer: true }), 'bottom');
 });
 
-test('a trail of jumps takes priority over everything', () => {
-  // The trail is the one thing the user cannot reconstruct by hand, so it is
-  // offered even while sitting at the bottom.
-  assert.strictEqual(mode({ backStackSize: 1, atEndOfWindow: true }), 'back');
-  assert.strictEqual(mode({ backStackSize: 3, atEndOfWindow: false }), 'back');
-  assert.strictEqual(mode({ backStackSize: 2, atEndOfWindow: true, hasNewer: true }), 'back');
-});
-
-test('once the trail is exhausted the button goes back to meaning "bottom"', () => {
-  assert.strictEqual(mode({ backStackSize: 0, atEndOfWindow: false }), 'bottom');
-});
-
-// ── A way out of a search ────────────────────────────────────────────────────
+// ── One button, one job ─────────────────────────────────────────────────────
 //
-// Reported as: while searching there is no button to go to the end of the chat
-// (the new messages), and none afterwards either once the search box has been
-// cleared and the search area closed.
+// Reported as: after "show in chat" there is no need for a button that returns
+// to where you were — the one that goes to the newest messages is enough; and
+// the same while searching.
 //
-// Stepping through search results jumps to each one, and every jump is pushed
-// onto the back trail — so the button turns into the back-walking one and STAYS
-// that way after the search closes, because closing a search does not undo the
-// jumps it made. Ten results in, the only way to the present is ten taps
-// backwards through the ones already looked at.
-const newest = (o) =>
-  F.showsGoToNewest({ backStackSize: 0, atEndOfWindow: false, hasNewer: false, ...o });
+// The button used to turn into a back button after any jump and walk the trail
+// in reverse. Stepping through ten search results left ten jumps on that trail,
+// so leaving the search meant ten taps backwards through results already looked
+// at — and the whole time the count of new messages was hidden, because the
+// button was busy being something else.
 
-test('THE BUG: a search jump offers a direct way to the newest messages', () => {
-  // Window left in the middle of the chat by the jump, trail one deep.
-  assert.strictEqual(newest({ backStackSize: 1, atEndOfWindow: true, hasNewer: true }), true);
+test('THE CHANGE: a jump does not turn the button into a back button', () => {
+  // There is no longer any mode but "go to the newest".
+  assert.strictEqual(mode({ atEndOfWindow: true, hasNewer: true }), 'bottom');
+  assert.strictEqual(mode({ atEndOfWindow: false, hasNewer: false }), 'bottom');
+  assert.strictEqual(mode({ atEndOfWindow: true, hasNewer: false }), 'hidden');
 });
 
-test('and it is still offered after stepping through many results', () => {
-  // This is the case the back button cannot serve: ten taps to walk out.
-  assert.strictEqual(newest({ backStackSize: 10, atEndOfWindow: false, hasNewer: true }), true);
+test('every visible state of the button clears the count when tapped', () => {
+  // It only ever goes to the newest messages now, so arriving there always
+  // means the new messages have been reached.
+  assert.strictEqual(F.clearsUnseenOnTap(mode({ atEndOfWindow: false })), true);
+  assert.strictEqual(F.clearsUnseenOnTap(mode({ atEndOfWindow: true, hasNewer: true })), true);
 });
 
-test('no second button when the ordinary one already means "bottom"', () => {
-  // Two buttons doing one job is worse than one.
-  assert.strictEqual(mode({ backStackSize: 0, atEndOfWindow: false }), 'bottom');
-  assert.strictEqual(newest({ backStackSize: 0, atEndOfWindow: false }), false);
-  assert.strictEqual(newest({ backStackSize: 0, atEndOfWindow: true, hasNewer: true }), false);
+// ── The count ───────────────────────────────────────────────────────────────
+//
+// Reported as: when new messages arrive while scrolled up, the button with the
+// count does not act correctly.
+
+test('THE BUG: something unseen always leaves somewhere to go', () => {
+  // onScroll is throttled, so the last position it reported is not always
+  // where the list actually came to rest. If that reading says "at the bottom"
+  // while messages have arrived unseen, the button hides itself and takes the
+  // count with it — a badge that vanishes over messages nobody has read.
+  assert.strictEqual(mode({ atEndOfWindow: true, hasNewer: false, unseen: 3 }), 'bottom');
 });
 
-test('no second button once the chat is back at the present', () => {
-  // Trail still there to walk, but there is nowhere newer to be taken.
-  assert.strictEqual(mode({ backStackSize: 2, atEndOfWindow: true, hasNewer: false }), 'back');
-  assert.strictEqual(newest({ backStackSize: 2, atEndOfWindow: true, hasNewer: false }), false);
+test('nothing unseen and nothing beyond the end means no button', () => {
+  assert.strictEqual(mode({ atEndOfWindow: true, hasNewer: false, unseen: 0 }), 'hidden');
 });
 
-test('a jump inside the loaded window still offers the way down', () => {
-  // Jumping to a quoted message that was already loaded: nothing newer to
-  // FETCH, but the list is scrolled up, so the present is still somewhere else.
-  assert.strictEqual(newest({ backStackSize: 1, atEndOfWindow: false, hasNewer: false }), true);
+test('a missing count is not a count', () => {
+  // The caller may simply not pass it; that must not read as "something is
+  // waiting" and pin the button open forever.
+  assert.strictEqual(F.fabMode({ atEndOfWindow: true, hasNewer: false }), 'hidden');
 });
 
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
-  try { f(); console.log(`  ✓ ${n}`); passed++; }
-  catch (e) { console.error(`  ✗ ${n}\n      ${e.message}`); failed++; }
+  try { f(); console.log(`  \u2713 ${n}`); passed++; }
+  catch (e) { console.error(`  \u2717 ${n}\n      ${e.message}`); failed++; }
 }
 fs.rmSync(OUT, { recursive: true, force: true });
 console.log(`\n${passed} passed, ${failed} failed`);

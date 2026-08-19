@@ -56,9 +56,9 @@ import SelectableText, { clearSelectionOf } from '../components/SelectableText';
 import * as selection from '../selection';
 import { searchLocal, mergeResults } from '../localSearch';
 import * as win from '../messageWindow';
-import { fabMode, atPresent, clearsUnseenOnTap, showsGoToNewest } from '../scrollFab';
+import { fabMode, atPresent, clearsUnseenOnTap } from '../scrollFab';
 import {
-  reduceSelection, initialSelection, LONG_PRESS_MS,
+  reduceSelection, initialSelection, LONG_PRESS_MS, DOUBLE_TAP_MS,
   type SelectionState, type MsgId,
 } from '../textSelection';
 import ChatSearch from '../components/ChatSearch';
@@ -315,6 +315,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // How many messages arrived while the user was scrolled up, shown as a badge
   // on the scroll-to-bottom button.
   const [missedCount, setMissedCount] = useState(0);
+  // Read by the press handler, which runs outside the render that produced the
+  // state and must not decide what the button means from a stale copy.
+  const missedCountRef = useRef(0);
   const [inviteName, setInviteName] = useState('');
   const [inviteSuggestions, setInviteSuggestions] = useState<any[]>([]);
   const [inviteSearching, setInviteSearching] = useState(false);
@@ -371,12 +374,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const userDraggedRef = useRef(false);
   const [loadingNewer, setLoadingNewer] = useState(false);
   const loadingOlderRef = useRef(false);
-  const [backStackSize, setBackStackSize] = useState(0);
   const flatListRef = useRef<FlatList>(null);
   const messagesRef = useRef<Message[]>([]);
   const visibleIdRef = useRef<number | null>(null);
   const isNearBottomRef = useRef(true);
-  const jumpBackStackRef = useRef<Array<number | 'bottom'>>([]);
   const typingTimer = useRef<any>(null);
   const socketRef = useRef<any>(null);
   const meRef = useRef('');
@@ -516,9 +517,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       setJumping(false);
     }
 
-    // Push where we came from so the FAB can walk back through each reply level
-    jumpBackStackRef.current.push(isNearBottomRef.current ? 'bottom' : (visibleIdRef.current ?? 'bottom'));
-    setBackStackSize(jumpBackStackRef.current.length);
+    // Nothing is remembered about where the jump came from. It used to be, so
+    // the button could walk back through each level — but arriving at the
+    // message you asked for is the END of that errand, and a button that then
+    // insists on retracing it is in the way. Ten search results meant ten taps
+    // to get out of the search, with the new-message count hidden behind them
+    // the whole time.
     // Give freshly prepended rows a moment to render before scrolling
     // The window may have just been replaced wholesale, so give the new rows
     // a frame to mount; scrollToId corrects itself from there.
@@ -529,9 +533,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
   function handleScrollFabPress() {
     const mode = fabMode({
-      backStackSize: jumpBackStackRef.current.length,
       atEndOfWindow: isNearBottomRef.current,
       hasNewer: hasMoreNewerRef.current,
+      unseen: missedCountRef.current,
     });
     // Going to the newest messages is a statement of intent: the unseen count
     // and the button itself go NOW, rather than waiting for a scroll event to
@@ -539,14 +543,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // was already looking at — onScroll is throttled and the animated scroll
     // finished between two of its ticks.
     if (clearsUnseenOnTap(mode)) markCaughtUp();
-
-    const marker = jumpBackStackRef.current.pop();
-    setBackStackSize(jumpBackStackRef.current.length);
-    if (marker && marker !== 'bottom' && scrollToId(marker)) {
-      setHighlightId(marker);
-      setTimeout(() => setHighlightId(null), 1500);
-      return;
-    }
+    setHighlightId(null);
     // Going to the bottom is a direct request, not a walk: fetch the newest
     // page in one go rather than paging forward through months of history the
     // user has said they do not want to read.
@@ -617,14 +614,32 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     const nearBottom = atPresent({ atEndOfWindow: atEnd, hasNewer: hasMoreNewerRef.current });
     isNearBottomRef.current = nearBottom;
     setShowScrollFab(!nearBottom);
-    if (nearBottom) setMissedCount(n => (n ? 0 : n));
+    if (nearBottom) setMissed(0);
+  }
+
+  /**
+   * How many new messages are waiting, in one place.
+   *
+   * The ref and the state move together. The press handler reads the ref
+   * because it runs outside the render that produced the state, and deciding
+   * what the button means from a stale count is how it came to behave
+   * differently from the badge printed on it.
+   */
+  function setMissed(n: number) {
+    if (missedCountRef.current === n) return;
+    missedCountRef.current = n;
+    setMissedCount(n);
+  }
+
+  function bumpMissed() {
+    setMissed(missedCountRef.current + 1);
   }
 
   /** Everything is caught up: at the newest message, nothing unseen. */
   function markCaughtUp() {
     isNearBottomRef.current = true;
     setShowScrollFab(false);
-    setMissedCount(0);
+    setMissed(0);
   }
 
   /** The loaded slice, as messageWindow sees it. */
@@ -713,33 +728,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // of "at the present", which already accounts for a window left short of the
   // newest message by a jump.
   const currentFabMode = fabMode({
-    backStackSize,
     atEndOfWindow: !showScrollFab,
     hasNewer: hasMoreNewerRef.current,
+    unseen: missedCount,
   });
   const fabVisible = currentFabMode !== 'hidden';
-  const fabIsBack = currentFabMode === 'back';
-  const goToNewestVisible = showsGoToNewest({
-    backStackSize,
-    atEndOfWindow: !showScrollFab,
-    hasNewer: hasMoreNewerRef.current,
-  });
-
-  /**
-   * Out of a search (or a trail of jumps) and back to the newest messages.
-   *
-   * The trail is dropped rather than walked: asking for the end of the chat is
-   * leaving the excursion, and keeping the trail would leave a back button
-   * hovering at the bottom of a chat pointing into search results the user has
-   * finished with.
-   */
-  function goToNewest() {
-    jumpBackStackRef.current.length = 0;
-    setBackStackSize(0);
-    setHighlightId(null);
-    markCaughtUp();
-    jumpToBottom();
-  }
 
   // When a voice message finishes, auto-play the next voice message in this chat
   useEffect(() => {
@@ -1100,7 +1093,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             room.is_dm ? (room.other_username || room.name) : room.name).catch(() => {});
         }
         if (isNearBottomRef.current) scrollBottom();
-        else if (msg.username !== meRef.current) setMissedCount(n => n + 1);
+        else if (msg.username !== meRef.current) bumpMissed();
         sock.emit('mark_read', { roomId: room.id, lastMsgId: msg.id });
       });
       // The owner removed us: leave the chat immediately.
@@ -2153,10 +2146,48 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   /** A touch went down on a selectable text bubble (observed, not claimed). */
   function noteTextTouch(id: MsgId) {
     clearTimeout(holdTimer.current);
-    selectionEvent({ type: 'down', id, at: Date.now() });
+    clearTimeout(tapTimer.current);
+    textTouchAt.current = Date.now();
+    selectionEvent({ type: 'down', id, at: textTouchAt.current });
     // No tap within the long-press window means the finger was held, which is
     // the other way the OS starts a selection.
     holdTimer.current = setTimeout(() => selectionEvent({ type: 'held', id }), LONG_PRESS_MS);
+  }
+
+  /** When the finger that landed on a text bubble went down. */
+  const textTouchAt = useRef(0);
+
+  /**
+   * The finger came off a text bubble.
+   *
+   * This did not exist, and its absence was the whole of the double-tap bug.
+   * A tap on the text lands on the <Text>, not on the press-catcher behind the
+   * bubble, so NOTHING was told the touch had ended: the long-press timer was
+   * never cancelled and fired 450ms later, marking a message as "selected"
+   * that the user had merely tapped once. From then on our idea of what the OS
+   * was showing and what it was actually showing had come apart, and the next
+   * double-tap went to dismissing a selection instead of making one.
+   *
+   * It is also, for free, the tap that opens the message menu — which is what
+   * a single tap on a message ought to do and previously did nothing at all.
+   */
+  function noteTextRelease(msg: Message) {
+    const held = Date.now() - textTouchAt.current;
+    // Long enough to be a press, not a tap: the OS is selecting a word, and
+    // the hold timer has already said so. Nothing to do.
+    if (held >= LONG_PRESS_MS) return;
+    clearTimeout(holdTimer.current);
+    // Wait to find out whether a second tap is coming. A double-tap is how the
+    // OS starts a word selection, so opening the menu on the first tap would
+    // make selecting text by double-tap impossible. noteTextTouch cancels this
+    // timer, so a second tap simply prevents the menu.
+    clearTimeout(tapTimer.current);
+    tapTimer.current = setTimeout(() => {
+      const action = selectionEvent({ type: 'tap' });
+      if (action === 'dismiss') return;
+      if (selectMode) { toggleSelected(msg); return; }
+      openMenuFor(msg);
+    }, DOUBLE_TAP_MS);
   }
 
   /** Wipe the on-screen selection by remounting that message's Text. */
@@ -2699,6 +2730,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 if (canTakeContent(msg)) noteTextTouch(msg.id);
                 return false;
               },
+              // The other half of the same observation. Touch handlers on a
+              // View are delivered whether or not it owns the responder, which
+              // is the only way to see a tap that landed on selectable text.
+              onTouchEnd: () => { if (canTakeContent(msg)) noteTextRelease(msg); },
+              // A finger that moved is a scroll or a swipe, not a tap, and
+              // must not leave a menu waiting to open behind it.
+              onTouchMove: () => { clearTimeout(tapTimer.current); },
             }
           : {
               onPress: selectMode ? () => toggleSelected(msg) : undefined,
@@ -3441,28 +3479,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           style={[s.scrollFab, (replyTo || editingId) && s.scrollFabRaised]}
           onPress={handleScrollFabPress}
         >
-          <Text style={s.scrollFabIcon}>{fabIsBack ? '↩' : '↓'}</Text>
-          {!fabIsBack && missedCount > 0 && (
+          <Text style={s.scrollFabIcon}>↓</Text>
+          {missedCount > 0 && (
             <View style={s.scrollFabBadge}>
               <Text style={s.scrollFabBadgeText}>{missedCount > 99 ? '99+' : missedCount}</Text>
             </View>
           )}
-        </TouchableOpacity>
-      )}
-
-      {/* Straight out of a search, or a trail of jumps, to the newest messages.
-          It sits BESIDE the back button rather than replacing it, so neither
-          way out costs the other — and it stays put once the search box is
-          cleared and the search closed, which is exactly when someone wants
-          to get back to the present. */}
-      {goToNewestVisible && (
-        <TouchableOpacity
-          style={[s.newestFab, (replyTo || editingId) && s.scrollFabRaised]}
-          onPress={goToNewest}
-          accessibilityLabel="Go to the newest messages"
-        >
-          <Ionicons name="play-skip-forward" size={17} color={C.accent}
-            style={{ transform: [{ rotate: '90deg' }] }} />
         </TouchableOpacity>
       )}
 
@@ -3927,7 +3949,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               // Saving or sharing a one-time photo would defeat it.
               ...(isOneTimeUrl(viewerUrl) ? [] : [['download', 'download-outline', 'Download']]),
               ...(isOneTimeUrl(viewerUrl) ? [] : [['share', 'share-outline', 'Share']]),
-              ['close', 'close-outline', 'Close photo'],
+              // No "Close photo" row. The sheet's own Cancel dismisses the
+              // sheet, the ✕ and the back gesture close the photo, and a menu
+              // entry that repeats what two other controls already do is one
+              // more thing to read past.
             ] as [string, string, string][])).map(([action, icon, label]) => (
               <Pressable
                 key={action}
@@ -3937,7 +3962,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                   const it = viewerActions;
                   setViewerActions(null);
                   if (action === 'edit') { if (viewerUrl) setEditing({ uri: viewerUrl }); return; }
-                  if (action === 'close') { closeViewer(); return; }
                   if (!it) return;
                   setViewer(null);
                   onMediaAction(action as MediaAction, it);
@@ -4549,14 +4573,6 @@ const s = StyleSheet.create({
     borderWidth: 2, borderColor: C.bg,
   },
   scrollFabBadgeText: { color: '#fff', fontSize: 10.5, fontWeight: '800' },
-  // Beside the scroll button, not above it: the slot above belongs to the
-  // mention button, and all three can be up at once.
-  newestFab: {
-    position: 'absolute', end: 68, bottom: 148, width: 40, height: 40, borderRadius: 20,
-    backgroundColor: C.sidebar, borderWidth: 1, borderColor: C.border,
-    alignItems: 'center', justifyContent: 'center',
-    elevation: 4, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 6, shadowOffset: { width: 0, height: 2 },
-  },
   // Sits above the scroll-to-bottom button so the two never overlap.
   mentionFab: {
     position: 'absolute', end: 16, bottom: 200, width: 44, height: 44, borderRadius: 22,

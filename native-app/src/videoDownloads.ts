@@ -35,7 +35,31 @@ export function keyFor(url: string): string {
   return localNameFor(url, 'vid-');
 }
 
+// documentDirectory, not cacheDirectory.
+//
+// Reported as: a downloaded video downloads again on every next open. It was
+// being written to the cache directory, which Android empties whenever the
+// device is short of space — and on a phone with a full gallery that is most
+// of the time. The file was genuinely gone, so the bubble was right to offer
+// the download again; it just should never have been somewhere the OS could
+// take it away. The image cache next door already knew this and says so in a
+// comment; the video downloads did not.
+const DIR = FileSystem.documentDirectory + 'videos/';
+let dirReady: Promise<any> | null = null;
+
+function ensureDir(): Promise<any> {
+  if (!dirReady) {
+    dirReady = FileSystem.makeDirectoryAsync(DIR, { intermediates: true }).catch(() => {});
+  }
+  return dirReady;
+}
+
 function pathFor(url: string): string {
+  return `${DIR}${keyFor(url)}`;
+}
+
+/** Where the old builds put it, so a file already on the device is adopted. */
+function legacyPathFor(url: string): string {
   return `${FileSystem.cacheDirectory}${keyFor(url)}`;
 }
 
@@ -53,6 +77,19 @@ export async function localUri(url: string): Promise<string | null> {
     const info = await FileSystem.getInfoAsync(path);
     if (info.exists && (info as any).size > 0) {
       // A file left over from a previous run is still a finished download.
+      state.set(key, { written: (info as any).size, total: (info as any).size, status: 'done', uri: path });
+      emit();
+      return path;
+    }
+  } catch {}
+  // Downloaded by a build that still used the cache directory, and not yet
+  // reclaimed. Move it rather than fetching it again.
+  try {
+    const old = legacyPathFor(url);
+    const info = await FileSystem.getInfoAsync(old);
+    if (info.exists && (info as any).size > 0) {
+      await ensureDir();
+      await FileSystem.moveAsync({ from: old, to: path });
       state.set(key, { written: (info as any).size, total: (info as any).size, status: 'done', uri: path });
       emit();
       return path;
@@ -85,6 +122,8 @@ export async function start(url: string): Promise<string | null> {
   if (already) return already;
 
   const total = await sizeOf(url);
+  // The directory has to exist before the download names a file inside it.
+  await ensureDir();
   state.set(key, { written: 0, total, status: 'downloading' });
   emit();
 

@@ -58,8 +58,16 @@ export default function VideoBubble({
 
         {/* Size, always visible: the point of a download button is knowing
             what it will cost before pressing it. */}
-        {!uploading && total > 0 && (
+        {/* The size matters before you have the file, not after. */}
+        {!uploading && total > 0 && status !== 'done' && (
           <Text style={s.size}>{fmtBytes(total)}</Text>
+        )}
+
+        {/* Kept on the device: a mark, not a control. */}
+        {!uploading && status === 'done' && (
+          <View style={s.savedMark}>
+            <Ionicons name="checkmark-circle" size={14} color="#22c55e" />
+          </View>
         )}
 
         {!uploading && (
@@ -79,10 +87,10 @@ export default function VideoBubble({
                 <Ionicons name="close" size={15} color="#fff" />
               </TouchableOpacity>
             ) : status === 'done' ? (
-              <View style={[s.dockBtn, s.dockDone]}>
-                <Ionicons name="checkmark-circle" size={15} color="#22c55e" />
-                <Text style={s.dockText}>Saved</Text>
-              </View>
+              // Nothing. A video already on the device needs no button: there
+              // is nothing left to press and the dock was only taking up the
+              // picture. The small tick in the corner says it is kept.
+              null
             ) : (
               <TouchableOpacity
                 style={s.dockBtn}
@@ -115,6 +123,10 @@ export default function VideoBubble({
 const hit = { top: 8, bottom: 8, left: 8, right: 8 };
 
 const s = StyleSheet.create({
+  savedMark: {
+    position: 'absolute', top: 6, right: 6,
+    backgroundColor: 'rgba(0,0,0,0.45)', borderRadius: 9, padding: 2,
+  },
   thumb: {
     width: 200, height: 140, borderRadius: 10, backgroundColor: '#000',
     alignItems: 'center', justifyContent: 'center', overflow: 'hidden',
@@ -132,7 +144,6 @@ const s = StyleSheet.create({
     paddingHorizontal: 11, paddingVertical: 6,
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.18)',
   },
-  dockDone: { backgroundColor: 'rgba(15,23,42,0.6)' },
   dockText: { color: '#fff', fontSize: 11.5, fontWeight: '700' },
   progressTrack: {
     position: 'absolute', left: 0, right: 0, bottom: 0,

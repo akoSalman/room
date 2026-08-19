@@ -164,7 +164,11 @@ test('THE BUG: touching another message clears the selection still up on the fir
   ]);
   assert.strictEqual(cleared[3], 1,
     'message 1 kept its selection, so the OS will spend the next tap dismissing it');
-  assert.strictEqual(actions[3], 'dismiss');
+  // Not reported as 'dismiss': the clear happens on the way DOWN and the touch
+  // carries on to become whatever it was going to be. Calling it a dismiss
+  // would mean "that gesture is spent", and it is not — this very touch may be
+  // the first half of a double-tap on message 2.
+  assert.strictEqual(actions[3], null);
 });
 
 test('and a double tap on that second message then selects it first time', () => {
@@ -191,12 +195,62 @@ test('touching the SAME selected message again does not clear it', () => {
   assert.strictEqual(cleared[3], null);
 });
 
-test('with nothing selected, touching a message clears nothing', () => {
+test('THE BUG: touching a message clears the LAST ONE TOUCHED, believed selected or not', () => {
+  // This used to clear only a selection the reducer believed in, and that
+  // belief is an inference from two weak signals — a touch going down, and a
+  // tap failing to arrive. It is wrong in both directions.
+  //
+  // Wrong the dangerous way: a real OS selection exists that we never noticed
+  // (a tap on the text reaches the <Text>, not any press handler, so nothing
+  // ever confirms it). The next double-tap on another message is then spent by
+  // the OS dismissing that selection, and nothing gets selected — which is
+  // exactly the reported "single tap another message first, then it works".
+  //
+  // Clearing by touch has no such holes. Remounting a Text with nothing
+  // selected in it renders identically and shows nothing.
   const { cleared } = run([
     { type: 'down', id: 1, at: 1000 },
     { type: 'down', id: 2, at: 5000 },
   ]);
+  assert.deepStrictEqual(cleared, [null, 1],
+    'touching message 2 did not clear whatever message 1 might have been showing');
+});
+
+test('touching the SAME message again clears nothing', () => {
+  // The second tap of a double-tap must not wipe the selection the first tap
+  // is in the middle of starting.
+  const { cleared } = run([
+    { type: 'down', id: 1, at: 1000 },
+    { type: 'down', id: 1, at: 1150 },
+  ]);
   assert.deepStrictEqual(cleared, [null, null]);
+});
+
+test('THE SCROLL CASE: a scroll does not make the reducer forget what was touched', () => {
+  // Reported as: on the first screen of a chat double-tap is fine, but after
+  // scrolling it stops working until you tap some other message first.
+  //
+  // A scroll clears our state, but it cannot clear what the OS has drawn. The
+  // message under the finger when the drag began is still the one that might
+  // be holding a selection, so it has to survive the clear and be wiped on the
+  // next touch elsewhere.
+  const { cleared } = run([
+    { type: 'down', id: 7, at: 1000 },   // finger lands on a message
+    { type: 'clear' },                   // ...and the list starts scrolling
+    { type: 'down', id: 9, at: 4000 },   // now double-tap something else
+  ]);
+  assert.strictEqual(cleared[2], 7,
+    'after a scroll, the message the drag started on was never cleared');
+});
+
+test('and the double-tap that follows a scroll still registers', () => {
+  const { state } = run([
+    { type: 'down', id: 7, at: 1000 },
+    { type: 'clear' },
+    { type: 'down', id: 9, at: 4000 },
+    { type: 'down', id: 9, at: 4150 },
+  ]);
+  assert.strictEqual(state.selecting, 9);
 });
 
 test('after the stale selection is cleared, the next tap opens the menu', () => {

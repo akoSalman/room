@@ -36,6 +36,8 @@ export type MediaAction = 'open' | 'download' | 'share' | 'showInChat';
 
 const COLS = 3;
 const GAP = 2;
+/** The empty tile, in the same family as the rest of the light UI. */
+const PLACEHOLDER = '#e3e7ec';
 const TABS: [MediaTab, string, string][] = [
   ['images', 'Photos', 'image-outline'],
   ['files', 'Files', 'document-outline'],
@@ -72,8 +74,21 @@ const Cell = memo(function Cell({ item, index, size, marginRight, thumb, onOpen,
           for more only makes the grid slower to fill. */}
       <Image
         source={{ uri: thumb(item.url, 96) }}
-        style={{ width: size, height: size, backgroundColor: '#0e1116' }}
+        style={{ width: size, height: size, backgroundColor: PLACEHOLDER }}
         resizeMode="cover"
+        // Reported as: reopening the gallery shows black squares that then
+        // "seem like loaded" — not smooth like the phone's own gallery.
+        //
+        // Two causes, both here. Android's image pipeline cross-fades every
+        // image in over 300ms, including ones it already has decoded, so even
+        // a cache hit arrives as a fade from the tile colour. And the tile
+        // colour was near-black, which on a light grid reads as a broken
+        // image rather than one still coming.
+        //
+        // No fade, and a pale tile: a cached thumbnail now appears at once,
+        // and one that is genuinely still loading looks like an empty frame
+        // instead of a hole.
+        fadeDuration={0}
       />
     </Pressable>
   );
@@ -165,6 +180,23 @@ export default function MediaBrowser({
   const rows = useMemo(() => toRows(images, COLS), [images]);
   const fullUrls = useMemo(() => images.map(i => `${baseUrl}${i.url}`), [images, baseUrl]);
 
+  // Warm the first few screens the moment the gallery opens, so scrolling into
+  // them finds them already decoded rather than starting a request per tile as
+  // it arrives. Only the beginning: prefetching two thousand photos would be
+  // worse than the problem.
+  useEffect(() => {
+    if (!visible || !images.length) return;
+    let cancelled = false;
+    const first = images.slice(0, 30).map(i => thumbUrl(i.url, 96));
+    (async () => {
+      for (const u of first) {
+        if (cancelled) return;
+        try { await Image.prefetch(u); } catch {}
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [visible, images, thumbUrl]);
+
   const tabIndex = Math.max(0, TABS.findIndex(t => t[0] === tab));
 
   // A tab's list is built the first time that tab is looked at, and kept from
@@ -229,7 +261,7 @@ export default function MediaBrowser({
       keyExtractor={(r) => r[0]?.url || 'empty'}
       renderItem={renderRow}
       getItemLayout={getItemLayout}
-      initialNumToRender={8}
+      initialNumToRender={10}
       maxToRenderPerBatch={6}
       windowSize={5}
       removeClippedSubviews
