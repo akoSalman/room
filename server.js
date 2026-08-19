@@ -1374,6 +1374,158 @@ app.post('/upload', authMiddleware, upload.single('file'), (req, res) => {
   });
 });
 
+// ── Resumable uploads ────────────────────────────────────────────────────────
+//
+// A whole-file POST cannot be paused and cannot be resumed: a connection that
+// drops at 90% of a 60 MB video costs all 60 MB again, and there is no honest
+// way to offer a pause button for it. So a file can instead be sent in pieces
+// against a SESSION that remembers how many bytes it already holds.
+//
+// The offset is the size of the partial file on disk, never a number kept in
+// memory. That is what makes it survive a server restart, and it is also what
+// makes a resumed upload safe: the client is told where the server actually
+// got to rather than being trusted about where it thinks it got to.
+// Room for a 512 KB chunk plus base64's 33% overhead and a little slack.
+const CHUNK_LIMIT_BYTES = 1024 * 1024;
+// Inside uploads/ because that is the directory deployments actually keep and
+// make writable. It is under the static handler, but everything there needs a
+// signature computed from the secret, so a half-finished file is no more
+// reachable than a finished one.
+const PARTIAL_DIR = path.join('uploads', '.partial');
+const PARTIAL_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_UPLOAD_BYTES = 80 * 1024 * 1024;   // same limit as the one-shot POST
+try { fs.mkdirSync(PARTIAL_DIR, { recursive: true }); } catch {}
+
+const partPath = id => path.join(PARTIAL_DIR, `${id}.part`);
+const metaPath = id => path.join(PARTIAL_DIR, `${id}.json`);
+
+/**
+ * Look up a session, or answer the request with why not.
+ *
+ * The id is checked against a strict pattern before it is ever joined onto a
+ * path: it comes from the client, and "../../etc/something" would otherwise be
+ * a perfectly good session id.
+ */
+function openSession(req, res) {
+  const id = String(req.params.id || '');
+  if (!/^[a-f0-9]{32}$/.test(id)) { res.status(400).json({ error: 'Bad session' }); return null; }
+  let meta;
+  try { meta = JSON.parse(fs.readFileSync(metaPath(id), 'utf8')); }
+  catch { res.status(404).json({ error: 'No such upload' }); return null; }
+  // Sessions belong to the account that opened them. Without this, knowing an
+  // id would be enough to append to someone else's upload.
+  if (meta.userId !== req.user.id) { res.status(404).json({ error: 'No such upload' }); return null; }
+  let offset = 0;
+  try { offset = fs.statSync(partPath(id)).size; } catch {}
+  return { id, meta, offset };
+}
+
+app.post('/upload/session', authMiddleware, (req, res) => {
+  const size = parseInt(req.body?.size, 10);
+  if (!isFinite(size) || size <= 0) return res.status(400).json({ error: 'Bad size' });
+  if (size > MAX_UPLOAD_BYTES) return res.status(413).json({ error: 'File too large' });
+  const name = String(req.body?.name || 'file').slice(0, 200);
+  const id = crypto.randomBytes(16).toString('hex');
+  const meta = {
+    userId: req.user.id, name, size,
+    mime: String(req.body?.mime || 'application/octet-stream').slice(0, 100),
+    createdAt: Date.now(),
+  };
+  try {
+    fs.writeFileSync(metaPath(id), JSON.stringify(meta));
+    fs.writeFileSync(partPath(id), '');
+  } catch {
+    return res.status(500).json({ error: 'Could not start upload' });
+  }
+  res.json({ id, offset: 0 });
+});
+
+// Where the server actually got to. Asked before every resume.
+app.get('/upload/session/:id', authMiddleware, (req, res) => {
+  const s = openSession(req, res);
+  if (!s) return;
+  res.json({ id: s.id, offset: s.offset, size: s.meta.size });
+});
+
+// One chunk. Raw bytes, or base64 text on devices where handing a binary body
+// to the network stack is not available — the server accepts either so the app
+// never has to fall back to sending the whole file again.
+app.patch('/upload/session/:id',
+  authMiddleware,
+  express.raw({ type: () => true, limit: CHUNK_LIMIT_BYTES }),
+  (req, res) => {
+    const s = openSession(req, res);
+    if (!s) return;
+    const at = parseInt(req.get('x-offset'), 10);
+    if (!isFinite(at) || at < 0) return res.status(400).json({ error: 'Bad offset' });
+    // Not an error worth failing on: a chunk that was already received, then
+    // re-sent because the acknowledgement was lost, is the normal shape of a
+    // resume. Tell the client where things actually stand and let it continue.
+    if (at !== s.offset) return res.status(409).json({ error: 'Offset mismatch', offset: s.offset });
+
+    let buf = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    if (req.get('x-encoding') === 'base64') {
+      try { buf = Buffer.from(buf.toString('utf8'), 'base64'); }
+      catch { return res.status(400).json({ error: 'Bad chunk' }); }
+    }
+    if (!buf.length) return res.status(400).json({ error: 'Empty chunk' });
+    // A client that keeps sending past the size it declared would otherwise be
+    // able to fill the disk one chunk at a time.
+    if (s.offset + buf.length > s.meta.size) return res.status(413).json({ error: 'Past end of file' });
+
+    try { fs.appendFileSync(partPath(s.id), buf); }
+    catch { return res.status(500).json({ error: 'Write failed' }); }
+    res.json({ offset: s.offset + buf.length, size: s.meta.size });
+  });
+
+// All bytes in: turn the partial into a real upload.
+app.post('/upload/session/:id/finish', authMiddleware, (req, res) => {
+  const s = openSession(req, res);
+  if (!s) return;
+  if (s.offset !== s.meta.size) {
+    return res.status(409).json({ error: 'Incomplete', offset: s.offset, size: s.meta.size });
+  }
+  const unique = Date.now() + '-' + Math.round(Math.random() * 1e9);
+  const filename = unique + path.extname(s.meta.name);
+  try {
+    fs.renameSync(partPath(s.id), path.join('uploads', filename));
+    fs.unlinkSync(metaPath(s.id));
+  } catch {
+    return res.status(500).json({ error: 'Could not finish upload' });
+  }
+  // Deliberately the same shape as POST /upload, so the two paths are
+  // interchangeable to everything downstream.
+  res.json({ url: '/uploads/' + filename, name: s.meta.name, mimetype: s.meta.mime });
+});
+
+// Given up on. Dropping the bytes now rather than waiting for the reaper.
+app.delete('/upload/session/:id', authMiddleware, (req, res) => {
+  const s = openSession(req, res);
+  if (!s) return;
+  try { fs.unlinkSync(partPath(s.id)); } catch {}
+  try { fs.unlinkSync(metaPath(s.id)); } catch {}
+  res.json({ ok: true });
+});
+
+/**
+ * Sweep away partials nobody came back for.
+ *
+ * An upload abandoned by an app that was force-quit leaves bytes on disk with
+ * nothing pointing at them. Without this they accumulate forever, and a chat
+ * server's disk filling up takes the whole thing down.
+ */
+function reapPartials() {
+  let names;
+  try { names = fs.readdirSync(PARTIAL_DIR); } catch { return; }
+  const cutoff = Date.now() - PARTIAL_TTL_MS;
+  for (const n of names) {
+    const f = path.join(PARTIAL_DIR, n);
+    try { if (fs.statSync(f).mtimeMs < cutoff) fs.unlinkSync(f); } catch {}
+  }
+}
+reapPartials();
+setInterval(reapPartials, 60 * 60 * 1000).unref?.();
+
 // Shareable room links: /join/<roomId> opens the web app on that room
 app.get('/join/:roomId', (req, res) => {
   res.redirect('/?join=' + encodeURIComponent(req.params.roomId));

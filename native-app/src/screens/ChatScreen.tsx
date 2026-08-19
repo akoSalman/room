@@ -28,6 +28,19 @@ import AwesomeGallery from 'react-native-awesome-gallery';
 import GalleryGrid from '../components/GalleryGrid';
 import MediaBrowser, { MediaAction, MediaItem, MediaTab } from '../components/MediaBrowser';
 import * as rm from '../roomMedia';
+import * as up from '../uploadProgress';
+import UploadOverlay from '../components/UploadOverlay';
+import { uploadResumable } from '../chunkedUpload';
+
+/**
+ * Thrown when the user pressed cancel, so it can be told apart from a real
+ * failure. Module scope, not inside the component: a class redeclared on every
+ * render is a different class each time, and `instanceof` across renders would
+ * quietly answer false.
+ */
+class UploadCancelled extends Error {
+  constructor() { super('cancelled'); this.name = 'UploadCancelled'; }
+}
 import ImageWithSpinner from '../components/ImageWithSpinner';
 import GalleryImage from '../components/GalleryImage';
 import VideoPlayer, { VideoItem } from '../components/VideoPlayer';
@@ -208,7 +221,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // Ticks so "12m left" on a live pin stays honest without a per-second render.
   const [clockTick, setClockTick] = useState(0);
   const [maxOtherReadMsgId, setMaxOtherReadMsgId] = useState(0);
-  const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
   // clientId -> uploaded file URL, so the server's echo can be matched back to
   // its optimistic bubble even when the server doesn't echo client_id.
   const pendingUploadPaths = useRef<Record<string, string>>({});
@@ -408,8 +420,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const holdTimer = useRef<any>(null);
 
   const rowExtraData = useMemo(
-    () => ({ maxOtherReadMsgId, uploadProgress, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode }),
-    [maxOtherReadMsgId, uploadProgress, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode],
+    // Upload progress is deliberately NOT here. It used to be, and every
+    // report — hundreds during a video transcode — re-rendered every row in
+    // the chat. Each bubble subscribes to its own progress instead.
+    () => ({ maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode }),
+    [maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode],
   );
 
   const scrollBottom = useCallback(() => {
@@ -1059,10 +1074,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           audioManager.retarget(pendingId, msg.id);
           outbox.markDone(pendingId);
           removeFailedMsg(pendingId); // send confirmed — drop the crash-safety copy
-          setUploadProgress(prev => {
-            const { [pendingId]: _drop, ...rest } = prev;
-            return rest;
-          });
+          up.finish(pendingId);
           setMessages(prev => {
             const idx = prev.findIndex(m => String(m.id) === pendingId);
             if (idx === -1) return [...prev, msg];
@@ -1490,29 +1502,52 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     setCameraMode(mode);
   }
 
-  // FileSystem.createUploadTask (unlike fetch) reports real progress events.
-  async function uploadWithProgress(uri: string, name: string, mime: string, onProgress: (pct: number) => void) {
-    const token = await getToken();
-    const task = FileSystem.createUploadTask(
-      `${BASE_URL}/upload`,
-      uri,
-      {
-        httpMethod: 'POST',
-        uploadType: FileSystem.FileSystemUploadType.MULTIPART,
-        fieldName: 'file',
-        mimeType: mime,
-        parameters: {},
-        headers: { Authorization: `Bearer ${token}` },
-      },
-      (data) => {
-        if (data.totalBytesExpectedToSend > 0) {
-          onProgress(Math.round((data.totalBytesSent / data.totalBytesExpectedToSend) * 100));
-        }
-      }
-    );
-    const result = await task.uploadAsync();
-    if (!result || !result.body) throw new Error('Upload failed');
-    return JSON.parse(result.body);
+  /**
+   * Send one file, resumably, reporting to the bubble it belongs to.
+   *
+   * A whole-file POST could be cancelled but never paused, so a connection
+   * that died at 90% of a video cost the whole thing again — and there was no
+   * honest pause button to offer. This goes up in chunks against a server
+   * session that remembers what it already holds, which is what makes pause,
+   * resume and surviving a dropped connection all the same mechanism.
+   *
+   * `clientId` is which bubble to report to; the pause/cancel buttons on that
+   * bubble drive the handle registered here.
+   */
+  function uploadWithProgress(
+    clientId: string, uri: string, name: string, mime: string,
+    onProgress: (pct: number, sent: number, total: number) => void,
+  ): Promise<{ url: string; name: string; mimetype: string }> {
+    return new Promise(async (resolve, reject) => {
+      const token = await getToken();
+      const handle = uploadResumable(BASE_URL, uri, name, mime, token || '', {
+        onProgress: (sent, total) => onProgress(total > 0 ? sent / total : 0, sent, total),
+        onDone: resolve,
+        onFailed: reject,
+      });
+      up.attach(clientId, {
+        pause: () => handle.pause(),
+        resume: () => handle.resume(),
+        // Cancelling is a decision, not a failure: the promise is rejected so
+        // the caller unwinds, and the bubble is removed rather than left
+        // sitting there offering a retry nobody asked for.
+        cancel: () => { handle.cancel(); reject(new UploadCancelled()); },
+      });
+    });
+  }
+
+  /** Take a cancelled send off the screen entirely. */
+  function removeCancelled(clientId: string) {
+    up.finish(clientId);
+    outbox.markDone(clientId);
+    removeFailedMsg(clientId);
+    setMessages(prev => prev.filter(m => String(m.id) !== clientId));
+  }
+
+  /** A send that ended: cancelled means gone, anything else means retryable. */
+  function settleUpload(clientId: string, err: any) {
+    if (err instanceof UploadCancelled) removeCancelled(clientId);
+    else markUploadFailed(clientId);
   }
 
   function addOptimisticMessage(clientId: string, type: string, localUri: string, fileName: string | null, replyToId: number | null, caption: string | null = null) {
@@ -1529,7 +1564,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // while the upload is still in flight — the common case on a bad network —
     // the message must survive the restart as a retryable failed send.
     saveFailedMsg(optimistic);
-    setUploadProgress(prev => ({ ...prev, [clientId]: 0 }));
+
     if (isNearBottomRef.current) setTimeout(scrollBottom, 50);
   }
 
@@ -1556,7 +1591,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
   function markUploadFailed(clientId: string) {
     outbox.markDone(clientId);
-    setUploadProgress(prev => { const { [clientId]: _d, ...rest } = prev; return rest; });
+    up.setPhase(clientId, 'failed');
     setMessages(prev => {
       const next = prev.map(m => m.id === clientId ? { ...m, _uploading: false, _uploadFailed: true } : m);
       const failed = next.find(m => m.id === clientId);
@@ -1569,7 +1604,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     uri: string, name: string, mime: string, caption: string | null = null,
     oneTimeOverride?: number, quality: Quality = sendQuality,
     // Slow video work, deferred so it runs AFTER the bubble is on screen.
-    videoPrep?: (onProgress: (p: number) => void) => Promise<{ uri: string; name: string }>,
+    videoPrep?: (onProgress: (p: number) => void, clientId: string) => Promise<{ uri: string; name: string }>,
   ) {
     // messageTypeFor re-checks the extension, so a file whose mime was missing
     // still lands as 'music'/'video'/'image' and gets the right player/bubble.
@@ -1589,14 +1624,19 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // there is what the user pressed Send for.
     addOptimisticMessage(clientId, type, uri, name, replyToId, caption);
     setReplyTo(null);
+    // Whether there is a transcode in front decides how the one progress bar
+    // is shared between preparing and sending.
+    const hasProcessing = type === 'video' && !!videoPrep;
+    up.begin(clientId, hasProcessing);
+    setReplyTo(null);
 
     if (type === 'image') {
       const c = await compressForSend(uri, name, mime, quality);
       uri = c.uri; name = c.name; mime = c.mime;
     } else if (type === 'video' && videoPrep) {
       // Transcode/trim, reported as progress on the bubble itself.
-      const out = await videoPrep((pct) =>
-        setUploadProgress(prev => ({ ...prev, [clientId]: Math.round(pct * 40) })));
+      const out = await videoPrep((pct) => up.report(clientId, 'processing', pct), clientId);
+      if (up.get(clientId)?.phase === 'cancelled') { removeCancelled(clientId); return; }
       uri = out.uri; name = out.name;
     }
     // Keep a durable copy so an interrupted upload can resume on next open.
@@ -1609,14 +1649,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // this chat, and re-entering must not start a second copy of it.
     outbox.markStart(clientId, room.id);
     try {
-      const res = await uploadWithProgress(uri, name, mime, pct => setUploadProgress(prev => ({ ...prev, [clientId]: pct })));
-      if (res.error) throw new Error(res.error);
+      const res = await uploadWithProgress(clientId, uri, name, mime,
+        (f, sent, total) => up.report(clientId, 'uploading', f, sent, total));
       pendingUploadPaths.current[clientId] = res.url;
       socketRef.current?.emit('send_message', {
         roomId: room.id, type, content: caption, filePath: res.url, fileName: name, replyToId, clientId, oneTimeSeconds: oneTime,
       });
-    } catch {
-      markUploadFailed(clientId);
+    } catch (err) {
+      settleUpload(clientId, err);
     }
   }
 
@@ -1635,17 +1675,23 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     }));
     addOptimisticMessage(clientId, 'gallery', JSON.stringify(images.map(m => m.uri)), JSON.stringify(images.map(m => m.name)), replyToId, caption);
     setReplyTo(null);
+    up.begin(clientId, false);
     outbox.markStart(clientId, room.id);
     try {
+      // One bar for the whole album: each picture is a slice of it, and the
+      // byte counts are summed so the line underneath is about the album
+      // rather than about whichever photo happens to be in flight.
       const progress = images.map(() => 0);
+      const sentEach = images.map(() => 0);
+      const totalEach = images.map(() => 0);
       const urls: string[] = [];
       for (let i = 0; i < images.length; i++) {
-        const res = await uploadWithProgress(images[i].uri, images[i].name, images[i].mime, pct => {
-          progress[i] = pct;
-          const avg = Math.round(progress.reduce((a, b) => a + b, 0) / images.length);
-          setUploadProgress(prev => ({ ...prev, [clientId]: avg }));
-        });
-        if (res.error) throw new Error(res.error);
+        const res = await uploadWithProgress(clientId, images[i].uri, images[i].name, images[i].mime,
+          (f, sent, total) => {
+            progress[i] = f; sentEach[i] = sent; totalEach[i] = total;
+            const sum = (a: number[]) => a.reduce((x, y) => x + y, 0);
+            up.report(clientId, 'uploading', sum(progress) / images.length, sum(sentEach), sum(totalEach));
+          });
         urls.push(res.url);
       }
       const filePath = JSON.stringify(urls);
@@ -1654,8 +1700,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         roomId: room.id, type: 'gallery', content: caption, filePath, fileName: null,
         replyToId, clientId, oneTimeSeconds: oneTime,
       });
-    } catch {
-      markUploadFailed(clientId);
+    } catch (err) {
+      settleUpload(clientId, err);
     }
   }
 
@@ -1671,16 +1717,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     uri = await persistLocal(uri, `voice-${Date.now()}.m4a`);
     addOptimisticMessage(clientId, 'audio', uri, peakStr, replyToId, caption);
     setReplyTo(null);
+    up.begin(clientId, false);
     outbox.markStart(clientId, room.id);
     try {
-      const res = await uploadWithProgress(uri, `voice-${Date.now()}.m4a`, 'audio/m4a', pct => setUploadProgress(prev => ({ ...prev, [clientId]: pct })));
-      if (res.error) throw new Error(res.error);
+      const res = await uploadWithProgress(clientId, uri, `voice-${Date.now()}.m4a`, 'audio/m4a',
+        (f, sent, total) => up.report(clientId, 'uploading', f, sent, total));
       pendingUploadPaths.current[clientId] = res.url;
       socketRef.current?.emit('send_message', {
         roomId: room.id, type: 'audio', content: caption, filePath: res.url, fileName: peakStr, replyToId, clientId, oneTimeSeconds: oneTime,
       });
-    } catch {
-      markUploadFailed(clientId);
+    } catch (err) {
+      settleUpload(clientId, err);
     }
   }
 
@@ -1795,6 +1842,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // counting and a later delete can still tombstone this lineage.
     const m: any = msg;
     outbox.setNextOrigin(String(m._originId || clientId), manual ? 0 : (m._attempts || 0) + 1);
+    // The retry gets a new clientId, so the old entry would sit in the store
+    // for the life of the app with no bubble left to report to.
+    up.finish(clientId);
     removeFailedMsg(clientId);
     setMessages(prev => prev.filter(m => m.id !== clientId));
     if (msg.type === 'text') {
@@ -1826,6 +1876,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // still in flight cannot re-persist it under its new clientId when it fails.
   function discardFailed(msg: Message) {
     const clientId = String(msg.id);
+    up.finish(clientId);
     outbox.discard(room.id, msg);
     setMessages(prev => prev.filter(m => m.id !== clientId));
   }
@@ -2299,12 +2350,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // Hand the transcode to uploadFile as a deferred step: the bubble appears
     // straight away and this runs behind it, reporting onto the bubble's own
     // progress bar. Pressing Send now feels instant even for a 4K clip.
-    const prep = async (onProgress: (p: number) => void) => {
+    const prep = async (onProgress: (p: number) => void, clientId: string) => {
       let uri = choice.uri;
       let name = pending.item.name;
       if (choice.quality !== 'original') {
         uri = await compressVideo(
           choice.uri, choice.quality, choice.size, onProgress, pending.bytes, choice.seconds,
+          // A transcode cannot be paused — the encoder offers no such thing —
+          // but it must be stoppable, because it is the slowest part of
+          // sending a video and the one people give up on.
+          (stop) => up.attach(clientId, { cancel: stop }),
         );
       }
       // Re-encoding, and the trimmer, both produce an mp4 whatever went in.
@@ -2891,11 +2946,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               <Text style={s.oneTimeHideBtn}>🙈 Hide</Text>
             </TouchableOpacity>
           ) : null}
-          {msg._uploading && (
-            <View style={s.uploadOverlay}>
-              <View style={[s.uploadProgressBar, { width: `${uploadProgress[String(msg.id)] ?? 0}%` }]} />
-            </View>
-          )}
+          {msg._uploading && <UploadOverlay msgId={msg.id} />}
           {msg._uploadFailed && (
             <View style={s.failedRow}>
               <TouchableOpacity onPress={() => retryUpload(msg, true)}>
@@ -4178,8 +4229,6 @@ const s = StyleSheet.create({
     borderRadius: 10, backgroundColor: 'rgba(59,125,216,0.16)', overflow: 'hidden',
   },
   bubble: { borderRadius: 12, padding: 10, maxWidth: '100%', overflow: 'hidden' },
-  uploadOverlay: { height: 3, backgroundColor: 'rgba(255,255,255,0.25)', marginTop: 6, borderRadius: 2, overflow: 'hidden' },
-  uploadProgressBar: { height: '100%', backgroundColor: C.accent },
   uploadRetryText: { color: '#f87171', fontSize: 12, marginTop: 6, textDecorationLine: 'underline' },
   failedRow: { flexDirection: 'row', alignItems: 'center', gap: 14, marginTop: 6 },
   callLog: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 },

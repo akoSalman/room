@@ -8,7 +8,9 @@
 import { NativeEventEmitter, NativeModules } from 'react-native';
 import { Video as VideoCompressor } from 'react-native-compressor';
 import { showEditor } from 'react-native-video-trim';
-import { VideoQuality, presetFor, videoTarget, shouldTranscode } from './videoQuality';
+import {
+  VideoQuality, presetFor, videoTarget, shouldTranscode, PROGRESS_DIVIDER,
+} from './videoQuality';
 
 export type TrimRange = { startSec: number; endSec: number } | null;
 
@@ -70,6 +72,8 @@ export async function compressVideo(
   onProgress?: (p: number) => void,
   originalBytes = 0,
   seconds = 0,
+  /** Called with a function that abandons the transcode. */
+  onCancellable?: (cancel: () => void) => void,
 ): Promise<string> {
   if (quality === 'original') return uri;
   const preset = presetFor(quality);
@@ -88,7 +92,23 @@ export async function compressVideo(
         maxSize: preset.maxEdge,
         bitrate: preset.bitrate,
         minimumFileSizeForCompress: 0,
-      },
+        // ── Why this line matters more than it looks ───────────────────────
+        //
+        // The native encoder reports progress from inside its decode → draw →
+        // encode loop, once PER FRAME. With no divider, every one of those
+        // crosses the bridge: about nine hundred events for a thirty-second
+        // clip, each waking JavaScript and, until this change, re-rendering
+        // every message in the chat. All of it on the same CPU that is trying
+        // to encode the video. Reporting every 5% is twenty events instead of
+        // nine hundred, and the bar looks exactly the same to a human.
+        progressDivider: PROGRESS_DIVIDER,
+        // The handle for abandoning it. A transcode is the one part of sending
+        // a video that cannot be paused, so it must at least be stoppable.
+        getCancellationId: (id: string) => {
+          // cancelCompression is a method on the Video export, not a root one.
+          onCancellable?.(() => { try { VideoCompressor.cancelCompression(id); } catch {} });
+        },
+      } as any,
       (p) => onProgress?.(typeof p === 'number' ? p : 0),
     );
     return out || uri;

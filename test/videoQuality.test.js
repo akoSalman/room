@@ -140,6 +140,44 @@ test('durations read as mm:ss', () => {
   assert.strictEqual(V.fmtDuration(-5), '0:00');
 });
 
+// ── Why re-encoding was so slow ─────────────────────────────────────────────
+//
+// Reported as: "still processing videos for lower resolutions takes too long."
+//
+// The native encoder reports progress from inside its decode → draw → encode
+// loop, once per FRAME. Unthrottled, every one of those crossed the bridge and
+// woke JavaScript on the same CPU that was trying to encode the video: the app
+// spent the phone's processor telling itself how slowly it was going.
+
+/** How many progress events the native side emits, given a divider. */
+function eventsEmitted(frames, divider) {
+  // Mirrors the native rule: emit when the rounded percentage is a multiple of
+  // the divider and has moved on. A divider of 0 means emit every time.
+  let last = -1, count = 0;
+  for (let i = 1; i <= frames; i++) {
+    const pct = Math.round((i / frames) * 100);
+    if (divider === 0 || (pct % divider === 0 && pct > last)) { count++; last = pct; }
+  }
+  return count;
+}
+
+test('THE BUG: progress is not reported once per frame', () => {
+  const frames = 30 * 30;   // a thirty-second clip at thirty frames a second
+  assert.strictEqual(eventsEmitted(frames, 0), frames,
+    'the unthrottled rule should emit per frame — the test model is wrong');
+  const throttled = eventsEmitted(frames, V.PROGRESS_DIVIDER);
+  assert.ok(throttled <= 25,
+    `${throttled} progress events for a 30s clip; per-frame reporting is the bug`);
+  assert.ok(throttled >= 10,
+    `${throttled} events is too few for a bar that should look smooth`);
+});
+
+test('the divider still lets the bar reach both ends', () => {
+  // A divider that does not divide 100 would stop short of full.
+  assert.strictEqual(100 % V.PROGRESS_DIVIDER, 0,
+    'the bar would never report 100% with this divider');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

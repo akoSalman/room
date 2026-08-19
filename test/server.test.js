@@ -1814,4 +1814,201 @@ test('the gallery refuses a room the viewer is not in', async () => {
   assert.ok(r.error, 'a stranger was handed a private room\'s photos');
 });
 
+// ── Resumable uploads ────────────────────────────────────────────────────────
+//
+// Reported as: uploads sometimes take far too long, and there is no pause or
+// cancel. A whole-file POST cannot be paused — pausing would throw away every
+// byte already sent — so a file goes up in chunks against a session that
+// remembers what it holds. These tests are about the thing that goes silently
+// wrong: bytes landing in the wrong order, or a gap in the middle of a file
+// that then uploads "successfully" and is broken.
+
+/** PATCH one chunk of a session. */
+async function patchChunk(id, offset, buf, token, encoding) {
+  return fetch(`${baseUrl}/upload/session/${id}`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': encoding === 'base64' ? 'text/plain' : 'application/octet-stream',
+      'x-offset': String(offset),
+      ...(encoding === 'base64' ? { 'x-encoding': 'base64' } : {}),
+    },
+    body: encoding === 'base64' ? buf.toString('base64') : buf,
+  });
+}
+
+test('a file sent in chunks arrives byte-for-byte identical', async () => {
+  const u = await signUp('upsess50');
+  // Deliberately not a multiple of the chunk size, so the last chunk is short.
+  const data = require('crypto').randomBytes(7000);
+  const open = await api('/upload/session', 'POST',
+    { name: 'chunked.bin', size: data.length, mime: 'application/octet-stream' }, u.token);
+  assert.ok(open.id, `no session: ${JSON.stringify(open)}`);
+  assert.strictEqual(open.offset, 0);
+
+  let at = 0;
+  while (at < data.length) {
+    const end = Math.min(at + 2048, data.length);
+    const r = await patchChunk(open.id, at, data.subarray(at, end), u.token);
+    const j = await r.json();
+    assert.strictEqual(r.status, 200, `chunk at ${at} rejected: ${JSON.stringify(j)}`);
+    assert.strictEqual(j.offset, end, 'server lost count of what it has');
+    at = end;
+  }
+
+  const fin = await api(`/upload/session/${open.id}/finish`, 'POST', null, u.token);
+  assert.ok(fin.url, `finish failed: ${JSON.stringify(fin)}`);
+  const name = fin.url.replace('/uploads/', '');
+  const res = await fetch(baseUrl + fin.url + signUpload(name));
+  assert.strictEqual(res.status, 200, 'the finished upload is not readable');
+  const got = Buffer.from(await res.arrayBuffer());
+  assert.strictEqual(got.length, data.length, 'the reassembled file is the wrong length');
+  assert.ok(got.equals(data), 'the reassembled file does not match what was sent');
+});
+
+test('THE ONE THAT CORRUPTS FILES: a chunk at the wrong offset is refused', async () => {
+  // A client that lost track and carried on from its own count would punch a
+  // hole in the middle of the file. The server refuses and says where it
+  // really is, which is what a resume needs.
+  const u = await signUp('upsess51');
+  const open = await api('/upload/session', 'POST', { name: 'gap.bin', size: 3000 }, u.token);
+  await patchChunk(open.id, 0, Buffer.alloc(1000, 1), u.token);
+
+  const skipped = await patchChunk(open.id, 2000, Buffer.alloc(1000, 2), u.token);
+  assert.strictEqual(skipped.status, 409, 'a chunk that would leave a gap was accepted');
+  const body = await skipped.json();
+  assert.strictEqual(body.offset, 1000, 'the refusal did not say where the server actually is');
+
+  // Carrying on from the offset it reported works.
+  const ok = await patchChunk(open.id, 1000, Buffer.alloc(2000, 3), u.token);
+  assert.strictEqual(ok.status, 200);
+  assert.strictEqual((await ok.json()).offset, 3000);
+});
+
+test('a resumed upload is told how much the server really has', async () => {
+  const u = await signUp('upsess52');
+  const open = await api('/upload/session', 'POST', { name: 'resume.bin', size: 5000 }, u.token);
+  await patchChunk(open.id, 0, Buffer.alloc(1500, 7), u.token);
+  const where = await api(`/upload/session/${open.id}`, 'GET', null, u.token);
+  assert.strictEqual(where.offset, 1500);
+  assert.strictEqual(where.size, 5000);
+});
+
+test('a re-sent chunk does not double up', async () => {
+  // The normal shape of a resume: the client sends a chunk again because the
+  // acknowledgement was lost. Appending it twice would corrupt the file.
+  const u = await signUp('upsess53');
+  const open = await api('/upload/session', 'POST', { name: 'dup.bin', size: 2000 }, u.token);
+  await patchChunk(open.id, 0, Buffer.alloc(1000, 9), u.token);
+  const again = await patchChunk(open.id, 0, Buffer.alloc(1000, 9), u.token);
+  assert.strictEqual(again.status, 409, 'the same chunk was appended twice');
+  assert.strictEqual((await api(`/upload/session/${open.id}`, 'GET', null, u.token)).offset, 1000);
+});
+
+test('base64 chunks reassemble to the same bytes as raw ones', async () => {
+  // The fallback path for devices where a binary body cannot be handed to the
+  // network stack. It must produce an identical file, not an approximation.
+  const u = await signUp('upsess54');
+  const data = require('crypto').randomBytes(3333);
+  const open = await api('/upload/session', 'POST', { name: 'b64.bin', size: data.length }, u.token);
+  let at = 0;
+  while (at < data.length) {
+    const end = Math.min(at + 1111, data.length);
+    const r = await patchChunk(open.id, at, data.subarray(at, end), u.token, 'base64');
+    assert.strictEqual(r.status, 200, `base64 chunk at ${at} rejected`);
+    at = (await r.json()).offset;
+  }
+  const fin = await api(`/upload/session/${open.id}/finish`, 'POST', null, u.token);
+  const res = await fetch(baseUrl + fin.url + signUpload(fin.url.replace('/uploads/', '')));
+  assert.ok(Buffer.from(await res.arrayBuffer()).equals(data), 'base64 round trip changed the bytes');
+});
+
+test('an unfinished upload cannot be finished', async () => {
+  const u = await signUp('upsess55');
+  const open = await api('/upload/session', 'POST', { name: 'short.bin', size: 4000 }, u.token);
+  await patchChunk(open.id, 0, Buffer.alloc(1000, 1), u.token);
+  const r = await raw(`/upload/session/${open.id}/finish`, 'POST', null, u.token);
+  assert.strictEqual(r.status, 409, 'a partial file was published as a complete one');
+  const j = await r.json();
+  assert.strictEqual(j.offset, 1000);
+  assert.strictEqual(j.size, 4000);
+});
+
+test('cancelling an upload throws the partial bytes away', async () => {
+  const u = await signUp('upsess56');
+  const open = await api('/upload/session', 'POST', { name: 'bin.bin', size: 4000 }, u.token);
+  await patchChunk(open.id, 0, Buffer.alloc(1000, 1), u.token);
+  assert.ok((await api(`/upload/session/${open.id}`, 'DELETE', null, u.token)).ok);
+  const gone = await raw(`/upload/session/${open.id}`, 'GET', null, u.token);
+  assert.strictEqual(gone.status, 404, 'a cancelled upload is still on the server');
+});
+
+test('SECURITY: an upload session belongs to the account that opened it', async () => {
+  // Otherwise knowing an id is enough to append to someone else's file.
+  const owner = await signUp('upown57');
+  const other = await signUp('upoth57');
+  const open = await api('/upload/session', 'POST', { name: 'mine.bin', size: 2000 }, owner.token);
+  const peek = await raw(`/upload/session/${open.id}`, 'GET', null, other.token);
+  assert.strictEqual(peek.status, 404, "a stranger could read someone else's upload session");
+  const write = await patchChunk(open.id, 0, Buffer.alloc(100, 1), other.token);
+  assert.strictEqual(write.status, 404, "a stranger could append to someone else's upload");
+  const fin = await raw(`/upload/session/${open.id}/finish`, 'POST', null, other.token);
+  assert.strictEqual(fin.status, 404);
+});
+
+test('SECURITY: a session id cannot be a path', async () => {
+  // The id is joined onto a filesystem path, so "../../etc/passwd" would
+  // otherwise be a perfectly good session id — and DELETE would then unlink
+  // whatever it named.
+  //
+  // Asserted as 400, not "400 or 404": a malformed id must be refused BEFORE
+  // anything touches the filesystem. Accepting 404 would let this pass with no
+  // guard at all, because a path that happens not to exist 404s by itself.
+  const u = await signUp('uppath58');
+  const bad = ['..%2F..%2Fetc%2Fpasswd', 'abc', 'A'.repeat(32), '..%2F..%2F..%2Fchat.db',
+               `${'a'.repeat(31)}%2F..`];
+  for (const id of bad) {
+    for (const [method, path] of [['GET', ''], ['DELETE', ''], ['POST', '/finish']]) {
+      const r = await raw(`/upload/session/${id}${path}`, method, null, u.token);
+      assert.strictEqual(r.status, 400,
+        `${method} with session id "${id}" got ${r.status}; it must be refused as malformed`);
+    }
+  }
+});
+
+test('SECURITY: a client cannot write more than the size it declared', async () => {
+  // Otherwise the disk can be filled one chunk at a time by a client that
+  // simply keeps going.
+  const u = await signUp('upcap59');
+  const open = await api('/upload/session', 'POST', { name: 'cap.bin', size: 1000 }, u.token);
+  await patchChunk(open.id, 0, Buffer.alloc(1000, 1), u.token);
+  const over = await patchChunk(open.id, 1000, Buffer.alloc(500, 2), u.token);
+  assert.strictEqual(over.status, 413, 'the server accepted bytes past the declared size');
+});
+
+test('SECURITY: a session cannot be opened for an absurd size', async () => {
+  const u = await signUp('upbig60');
+  const r = await raw('/upload/session', 'POST', { name: 'huge.bin', size: 500 * 1024 * 1024 }, u.token);
+  assert.strictEqual(r.status, 413);
+  const bad = await raw('/upload/session', 'POST', { name: 'x', size: 0 }, u.token);
+  assert.strictEqual(bad.status, 400);
+});
+
+test('SECURITY: upload sessions need a login', async () => {
+  const r = await raw('/upload/session', 'POST', { name: 'x', size: 10 });
+  assert.strictEqual(r.status, 401);
+});
+
+test('SECURITY: half-finished uploads are not readable over the web', async () => {
+  // They live under uploads/, which is served — but everything there needs a
+  // signature computed from the secret.
+  const u = await signUp('uppart61');
+  const open = await api('/upload/session', 'POST', { name: 'secret.bin', size: 2000 }, u.token);
+  await patchChunk(open.id, 0, Buffer.alloc(1000, 1), u.token);
+  for (const p of [`/uploads/.partial/${open.id}.part`, `/uploads/.partial/${open.id}.json`]) {
+    const r = await fetch(baseUrl + p);
+    assert.strictEqual(r.status, 403, `${p} was readable without a signature`);
+  }
+});
+
 main().catch(err => { console.error(err); process.exit(1); });

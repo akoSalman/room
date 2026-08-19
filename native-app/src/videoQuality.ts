@@ -33,6 +33,24 @@ export function presetFor(id: VideoQuality): VideoPreset {
 }
 
 /**
+ * Report transcode progress every this many percent, and no oftener.
+ *
+ * Reported as: re-encoding a video to a lower resolution takes far too long.
+ *
+ * The native encoder calls its progress listener from inside the decode →
+ * draw → encode loop, once per FRAME. Left unthrottled every one of those
+ * crossed the bridge — around nine hundred for a thirty-second clip — and each
+ * one woke JavaScript on the same CPU the encoder was using. It is a
+ * self-inflicted wound: the app was spending its phone's processor telling
+ * itself how slowly it was going.
+ *
+ * Five percent is twenty-one reports for the whole transcode, and a bar that
+ * moves in twentieths is indistinguishable to a human from one that moves in
+ * nine-hundredths.
+ */
+export const PROGRESS_DIVIDER = 5;
+
+/**
  * Output dimensions for a source of this size, or null to leave it alone.
  *
  * Never upscales: a 480p clip sent as "1080p" would be a bigger file with no
