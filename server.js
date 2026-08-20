@@ -7,6 +7,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const { recipientsFor } = require('./notify');
 const credentials = require('./credentials');
 const cors = require('cors');
 const db = require('./db');
@@ -508,9 +509,11 @@ app.get('/mentions/:roomId', authMiddleware, (req, res) => {
   if (!me) return res.json({ mentions: [] });
   const read = db.prepare('SELECT last_read_msg_id FROM room_reads WHERE room_id = ? AND user_id = ?')
     .get(room.id, req.user.id);
+  // A mention inside cleared history is not a mention that is still waiting.
+  const floor = clearedUpto(req.user.id, room.id);
   const rows = db.prepare(`
     SELECT id FROM messages
-    WHERE room_id = ? AND user_id != ? AND id > ?
+    WHERE room_id = ? AND user_id != ? AND id > ? AND id > ${floor}
       AND content LIKE ? ESCAPE '#'
     ORDER BY id ASC LIMIT 100
   `).all(room.id, req.user.id, read?.last_read_msg_id || 0,
@@ -608,8 +611,21 @@ async function getFcmAccessToken() {
  * high-priority message wakes the app so it can raise a real ringing call
  * notification itself.
  */
+/**
+ * `android.fromUserId`, when given, is who this notification is ABOUT.
+ *
+ * Anyone who has muted that person is dropped here rather than at each of the
+ * five call sites. Muting is about not being interrupted, so it stops the
+ * notification and nothing else: the message still arrives, the chat still
+ * shows it, and the unread count still counts it.
+ */
 async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
   if (!fcmCreds || !userIds.length) return;
+  // The rule lives in notify.js so it can be tested: everything from here on
+  // is behind the FCM credential check above, which a test environment has no
+  // way to satisfy.
+  userIds = recipientsFor(userIds, android.fromUserId, hasMuted);
+  if (!userIds.length) return;
   try {
     const placeholders = userIds.map(() => '?').join(',');
     const tokens = db.prepare(`SELECT token FROM push_tokens WHERE user_id IN (${placeholders})`)
@@ -761,6 +777,11 @@ app.get('/unread-counts', authMiddleware, (req, res) => {
     LEFT JOIN room_reads rr ON rr.room_id = m.room_id AND rr.user_id = ?
     JOIN rooms r ON r.id = m.room_id
     WHERE m.user_id != ? AND m.id > COALESCE(rr.last_read_msg_id, 0)
+      -- Cleared messages are not unread messages. Without this a chat the
+      -- user has just emptied comes straight back with a badge on it.
+      AND m.id > COALESCE(
+        (SELECT rc.cleared_upto_id FROM room_clears rc
+          WHERE rc.room_id = m.room_id AND rc.user_id = ?), 0)
       AND (
         EXISTS (SELECT 1 FROM room_members rm WHERE rm.room_id = m.room_id AND rm.user_id = ?)
         -- DMs carry no membership rows; they are identified by their name,
@@ -781,7 +802,12 @@ app.get('/unread-counts', authMiddleware, (req, res) => {
     -- The two LIKE ids are bound as STRINGS on purpose. A JS number binds as
     -- a REAL, and SQLite's || then renders it '2.0', so the pattern became
     -- '%__2.0__' and matched no DM at all.
-  `).all(req.user.id, req.user.id, req.user.id, String(req.user.id), String(req.user.id));
+  `)
+  // Bound in the order the placeholders appear: the read-position join, the
+  // author test, the clear mark, the membership test, then the two DM name
+  // patterns. Adding the clear mark shifted every one after it along.
+  .all(req.user.id, req.user.id, req.user.id, req.user.id,
+       String(req.user.id), String(req.user.id));
   const counts = {};
   rows.forEach(r => { counts[r.room_id] = r.cnt; });
   res.json(counts);
@@ -884,10 +910,11 @@ const LINK_RE = /(https?:\/\/[^\s]+|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:\/[^\s]*)
  * them, so unlike the photo list there is nothing here worth paging.
  */
 function collectOther(room, viewerId) {
+  const floor = clearedUpto(viewerId, room.id);
   const rows = db.prepare(`
     SELECT id, type, content, file_path, file_name, user_id, disappear_seconds
     FROM messages
-    WHERE room_id = ? AND one_time_seconds IS NULL
+    WHERE room_id = ? AND id > ${floor} AND one_time_seconds IS NULL
       AND (type IN ('video','file','music') OR type = 'text')
     ORDER BY id DESC LIMIT 5000
   `).all(room.id);
@@ -942,10 +969,11 @@ app.get('/room-media/:roomId', authMiddleware, (req, res) => {
 
   if (req.query.v === '2') {
     const before = parseInt(req.query.before, 10) || 0;
+    const floor = clearedUpto(req.user.id, room.id);
     const imgRows = db.prepare(`
       SELECT id, type, file_path, file_name, user_id, disappear_seconds
       FROM messages
-      WHERE room_id = ? AND one_time_seconds IS NULL
+      WHERE room_id = ? AND id > ${floor} AND one_time_seconds IS NULL
         AND type IN ('image','gallery') AND file_path IS NOT NULL
         ${before ? 'AND id < ?' : ''}
       ORDER BY id DESC LIMIT ?
@@ -970,10 +998,11 @@ app.get('/room-media/:roomId', authMiddleware, (req, res) => {
   // The unpaged shape, for app versions already in people's hands. Every item
   // carries the id of the message it came from, so the browser can offer
   // "Show in chat" and jump straight to it.
+  const legacyFloor = clearedUpto(req.user.id, room.id);
   const imgRows = db.prepare(`
     SELECT id, type, file_path, file_name, user_id, disappear_seconds
     FROM messages
-    WHERE room_id = ? AND one_time_seconds IS NULL
+    WHERE room_id = ? AND id > ${legacyFloor} AND one_time_seconds IS NULL
       AND type IN ('image','gallery') AND file_path IS NOT NULL
     ORDER BY id DESC LIMIT 5000
   `).all(room.id);
@@ -991,6 +1020,52 @@ app.get('/read-receipts/:roomId', authMiddleware, (req, res) => {
     .all(room.id, req.user.id);
   res.json(rows.reduce((acc, r) => { acc[r.user_id] = r.last_read_msg_id; return acc; }, {}));
 });
+
+// ── Blocking, muting, and clearing ───────────────────────────────────────────
+
+/** The two user ids in a DM room, or null for anything else. */
+function dmParticipants(room) {
+  if (!room || !room.is_dm) return null;
+  const parts = String(room.name).split('__').filter(Boolean);
+  if (parts.length !== 3) return null;
+  const a = parseInt(parts[1], 10), b = parseInt(parts[2], 10);
+  return isFinite(a) && isFinite(b) ? [a, b] : null;
+}
+
+/** The other person in a DM, from one participant's point of view. */
+function dmPeerId(room, userId) {
+  const p = dmParticipants(room);
+  if (!p) return null;
+  if (p[0] === userId) return p[1];
+  if (p[1] === userId) return p[0];
+  return null;
+}
+
+/** Has `targetId` blocked `senderId` from reaching them? */
+function hasBlocked(targetId, senderId) {
+  if (!targetId || !senderId) return false;
+  return !!db.prepare('SELECT 1 FROM user_blocks WHERE blocker_id = ? AND blocked_id = ?')
+    .get(targetId, senderId);
+}
+
+function hasMuted(userId, otherId) {
+  if (!userId || !otherId) return false;
+  return !!db.prepare('SELECT 1 FROM user_mutes WHERE user_id = ? AND muted_id = ?')
+    .get(userId, otherId);
+}
+
+/**
+ * The last message this user has cleared away in this room.
+ *
+ * Everything at or below it is hidden from them. Returns 0 when they have
+ * never cleared anything, which makes `m.id > 0` a no-op filter — so every
+ * read path can apply it unconditionally rather than remembering to.
+ */
+function clearedUpto(userId, roomId) {
+  const row = db.prepare('SELECT cleared_upto_id FROM room_clears WHERE user_id = ? AND room_id = ?')
+    .get(userId, roomId);
+  return row ? (row.cleared_upto_id || 0) : 0;
+}
 
 function canAccessRoom(userId, room) {
   if (!room) return false;
@@ -1109,6 +1184,97 @@ app.post('/dm/:userId', authMiddleware, (req, res) => {
   res.json({ ...room, otherUsername: other.username });
 });
 
+// ── One person's view of another ─────────────────────────────────────────────
+
+app.get('/user-profile/:username', authMiddleware, (req, res) => {
+  const other = db.prepare('SELECT id, username, avatar, created_at FROM users WHERE username = ?')
+    .get(String(req.params.username || ''));
+  if (!other) return res.status(404).json({ error: 'User not found' });
+  const dmName = `__dm__${Math.min(req.user.id, other.id)}__${Math.max(req.user.id, other.id)}__`;
+  const dm = db.prepare('SELECT id FROM rooms WHERE name = ?').get(dmName);
+  res.json({
+    id: other.id,
+    username: other.username,
+    avatar: other.avatar || null,
+    created_at: other.created_at,
+    isSelf: other.id === req.user.id,
+    // Both are MY settings about them, never theirs about me: whether someone
+    // has blocked you is not something you get to ask the server.
+    muted: hasMuted(req.user.id, other.id),
+    blocked: hasBlocked(req.user.id, other.id),
+    dmRoomId: dm ? dm.id : null,
+  });
+});
+
+/** Block or unblock, mute or unmute. `on` decides which. */
+function setPeerFlag(table, cols) {
+  return (req, res) => {
+    const otherId = parseInt(req.params.userId, 10);
+    if (!otherId || otherId === req.user.id) return res.status(400).json({ error: 'Invalid user' });
+    if (!db.prepare('SELECT 1 FROM users WHERE id = ?').get(otherId)) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    const on = req.method === 'POST';
+    if (on) {
+      db.prepare(`INSERT OR IGNORE INTO ${table} (${cols[0]}, ${cols[1]}) VALUES (?, ?)`)
+        .run(req.user.id, otherId);
+    } else {
+      db.prepare(`DELETE FROM ${table} WHERE ${cols[0]} = ? AND ${cols[1]} = ?`)
+        .run(req.user.id, otherId);
+    }
+    res.json({ ok: true, on });
+  };
+}
+
+app.post('/block/:userId', authMiddleware, setPeerFlag('user_blocks', ['blocker_id', 'blocked_id']));
+app.delete('/block/:userId', authMiddleware, setPeerFlag('user_blocks', ['blocker_id', 'blocked_id']));
+app.post('/mute/:userId', authMiddleware, setPeerFlag('user_mutes', ['user_id', 'muted_id']));
+app.delete('/mute/:userId', authMiddleware, setPeerFlag('user_mutes', ['user_id', 'muted_id']));
+
+/**
+ * Clear a conversation.
+ *
+ * `scope: 'me'` records a high-water mark and deletes nothing. The other
+ * person's copy is theirs; a chat app that let one side reach into the other's
+ * history by default would be worth nobody's trust.
+ *
+ * `scope: 'both'` really does delete, and is therefore only offered in a DM —
+ * between two people it is a decision they can undo by talking again, whereas
+ * in a group it would be one member destroying everyone else's record of a
+ * conversation they were all part of.
+ */
+app.post('/clear-history/:roomId', authMiddleware, (req, res) => {
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
+  if (!room || !canAccessRoom(req.user.id, room)) return res.status(404).json({ error: 'Not found' });
+  const scope = req.body?.scope === 'both' ? 'both' : 'me';
+
+  const top = db.prepare('SELECT MAX(id) AS id FROM messages WHERE room_id = ?').get(room.id);
+  const upto = top?.id || 0;
+
+  if (scope === 'both') {
+    if (!room.is_dm) return res.status(400).json({ error: 'Only a direct chat can be cleared for both' });
+    const rows = db.prepare('SELECT id, file_path FROM messages WHERE room_id = ? AND id <= ?')
+      .all(room.id, upto);
+    db.prepare('DELETE FROM messages WHERE room_id = ? AND id <= ?').run(room.id, upto);
+    db.prepare('DELETE FROM reactions WHERE message_id IN (SELECT id FROM messages WHERE room_id = ?)')
+      .run(room.id);
+    // The other side is told so their screen empties too, rather than showing
+    // messages that no longer exist until they next reload.
+    io.to('room:' + room.id).emit('history_cleared', { roomId: room.id, uptoId: upto, scope: 'both' });
+    const peer = dmPeerId(room, req.user.id);
+    if (peer) io.to('user:' + peer).emit('history_cleared', { roomId: room.id, uptoId: upto, scope: 'both' });
+    io.to('user:' + req.user.id).emit('history_cleared', { roomId: room.id, uptoId: upto, scope: 'both' });
+    return res.json({ ok: true, scope, uptoId: upto, removed: rows.length });
+  }
+
+  db.prepare(`
+    INSERT INTO room_clears (user_id, room_id, cleared_upto_id) VALUES (?, ?, ?)
+    ON CONFLICT(user_id, room_id) DO UPDATE SET cleared_upto_id = MAX(cleared_upto_id, excluded.cleared_upto_id)
+  `).run(req.user.id, room.id, upto);
+  io.to('user:' + req.user.id).emit('history_cleared', { roomId: room.id, uptoId: upto, scope: 'me' });
+  res.json({ ok: true, scope, uptoId: upto });
+});
+
 app.get('/dm-rooms', authMiddleware, (req, res) => {
   // Return DM rooms the current user is part of (name format: __dm__{a}__{b}__)
   const myId = req.user.id;
@@ -1126,10 +1292,23 @@ app.get('/dm-rooms', authMiddleware, (req, res) => {
     const b = parseInt(parts[2]);
     if (a !== myId && b !== myId) continue;
     const otherId = a === myId ? b : a;
-    const other = db.prepare('SELECT username FROM users WHERE id = ?').get(otherId);
+    const other = db.prepare('SELECT username, avatar FROM users WHERE id = ?').get(otherId);
     if (!other) continue;
-    const last = db.prepare('SELECT MAX(id) AS id FROM messages WHERE room_id = ?').get(room.id);
-    rooms.push({ ...room, other_username: other.username, last_msg_id: last?.id || 0 });
+    // Clearing a chat takes it off the list, not just out of the chat. It
+    // comes back on its own the moment either side says something new, since
+    // that message has a higher id than the mark — which is the behaviour
+    // people expect from a chat list and the reason this is a mark rather
+    // than a hidden flag anyone would have to remember to unset.
+    const floor = clearedUpto(myId, room.id);
+    const last = db.prepare(`SELECT MAX(id) AS id FROM messages WHERE room_id = ? AND id > ${floor}`)
+      .get(room.id);
+    if (!last || !last.id) continue;
+    rooms.push({
+      ...room,
+      other_username: other.username,
+      other_avatar: other.avatar || null,
+      last_msg_id: last.id,
+    });
   }
   // Most recently active DM first (was: newest-created, which never reordered
   // as conversations went back and forth).
@@ -1158,11 +1337,15 @@ app.get('/search-messages/:roomId', authMiddleware, (req, res) => {
   // LIKE with the wildcards escaped, so a search for "100%" or "a_b" looks for
   // those characters rather than matching everything.
   const pattern = '%' + q.replace(/[#%_]/g, c => '#' + c) + '%';
+  // Cleared history is not searchable history. A message the user has cleared
+  // away must not come back through a search box.
+  const floor = clearedUpto(req.user.id, room.id);
   const rows = db.prepare(`
     SELECT m.id, m.content, m.created_at, m.user_id, u.username, u.avatar
     FROM messages m
     JOIN users u ON m.user_id = u.id
     WHERE m.room_id = ?
+      AND m.id > ${floor}
       AND m.type = 'text'
       AND m.content IS NOT NULL
       AND m.content NOT LIKE 'e2e:%'
@@ -1173,7 +1356,7 @@ app.get('/search-messages/:roomId', authMiddleware, (req, res) => {
 
   // How much of this chat could not be searched, so the client can say so.
   const encryptedSkipped = db.prepare(
-    "SELECT COUNT(*) c FROM messages WHERE room_id = ? AND type = 'text' AND content LIKE 'e2e:%'"
+    `SELECT COUNT(*) c FROM messages WHERE room_id = ? AND id > ${floor} AND type = 'text' AND content LIKE 'e2e:%'`
   ).get(room.id).c;
 
   res.json({ results: rows, encryptedSkipped });
@@ -1197,11 +1380,13 @@ app.get('/encrypted-messages/:roomId', authMiddleware, (req, res) => {
   // Capped. Handing over an unbounded history would turn a search into a
   // multi-megabyte download on a connection that cannot afford it.
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 2000, 1), 5000);
+  const floor = clearedUpto(req.user.id, room.id);
   const rows = db.prepare(`
     SELECT m.id, m.content, m.created_at, m.user_id, u.username, u.avatar
     FROM messages m
     JOIN users u ON m.user_id = u.id
     WHERE m.room_id = ?
+      AND m.id > ${floor}
       AND m.type = 'text'
       AND m.content LIKE 'e2e:%'
     ORDER BY m.id DESC
@@ -1211,7 +1396,7 @@ app.get('/encrypted-messages/:roomId', authMiddleware, (req, res) => {
   // The total, so the client can say when it is searching only part of a very
   // long history rather than quietly searching less than the user thinks.
   const total = db.prepare(
-    "SELECT COUNT(*) c FROM messages WHERE room_id = ? AND type = 'text' AND content LIKE 'e2e:%'"
+    `SELECT COUNT(*) c FROM messages WHERE room_id = ? AND id > ${floor} AND type = 'text' AND content LIKE 'e2e:%'`
   ).get(room.id).c;
 
   res.json({ messages: rows, total });
@@ -1231,7 +1416,8 @@ app.get('/message-context/:roomId/:msgId', authMiddleware, (req, res) => {
   const msgId = parseInt(req.params.msgId, 10);
   if (!Number.isInteger(msgId)) return res.status(400).json({ error: 'Bad message id' });
 
-  const target = db.prepare('SELECT id FROM messages WHERE id = ? AND room_id = ?')
+  const floor = clearedUpto(req.user.id, room.id);
+  const target = db.prepare(`SELECT id FROM messages WHERE id = ? AND room_id = ? AND id > ${floor}`)
     .get(msgId, room.id);
   // Gone (deleted, expired, or never in this room) — say so rather than
   // returning an empty window the client cannot tell apart from a slow load.
@@ -1246,7 +1432,7 @@ app.get('/message-context/:roomId/:msgId', authMiddleware, (req, res) => {
     JOIN users u ON m.user_id = u.id
     LEFT JOIN messages rm ON m.reply_to_id = rm.id
     LEFT JOIN users ru ON rm.user_id = ru.id
-    WHERE m.room_id = ? AND m.id ${cmp} ?
+    WHERE m.room_id = ? AND m.id ${cmp} ? AND m.id > ${floor}
     ORDER BY m.id ${order} LIMIT ?`;
 
   const older = db.prepare(sql('<=', 'DESC')).all(room.id, msgId, HALF + 1);
@@ -1269,6 +1455,11 @@ app.get('/messages/:roomId', authMiddleware, (req, res) => {
   if (!canAccessRoom(req.user.id, roomRow)) return res.status(403).json({ error: 'Not a member of this room' });
   const before = parseInt(req.query.before);
   const after = parseInt(req.query.after);
+  // Everything this user has cleared away in this room stays away, on every
+  // one of the three paths below. 0 when nothing was cleared, which makes
+  // `m.id > 0` a filter that costs nothing and can be applied unconditionally
+  // — far safer than remembering which branch needs it.
+  const floor = clearedUpto(req.user.id, roomRow.id);
 
   // Paged by id, not by created_at.
   //
@@ -1300,7 +1491,7 @@ app.get('/messages/:roomId', authMiddleware, (req, res) => {
       JOIN users u ON m.user_id = u.id
       LEFT JOIN messages rm ON m.reply_to_id = rm.id
       LEFT JOIN users ru ON rm.user_id = ru.id
-      WHERE m.room_id = ? AND m.id > ?
+      WHERE m.room_id = ? AND m.id > ? AND m.id > ${floor}
       ORDER BY m.id ASC LIMIT ?
     `).all(req.params.roomId, after, MESSAGES_PAGE_SIZE);
     return res.json(rows.map(signMessage));
@@ -1315,7 +1506,7 @@ app.get('/messages/:roomId', authMiddleware, (req, res) => {
         JOIN users u ON m.user_id = u.id
         LEFT JOIN messages rm ON m.reply_to_id = rm.id
         LEFT JOIN users ru ON rm.user_id = ru.id
-        WHERE m.room_id = ? AND m.id < ?
+        WHERE m.room_id = ? AND m.id < ? AND m.id > ${floor}
         ORDER BY m.id DESC LIMIT ?
       `).all(req.params.roomId, before, MESSAGES_PAGE_SIZE)
     : db.prepare(`
@@ -1326,7 +1517,7 @@ app.get('/messages/:roomId', authMiddleware, (req, res) => {
         JOIN users u ON m.user_id = u.id
         LEFT JOIN messages rm ON m.reply_to_id = rm.id
         LEFT JOIN users ru ON rm.user_id = ru.id
-        WHERE m.room_id = ?
+        WHERE m.room_id = ? AND m.id > ${floor}
         ORDER BY m.id DESC LIMIT ?
       `).all(req.params.roomId, MESSAGES_PAGE_SIZE);
   res.json(messages.reverse().map(signMessage));
@@ -1682,6 +1873,18 @@ io.on('connection', (socket) => {
     if (!isRoomMember(socket.user.id, room)) {
       return reply({ error: 'Join this room to post in it' });
     }
+    // Blocked: the person on the other end of this DM has said they do not
+    // want to hear from this one. Checked on the way IN, so nothing is stored
+    // and nothing is delivered — a message that exists on the server but never
+    // arrives is a worse outcome than a refusal the sender can see.
+    //
+    // Direct chats only. Blocking is one person's decision about another, and
+    // in a group it would silently remove somebody from a conversation the
+    // rest of the room is still having.
+    const peer = dmPeerId(room, socket.user.id);
+    if (peer && hasBlocked(peer, socket.user.id)) {
+      return reply({ error: 'You can no longer send messages to this person' });
+    }
     const msgType = CLIENT_MSG_TYPES.has(type) ? type : 'text';
     const oneTime = Number.isInteger(oneTimeSeconds) && oneTimeSeconds >= 1 && oneTimeSeconds <= 3600
       ? oneTimeSeconds : null;
@@ -1764,6 +1967,7 @@ io.on('connection', (socket) => {
         (msg.avatar ? msg.avatar + ' ' : '') + msg.username + roomLabel,
         `mentioned you`,
         { roomId: String(roomId), msgId: String(msg.id), mention: '1' },
+        { fromUserId: socket.user.id },
       );
     }
 
@@ -1771,7 +1975,8 @@ io.on('connection', (socket) => {
       memberIds.filter(id => id !== socket.user.id && !viewingUserIds.has(id)),
       (msg.avatar ? msg.avatar + ' ' : '') + msg.username + roomLabel,
       messagePreview(msg),
-      { roomId: String(roomId), msgId: String(msg.id) }
+      { roomId: String(roomId), msgId: String(msg.id) },
+      { fromUserId: socket.user.id },
     );
 
     // Notify the other DM participant so they can add the DM room to sidebar
@@ -1810,7 +2015,7 @@ io.on('connection', (socket) => {
           fromUserId: socket.user.id,
           fromUsername: socket.user.username,
         },
-        { dataOnly: true },
+        { dataOnly: true, fromUserId: socket.user.id },
       );
     }
   });
@@ -2002,6 +2207,7 @@ io.on('connection', (socket) => {
         (socket.user.avatar ? socket.user.avatar + ' ' : '') + socket.user.username,
         `🔒 Invited you to "${room.name}"`,
         { roomId: String(dm.id), msgId: String(msg.id) },
+        { fromUserId: socket.user.id },
       );
     }
     if (typeof ack === 'function') ack({ ok: true });
@@ -2319,7 +2525,8 @@ io.on('connection', (socket) => {
       dstMembers.filter(id => id !== socket.user.id),
       (msg.avatar ? msg.avatar + ' ' : '') + msg.username + (dstRoom.is_dm ? '' : ` · ${dstRoom.name}`),
       messagePreview(msg),
-      { roomId: String(dstRoom.id), msgId: String(msg.id) }
+      { roomId: String(dstRoom.id), msgId: String(msg.id) },
+      { fromUserId: socket.user.id },
     );
     if (dstRoom.is_dm) io.emit('dm_activity', { room: dstRoom });
     if (typeof ack === 'function') ack({ ok: true });

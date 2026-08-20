@@ -31,6 +31,8 @@ import * as rm from '../roomMedia';
 import * as up from '../uploadProgress';
 import UploadOverlay from '../components/UploadOverlay';
 import LocationPicker from '../components/LocationPicker';
+import PeerSheet from '../components/PeerSheet';
+import { PeerView, ClearScope } from '../peerActions';
 import * as pick from '../locationPick';
 import { uploadResumable } from '../chunkedUpload';
 
@@ -124,7 +126,7 @@ function looksRTLText(t: string): boolean {
 }
 
 export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, initialJumpMsgId, initialShare, onShareConsumed }: {
-  room: { id: number; name: string; is_dm: number; other_username?: string; is_private?: number; created_by?: number };
+  room: { id: number; name: string; is_dm: number; other_username?: string; other_avatar?: string | null; is_private?: number; created_by?: number };
   initialShare?: { files?: { path: string; mimeType?: string; fileName?: string }[]; text?: string | null } | null;
   onShareConsumed?: () => void;
   onBack: () => void;
@@ -308,6 +310,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // Separate from forwardMsg: the picker is also opened for a multi-selection,
   // where there is no single message to hang visibility off.
   const [forwardOpen, setForwardOpen] = useState(false);
+  // The person whose sheet is open — mute, block, clear history.
+  const [peer, setPeer] = useState<PeerView | null>(null);
+  const [peerOpen, setPeerOpen] = useState(false);
   const [showRoomInfo, setShowRoomInfo] = useState(false);
   const [roomInfo, setRoomInfo] = useState<any>(null);
   const [showPlayer, setShowPlayer] = useState(false);
@@ -1100,6 +1105,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         sock.emit('mark_read', { roomId: room.id, lastMsgId: msg.id });
       });
       // The owner removed us: leave the chat immediately.
+      // The other side cleared the conversation for both of us. Their decision
+      // has already taken effect on the server, so showing messages that no
+      // longer exist until the next reload would be showing a lie.
+      sock.on('history_cleared', ({ roomId, uptoId, scope }: any) => {
+        if (roomId !== room.id) { rm.forgetCached(roomId); return; }
+        rm.forgetCached(roomId);
+        const keep = messagesRef.current.filter(
+          (m: any) => typeof m.id !== 'number' || m.id > (uptoId || 0));
+        applyWindow({ messages: keep, hasOlder: false, hasNewer: hasMoreNewerRef.current });
+        if (scope === 'both') toast('This chat was cleared');
+      });
+
       sock.on('removed_from_room', ({ roomId, roomName }: any) => {
         if (roomId !== room.id) return;
         Alert.alert('Removed', `You were removed from "${roomName}".`);
@@ -2198,6 +2215,52 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     clearSelectionOf(id);
   }
 
+  /** Open the sheet for a person, loading what I have decided about them. */
+  async function openPeer(username: string) {
+    if (!username || username === meRef.current) return;
+    setPeer({ username, muted: false, blocked: false });
+    setPeerOpen(true);
+    const p = await apiFetch(`/user-profile/${encodeURIComponent(username)}`);
+    if (p && !p.error) {
+      setPeer({
+        username: p.username, avatar: p.avatar,
+        muted: !!p.muted, blocked: !!p.blocked, isSelf: !!p.isSelf,
+      });
+      peerIdRef.current = p.id;
+    }
+  }
+  const peerIdRef = useRef<number | null>(null);
+
+  async function setPeerFlag(kind: 'mute' | 'block', on: boolean) {
+    const id = peerIdRef.current;
+    if (!id) return;
+    const r = await apiFetch(`/${kind}/${id}`, on ? 'POST' : 'DELETE');
+    if (r?.error) { toast(r.error); return; }
+    setPeer(prev => prev && { ...prev, [kind === 'mute' ? 'muted' : 'blocked']: on });
+    toast(kind === 'mute'
+      ? (on ? 'Notifications muted' : 'Notifications on')
+      : (on ? 'Blocked' : 'Unblocked'));
+  }
+
+  /**
+   * Empty this conversation.
+   *
+   * The screen is emptied straight away rather than waiting for the server:
+   * clearing is the one action where a delay looks exactly like it did not
+   * work, and the request that follows either confirms it or the messages
+   * come back on the next load.
+   */
+  async function clearHistory(scope: ClearScope) {
+    setPeerOpen(false);
+    const r = await apiFetch(`/clear-history/${room.id}`, 'POST', { scope });
+    if (r?.error) { toast(r.error); return; }
+    applyWindow({ messages: [], hasOlder: false, hasNewer: false });
+    rm.forgetCached(room.id);
+    toast(scope === 'both' ? 'Cleared for both' : 'Cleared');
+    // Nothing left to be in: the chat has also left the chat list.
+    onBack();
+  }
+
   function openMenuFor(msg: Message, e?: any) {
     setActionsMsg({ msg, x: e?.nativeEvent?.pageX ?? 0, y: e?.nativeEvent?.pageY ?? 0 });
   }
@@ -2732,7 +2795,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               <Text style={s.sender}>{msg.username}</Text>
             </View>
           ) : (
-            <TouchableOpacity style={s.senderChip} onPress={() => openDM(msg.username)} activeOpacity={0.6}>
+            <TouchableOpacity style={s.senderChip} onPress={() => openPeer(msg.username)} activeOpacity={0.6}>
               {msg.avatar ? (
                 <Text style={s.senderAvatarEmoji}>{msg.avatar}</Text>
               ) : (
@@ -3199,12 +3262,20 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         </TouchableOpacity>
         <TouchableOpacity style={s.headerCenter} activeOpacity={0.7}
           onPress={() => {
-            if (room.is_dm) { openMediaBrowser('images'); return; }
+            if (room.is_dm) { openPeer(room.other_username || ''); return; }
             setShowRoomInfo(true);
             loadRoomInfo();
-          }}>
+          }}
+          onLongPress={() => { if (room.is_dm) openMediaBrowser('images'); }}
+          delayLongPress={350}>
           <View style={s.roomAvatar}>
-            <Text style={s.roomAvatarText}>{room.is_dm ? '💬' : room.is_private ? '🔒' : '#'}</Text>
+            {/* The person's own emoji, not a generic speech bubble: a chat with
+                somebody should look like that person. */}
+            <Text style={s.roomAvatarText}>
+              {room.is_dm
+                ? (room.other_avatar || '💬')
+                : room.is_private ? '🔒' : '#'}
+            </Text>
           </View>
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={s.headerTitle} numberOfLines={1}>{title}</Text>
@@ -3863,6 +3934,20 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           </Text>
         </View>
       )}
+
+      {/* One person, and what you can do about them. */}
+      <PeerSheet
+        visible={peerOpen}
+        peer={peer}
+        isDm={!!room.is_dm && peer?.username === room.other_username}
+        onClose={() => setPeerOpen(false)}
+        onToggleMute={(next) => setPeerFlag('mute', next)}
+        onToggleBlock={(next) => setPeerFlag('block', next)}
+        onClear={clearHistory}
+        // Only when this is someone else's chat — in a direct chat you are
+        // already in the conversation the button would open.
+        onOpenChat={room.is_dm ? undefined : () => openDM(peer?.username || '')}
+      />
 
       {/* Placing the pin by hand, because the phone's own answer is sometimes
           a neighbourhood rather than a street. */}

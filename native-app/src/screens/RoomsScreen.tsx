@@ -9,7 +9,9 @@ import * as mediaCache from '../mediaCache';
 import * as offline from '../offlineStore';
 import { fmtBytes } from '../download';
 import * as IntentLauncher from 'expo-intent-launcher';
+import { Ionicons } from '@expo/vector-icons';
 import { C, isRTL } from '../theme';
+import { ClearScope, clearScopes, clearLabel, clearHint, clearConfirm } from '../peerActions';
 import { apiFetch, getUsername, getUserId, getSocket, setAuth, getAvatar, RELEASE_TAG, RELEASE_FILE } from '../api';
 import { BUILD_VERSION } from '../version';
 
@@ -18,7 +20,7 @@ const AVATAR_EMOJIS = ['🦄','🐉','🧙‍♂️','🧚‍♀️','🧛‍♂
 const LATEST_APK_URL = `https://github.com/akoSalman/room-releases/releases/download/${RELEASE_TAG}/${RELEASE_FILE}`;
 const LATEST_RELEASE_API = `https://api.github.com/repos/akoSalman/room-releases/releases/tags/${RELEASE_TAG}`;
 
-type Room = { id: number; name: string; is_dm: number; other_username?: string; created_by?: number; disappearing_seconds?: number };
+type Room = { id: number; name: string; is_dm: number; other_username?: string; other_avatar?: string | null; created_by?: number; is_private?: number; disappearing_seconds?: number };
 
 export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount, onProfileOpened }: {
   onSelectRoom: (room: Room) => void;
@@ -26,6 +28,8 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   openProfileOnMount?: boolean;
   onProfileOpened?: () => void;
 }) {
+  // The chat a long press is offering to clear.
+  const [clearing, setClearing] = useState<Room | null>(null);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [dms, setDms] = useState<Room[]>([]);
   const [newRoom, setNewRoom] = useState('');
@@ -92,6 +96,33 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
     setTimeout(go, 350);
     setTimeout(go, 700);
   }, []);
+
+  /**
+   * Clear a chat from the list.
+   *
+   * Both options take the chat off this list — that is what makes it feel
+   * cleared rather than merely emptied. "Just for me" hides it until the
+   * conversation resumes; "for both" deletes the messages, so it is gone for
+   * the other person's list too.
+   */
+  async function confirmClear(room: Room, scope: ClearScope) {
+    const name = room.is_dm ? (room.other_username || 'this chat') : room.name;
+    const c = clearConfirm(scope, name);
+    const go = async () => {
+      setClearing(null);
+      const r = await apiFetch(`/clear-history/${room.id}`, 'POST', { scope });
+      if (r?.error) { Alert.alert('Could not clear', r.error); return; }
+      // Off the list immediately; `load` then confirms it from the server.
+      setDms(prev => prev.filter(d => d.id !== room.id));
+      setRooms(prev => prev.filter(x => x.id !== room.id));
+      load();
+    };
+    if (!c) { go(); return; }
+    Alert.alert(c.title, c.body, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Clear', style: 'destructive', onPress: go },
+    ]);
+  }
 
   const load = useCallback(async () => {
     const [r, d, u, id, counts] = await Promise.all([
@@ -173,6 +204,13 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
         setUnread(prev => ({ ...prev, [msg.room_id]: (prev[msg.room_id] || 0) + 1 }));
       });
       sock.on('dm_activity', () => load());
+      // Cleared elsewhere — by the other person, or on another device. The
+      // list has to lose the chat here too, or it stays on screen showing a
+      // last message that is gone.
+      sock.on('history_cleared', ({ roomId }: any) => {
+        setDms(prev => prev.filter(d => d.id !== roomId));
+        load();
+      });
       // Membership changed elsewhere (joined by link, left, removed by an
       // owner) — the room list is no longer accurate.
       sock.on('room_created', () => load());
@@ -414,8 +452,18 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
             const label = item.is_dm ? (item.other_username || item.name) : item.name;
             const count = unread[item.id] || 0;
             return (
-              <TouchableOpacity style={s.roomItem} onPress={() => selectRoom(item)}>
-                <Text style={s.roomIcon}>{item.is_dm ? '💬' : item.is_private ? '🔒' : '#'}</Text>
+              <TouchableOpacity
+                style={s.roomItem}
+                onPress={() => selectRoom(item)}
+                onLongPress={() => setClearing(item)}
+                delayLongPress={400}
+              >
+                {/* A direct chat shows the person's own emoji. A row of
+                    identical speech bubbles tells you nothing about which
+                    conversation is which. */}
+                <Text style={s.roomIcon}>
+                  {item.is_dm ? (item.other_avatar || '💬') : item.is_private ? '🔒' : '#'}
+                </Text>
                 <Text style={s.roomName}>{label}</Text>
                 {/* Both people see that a chat destroys its messages without
                     having to open it — the mode belongs to the chat, not to
@@ -438,6 +486,43 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
           onRefresh={load}
         />
       )}
+
+      {/* Long press on a chat: clear it, and take it off this list. */}
+      <Modal visible={!!clearing} transparent animationType="slide" onRequestClose={() => setClearing(null)}>
+        <View style={s.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setClearing(null)} />
+          <View style={s.sheet}>
+            <View style={s.sheetHandle} />
+            <Text style={s.sheetTitle} numberOfLines={1}>
+              {clearing?.is_dm ? (clearing?.other_username || '') : clearing?.name}
+            </Text>
+            {clearing && clearScopes(!!clearing.is_dm).map(scope => (
+              <TouchableOpacity
+                key={scope}
+                style={s.sheetRow}
+                onPress={() => confirmClear(clearing, scope)}
+              >
+                <Ionicons
+                  name={scope === 'both' ? 'trash-outline' : 'eye-off-outline'}
+                  size={19}
+                  color={scope === 'both' ? C.danger : C.text}
+                />
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={[s.sheetRowText, scope === 'both' && { color: C.danger }]}>
+                    {clearLabel(scope)}
+                  </Text>
+                  <Text style={s.sheetRowHint}>
+                    {clearHint(scope, clearing.is_dm ? (clearing.other_username || 'they') : 'everyone else')}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity style={s.sheetCancel} onPress={() => setClearing(null)}>
+              <Text style={s.sheetCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* Profile Modal */}
       <Modal visible={showProfile} transparent animationType="slide" onRequestClose={() => setShowProfile(false)}>
@@ -755,6 +840,11 @@ const s = StyleSheet.create({
   sheetHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: C.border, alignSelf: 'center', marginTop: 10, marginBottom: 6 },
   sheetHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: C.border },
   sheetTitle: { color: C.text, fontWeight: '700', fontSize: 16 },
+  sheetRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingVertical: 13 },
+  sheetRowText: { color: C.text, fontSize: 15, fontWeight: '700' },
+  sheetRowHint: { color: C.muted, fontSize: 11.5, marginTop: 2 },
+  sheetCancel: { alignItems: 'center', paddingVertical: 12, marginTop: 4 },
+  sheetCancelText: { color: C.muted, fontSize: 14.5, fontWeight: '700' },
   closeBtn: { color: C.muted, fontSize: 18 },
   closeBtnTouch: { padding: 8, margin: -4 },
   profileTop: { alignItems: 'center', paddingVertical: 20 },

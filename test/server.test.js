@@ -2011,4 +2011,272 @@ test('SECURITY: half-finished uploads are not readable over the web', async () =
   }
 });
 
+// ── Blocking, muting, clearing ───────────────────────────────────────────────
+
+test('a profile says what I have decided about that person, not what they decided about me', async () => {
+  const a = await signUp('prof70a');
+  const b = await signUp('prof70b');
+  let p = await api('/user-profile/prof70b', 'GET', null, a.token);
+  assert.strictEqual(p.username, 'prof70b');
+  assert.strictEqual(p.blocked, false);
+  assert.strictEqual(p.muted, false);
+  assert.strictEqual(p.isSelf, false);
+
+  // b blocks a. a must NOT be able to see that from b's profile — whether
+  // someone has blocked you is not a thing you get to ask the server.
+  await api(`/block/${(await api('/user-profile/prof70a', 'GET', null, b.token)).id}`, 'POST', null, b.token);
+  p = await api('/user-profile/prof70b', 'GET', null, a.token);
+  assert.strictEqual(p.blocked, false, "the server told someone they had been blocked");
+});
+
+test('THE POINT OF BLOCKING: a blocked person cannot send into the DM', async () => {
+  const owner = await signUp('blk71a');
+  const nuisance = await signUp('blk71b');
+  const ownerId = (await api('/user-profile/blk71a', 'GET', null, nuisance.token)).id;
+  const nuisanceId = (await api('/user-profile/blk71b', 'GET', null, owner.token)).id;
+
+  const dm = await api(`/dm/${nuisanceId}`, 'POST', null, owner.token);
+  const nSock = await connect(nuisance.token);
+  assert.ok((await emit(nSock, 'send_message', { roomId: dm.id, type: 'text', content: 'before' })).ok);
+
+  assert.ok((await api(`/block/${nuisanceId}`, 'POST', null, owner.token)).ok);
+  const refused = await emit(nSock, 'send_message', { roomId: dm.id, type: 'text', content: 'after' });
+  assert.ok(refused.error, 'a blocked user could still send a message');
+
+  // And nothing was stored: a message that exists on the server but is never
+  // delivered is worse than a refusal the sender can see.
+  const msgs = await api(`/messages/${dm.id}`, 'GET', null, owner.token);
+  assert.strictEqual(msgs.filter(m => m.content === 'after').length, 0,
+    'the refused message was written to the database anyway');
+
+  // Blocking is one-directional: the blocker can still write.
+  const oSock = await connect(owner.token);
+  assert.ok((await emit(oSock, 'send_message', { roomId: dm.id, type: 'text', content: 'mine' })).ok,
+    'blocking somebody stopped ME from using my own chat');
+});
+
+test('unblocking lets them back in', async () => {
+  const owner = await signUp('blk72a');
+  const other = await signUp('blk72b');
+  const otherId = (await api('/user-profile/blk72b', 'GET', null, owner.token)).id;
+  const dm = await api(`/dm/${otherId}`, 'POST', null, owner.token);
+  const sock = await connect(other.token);
+
+  await api(`/block/${otherId}`, 'POST', null, owner.token);
+  assert.ok((await emit(sock, 'send_message', { roomId: dm.id, type: 'text', content: 'x' })).error);
+  await api(`/block/${otherId}`, 'DELETE', null, owner.token);
+  assert.ok((await emit(sock, 'send_message', { roomId: dm.id, type: 'text', content: 'y' })).ok,
+    'unblocking did not restore messaging');
+});
+
+test('SECURITY: blocking is recorded against the account that asked for it', async () => {
+  // Not against a user id the client supplies as the blocker.
+  const a = await signUp('blk73a');
+  const b = await signUp('blk73b');
+  const bId = (await api('/user-profile/blk73b', 'GET', null, a.token)).id;
+  await api(`/block/${bId}`, 'POST', null, a.token);
+  // b has blocked nobody.
+  const fromB = await api('/user-profile/blk73a', 'GET', null, b.token);
+  assert.strictEqual(fromB.blocked, false);
+  const fromA = await api('/user-profile/blk73b', 'GET', null, a.token);
+  assert.strictEqual(fromA.blocked, true);
+});
+
+test('you cannot block yourself', async () => {
+  const a = await signUp('blk74a');
+  const id = (await api('/user-profile/blk74a', 'GET', null, a.token)).id;
+  const r = await raw(`/block/${id}`, 'POST', null, a.token);
+  assert.strictEqual(r.status, 400);
+});
+
+test('muting is remembered, and is mine alone', async () => {
+  const a = await signUp('mut75a');
+  const b = await signUp('mut75b');
+  const bId = (await api('/user-profile/mut75b', 'GET', null, a.token)).id;
+  assert.ok((await api(`/mute/${bId}`, 'POST', null, a.token)).ok);
+  assert.strictEqual((await api('/user-profile/mut75b', 'GET', null, a.token)).muted, true);
+  assert.strictEqual((await api('/user-profile/mut75a', 'GET', null, b.token)).muted, false);
+  await api(`/mute/${bId}`, 'DELETE', null, a.token);
+  assert.strictEqual((await api('/user-profile/mut75b', 'GET', null, a.token)).muted, false);
+});
+
+test('muting stops the notification and NOTHING else', async () => {
+  // Mute is about not being interrupted. The message still arrives, the chat
+  // still shows it, and it still counts as unread — anything else would be
+  // "block" wearing a different name.
+  const a = await signUp('mut76a');
+  const b = await signUp('mut76b');
+  const bId = (await api('/user-profile/mut76b', 'GET', null, a.token)).id;
+  const dm = await api(`/dm/${bId}`, 'POST', null, a.token);
+  await api(`/mute/${bId}`, 'POST', null, a.token);
+
+  const bSock = await connect(b.token);
+  assert.ok((await emit(bSock, 'send_message', { roomId: dm.id, type: 'text', content: 'still here' })).ok);
+  const msgs = await api(`/messages/${dm.id}`, 'GET', null, a.token);
+  assert.ok(msgs.some(m => m.content === 'still here'), 'muting swallowed the message itself');
+  const counts = await api('/unread-counts', 'GET', null, a.token);
+  assert.ok((counts[dm.id] || 0) > 0, 'a muted chat stopped counting unread messages');
+});
+
+// ── Clearing ────────────────────────────────────────────────────────────────
+
+/** Every way the server will hand back a message, for one viewer. */
+async function everyReadPath(roomId, token) {
+  const [page, ctx, search, enc, media] = await Promise.all([
+    api(`/messages/${roomId}`, 'GET', null, token),
+    null,
+    api(`/search-messages/${roomId}?q=secret`, 'GET', null, token),
+    api(`/encrypted-messages/${roomId}`, 'GET', null, token),
+    api(`/room-media/${roomId}?v=2`, 'GET', null, token),
+  ]);
+  return { page, ctx, search, enc, media };
+}
+
+test('THE LEAK THIS PREVENTS: cleared history is gone from EVERY way of reading it', async () => {
+  // One missed query is a whole conversation coming back through a search box
+  // or a media gallery, which is worse than never having offered to clear it.
+  const a = await signUp('clr77a');
+  const b = await signUp('clr77b');
+  const bId = (await api('/user-profile/clr77b', 'GET', null, a.token)).id;
+  const dm = await api(`/dm/${bId}`, 'POST', null, a.token);
+  const aSock = await connect(a.token);
+
+  await emit(aSock, 'send_message', { roomId: dm.id, type: 'text', content: 'a secret plan' });
+  await emit(aSock, 'send_message',
+    { roomId: dm.id, type: 'image', content: '', filePath: '/uploads/c77.jpg', fileName: 'c77.jpg' });
+  await emit(aSock, 'send_message', { roomId: dm.id, type: 'text', content: 'e2e:AAAAsecret' });
+  const before = await api(`/messages/${dm.id}`, 'GET', null, a.token);
+  const targetId = before[0].id;
+  assert.strictEqual(before.length, 3);
+
+  assert.ok((await api(`/clear-history/${dm.id}`, 'POST', { scope: 'me' }, a.token)).ok);
+
+  const after = await everyReadPath(dm.id, a.token);
+  assert.strictEqual(after.page.length, 0, 'the message list still has the cleared messages');
+  assert.strictEqual(after.search.results.length, 0, 'search still finds cleared messages');
+  assert.strictEqual(after.search.encryptedSkipped, 0,
+    'search still counts cleared encrypted messages as unsearched');
+  assert.strictEqual(after.enc.messages.length, 0, 'encrypted handover still includes cleared messages');
+  assert.strictEqual(after.enc.total, 0);
+  assert.strictEqual(after.media.images.length, 0, 'the gallery still shows cleared photos');
+
+  // And jumping straight to one by id — the path a stale notification or an
+  // old reply quote would take.
+  const ctx = await raw(`/message-context/${dm.id}/${targetId}`, 'GET', null, a.token);
+  assert.strictEqual(ctx.status, 404, 'a cleared message could still be jumped to directly');
+});
+
+test('clearing for me leaves the other person untouched', async () => {
+  // The other side's copy is theirs. A chat app where one person can reach
+  // into another's history by default is worth nobody's trust.
+  const a = await signUp('clr78a');
+  const b = await signUp('clr78b');
+  const bId = (await api('/user-profile/clr78b', 'GET', null, a.token)).id;
+  const dm = await api(`/dm/${bId}`, 'POST', null, a.token);
+  const aSock = await connect(a.token);
+  await emit(aSock, 'send_message', { roomId: dm.id, type: 'text', content: 'kept by them' });
+
+  await api(`/clear-history/${dm.id}`, 'POST', { scope: 'me' }, a.token);
+  assert.strictEqual((await api(`/messages/${dm.id}`, 'GET', null, a.token)).length, 0);
+  const theirs = await api(`/messages/${dm.id}`, 'GET', null, b.token);
+  assert.strictEqual(theirs.length, 1, "clearing my copy deleted the other person's too");
+});
+
+test('clearing for BOTH really does delete', async () => {
+  const a = await signUp('clr79a');
+  const b = await signUp('clr79b');
+  const bId = (await api('/user-profile/clr79b', 'GET', null, a.token)).id;
+  const dm = await api(`/dm/${bId}`, 'POST', null, a.token);
+  const aSock = await connect(a.token);
+  await emit(aSock, 'send_message', { roomId: dm.id, type: 'text', content: 'gone for good' });
+
+  const r = await api(`/clear-history/${dm.id}`, 'POST', { scope: 'both' }, a.token);
+  assert.strictEqual(r.scope, 'both');
+  assert.strictEqual((await api(`/messages/${dm.id}`, 'GET', null, a.token)).length, 0);
+  assert.strictEqual((await api(`/messages/${dm.id}`, 'GET', null, b.token)).length, 0,
+    'clearing for both left the other side with the messages');
+});
+
+test('a group cannot be cleared for everyone by one member', async () => {
+  // Between two people it is a decision they can undo by talking again. In a
+  // group it is one member destroying everybody else's record of a
+  // conversation they were all part of.
+  const owner = await signUp('clr80a');
+  const member = await signUp('clr80b');
+  const room = await api('/rooms', 'POST', { name: 'clear-room-80' }, owner.token);
+  const mSock = await connect(member.token);
+  await emit(mSock, 'accept_invite', { roomId: room.id });
+  const oSock = await connect(owner.token);
+  await emit(oSock, 'send_message', { roomId: room.id, type: 'text', content: 'everyone\'s' });
+
+  const r = await raw(`/clear-history/${room.id}`, 'POST', { scope: 'both' }, member.token);
+  assert.strictEqual(r.status, 400, 'one member wiped a group chat for everyone');
+  // …but they may still clear their own view of it.
+  assert.ok((await api(`/clear-history/${room.id}`, 'POST', { scope: 'me' }, member.token)).ok);
+  assert.strictEqual((await api(`/messages/${room.id}`, 'GET', null, member.token)).length, 0);
+  // Asserted on content, not on a count: joining a room also inserts a system
+  // notice, so the owner's copy holds that as well as the message.
+  const ownersCopy = await api(`/messages/${room.id}`, 'GET', null, owner.token);
+  assert.ok(ownersCopy.some(m => m.content === "everyone's"),
+    "one member clearing their own view emptied the owner's");
+});
+
+test('a cleared chat leaves the chat list, and comes back when someone speaks', async () => {
+  const a = await signUp('clr81a');
+  const b = await signUp('clr81b');
+  const bId = (await api('/user-profile/clr81b', 'GET', null, a.token)).id;
+  const dm = await api(`/dm/${bId}`, 'POST', null, a.token);
+  const bSock = await connect(b.token);
+  await emit(bSock, 'send_message', { roomId: dm.id, type: 'text', content: 'hello' });
+
+  assert.ok((await api('/dm-rooms', 'GET', null, a.token)).some(r => r.id === dm.id));
+  await api(`/clear-history/${dm.id}`, 'POST', { scope: 'me' }, a.token);
+  assert.ok(!(await api('/dm-rooms', 'GET', null, a.token)).some(r => r.id === dm.id),
+    'a cleared chat was still in the chat list');
+  // It is still in THEIR list — they cleared nothing.
+  assert.ok((await api('/dm-rooms', 'GET', null, b.token)).some(r => r.id === dm.id));
+
+  await emit(bSock, 'send_message', { roomId: dm.id, type: 'text', content: 'are you there?' });
+  const back = (await api('/dm-rooms', 'GET', null, a.token)).find(r => r.id === dm.id);
+  assert.ok(back, 'the chat did not come back when the conversation resumed');
+  const msgs = await api(`/messages/${dm.id}`, 'GET', null, a.token);
+  assert.deepStrictEqual(msgs.map(m => m.content), ['are you there?'],
+    'the cleared messages came back along with the new one');
+});
+
+test('a cleared chat stops counting unread messages', async () => {
+  const a = await signUp('clr82a');
+  const b = await signUp('clr82b');
+  const bId = (await api('/user-profile/clr82b', 'GET', null, a.token)).id;
+  const dm = await api(`/dm/${bId}`, 'POST', null, a.token);
+  const bSock = await connect(b.token);
+  await emit(bSock, 'send_message', { roomId: dm.id, type: 'text', content: 'unread' });
+  assert.ok((await api('/unread-counts', 'GET', null, a.token))[dm.id] > 0);
+  await api(`/clear-history/${dm.id}`, 'POST', { scope: 'me' }, a.token);
+  assert.ok(!((await api('/unread-counts', 'GET', null, a.token))[dm.id] > 0),
+    'a chat the user just emptied came straight back with a badge on it');
+});
+
+test('SECURITY: you cannot clear a room you are not in', async () => {
+  const owner = await signUp('clr83a');
+  const stranger = await signUp('clr83b');
+  const room = await api('/rooms', 'POST', { name: 'clear-room-83', isPrivate: true }, owner.token);
+  const r = await raw(`/clear-history/${room.id}`, 'POST', { scope: 'me' }, stranger.token);
+  assert.strictEqual(r.status, 404);
+});
+
+test('the chat list carries the other person\'s avatar', async () => {
+  // So a direct chat can show who it is with, rather than a generic icon.
+  const a = await signUp('ava84a');
+  const b = await signUp('ava84b');
+  await api('/profile', 'PUT', { avatar: '🦊' }, b.token);
+  const bId = (await api('/user-profile/ava84b', 'GET', null, a.token)).id;
+  const dm = await api(`/dm/${bId}`, 'POST', null, a.token);
+  const bSock = await connect(b.token);
+  await emit(bSock, 'send_message', { roomId: dm.id, type: 'text', content: 'hi' });
+  const row = (await api('/dm-rooms', 'GET', null, a.token)).find(r => r.id === dm.id);
+  assert.strictEqual(row.other_avatar, '🦊');
+  assert.strictEqual((await api('/user-profile/ava84b', 'GET', null, a.token)).avatar, '🦊');
+});
+
 main().catch(err => { console.error(err); process.exit(1); });

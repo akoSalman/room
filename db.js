@@ -98,6 +98,39 @@ db.exec(`
     platform TEXT
   );
 `);
+// ── Blocking, muting, and clearing history ───────────────────────────────────
+//
+// All three are decisions ONE person makes about another, so all three are
+// keyed by the person who made them rather than stored on the target.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_blocks (
+    blocker_id INTEGER NOT NULL,
+    blocked_id INTEGER NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(blocker_id, blocked_id)
+  );
+`);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_mutes (
+    user_id INTEGER NOT NULL,
+    muted_id INTEGER NOT NULL,
+    UNIQUE(user_id, muted_id)
+  );
+`);
+// "Clear for me" cannot delete anything — the other person's copy is theirs.
+// So it records a HIGH-WATER MARK instead: everything up to and including this
+// message id is hidden from this user, in this room, everywhere it would
+// otherwise be read. A later message simply has a higher id and reappears
+// normally, which is what makes the chat come back on its own when the
+// conversation resumes.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS room_clears (
+    user_id INTEGER NOT NULL,
+    room_id INTEGER NOT NULL,
+    cleared_upto_id INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(user_id, room_id)
+  );
+`);
 db.exec(`
   CREATE TABLE IF NOT EXISTS room_reads (
     user_id INTEGER NOT NULL,
