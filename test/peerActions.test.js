@@ -70,6 +70,49 @@ test('blocking asks first; unblocking does not', () => {
   assert.strictEqual(P.blockConfirm(true, 'sara'), null);
 });
 
+test('THE PROMISE NOT MADE: blocking never claims to stop the other person sending', () => {
+  // They are not stopped. Their app still lets them type and send; the
+  // messages simply never arrive, and they are never told why. Saying "they
+  // cannot message you" would be a promise about somebody else's screen that
+  // this app does not keep.
+  for (const s of [P.blockHint(false, 'sara'), P.blockConfirm(false, 'sara').body]) {
+    assert.ok(!/not be able to send/i.test(s), `claims to stop them sending: ${s}`);
+    assert.ok(/reach|receiv/i.test(s), `does not say what actually happens: ${s}`);
+  }
+});
+
+test('blocking says that online status goes too', () => {
+  // Being able to watch when somebody is at their phone is exactly the kind of
+  // contact blocking is for, and the one that leaves no trace — so it is worth
+  // saying, not just doing.
+  assert.ok(/online/i.test(P.blockHint(false, 'sara')), P.blockHint(false, 'sara'));
+  assert.ok(/online/i.test(P.blockConfirm(false, 'sara').body));
+});
+
+test('and that the other person is not told', () => {
+  assert.ok(/not told|do not know|never told/i.test(P.blockConfirm(false, 'sara').body),
+    P.blockConfirm(false, 'sara').body);
+});
+
+// ── A message that never arrived ────────────────────────────────────────────
+
+test('THE FEEL OF IT: an undelivered message is faded and carries no tick', () => {
+  const v = P.vanishedStyle(1);
+  assert.strictEqual(v.faded, true);
+  assert.strictEqual(v.dashed, true);
+  // A ✓ claiming delivery for something the server deliberately withheld
+  // would be the one outright lie in this design.
+  assert.strictEqual(v.showTicks, false, 'an undelivered message claimed to be delivered');
+});
+
+test('an ordinary message is drawn normally, and does show its tick', () => {
+  for (const v of [P.vanishedStyle(0), P.vanishedStyle(undefined), P.vanishedStyle(false)]) {
+    assert.strictEqual(v.faded, false);
+    assert.strictEqual(v.dashed, false);
+    assert.strictEqual(v.showTicks, true);
+  }
+});
+
 test('THE MISUNDERSTANDING THIS HEADS OFF: mute does not hide messages', () => {
   // "Mute" is widely assumed to mean the messages stop arriving. Somebody who
   // wanted that wanted block, and finding out later is the wrong time.
@@ -94,7 +137,7 @@ test('the person\'s name appears in every explanation', () => {
     P.muteHint(false, 'sara'), P.muteHint(true, 'sara'),
     P.blockHint(false, 'sara'), P.blockHint(true, 'sara'),
     P.clearHint('me', 'sara'), P.clearHint('both', 'sara'),
-  ]) {
+  ].map(x => x.replace(/sara's/g, 'sara'))) {
     assert.ok(s.includes('sara'), `no name in: ${s}`);
   }
 });

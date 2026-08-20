@@ -145,11 +145,15 @@ function ListRow({ item, icon, sub, onOpen, onMenu }: {
 }
 
 export default function MediaBrowser({
-  visible, title, state, tab, onTab, onClose, onOpenImage, onLoadMore, loadingMore,
-  thumbUrl, focusIndex, openId, baseUrl, onAction,
+  visible, title, avatar, state, tab, onTab, onClose, onOpenImage, onLoadMore, loadingMore,
+  thumbUrl, focusIndex, openId, baseUrl, onAction, onMenu,
 }: {
   visible: boolean;
   title: string;
+  /** The person's own emoji, when this is somebody's profile. */
+  avatar?: string | null;
+  /** Opens the ⋮ actions. Absent when there are none to offer. */
+  onMenu?: () => void;
   /** Null while the first page is still on its way. */
   state: MediaState | null;
   tab: MediaTab;
@@ -327,10 +331,26 @@ export default function MediaBrowser({
           <TouchableOpacity onPress={onClose} style={s.iconBtn} hitSlop={hit}>
             <Ionicons name="arrow-back" size={24} color={C.text} />
           </TouchableOpacity>
+          {/* The person, not a generic header: this screen IS their profile,
+              and what is shared with them is what it has to show. */}
+          {avatar !== undefined && (
+            <View style={s.headAvatar}>
+              <Text style={s.headAvatarText}>{avatar || '💬'}</Text>
+            </View>
+          )}
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={s.title} numberOfLines={1}>{title}</Text>
             <Text style={s.sub}>{countLabel}</Text>
           </View>
+          {/* Top right, where a ⋮ belongs. Mute, block and clearing live
+              behind it rather than in front of the media, which is what
+              somebody opening a profile actually came to look at. */}
+          {onMenu && (
+            <TouchableOpacity onPress={onMenu} style={s.iconBtn} hitSlop={hit}
+              accessibilityLabel="More options">
+              <Ionicons name="ellipsis-vertical" size={21} color={C.text} />
+            </TouchableOpacity>
+          )}
         </View>
 
         <View style={s.tabs}>
@@ -411,6 +431,11 @@ const s = StyleSheet.create({
     backgroundColor: C.header,
   },
   iconBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
+  headAvatar: {
+    width: 36, height: 36, borderRadius: 18, backgroundColor: C.msgBg,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  headAvatarText: { fontSize: 18 },
   title: { color: C.text, fontSize: 16, fontWeight: '800' },
   sub: { color: C.muted, fontSize: 11.5, marginTop: 1 },
   tabs: {

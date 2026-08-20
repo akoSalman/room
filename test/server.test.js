@@ -2029,10 +2029,12 @@ test('a profile says what I have decided about that person, not what they decide
   assert.strictEqual(p.blocked, false, "the server told someone they had been blocked");
 });
 
-test('THE POINT OF BLOCKING: a blocked person cannot send into the DM', async () => {
+test('THE POINT OF BLOCKING: the message is accepted and never arrives', async () => {
+  // Refusing the send announced the block to the sender, which turns a quiet
+  // decision into a confrontation. The send is accepted; the message simply
+  // never reaches the person who blocked them.
   const owner = await signUp('blk71a');
   const nuisance = await signUp('blk71b');
-  const ownerId = (await api('/user-profile/blk71a', 'GET', null, nuisance.token)).id;
   const nuisanceId = (await api('/user-profile/blk71b', 'GET', null, owner.token)).id;
 
   const dm = await api(`/dm/${nuisanceId}`, 'POST', null, owner.token);
@@ -2040,14 +2042,23 @@ test('THE POINT OF BLOCKING: a blocked person cannot send into the DM', async ()
   assert.ok((await emit(nSock, 'send_message', { roomId: dm.id, type: 'text', content: 'before' })).ok);
 
   assert.ok((await api(`/block/${nuisanceId}`, 'POST', null, owner.token)).ok);
-  const refused = await emit(nSock, 'send_message', { roomId: dm.id, type: 'text', content: 'after' });
-  assert.ok(refused.error, 'a blocked user could still send a message');
+  const sent = await emit(nSock, 'send_message', { roomId: dm.id, type: 'text', content: 'after' });
+  assert.ok(sent.ok, 'the sender was told outright that they had been blocked');
 
-  // And nothing was stored: a message that exists on the server but is never
-  // delivered is worse than a refusal the sender can see.
-  const msgs = await api(`/messages/${dm.id}`, 'GET', null, owner.token);
-  assert.strictEqual(msgs.filter(m => m.content === 'after').length, 0,
-    'the refused message was written to the database anyway');
+  // The blocker never sees it…
+  const theirs = await api(`/messages/${dm.id}`, 'GET', null, owner.token);
+  assert.ok(!theirs.some(m => m.content === 'after'),
+    'a message from a blocked person reached the person who blocked them');
+  assert.ok(theirs.some(m => m.content === 'before'),
+    'blocking retroactively hid messages sent before the block');
+
+  // …and the sender still has their own copy, marked, so the app can draw it
+  // as never having arrived.
+  const mine = await api(`/messages/${dm.id}`, 'GET', null, nuisance.token);
+  const after = mine.find(m => m.content === 'after');
+  assert.ok(after, 'the sender lost their own message');
+  assert.strictEqual(after.blocked_delivery, 1, 'the message was not marked as undelivered');
+  assert.strictEqual(mine.find(m => m.content === 'before').blocked_delivery, 0);
 
   // Blocking is one-directional: the blocker can still write.
   const oSock = await connect(owner.token);
@@ -2055,7 +2066,9 @@ test('THE POINT OF BLOCKING: a blocked person cannot send into the DM', async ()
     'blocking somebody stopped ME from using my own chat');
 });
 
-test('unblocking lets them back in', async () => {
+test('unblocking does NOT deliver what was sent while blocked', async () => {
+  // Those messages were sent to somebody who had said they did not want them.
+  // Lifting the block is not consent to receive the backlog.
   const owner = await signUp('blk72a');
   const other = await signUp('blk72b');
   const otherId = (await api('/user-profile/blk72b', 'GET', null, owner.token)).id;
@@ -2063,10 +2076,103 @@ test('unblocking lets them back in', async () => {
   const sock = await connect(other.token);
 
   await api(`/block/${otherId}`, 'POST', null, owner.token);
-  assert.ok((await emit(sock, 'send_message', { roomId: dm.id, type: 'text', content: 'x' })).error);
+  assert.ok((await emit(sock, 'send_message', { roomId: dm.id, type: 'text', content: 'while blocked' })).ok);
   await api(`/block/${otherId}`, 'DELETE', null, owner.token);
-  assert.ok((await emit(sock, 'send_message', { roomId: dm.id, type: 'text', content: 'y' })).ok,
-    'unblocking did not restore messaging');
+  assert.ok((await emit(sock, 'send_message', { roomId: dm.id, type: 'text', content: 'after unblock' })).ok);
+
+  const theirs = await api(`/messages/${dm.id}`, 'GET', null, owner.token);
+  assert.ok(theirs.some(m => m.content === 'after unblock'),
+    'unblocking did not restore delivery');
+  assert.ok(!theirs.some(m => m.content === 'while blocked'),
+    'unblocking delivered a backlog the person never agreed to receive');
+});
+
+test('an undelivered message stays out of search, media and jumps', async () => {
+  // The same discipline as cleared history: one missed query and a blocked
+  // person is back in the conversation through a search box.
+  const owner = await signUp('blk85a');
+  const nuisance = await signUp('blk85b');
+  const nId = (await api('/user-profile/blk85b', 'GET', null, owner.token)).id;
+  const dm = await api(`/dm/${nId}`, 'POST', null, owner.token);
+  await api(`/block/${nId}`, 'POST', null, owner.token);
+
+  const nSock = await connect(nuisance.token);
+  await emit(nSock, 'send_message', { roomId: dm.id, type: 'text', content: 'a secret word' });
+  await emit(nSock, 'send_message',
+    { roomId: dm.id, type: 'image', content: '', filePath: '/uploads/b85.jpg', fileName: 'b85.jpg' });
+  await emit(nSock, 'send_message', { roomId: dm.id, type: 'text', content: 'e2e:AAAAblocked' });
+
+  const mine = await api(`/messages/${dm.id}`, 'GET', null, nuisance.token);
+  const oneId = mine[0].id;
+
+  assert.strictEqual((await api(`/search-messages/${dm.id}?q=secret`, 'GET', null, owner.token)).results.length, 0,
+    'search found a message from a blocked person');
+  assert.strictEqual((await api(`/encrypted-messages/${dm.id}`, 'GET', null, owner.token)).messages.length, 0,
+    'the encrypted handover included a blocked person\'s message');
+  assert.strictEqual((await api(`/room-media/${dm.id}?v=2`, 'GET', null, owner.token)).images.length, 0,
+    'the gallery showed a photo from a blocked person');
+  const ctx = await raw(`/message-context/${dm.id}/${oneId}`, 'GET', null, owner.token);
+  assert.strictEqual(ctx.status, 404, 'a blocked message could be jumped to directly');
+  // The sender's own view is untouched.
+  assert.strictEqual((await api(`/search-messages/${dm.id}?q=secret`, 'GET', null, nuisance.token)).results.length, 1,
+    'the sender lost their own message from their own search');
+});
+
+test('THE LIVE LEAK: a blocked message never reaches the open chat either', async () => {
+  // Hiding it from the read paths is not enough. If it is still emitted over
+  // the socket, the person who blocked them watches it appear in real time and
+  // only loses it on reload — which is worse than never having blocked at all.
+  const owner = await signUp('blk87a');
+  const nuisance = await signUp('blk87b');
+  const nId = (await api('/user-profile/blk87b', 'GET', null, owner.token)).id;
+  const dm = await api(`/dm/${nId}`, 'POST', null, owner.token);
+  await api(`/block/${nId}`, 'POST', null, owner.token);
+
+  const oSock = await connect(owner.token);
+  const nSock = await connect(nuisance.token);
+  oSock.emit('join_room', dm.id);
+
+  let arrived = null;
+  oSock.on('message_received', (m) => { if (m.room_id === dm.id) arrived = m; });
+  // The sender DOES get their own copy back, which is how the app knows to
+  // draw it as never having arrived — so waiting on that also tells us the
+  // send has been fully processed by the server.
+  const echo = waitFor(nSock, 'message_received', m => m.content === 'shout into the void', 3000);
+  await emit(nSock, 'send_message', { roomId: dm.id, type: 'text', content: 'shout into the void' });
+  const mine = await echo;
+  assert.strictEqual(mine.blocked_delivery, 1, 'the sender\'s own copy was not marked');
+
+  // A further moment, so "it had not arrived yet" cannot pass for "it never
+  // arrives".
+  await new Promise(r => setTimeout(r, 300));
+  assert.strictEqual(arrived, null,
+    'a message from a blocked person was pushed live into the blocker\'s chat');
+});
+
+test('a blocked person does not see the blocker as online', async () => {
+  const owner = await signUp('blk86a');
+  const nuisance = await signUp('blk86b');
+  const nId = (await api('/user-profile/blk86b', 'GET', null, owner.token)).id;
+  const dm = await api(`/dm/${nId}`, 'POST', null, owner.token);
+  await api(`/block/${nId}`, 'POST', null, owner.token);
+
+  const nSock = await connect(nuisance.token);
+  const oSock = await connect(owner.token);
+  // The blocked user is in the room; the blocker joins after them, so the
+  // blocked user receives a presence update naming whoever is there.
+  const seen = waitFor(nSock, 'room_online', () => true, 3000);
+  nSock.emit('join_room', dm.id);
+  await seen;
+  const afterOwnerJoins = waitFor(nSock, 'room_online', () => true, 3000);
+  oSock.emit('join_room', dm.id);
+  const list = await afterOwnerJoins;
+  assert.ok(!list.users.includes('blk86a'),
+    'a blocked person could see the blocker was online');
+
+  // The blocker still sees them — blocking is about not being contacted, not
+  // about disappearing from your own screen.
+  const ownerSees = waitFor(oSock, 'room_online', p => p.users.includes('blk86b'), 3000);
+  await ownerSees;
 });
 
 test('SECURITY: blocking is recorded against the account that asked for it', async () => {

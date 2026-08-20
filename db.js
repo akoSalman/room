@@ -82,6 +82,14 @@ if (!db.prepare("SELECT value FROM meta WHERE key = 'voice_played_backfill'").ge
 // End-to-end encryption: the user's X25519 public key, plus their private key
 // encrypted client-side with a password-derived key (the server can never
 // read it) so the same identity works across web and mobile.
+// Sent by somebody the recipient has blocked.
+//
+// The message is stored and shown to its AUTHOR — who sees it in a faded,
+// unsent-looking style — but is never delivered to the person who blocked
+// them. Refusing outright told the sender they had been blocked; this does
+// not, while also never putting the message in front of someone who asked not
+// to receive it.
+try { db.exec('ALTER TABLE messages ADD COLUMN blocked_delivery INTEGER DEFAULT 0'); } catch {}
 try { db.exec('ALTER TABLE users ADD COLUMN public_key TEXT'); } catch {}
 try { db.exec('ALTER TABLE users ADD COLUMN enc_priv TEXT'); } catch {}
 db.exec(`

@@ -32,7 +32,7 @@ import * as up from '../uploadProgress';
 import UploadOverlay from '../components/UploadOverlay';
 import LocationPicker from '../components/LocationPicker';
 import PeerSheet from '../components/PeerSheet';
-import { PeerView, ClearScope } from '../peerActions';
+import { PeerView, ClearScope, vanishedStyle } from '../peerActions';
 import * as pick from '../locationPick';
 import { uploadResumable } from '../chunkedUpload';
 
@@ -105,6 +105,14 @@ type Message = {
   /** Disappearing mode: the lifetime, and the deadline once someone has seen it. */
   disappear_seconds?: number | null; expires_at?: number | null;
   _uploading?: boolean; _uploadFailed?: boolean;
+  /**
+   * Sent to somebody who has blocked the sender.
+   *
+   * Only ever set on the sender's own copy — the recipient never receives the
+   * message at all. It exists so their own chat can show it as never having
+   * landed, rather than pretending it went through.
+   */
+  blocked_delivery?: number;
 };
 // Shows a spinner over the image until it finishes loading (download progress proxy).
 type Reaction = { emoji: string; username: string; user_id: number };
@@ -2215,19 +2223,34 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     clearSelectionOf(id);
   }
 
-  /** Open the sheet for a person, loading what I have decided about them. */
-  async function openPeer(username: string) {
-    if (!username || username === meRef.current) return;
-    setPeer({ username, muted: false, blocked: false });
-    setPeerOpen(true);
+  /**
+   * Load what I have decided about a person, without showing anything.
+   *
+   * Separate from opening the sheet because the profile needs it too: the ⋮
+   * has to know whether it is offering "Block" or "Unblock" before it is
+   * tapped, not after.
+   */
+  async function loadPeer(username: string) {
+    if (!username || username === meRef.current) return null;
+    setPeer(prev => prev?.username === username ? prev : { username, muted: false, blocked: false });
     const p = await apiFetch(`/user-profile/${encodeURIComponent(username)}`);
     if (p && !p.error) {
-      setPeer({
+      const view = {
         username: p.username, avatar: p.avatar,
         muted: !!p.muted, blocked: !!p.blocked, isSelf: !!p.isSelf,
-      });
+      };
+      setPeer(view);
       peerIdRef.current = p.id;
+      return view;
     }
+    return null;
+  }
+
+  /** Load and show the actions sheet. */
+  async function openPeer(username: string) {
+    if (!username || username === meRef.current) return;
+    setPeerOpen(true);
+    await loadPeer(username);
   }
   const peerIdRef = useRef<number | null>(null);
 
@@ -2861,6 +2884,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           {...bubbleProps}
           style={[s.bubble, mine ? s.mineBubble : s.theirsBubble,
                   highlightId === msg.id && s.bubbleHighlight,
+                  // Faded, dashed, and never marked as delivered. Enough to
+                  // feel that something is wrong without being told what —
+                  // announcing the block outright turns a quiet decision into
+                  // a confrontation with the person who made it. The rule
+                  // comes from peerActions so the drawn version and the tested
+                  // version cannot drift apart.
+                  vanishedStyle(msg.blocked_delivery).faded && s.bubbleVanished,
                   ]}
         >
           {/* Reply quote */}
@@ -3140,7 +3170,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 : msg.one_time_seconds}s
             </Text>
           ) : null}
-          {mine && !msg._uploading && !msg._uploadFailed && (
+          {/* No tick on a message that never arrived. A ✓ claiming delivery
+              for something the server deliberately withheld would be the one
+              outright lie in this design. */}
+          {mine && !msg._uploading && !msg._uploadFailed
+            && vanishedStyle(msg.blocked_delivery).showTicks && (
             <Text style={[s.ticks, msg.id <= maxOtherReadMsgId && s.ticksSeen]}>
               {msg.id <= maxOtherReadMsgId ? '✓✓' : '✓'}
             </Text>
@@ -3262,12 +3296,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         </TouchableOpacity>
         <TouchableOpacity style={s.headerCenter} activeOpacity={0.7}
           onPress={() => {
-            if (room.is_dm) { openPeer(room.other_username || ''); return; }
+            // A direct chat's header opens that person's PROFILE, which is the
+            // shared media with a ⋮ in the corner — media is what somebody
+            // opening a profile came to look at, and mute/block/clear are not.
+            if (room.is_dm) { openMediaBrowser('images'); loadPeer(room.other_username || ''); return; }
             setShowRoomInfo(true);
             loadRoomInfo();
-          }}
-          onLongPress={() => { if (room.is_dm) openMediaBrowser('images'); }}
-          delayLongPress={350}>
+          }}>
           <View style={s.roomAvatar}>
             {/* The person's own emoji, not a generic speech bubble: a chat with
                 somebody should look like that person. */}
@@ -3828,6 +3863,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       <MediaBrowser
         visible={showMedia}
         title={room.other_username || room.name}
+        avatar={room.is_dm ? (peer?.avatar ?? room.other_avatar ?? null) : undefined}
+        onMenu={room.is_dm ? () => setPeerOpen(true) : undefined}
         state={mediaState}
         tab={mediaTab}
         onTab={setMediaTab}
@@ -4642,6 +4679,12 @@ const s = StyleSheet.create({
   copyableNumber: { color: C.accent, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
   copyablePhone: { color: C.accent, fontWeight: '700', textDecorationLine: 'underline' },
   inlineCopy: { fontSize: 13 },
+  // A message that was accepted and never arrived.
+  bubbleVanished: {
+    opacity: 0.45,
+    borderWidth: 1, borderStyle: 'dashed', borderColor: C.muted,
+    backgroundColor: 'transparent',
+  },
   bubbleHighlight: { borderWidth: 2, borderColor: C.accent },
   mineBubble: { backgroundColor: C.mine, borderBottomRightRadius: 3 },
   theirsBubble: { backgroundColor: C.msgBg, borderBottomLeftRadius: 3 },

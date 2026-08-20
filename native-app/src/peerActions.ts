@@ -86,14 +86,38 @@ export function blockLabel(blocked: boolean): string {
 
 export function blockHint(blocked: boolean, name: string): string {
   return blocked
-    ? `${name} will be able to message you again.`
-    : `${name} will not be able to send you messages.`;
+    ? `${name}'s messages will reach you again.`
+    // Deliberately says what the BLOCKER gets, not what the other person is
+    // stopped from doing — because they are not stopped. Their app still lets
+    // them type and send; the messages simply never arrive here, and they are
+    // never told why. Promising "they cannot send you messages" would be a
+    // promise about somebody else's screen that this app does not keep.
+    : `You will stop receiving ${name}'s messages, and they will not see when you are online.`;
 }
 
 /** Blocking is irreversible-feeling enough to ask about; unblocking is not. */
 export function blockConfirm(blocked: boolean, name: string): { title: string; body: string } | null {
   if (blocked) return null;
-  return { title: `Block ${name}?`, body: `${name} will not be able to send you messages.` };
+  return {
+    title: `Block ${name}?`,
+    body: `Their messages will stop reaching you, and they will not see when you are online. `
+      + `They are not told that they have been blocked.`,
+  };
+}
+
+/**
+ * How a message of mine that was never delivered should be drawn.
+ *
+ * Faded, dashed, and with no delivery tick. The point is that it FEELS wrong
+ * without saying anything: a ✓ would be an outright lie about a message the
+ * server deliberately withheld, and a banner reading "you have been blocked"
+ * would turn one person's quiet decision into a confrontation with them.
+ */
+export function vanishedStyle(blockedDelivery: boolean | number | undefined): {
+  faded: boolean; dashed: boolean; showTicks: boolean;
+} {
+  const gone = !!blockedDelivery;
+  return { faded: gone, dashed: gone, showTicks: !gone };
 }
 
 /**

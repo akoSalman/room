@@ -509,11 +509,12 @@ app.get('/mentions/:roomId', authMiddleware, (req, res) => {
   if (!me) return res.json({ mentions: [] });
   const read = db.prepare('SELECT last_read_msg_id FROM room_reads WHERE room_id = ? AND user_id = ?')
     .get(room.id, req.user.id);
-  // A mention inside cleared history is not a mention that is still waiting.
-  const floor = clearedUpto(req.user.id, room.id);
+  // A mention inside cleared history, or from somebody blocked, is not a
+  // mention that is still waiting.
+  const vis = visibleMessagesSql(req.user.id, room.id, 'messages');
   const rows = db.prepare(`
     SELECT id FROM messages
-    WHERE room_id = ? AND user_id != ? AND id > ? AND id > ${floor}
+    WHERE room_id = ? AND user_id != ? AND id > ? ${vis}
       AND content LIKE ? ESCAPE '#'
     ORDER BY id ASC LIMIT 100
   `).all(room.id, req.user.id, read?.last_read_msg_id || 0,
@@ -910,11 +911,11 @@ const LINK_RE = /(https?:\/\/[^\s]+|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:\/[^\s]*)
  * them, so unlike the photo list there is nothing here worth paging.
  */
 function collectOther(room, viewerId) {
-  const floor = clearedUpto(viewerId, room.id);
+  const vis = visibleMessagesSql(viewerId, room.id, 'messages');
   const rows = db.prepare(`
     SELECT id, type, content, file_path, file_name, user_id, disappear_seconds
     FROM messages
-    WHERE room_id = ? AND id > ${floor} AND one_time_seconds IS NULL
+    WHERE room_id = ? ${vis} AND one_time_seconds IS NULL
       AND (type IN ('video','file','music') OR type = 'text')
     ORDER BY id DESC LIMIT 5000
   `).all(room.id);
@@ -969,11 +970,11 @@ app.get('/room-media/:roomId', authMiddleware, (req, res) => {
 
   if (req.query.v === '2') {
     const before = parseInt(req.query.before, 10) || 0;
-    const floor = clearedUpto(req.user.id, room.id);
+    const vis = visibleMessagesSql(req.user.id, room.id, 'messages');
     const imgRows = db.prepare(`
       SELECT id, type, file_path, file_name, user_id, disappear_seconds
       FROM messages
-      WHERE room_id = ? AND id > ${floor} AND one_time_seconds IS NULL
+      WHERE room_id = ? ${vis} AND one_time_seconds IS NULL
         AND type IN ('image','gallery') AND file_path IS NOT NULL
         ${before ? 'AND id < ?' : ''}
       ORDER BY id DESC LIMIT ?
@@ -998,11 +999,11 @@ app.get('/room-media/:roomId', authMiddleware, (req, res) => {
   // The unpaged shape, for app versions already in people's hands. Every item
   // carries the id of the message it came from, so the browser can offer
   // "Show in chat" and jump straight to it.
-  const legacyFloor = clearedUpto(req.user.id, room.id);
+  const legacyVis = visibleMessagesSql(req.user.id, room.id, 'messages');
   const imgRows = db.prepare(`
     SELECT id, type, file_path, file_name, user_id, disappear_seconds
     FROM messages
-    WHERE room_id = ? AND id > ${legacyFloor} AND one_time_seconds IS NULL
+    WHERE room_id = ? ${legacyVis} AND one_time_seconds IS NULL
       AND type IN ('image','gallery') AND file_path IS NOT NULL
     ORDER BY id DESC LIMIT 5000
   `).all(room.id);
@@ -1061,6 +1062,22 @@ function hasMuted(userId, otherId) {
  * never cleared anything, which makes `m.id > 0` a no-op filter — so every
  * read path can apply it unconditionally rather than remembering to.
  */
+/**
+ * The SQL every read of a room's messages has to carry.
+ *
+ * Two rules, one fragment, because they are forgotten in the same way: a query
+ * that misses this shows somebody history they cleared, or a message from
+ * somebody they blocked. Returned as text rather than parameters so it can be
+ * dropped into queries whose placeholder order is already load-bearing.
+ *
+ * Both numbers come from our own database as integers, never from the client.
+ */
+function visibleMessagesSql(userId, roomId, alias = 'm') {
+  const floor = Number(clearedUpto(userId, roomId)) || 0;
+  const me = Number(userId) || 0;
+  return `AND ${alias}.id > ${floor} AND (${alias}.blocked_delivery = 0 OR ${alias}.user_id = ${me})`;
+}
+
 function clearedUpto(userId, roomId) {
   const row = db.prepare('SELECT cleared_upto_id FROM room_clears WHERE user_id = ? AND room_id = ?')
     .get(userId, roomId);
@@ -1299,8 +1316,8 @@ app.get('/dm-rooms', authMiddleware, (req, res) => {
     // that message has a higher id than the mark — which is the behaviour
     // people expect from a chat list and the reason this is a mark rather
     // than a hidden flag anyone would have to remember to unset.
-    const floor = clearedUpto(myId, room.id);
-    const last = db.prepare(`SELECT MAX(id) AS id FROM messages WHERE room_id = ? AND id > ${floor}`)
+    const vis = visibleMessagesSql(myId, room.id, 'messages');
+    const last = db.prepare(`SELECT MAX(id) AS id FROM messages WHERE room_id = ? ${vis}`)
       .get(room.id);
     if (!last || !last.id) continue;
     rooms.push({
@@ -1339,13 +1356,13 @@ app.get('/search-messages/:roomId', authMiddleware, (req, res) => {
   const pattern = '%' + q.replace(/[#%_]/g, c => '#' + c) + '%';
   // Cleared history is not searchable history. A message the user has cleared
   // away must not come back through a search box.
-  const floor = clearedUpto(req.user.id, room.id);
+  const vis = visibleMessagesSql(req.user.id, room.id);
   const rows = db.prepare(`
     SELECT m.id, m.content, m.created_at, m.user_id, u.username, u.avatar
     FROM messages m
     JOIN users u ON m.user_id = u.id
     WHERE m.room_id = ?
-      AND m.id > ${floor}
+      ${vis}
       AND m.type = 'text'
       AND m.content IS NOT NULL
       AND m.content NOT LIKE 'e2e:%'
@@ -1356,7 +1373,7 @@ app.get('/search-messages/:roomId', authMiddleware, (req, res) => {
 
   // How much of this chat could not be searched, so the client can say so.
   const encryptedSkipped = db.prepare(
-    `SELECT COUNT(*) c FROM messages WHERE room_id = ? AND id > ${floor} AND type = 'text' AND content LIKE 'e2e:%'`
+    `SELECT COUNT(*) c FROM messages m WHERE room_id = ? ${vis} AND type = 'text' AND content LIKE 'e2e:%'`
   ).get(room.id).c;
 
   res.json({ results: rows, encryptedSkipped });
@@ -1380,13 +1397,13 @@ app.get('/encrypted-messages/:roomId', authMiddleware, (req, res) => {
   // Capped. Handing over an unbounded history would turn a search into a
   // multi-megabyte download on a connection that cannot afford it.
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 2000, 1), 5000);
-  const floor = clearedUpto(req.user.id, room.id);
+  const vis = visibleMessagesSql(req.user.id, room.id);
   const rows = db.prepare(`
     SELECT m.id, m.content, m.created_at, m.user_id, u.username, u.avatar
     FROM messages m
     JOIN users u ON m.user_id = u.id
     WHERE m.room_id = ?
-      AND m.id > ${floor}
+      ${vis}
       AND m.type = 'text'
       AND m.content LIKE 'e2e:%'
     ORDER BY m.id DESC
@@ -1396,7 +1413,7 @@ app.get('/encrypted-messages/:roomId', authMiddleware, (req, res) => {
   // The total, so the client can say when it is searching only part of a very
   // long history rather than quietly searching less than the user thinks.
   const total = db.prepare(
-    `SELECT COUNT(*) c FROM messages WHERE room_id = ? AND id > ${floor} AND type = 'text' AND content LIKE 'e2e:%'`
+    `SELECT COUNT(*) c FROM messages m WHERE room_id = ? ${vis} AND type = 'text' AND content LIKE 'e2e:%'`
   ).get(room.id).c;
 
   res.json({ messages: rows, total });
@@ -1416,8 +1433,8 @@ app.get('/message-context/:roomId/:msgId', authMiddleware, (req, res) => {
   const msgId = parseInt(req.params.msgId, 10);
   if (!Number.isInteger(msgId)) return res.status(400).json({ error: 'Bad message id' });
 
-  const floor = clearedUpto(req.user.id, room.id);
-  const target = db.prepare(`SELECT id FROM messages WHERE id = ? AND room_id = ? AND id > ${floor}`)
+  const vis = visibleMessagesSql(req.user.id, room.id);
+  const target = db.prepare(`SELECT id FROM messages m WHERE id = ? AND room_id = ? ${vis}`)
     .get(msgId, room.id);
   // Gone (deleted, expired, or never in this room) — say so rather than
   // returning an empty window the client cannot tell apart from a slow load.
@@ -1432,7 +1449,7 @@ app.get('/message-context/:roomId/:msgId', authMiddleware, (req, res) => {
     JOIN users u ON m.user_id = u.id
     LEFT JOIN messages rm ON m.reply_to_id = rm.id
     LEFT JOIN users ru ON rm.user_id = ru.id
-    WHERE m.room_id = ? AND m.id ${cmp} ? AND m.id > ${floor}
+    WHERE m.room_id = ? AND m.id ${cmp} ? ${vis}
     ORDER BY m.id ${order} LIMIT ?`;
 
   const older = db.prepare(sql('<=', 'DESC')).all(room.id, msgId, HALF + 1);
@@ -1459,7 +1476,7 @@ app.get('/messages/:roomId', authMiddleware, (req, res) => {
   // one of the three paths below. 0 when nothing was cleared, which makes
   // `m.id > 0` a filter that costs nothing and can be applied unconditionally
   // — far safer than remembering which branch needs it.
-  const floor = clearedUpto(req.user.id, roomRow.id);
+  const vis = visibleMessagesSql(req.user.id, roomRow.id);
 
   // Paged by id, not by created_at.
   //
@@ -1491,7 +1508,7 @@ app.get('/messages/:roomId', authMiddleware, (req, res) => {
       JOIN users u ON m.user_id = u.id
       LEFT JOIN messages rm ON m.reply_to_id = rm.id
       LEFT JOIN users ru ON rm.user_id = ru.id
-      WHERE m.room_id = ? AND m.id > ? AND m.id > ${floor}
+      WHERE m.room_id = ? AND m.id > ? ${vis}
       ORDER BY m.id ASC LIMIT ?
     `).all(req.params.roomId, after, MESSAGES_PAGE_SIZE);
     return res.json(rows.map(signMessage));
@@ -1506,7 +1523,7 @@ app.get('/messages/:roomId', authMiddleware, (req, res) => {
         JOIN users u ON m.user_id = u.id
         LEFT JOIN messages rm ON m.reply_to_id = rm.id
         LEFT JOIN users ru ON rm.user_id = ru.id
-        WHERE m.room_id = ? AND m.id < ? AND m.id > ${floor}
+        WHERE m.room_id = ? AND m.id < ? ${vis}
         ORDER BY m.id DESC LIMIT ?
       `).all(req.params.roomId, before, MESSAGES_PAGE_SIZE)
     : db.prepare(`
@@ -1517,7 +1534,7 @@ app.get('/messages/:roomId', authMiddleware, (req, res) => {
         JOIN users u ON m.user_id = u.id
         LEFT JOIN messages rm ON m.reply_to_id = rm.id
         LEFT JOIN users ru ON rm.user_id = ru.id
-        WHERE m.room_id = ? AND m.id > ${floor}
+        WHERE m.room_id = ? ${vis}
         ORDER BY m.id DESC LIMIT ?
       `).all(req.params.roomId, MESSAGES_PAGE_SIZE);
   res.json(messages.reverse().map(signMessage));
@@ -1724,6 +1741,47 @@ app.get('/join/:roomId', (req, res) => {
 
 // Socket.IO
 const onlineUsers = new Map(); // socketId -> { userId, username, roomId, focused }
+
+/**
+ * Tell a room who is in it — a DIFFERENT list per viewer.
+ *
+ * It used to be one list broadcast to everybody, which is fine until blocking
+ * exists. Somebody who has blocked you must not appear online to you: being
+ * able to watch when a person is at their phone is exactly the kind of contact
+ * blocking is for, and it is the one that leaves no trace.
+ *
+ * `excludeSocket` is the connection that is leaving, whose own entry has not
+ * been updated yet.
+ */
+/**
+ * Emit to everyone in a room EXCEPT people the sender has blocked.
+ *
+ * Typing and recording indicators are presence by another name: "she is typing
+ * right now" says the same thing as a green dot. Hiding one and not the other
+ * would leave the blocked person watching the blocker live through a different
+ * hole.
+ */
+function emitToRoomUnblocked(roomId, fromUserId, event, payload) {
+  const key = String(roomId);
+  for (const [sid, u] of onlineUsers.entries()) {
+    if (u.roomId !== key || u.userId === fromUserId) continue;
+    if (hasBlocked(fromUserId, u.userId)) continue;
+    io.to(sid).emit(event, payload);
+  }
+}
+
+function emitRoomOnline(roomId, excludeSocket) {
+  const key = String(roomId);
+  const present = [...onlineUsers.entries()]
+    .filter(([sid, u]) => u.roomId === key && sid !== excludeSocket);
+  for (const [sid, viewer] of present) {
+    const users = present
+      // Yourself always; anyone else only if they have not blocked you.
+      .filter(([, u]) => u.userId === viewer.userId || !hasBlocked(u.userId, viewer.userId))
+      .map(([, u]) => u.username);
+    io.to(sid).emit('room_online', { users });
+  }
+}
 const voiceRooms = new Map(); // roomId -> Map(socketId -> { userId, username })
 
 // Pending 1:1 call offers, so a callee whose app was closed can still receive
@@ -1809,20 +1867,14 @@ io.on('connection', (socket) => {
     const prev = onlineUsers.get(socket.id);
     if (prev?.roomId) {
       socket.leave(prev.roomId);
-      const oldOnline = [...onlineUsers.values()]
-        .filter(u => u.roomId === prev.roomId && u.username !== socket.user.username)
-        .map(u => u.username);
-      io.to(prev.roomId).emit('room_online', { users: oldOnline });
+      emitRoomOnline(prev.roomId, socket.id);
     }
     onlineUsers.set(socket.id, {
       userId: socket.user.id, username: socket.user.username, roomId: String(roomId),
       focused: prev ? prev.focused !== false : true,
     });
     socket.join(String(roomId)); // presence room (active room only)
-    const roomOnline = [...onlineUsers.values()]
-      .filter(u => u.roomId === String(roomId))
-      .map(u => u.username);
-    io.to(String(roomId)).emit('room_online', { users: roomOnline });
+    emitRoomOnline(roomId);
   });
 
   // Whether this particular connection is in front of the user right now: a
@@ -1846,10 +1898,7 @@ io.on('connection', (socket) => {
       userId: socket.user.id, username: socket.user.username, roomId: null,
       focused: prev.focused !== false,
     });
-    const oldOnline = [...onlineUsers.values()]
-      .filter(u => u.roomId === prev.roomId && u.username !== socket.user.username)
-      .map(u => u.username);
-    io.to(prev.roomId).emit('room_online', { users: oldOnline });
+    emitRoomOnline(prev.roomId);
   });
 
   // Message types a CLIENT is allowed to send. 'system'/'call'/'invite' are
@@ -1874,17 +1923,19 @@ io.on('connection', (socket) => {
       return reply({ error: 'Join this room to post in it' });
     }
     // Blocked: the person on the other end of this DM has said they do not
-    // want to hear from this one. Checked on the way IN, so nothing is stored
-    // and nothing is delivered — a message that exists on the server but never
-    // arrives is a worse outcome than a refusal the sender can see.
+    // want to hear from this one.
+    //
+    // The send is ACCEPTED, and the message stored — but it is never delivered
+    // to them, and never notified. Refusing outright announced the block to
+    // the sender, which turns a quiet decision into a confrontation. The
+    // sender sees their own message go up in a faded, never-arriving style;
+    // enough to feel that something is wrong, without being told what.
     //
     // Direct chats only. Blocking is one person's decision about another, and
     // in a group it would silently remove somebody from a conversation the
     // rest of the room is still having.
     const peer = dmPeerId(room, socket.user.id);
-    if (peer && hasBlocked(peer, socket.user.id)) {
-      return reply({ error: 'You can no longer send messages to this person' });
-    }
+    const blockedDelivery = peer && hasBlocked(peer, socket.user.id) ? 1 : 0;
     const msgType = CLIENT_MSG_TYPES.has(type) ? type : 'text';
     const oneTime = Number.isInteger(oneTimeSeconds) && oneTimeSeconds >= 1 && oneTimeSeconds <= 3600
       ? oneTimeSeconds : null;
@@ -1895,9 +1946,9 @@ io.on('connection', (socket) => {
     const disappearing = room && room.disappearing_seconds > 0 ? room.disappearing_seconds : 0;
 
     const result = db.prepare(`
-      INSERT INTO messages (room_id, user_id, type, content, file_path, file_name, reply_to_id, one_time_seconds, disappear_seconds)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(roomId, socket.user.id, msgType, content || null, stripSig(filePath), fileName || null, replyToId || null, oneTime, disappearing || null);
+      INSERT INTO messages (room_id, user_id, type, content, file_path, file_name, reply_to_id, one_time_seconds, disappear_seconds, blocked_delivery)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(roomId, socket.user.id, msgType, content || null, stripSig(filePath), fileName || null, replyToId || null, oneTime, disappearing || null, blockedDelivery);
 
     const msg = db.prepare(`
       SELECT m.*, u.username, u.avatar,
@@ -1930,6 +1981,12 @@ io.on('connection', (socket) => {
     // buzzing for messages the user was reading on their phone.
     const deliver = (id) => io.to('user:' + id).emit('message_received',
       viewingUserIds.has(id) ? { ...outMsg, seenElsewhere: true } : outMsg);
+    // Undelivered by design: it goes back to its author and nowhere else.
+    if (blockedDelivery) {
+      deliver(socket.user.id);
+      if (typeof ack === 'function') ack({ ok: true });
+      return;
+    }
     memberIds.forEach(deliver);
     // …plus anyone reading this public room without having joined it yet.
     previewerIds(room, memberIds).forEach(deliver);
@@ -2122,7 +2179,7 @@ io.on('connection', (socket) => {
   socket.on('disconnect', leaveVoice);
 
   socket.on('typing_start', ({ roomId }) => {
-    socket.to(String(roomId)).emit('user_typing', { username: socket.user.username });
+    emitToRoomUnblocked(roomId, socket.user.id, 'user_typing', { username: socket.user.username });
   });
 
   socket.on('typing_stop', ({ roomId }) => {
@@ -2158,7 +2215,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('recording_start', ({ roomId }) => {
-    socket.to(String(roomId)).emit('user_recording', { username: socket.user.username });
+    emitToRoomUnblocked(roomId, socket.user.id, 'user_recording', { username: socket.user.username });
   });
 
   socket.on('recording_stop', ({ roomId }) => {
@@ -2642,10 +2699,7 @@ io.on('connection', (socket) => {
     if (info?.roomId) {
       io.to(info.roomId).emit('user_stopped_typing', { username: socket.user.username });
       io.to(info.roomId).emit('user_stopped_recording', { username: socket.user.username });
-      const roomOnline = [...onlineUsers.values()]
-        .filter(u => u.roomId === info.roomId)
-        .map(u => u.username);
-      io.to(info.roomId).emit('room_online', { users: roomOnline });
+      emitRoomOnline(info.roomId);
     }
   });
 });
