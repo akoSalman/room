@@ -118,6 +118,10 @@ test('THE BUG: a call rings without needing any JavaScript to run', async () => 
     'a call went out on the ordinary message channel, which chimes once');
   assert.strictEqual(msg.android.notification.sound, 'ring');
   assert.strictEqual(msg.android.notification.notification_priority, 'PRIORITY_MAX');
+  // NOT click_action: it names an intent action the app declares no filter
+  // for, so setting it makes tapping the ringing notification do nothing.
+  assert.ok(!('click_action' in msg.android.notification),
+    'the call notification sets click_action, so tapping it opens nothing');
   assert.strictEqual(msg.android.priority, 'high', 'a call push must be high priority');
 
   // A call is worthless once missed: it must expire rather than be delivered

@@ -650,7 +650,12 @@ async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
               notification: {
                 channel_id: android.channelId || 'messages-v3',
                 sound: android.sound || 'notify',
-                ...(android.categoryId ? { click_action: android.categoryId, notification_priority: 'PRIORITY_MAX' } : {}),
+                // NOT click_action. That names an intent action the app must
+                // declare an intent-filter for, and this one declares none —
+                // so setting it means tapping the notification does nothing
+                // at all. Left off, Android opens the launcher activity,
+                // which is what tapping a call should do.
+                ...(android.priorityMax ? { notification_priority: 'PRIORITY_MAX' } : {}),
                 // Tag the tray notification with the message id so a later
                 // delete can replace/collapse it on the recipient's device.
                 ...(data.msgId ? { tag: `msg-${data.msgId}` } : {}),
@@ -2093,7 +2098,7 @@ io.on('connection', (socket) => {
         {
           channelId: 'calls-v2',
           sound: 'ring',
-          categoryId: 'call',
+          priorityMax: true,
           // One tag, so a second offer replaces the first rather than stacking.
           tag: 'incoming-call',
           // A call is worthless once it has been missed; do not deliver it

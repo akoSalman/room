@@ -367,6 +367,83 @@ test('a late hold timer after a swipe is ignored', () => {
   assert.strictEqual(state.selecting, null);
 });
 
+// ── Measuring the double-tap the way Android does ───────────────────────────
+//
+// Reported as: on entering a room, the first couple of double-taps do nothing;
+// tapping outside a message and then on it makes the next one work.
+//
+// The window was measured from the previous tap's touch-DOWN, which includes
+// however long the finger rested on it. Android measures from the previous
+// tap's RELEASE (ViewConfiguration.getDoubleTapTimeout, also 300ms). So an
+// ordinary double-tap — a 120ms dwell then a 220ms gap — is 340ms down-to-down
+// and 220ms release-to-down: the OS accepted it and selected a word, while
+// this reducer decided it was two separate taps. 300ms later the second of
+// those "taps" opened the message menu on top of the selection.
+
+test('THE BUG: an ordinary double-tap is one, even with a dwell on the first tap', () => {
+  // 120ms of dwell, then a 220ms gap. Android says double-tap. So must we.
+  const { state } = run([
+    { type: 'down', id: 1, at: 1000 },
+    { type: 'release', id: 1, at: 1120 },
+    { type: 'down', id: 1, at: 1340 },
+  ]);
+  assert.strictEqual(state.selecting, 1,
+    'a double-tap the OS would accept was read as two separate taps — the menu '
+    + 'then opens over the selection the OS just made');
+});
+
+test('a slow, deliberate press-and-tap is still not a double-tap', () => {
+  // Half a second after letting go is somebody tapping twice, not double-tapping.
+  const { state } = run([
+    { type: 'down', id: 1, at: 1000 },
+    { type: 'release', id: 1, at: 1120 },
+    { type: 'down', id: 1, at: 1120 + S.DOUBLE_TAP_MS + 50 },
+  ]);
+  assert.strictEqual(state.selecting, null);
+});
+
+test('a release from another message does not disturb this one\'s window', () => {
+  // A stray release — a swipe that ended over a neighbouring bubble, a row
+  // recycled mid-gesture — must leave the tracked message alone. Handled
+  // carelessly it OVERWRITES which message is being tracked, and the
+  // double-tap in progress is then attributed to the wrong one and lost.
+  const { state } = run([
+    { type: 'down', id: 1, at: 1000 },
+    { type: 'release', id: 2, at: 1100 },   // not the message being tracked
+    { type: 'down', id: 1, at: 1200 },      // still a double-tap on 1
+  ]);
+  assert.strictEqual(state.selecting, 1,
+    "a release from another message stole the double-tap in progress");
+});
+
+test('and it does not extend the window for a message already moved on from', () => {
+  const { state } = run([
+    { type: 'down', id: 1, at: 1000 },
+    { type: 'release', id: 2, at: 5000 },
+    { type: 'down', id: 1, at: 5100 },
+  ]);
+  assert.strictEqual(state.selecting, null,
+    "somebody else's release kept message 1's double-tap window open");
+});
+
+test('a release before anything was touched is harmless', () => {
+  const { state, actions } = run([{ type: 'release', id: 1, at: 1000 }]);
+  assert.strictEqual(state.selecting, null);
+  assert.strictEqual(actions[0], null);
+});
+
+test('the release of a LONG press still opens the window for what follows', () => {
+  // A press that became a selection is still the start of the next window —
+  // double-tapping straight after adjusting a selection has to work.
+  const { state } = run([
+    { type: 'down', id: 1, at: 1000 },
+    { type: 'held', id: 1 },
+    { type: 'release', id: 1, at: 1500 },
+    { type: 'down', id: 1, at: 1700 },
+  ]);
+  assert.strictEqual(state.selecting, 1);
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

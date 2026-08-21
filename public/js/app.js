@@ -4,9 +4,7 @@ let currentRoomId = null;
 let currentRoomIsDM = false;
 let maxOtherReadMsgId = 0; // highest message id any other room member has read (for seen checkmarks)
 let currentDMPeerPk = null; // the DM partner's public key (E2E) or null
-// Mirrored onto window so the separately-loaded search modules can read it
-// without app.js having to hand it to them on every call.
-function setDMPeerPk(k) { currentDMPeerPk = k; window.currentDMPeerPk = k; }
+function setDMPeerPk(k) { currentDMPeerPk = k; }
 let allChatImages = []; // every image of the current chat (from /room-media)
 let e2eUnlockAsked = false;
 
@@ -77,6 +75,33 @@ const openNotifications = {}; // msg id -> Notification, so deletes can close th
 let dmDividerInserted = false;
 // Who the open direct chat is with, for the profile sheet.
 let currentDMPeerName = null;
+
+// ── What the other scripts on this page are allowed to see ───────────────────
+//
+// `let` and `const` at the top level of a classic script do NOT become
+// properties of window — only `function` declarations and `var` do. So
+// `window.token` was undefined in every module loaded beside this one, and the
+// uploader duly sent "Authorization: Bearer undefined" to every request. The
+// symptom was an upload stuck at 0 B with no error on screen; the same hole
+// silently broke the profile sheet, in-chat search, encrypted search and the
+// location picker, all of which read state through window.
+//
+// Getters rather than copies, deliberately: a copy has to be re-assigned
+// everywhere the original changes — on sign-out, on switching chats, on the
+// socket reconnecting — and the one place somebody forgets is a module reading
+// a stale token for the rest of the session.
+//
+// test/webGlobals.test.js reads every `window.X` in public/js and checks it is
+// listed here, so a module written against a global that does not exist fails
+// the suite instead of failing silently in a browser.
+Object.defineProperties(window, {
+  token: { get: () => token, configurable: true },
+  username: { get: () => username, configurable: true },
+  currentRoomId: { get: () => currentRoomId, configurable: true },
+  currentRoomIsDM: { get: () => currentRoomIsDM, configurable: true },
+  currentDMPeerPk: { get: () => currentDMPeerPk, configurable: true },
+  socket: { get: () => socket, configurable: true },
+});
 
 /** The header's profile button. */
 function openPeerFromHeader() {

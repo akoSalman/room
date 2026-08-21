@@ -19,6 +19,19 @@
 // recognised by ABSENCE — a touch went down and no tap followed it in time,
 // which means the finger stayed put and the OS started selecting.
 
+/**
+ * The double-tap window — measured from the previous tap's RELEASE, not from
+ * its touch-down.
+ *
+ * This is how Android measures it (ViewConfiguration.getDoubleTapTimeout, also
+ * 300ms), and measuring it the other way is why double-tap "does not work for
+ * the first couple of tries". Down-to-down includes however long the finger
+ * rested on the first tap, so an ordinary double-tap — 120ms of dwell, then a
+ * 220ms gap — is 340ms down-to-down and only 220ms release-to-down. The OS
+ * accepted it and selected the word; we rejected it, decided the touch was an
+ * ordinary tap, and 300ms later opened the message menu on top of the
+ * selection the OS had just made.
+ */
 export const DOUBLE_TAP_MS = 300;
 export const LONG_PRESS_MS = 450;
 
@@ -51,6 +64,12 @@ export type SelectionEvent =
   | { type: 'down'; id: MsgId; at: number }
   /** The pending touch never became a tap: the finger was held. */
   | { type: 'held'; id: MsgId }
+  /**
+   * The finger came off. Recorded so the NEXT touch measures its gap from
+   * here — see DOUBLE_TAP_MS for why measuring from the touch-down instead
+   * made ordinary double-taps fail.
+   */
+  | { type: 'release'; id: MsgId; at: number }
   | { type: 'tap' }
   /** A swipe-to-reply took the gesture over on this message. */
   | { type: 'swipe'; id: MsgId }
@@ -128,6 +147,12 @@ export function reduceSelection(
         action: null,
         clearId: stale,
       };
+    }
+    case 'release': {
+      // Only the touch we are actually tracking. A release belonging to some
+      // earlier message must not reset the clock for this one.
+      if (!last || last.id !== ev.id) return { state, last, action: null, clearId: null };
+      return { state, last: { id: ev.id, at: ev.at }, action: null, clearId: null };
     }
     case 'held': {
       // Only the touch we are actually waiting on can turn into a hold.

@@ -132,3 +132,8 @@ const E2E = (() => {
 
   return { setup, rewrap, getPeerKey, encrypt, decrypt, isEncrypted, clear, ready, decodeKey: b64.dec };
 })();
+
+// `const` does not land on window, and the scripts loaded beside this one read
+// it from there. Without this line encrypted search throws the moment it tries
+// to decrypt anything.
+window.E2E = E2E;

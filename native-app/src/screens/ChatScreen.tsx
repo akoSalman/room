@@ -2239,7 +2239,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // scrolling up" until you tapped elsewhere: the elsewhere-tap was
     // dismissing a menu nobody meant to open.
     if (textTouchMoved.current) return;
-    const held = Date.now() - textTouchAt.current;
+    const now = Date.now();
+    const held = now - textTouchAt.current;
+    // The gap to the NEXT tap is measured from here, the way Android measures
+    // it. Recorded before the early return below, because a press that became
+    // a selection is still the start of the window for whatever follows.
+    selectionEvent({ type: 'release', id: msg.id, at: now });
     // Long enough to be a press, not a tap: the OS is selecting a word, and
     // the hold timer has already said so. Nothing to do.
     if (held >= LONG_PRESS_MS) return;
@@ -3441,7 +3446,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       {/* Full-screen image viewer: real mobile-gallery feel — pinch zoom,
           double-tap, swipe left/right between images, and pull down to close.
           Powered by react-native-awesome-gallery (reanimated + gestures). */}
-      <Modal visible={!!viewer} transparent animationType="fade" onRequestClose={closeViewer}>
+      {/* animationType="none", not "fade".
+          Reported as: swiping an image down to close it takes too long.
+
+          The gallery is not the slow part — it calls onSwipeToClose the
+          instant the gesture ends, and animates the picture away on the UI
+          thread in parallel. The delay was the Modal's own fade playing on top
+          of that: a second, redundant animation of the same disappearance,
+          which cannot start until the first has handed over. Dropping it means
+          the picture leaves with the finger. */}
+      <Modal visible={!!viewer} transparent animationType="none" onRequestClose={closeViewer}>
         <GestureHandlerRootView style={{ flex: 1, backgroundColor: '#000' }}>
           {viewer && (
             <>
