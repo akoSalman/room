@@ -1023,3 +1023,18 @@ body.disappearing-on .msg-caption, body.disappearing-on .msg-time { color: #8fa3
   border: 1px dashed var(--muted, #9ca3af);
   background: transparent !important;
 }
+
+/* ── Searching inside a chat ─────────────────────────────────────────────── */
+.chat-search {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; background: var(--header, #fff);
+  border-bottom: 1px solid var(--border, #e0e4e9);
+}
+.chat-search input {
+  flex: 1; min-width: 0; font: inherit; font-size: 14px;
+  padding: 7px 10px; border-radius: 8px;
+  border: 1px solid var(--border, #e0e4e9); background: var(--input-bg, #f0f2f5);
+  color: inherit;
+}
+.chat-search-count { font-size: 12.5px; font-weight: 700; color: var(--muted, #6b7280); white-space: nowrap; }
+.chat-search-note { font-size: 11px; color: #d97706; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

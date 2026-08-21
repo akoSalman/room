@@ -97,9 +97,24 @@
       <button id="room-voice-btn" class="icon-btn hidden" title="Join voice chat" onclick="Calls.toggleRoomVoice()">📞</button>
       <button id="room-media-btn" class="icon-btn hidden" title="Media, files & links" onclick="openMedia()">🖼</button>
       <button id="peer-btn" class="icon-btn hidden" title="Profile, mute, block, clear" onclick="openPeerFromHeader()">👤</button>
+      <button id="chat-search-btn" class="icon-btn hidden" title="Search in this chat" onclick="ChatSearch.open()">🔍</button>
       <button id="room-link-btn" class="icon-btn hidden" title="Room info" onclick="openRoomInfo()">ℹ️</button>
       <button id="online-indicator" class="online-badge hidden" onclick="toggleOnlinePanel()"></button>
     </header>
+
+    <!-- Search takes over a strip under the header while it is open; the chat
+         stays visible so results can be scrolled to as they are stepped
+         through. -->
+    <div id="chat-search" class="chat-search hidden">
+      <input id="chat-search-input" type="search" placeholder="Search in this chat…"
+             oninput="ChatSearch.onInput()"
+             onkeydown="if (event.key === 'Enter') ChatSearch.next(); if (event.key === 'Escape') ChatSearch.close();">
+      <span id="chat-search-count" class="chat-search-count"></span>
+      <span id="chat-search-note" class="chat-search-note"></span>
+      <button class="icon-btn" title="Newer match" onclick="ChatSearch.prev()">▲</button>
+      <button class="icon-btn" title="Older match" onclick="ChatSearch.next()">▼</button>
+      <button class="icon-btn" title="Close search" onclick="ChatSearch.close()">✕</button>
+    </div>
 
     <div id="connection-banner" class="hidden"><span class="conn-dot"></span><span id="connection-banner-text">Connecting…</span></div>
 
@@ -411,6 +426,7 @@
 <script src="/js/e2e.js"></script>
 <script src="/js/peerActions.js"></script>
 <script src="/js/peer.js"></script>
+<script src="/js/chatsearch.js"></script>
 <script src="/js/app.js"></script>
 <script src="/js/calls.js"></script>
 </body>

@@ -563,6 +563,7 @@ function connectSocket() {
         document.getElementById('room-title').textContent = 'Select a room';
         document.getElementById('room-media-btn').classList.add('hidden');
     document.getElementById('peer-btn').classList.add('hidden');
+    document.getElementById('chat-search-btn').classList.add('hidden');
         document.getElementById('join-bar').classList.add('hidden');
       }
     };
@@ -952,6 +953,7 @@ function leaveCurrentRoom() {
     document.getElementById('room-title').textContent = 'Select a room';
     document.getElementById('room-media-btn').classList.add('hidden');
     document.getElementById('peer-btn').classList.add('hidden');
+    document.getElementById('chat-search-btn').classList.add('hidden');
     document.getElementById('join-bar').classList.add('hidden');
   });
 }
@@ -1150,6 +1152,7 @@ function removeRoomFromList(roomId) {
     document.getElementById('room-title').textContent = 'Select a room';
     document.getElementById('room-media-btn').classList.add('hidden');
     document.getElementById('peer-btn').classList.add('hidden');
+    document.getElementById('chat-search-btn').classList.add('hidden');
     document.getElementById('messages').innerHTML = '';
   }
 }
@@ -1260,6 +1263,8 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   // Mute, block and clear are about a PERSON, so the button only appears
   // where there is exactly one of them.
   document.getElementById('peer-btn').classList.toggle('hidden', !isDM);
+  document.getElementById('chat-search-btn').classList.remove('hidden');
+  window.ChatSearch.close();
   currentDMPeerName = isDM ? String(roomName || '').replace(/^💬\s*/, '') : null;
   refreshJoinBar(roomId, isDM);
   // Whether THIS chat destroys its messages — the skin must follow the room,
@@ -1268,7 +1273,7 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   api(`/room-settings/${roomId}`)
     .then(r => { if (r && !r.error && String(currentRoomId) === String(roomId)) applyDisappearingSkin(r.disappearingSeconds || 0); })
     .catch(() => {});
-  jumpBackStack = [];
+  hasNewerMsgs = false;
   document.getElementById('scroll-fab').classList.add('hidden');
   oldestLoadedMsgId = null;
   hasMoreOlderMsgs = true;
@@ -3012,7 +3017,9 @@ function buildVoicePlayer(msg) {
 }
 
 // ─── Jump to replied message (multi-level back stack) ──────────────────────────
-let jumpBackStack = [];
+// More history exists AFTER what is loaded — true only while the window is
+// parked in the middle of the chat by a jump.
+let hasNewerMsgs = false;
 
 function currentVisibleMsgMarker() {
   const container = document.getElementById('messages');
@@ -3026,41 +3033,66 @@ function currentVisibleMsgMarker() {
   return visible ? visible.dataset.msgId : 'bottom';
 }
 
+/**
+ * Go to one message, wherever it is in the history.
+ *
+ * If it is already on the page, scroll to it. Otherwise fetch the window
+ * AROUND it in a single request and rebuild the list from that.
+ *
+ * It used to page backwards, a screenful at a time, until the message turned
+ * up — which for a search result from six months ago is dozens of round trips
+ * on a connection that cannot afford one. /message-context answers in one.
+ */
 async function jumpToMessage(messageId) {
   let target = document.querySelector(`[data-msg-id="${messageId}"]`);
 
-  // Target is older than what's loaded — page backwards until we find it
-  while (!target && hasMoreOlderMsgs) {
-    await loadOlderMessages();
+  if (!target) {
+    const ctx = await api(`/message-context/${currentRoomId}/${messageId}`);
+    if (!ctx || ctx.error || !Array.isArray(ctx.messages) || !ctx.messages.length) {
+      showToast('That message is no longer here');
+      return;
+    }
+    const container = document.getElementById('messages');
+    container.innerHTML = '';
+    ctx.messages.forEach(m => container.appendChild(buildMessageElement(m)));
+    oldestLoadedMsgId = ctx.messages[0].id;
+    hasMoreOlderMsgs = !!ctx.hasOlder;
+    // The window now sits in the middle of the chat, so the end of the list is
+    // no longer the present. The button has to keep offering the way back.
+    hasNewerMsgs = !!ctx.hasNewer;
     target = document.querySelector(`[data-msg-id="${messageId}"]`);
+    if (!target) return;
   }
-  if (!target) return;
-
-  // Push where we came from so the FAB can walk back through each reply level
-  jumpBackStack.push(currentVisibleMsgMarker());
-  updateScrollFab();
 
   target.scrollIntoView({ behavior: 'smooth', block: 'center' });
   target.classList.add('msg-highlight');
   setTimeout(() => target.classList.remove('msg-highlight'), 1500);
+  updateScrollFab();
 }
 
-function handleScrollFabClick() {
-  if (jumpBackStack.length > 0) {
-    const marker = jumpBackStack.pop();
-    if (marker && marker !== 'bottom') {
-      const el = document.querySelector(`[data-msg-id="${marker}"]`);
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        el.classList.add('msg-highlight');
-        setTimeout(() => el.classList.remove('msg-highlight'), 1500);
-        updateScrollFab();
-        return;
-      }
+/**
+ * One button, one job: go to the newest messages.
+ *
+ * It used to double as a back button that walked the trail of jumps in
+ * reverse. Stepping through ten search results left ten jumps on that trail,
+ * so leaving the search meant ten taps backwards through results already
+ * looked at. Arriving at the message you asked for is the END of that errand.
+ * The app dropped the trail for the same reason; this keeps the two in step.
+ */
+async function handleScrollFabClick() {
+  if (hasNewerMsgs) {
+    // The window is parked in the middle of the chat after a jump, so the end
+    // of the list is not the present. Fetch the newest page directly rather
+    // than paging forward through months of history.
+    const msgs = await api('/messages/' + currentRoomId);
+    if (Array.isArray(msgs) && msgs.length) {
+      const container = document.getElementById('messages');
+      container.innerHTML = '';
+      msgs.forEach(m => container.appendChild(buildMessageElement(m)));
+      oldestLoadedMsgId = msgs[0].id;
+      hasMoreOlderMsgs = msgs.length >= MESSAGES_PAGE_SIZE;
+      hasNewerMsgs = false;
     }
-    scrollBottom();
-    updateScrollFab();
-    return;
   }
   scrollBottom();
   updateScrollFab();
@@ -3071,16 +3103,11 @@ function updateScrollFab() {
   const fab = document.getElementById('scroll-fab');
   if (!container || !fab) return;
   const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
-
-  if (jumpBackStack.length > 0) {
-    fab.textContent = '↩';
-    fab.title = `Back (${jumpBackStack.length})`;
-    fab.classList.remove('hidden');
-    return;
-  }
   fab.textContent = '↓';
-  fab.title = 'Scroll to latest';
-  if (nearBottom) fab.classList.add('hidden');
+  fab.title = 'Go to the newest messages';
+  // "At the end of the list" is not "at the present": after a jump there is
+  // more history beyond the end of what is loaded.
+  if (nearBottom && !hasNewerMsgs) fab.classList.add('hidden');
   else fab.classList.remove('hidden');
 }
 
