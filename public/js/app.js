@@ -1625,23 +1625,10 @@ function confirmDelete(messageId) {
 
 // ─── File / Audio ─────────────────────────────────────────────────────────────
 
-// Upload with real progress events (fetch has none for uploads).
-function xhrUpload(file, filename, onProgress) {
-  return new Promise((resolve, reject) => {
-    const form = new FormData();
-    form.append('file', file, filename || undefined);
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/upload');
-    xhr.setRequestHeader('Authorization', 'Bearer ' + token);
-    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100)); };
-    xhr.onload = () => {
-      try { resolve(JSON.parse(xhr.responseText)); }
-      catch { reject(new Error('Upload failed')); }
-    };
-    xhr.onerror = () => reject(new Error('Upload failed — check your connection'));
-    xhr.send(form);
-  });
-}
+// Whole-file POST, kept for nothing in particular any more — every send goes
+// through resumable.js, which can be paused and survives a dropped
+// connection. Left out rather than left lying around: an upload path with no
+// pause button is the thing that was being fixed.
 
 function updateUploadProgress(wrapper, pct) {
   const bar = wrapper.querySelector('.upload-progress-bar');
@@ -1681,7 +1668,8 @@ async function uploadAndSendMedia(file, type, uploadFilename, messageFileName, r
   pendingUploads[clientId] = { wrapper, previewUrl };
 
   try {
-    const res = await xhrUpload(file, uploadFilename, pct => updateUploadProgress(wrapper, pct));
+    const res = await resumableUpload(file, uploadFilename, clientId, wrapper);
+    if (!res) return;                      // cancelled: the bubble is gone
     if (res.error) throw new Error(res.error);
     if (!pendingUploads[clientId]) return; // user already dismissed/retried
     socket.emit('send_message', {
@@ -1693,6 +1681,87 @@ async function uploadAndSendMedia(file, type, uploadFilename, messageFileName, r
       markUploadFailed(wrapper, clientId, () => uploadAndSendMedia(file, type, uploadFilename, messageFileName, roomId, replyToId, caption, oneTimeSeconds));
     }
   }
+}
+
+// Every upload in flight, so the bubble's buttons can reach the right one.
+const uploadControls = {};   // clientId -> { handle, paused }
+
+/**
+ * Send one file, resumably, reporting onto its own bubble.
+ *
+ * Resolves with the server's answer, or with null when the user cancelled —
+ * cancelling is a decision, not a failure, and must not leave a bubble
+ * offering a retry nobody asked for.
+ */
+function resumableUpload(file, filename, clientId, wrapper) {
+  return new Promise((resolve, reject) => {
+    let sentAt = [];
+    const handle = window.Resumable.upload(file, filename, {
+      onProgress(sent, total) {
+        updateUploadProgress(wrapper, total ? Math.round((sent / total) * 100) : 0);
+        const now = Date.now();
+        sentAt.push({ at: now, sent });
+        // A speed measured over the last few seconds, not since the beginning:
+        // "it has averaged 200 KB/s since you pressed send" is no use to
+        // somebody whose connection just died.
+        sentAt = sentAt.filter(s => s.at >= now - 5000 || s === sentAt[0]);
+        setUploadStatus(wrapper, uploadLine(sent, total, sentAt));
+      },
+      onPaused() { setUploadStatus(wrapper, 'Paused · ' + window.Resumable.fmtBytes(0)); },
+      onDone: resolve,
+      onFailed: reject,
+    });
+    uploadControls[clientId] = { handle, paused: false, resolve };
+  });
+}
+
+function uploadLine(sent, total, samples) {
+  const F = window.Resumable.fmtBytes;
+  const size = F(sent) + ' / ' + F(total);
+  if (samples.length < 2) return size;
+  const first = samples[0], last = samples[samples.length - 1];
+  const secs = (last.at - first.at) / 1000;
+  const bytes = last.sent - first.sent;
+  if (secs <= 0 || bytes <= 0) return size;
+  const rate = bytes / secs;
+  const left = Math.max(0, total - sent) / rate;
+  return size + ' · ' + F(rate) + '/s · ' + (left < 60 ? Math.ceil(left) + 's left'
+    : Math.floor(left / 60) + 'm ' + Math.ceil(left % 60) + 's left');
+}
+
+function setUploadStatus(wrapper, text) {
+  const el = wrapper.querySelector('.upload-status');
+  if (el) el.textContent = text;
+}
+
+function togglePause(clientId) {
+  const c = uploadControls[clientId];
+  if (!c) return;
+  const wrapper = pendingUploads[clientId] && pendingUploads[clientId].wrapper;
+  const btn = wrapper && wrapper.querySelector('.upload-btn[data-role="pause"]');
+  if (c.paused) {
+    c.paused = false;
+    c.handle.resume();
+    if (btn) { btn.textContent = '⏸'; btn.title = 'Pause'; }
+  } else {
+    c.paused = true;
+    c.handle.pause();
+    if (btn) { btn.textContent = '▶'; btn.title = 'Resume'; }
+  }
+}
+
+function cancelUpload(clientId) {
+  const c = uploadControls[clientId];
+  if (c) { c.handle.cancel(); delete uploadControls[clientId]; }
+  const p = pendingUploads[clientId];
+  if (p) {
+    if (p.previewUrl) URL.revokeObjectURL(p.previewUrl);
+    if (p.wrapper) p.wrapper.remove();
+    delete pendingUploads[clientId];
+  }
+  // Cancelling is a decision, not a failure: unwind quietly rather than
+  // leaving a bubble offering a retry nobody asked for.
+  if (c && c.resolve) c.resolve(null);
 }
 
 // Selecting media only STAGES it; everything staged is sent when the user
@@ -1796,14 +1865,16 @@ async function sendGallery(images, caption, oneTimeSeconds, roomId, replyToId) {
   pendingUploads[clientId] = { wrapper, previewUrl: null };
 
   try {
+    // One bar for the whole album, and the same pause and cancel buttons: the
+    // photo in flight owns them, and the next one takes them over.
     const progress = images.map(() => 0);
     const urls = [];
     for (let i = 0; i < images.length; i++) {
-      const res = await xhrUpload(images[i].file, images[i].file.name, pct => {
-        progress[i] = pct;
-        updateUploadProgress(wrapper, Math.round(progress.reduce((a, b) => a + b, 0) / images.length));
-      });
+      const res = await resumableUpload(images[i].file, images[i].file.name, clientId, wrapper);
+      if (!res) return;                    // cancelled: the bubble is gone
       if (res.error) throw new Error(res.error);
+      progress[i] = 100;
+      updateUploadProgress(wrapper, Math.round(progress.reduce((a, b) => a + b, 0) / images.length));
       urls.push(res.url);
     }
     if (!pendingUploads[clientId]) return;
@@ -2632,6 +2703,30 @@ function buildMessageElement(msg) {
     bar.style.width = (msg._progress || 0) + '%';
     overlay.appendChild(bar);
     bubble.appendChild(overlay);
+
+    // A bar creeping along with no numbers and no way to stop it is the worst
+    // version of a slow upload: you cannot tell whether it is moving, and you
+    // cannot give up without closing the tab.
+    const row = document.createElement('div');
+    row.className = 'upload-row';
+    const status = document.createElement('span');
+    status.className = 'upload-status';
+    status.dataset.msgId = msg.id;
+    row.appendChild(status);
+    const pauseBtn = document.createElement('button');
+    pauseBtn.className = 'upload-btn';
+    pauseBtn.dataset.role = 'pause';
+    pauseBtn.textContent = '⏸';
+    pauseBtn.title = 'Pause';
+    pauseBtn.onclick = (e) => { e.stopPropagation(); togglePause(msg.id); };
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'upload-btn';
+    cancelBtn.textContent = '✕';
+    cancelBtn.title = 'Cancel';
+    cancelBtn.onclick = (e) => { e.stopPropagation(); cancelUpload(msg.id); };
+    row.appendChild(pauseBtn);
+    row.appendChild(cancelBtn);
+    bubble.appendChild(row);
   }
   if (['image', 'video', 'audio', 'music'].includes(msg.type) && !msg._uploading) {
     attachDownloadSpinner(bubble, msg.type);

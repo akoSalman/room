@@ -1038,3 +1038,19 @@ body.disappearing-on .msg-caption, body.disappearing-on .msg-time { color: #8fa3
 }
 .chat-search-count { font-size: 12.5px; font-weight: 700; color: var(--muted, #6b7280); white-space: nowrap; }
 .chat-search-note { font-size: 11px; color: #d97706; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Sending a file: numbers, and a way to stop ──────────────────────────── */
+.upload-row {
+  display: flex; align-items: center; gap: 8px; margin-top: 5px;
+  width: 100%; min-width: 0;
+}
+.upload-status {
+  flex: 1; min-width: 0; font-size: 11px; color: var(--muted, #6b7280);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.upload-btn {
+  border: 0; background: rgba(0, 0, 0, 0.07); border-radius: 50%;
+  width: 24px; height: 24px; cursor: pointer; font-size: 11px; line-height: 1;
+  color: inherit; flex: none;
+}
+.upload-btn:hover { background: rgba(0, 0, 0, 0.14); }
