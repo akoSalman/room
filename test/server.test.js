@@ -2060,10 +2060,18 @@ test('THE POINT OF BLOCKING: the message is accepted and never arrives', async (
   assert.strictEqual(after.blocked_delivery, 1, 'the message was not marked as undelivered');
   assert.strictEqual(mine.find(m => m.content === 'before').blocked_delivery, 0);
 
-  // Blocking is one-directional: the blocker can still write.
+  // And it runs BOTH ways: having blocked somebody, I do not go on messaging
+  // them either. Refused out loud rather than silently, because this is MY
+  // decision and I can undo it in two taps — a message that quietly went
+  // nowhere would just be baffling.
   const oSock = await connect(owner.token);
-  assert.ok((await emit(oSock, 'send_message', { roomId: dm.id, type: 'text', content: 'mine' })).ok,
-    'blocking somebody stopped ME from using my own chat');
+  const sentByBlocker = await emit(oSock, 'send_message', { roomId: dm.id, type: 'text', content: 'mine' });
+  assert.ok(sentByBlocker.error, 'I could still message somebody I had blocked');
+  assert.ok(/unblock/i.test(sentByBlocker.message || ''),
+    `no way out offered: ${JSON.stringify(sentByBlocker)}`);
+  const theirCopy = await api(`/messages/${dm.id}`, 'GET', null, nuisance.token);
+  assert.ok(!theirCopy.some(m => m.content === 'mine'),
+    'a message to somebody I blocked was delivered to them anyway');
 });
 
 test('unblocking does NOT deliver what was sent while blocked', async () => {

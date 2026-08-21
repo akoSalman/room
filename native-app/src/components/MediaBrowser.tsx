@@ -20,15 +20,29 @@
 //    between opens.
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View, Text, TouchableOpacity, StyleSheet, Modal, FlatList, Image,
+  View, Text, TouchableOpacity, StyleSheet, Modal, FlatList,
   ActivityIndicator, useWindowDimensions, Pressable,
 } from 'react-native';
+// expo-image, not react-native's Image.
+//
+// Reported as: scrolling down the gallery and back up shows the thumbnails
+// loading all over again — nothing like the phone's own gallery.
+//
+// React Native's Image keeps decoded bitmaps only while they are mounted. A
+// windowed list unmounts a row the moment it leaves the screen, so coming
+// back means decoding from disk again, one tile at a time, visibly. There is
+// no prop that changes this; the component has no memory to configure.
+//
+// expo-image holds its own memory AND disk caches, keyed on the url and
+// independent of what is mounted, so a tile that has been seen once comes
+// back instantly. It is the difference this gallery has been missing.
+import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { C } from '../theme';
 import { fileIcon, extOf } from '../mime';
 import {
   MediaItem, MediaTab, MediaState,
-  toRows, rowOf, cellSize, shouldLoadMore, restoreToken, shouldRestore,
+  toRows, rowOf, cellSize, shouldLoadMore, restoreToken, shouldRestore, restoreOffset,
 } from '../roomMedia';
 
 export type { MediaItem, MediaTab } from '../roomMedia';
@@ -75,20 +89,15 @@ const Cell = memo(function Cell({ item, index, size, marginRight, thumb, onOpen,
       <Image
         source={{ uri: thumb(item.url, 96) }}
         style={{ width: size, height: size, backgroundColor: PLACEHOLDER }}
-        resizeMode="cover"
-        // Reported as: reopening the gallery shows black squares that then
-        // "seem like loaded" — not smooth like the phone's own gallery.
-        //
-        // Two causes, both here. Android's image pipeline cross-fades every
-        // image in over 300ms, including ones it already has decoded, so even
-        // a cache hit arrives as a fade from the tile colour. And the tile
-        // colour was near-black, which on a light grid reads as a broken
-        // image rather than one still coming.
-        //
-        // No fade, and a pale tile: a cached thumbnail now appears at once,
-        // and one that is genuinely still loading looks like an empty frame
-        // instead of a hole.
-        fadeDuration={0}
+        contentFit="cover"
+        // Both caches on: memory for the tiles just scrolled past, disk for
+        // the ones from last time the gallery was opened.
+        cachePolicy="memory-disk"
+        // No cross-fade. A tile the cache already holds should simply BE
+        // there; fading it in over a placeholder is the app pretending to
+        // load something it already has.
+        transition={0}
+        recyclingKey={item.url}
       />
     </Pressable>
   );
@@ -195,7 +204,7 @@ export default function MediaBrowser({
     (async () => {
       for (const u of first) {
         if (cancelled) return;
-        try { await Image.prefetch(u); } catch {}
+        try { await Image.prefetch(u, { cachePolicy: 'memory-disk' }); } catch {}
       }
     })();
     return () => { cancelled = true; };
@@ -227,14 +236,23 @@ export default function MediaBrowser({
   // open, and never because something else re-rendered.
   const restoreDone = useRef<string | null>(null);
   const token = restoreToken({ visible, openId, tab, focusIndex });
+  // Where the grid was when a photo was opened from it.
+  const gridOffset = useRef(0);
   useEffect(() => {
     if (!shouldRestore(token, restoreDone.current)) return;
     if (!rows.length) return;                      // nothing to scroll yet
-    const row = Math.min(rowOf(focusIndex, COLS), rows.length - 1);
     restoreDone.current = token;
-    // Row heights are exact, so this lands on the row rather than near it.
-    try { gridRef.current?.scrollToIndex({ index: row, animated: false }); } catch {}
-  }, [token, rows.length, focusIndex]);
+    const offset = restoreOffset({
+      savedOffset: gridOffset.current,
+      focusRow: Math.min(rowOf(focusIndex, COLS), rows.length - 1),
+      rowHeight: cell + GAP,
+      viewportHeight: gridHeight.current,
+      maxOffset: Math.max(0, rows.length * (cell + GAP) - gridHeight.current),
+    });
+    try { gridRef.current?.scrollToOffset({ offset, animated: false }); } catch {}
+  }, [token, rows.length, focusIndex, cell]);
+
+  const gridHeight = useRef(0);
 
   // Both handlers are STABLE, so that a page of photos arriving does not
   // re-render the rows already on screen. Read through refs rather than
@@ -275,6 +293,9 @@ export default function MediaBrowser({
           onLoadMore();
         }
       }}
+      onScroll={(e) => { gridOffset.current = e.nativeEvent.contentOffset.y; }}
+      scrollEventThrottle={64}
+      onLayout={(e) => { gridHeight.current = e.nativeEvent.layout.height; }}
       ListEmptyComponent={<Text style={s.empty}>No photos yet</Text>}
       ListFooterComponent={
         loadingMore ? <ActivityIndicator color={C.accent} style={{ marginVertical: 18 }} /> : null

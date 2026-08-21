@@ -267,3 +267,35 @@ export function restoreToken(o: {
 export function shouldRestore(token: string | null, done: string | null): boolean {
   return token !== null && token !== done;
 }
+
+/**
+ * Where the grid should sit when it comes back from the fullscreen viewer.
+ *
+ * Reported as: closing a photo scrolls the grid down until that photo is on
+ * the top row. It was restoring by ROW INDEX, and scrolling to an index puts
+ * that row at the top of the screen — so a photo you opened from the middle
+ * of the screen came back at the top, dragging everything with it.
+ *
+ * A gallery should not move at all when you close a picture you can already
+ * see. So: keep the offset the grid had, and only scroll when the photo is
+ * genuinely off screen — which happens when the viewer was swiped through to
+ * a different one. Then it is centred, because a photo arriving at the very
+ * edge of the screen is barely better than not scrolling.
+ */
+export function restoreOffset(o: {
+  savedOffset: number;
+  focusRow: number;
+  rowHeight: number;
+  viewportHeight: number;
+  maxOffset?: number;
+}): number {
+  const saved = Math.max(0, o.savedOffset || 0);
+  if (!(o.rowHeight > 0) || !(o.viewportHeight > 0)) return saved;
+  const top = Math.max(0, o.focusRow) * o.rowHeight;
+  const bottom = top + o.rowHeight;
+  // Wholly visible where we already are: leave it exactly alone.
+  if (top >= saved && bottom <= saved + o.viewportHeight) return saved;
+  const centred = top - (o.viewportHeight - o.rowHeight) / 2;
+  const cap = o.maxOffset === undefined ? Infinity : Math.max(0, o.maxOffset);
+  return Math.max(0, Math.min(centred, cap));
+}

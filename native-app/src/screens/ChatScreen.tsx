@@ -55,7 +55,7 @@ import TextViewer from '../components/TextViewer';
 import * as mediaCache from '../mediaCache';
 import * as offline from '../offlineStore';
 import ImageEditor from '../components/ImageEditor';
-import SelectedRow, { useSelectionCount } from '../components/SelectedRow';
+import SelectedRow, { SelectionCount } from '../components/SelectedRow';
 import SelectableText, { clearSelectionOf } from '../components/SelectableText';
 import * as selection from '../selection';
 import { searchLocal, mergeResults } from '../localSearch';
@@ -268,7 +268,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [selectMode, setSelectMode] = useState(false);
   // Subscribes to the selection directly, so ticking a message redraws this
   // number and the one row involved — not the list.
-  const selectedCount = useSelectionCount();
   // The one message whose text is currently being selected in place.
   // Controlled selection range, used only to preselect the whole message the
   // instant double-tap turns it into a selectable field; released a moment
@@ -705,14 +704,19 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     if (!Array.isArray(newer)) { hasMoreNewerRef.current = false; return; }
     // appendNewer decides the flag: a short page means we have caught up with
     // the present, and live messages can be appended again from here on.
-    // Trimmed from the far end: walking forward through months of history one
-    // page at a time would otherwise hold every page in memory at once, on
-    // phones that do not have it. The flag says the dropped end can be
-    // re-fetched, so nothing is lost.
-    applyWindow(win.trim(
-      win.appendNewer(currentWindow(), newer, MESSAGES_PAGE_SIZE),
-      MESSAGES_PAGE_SIZE * 6, 'older',
-    ));
+    // NOT trimmed any more.
+    //
+    // Dropping pages off the far end while the user scrolls was meant to keep
+    // memory down, and it is the reason the screen "hops a lot and suddenly
+    // goes too much down or up". Removing rows changes the total height of
+    // everything below the viewport, and the list has no getItemLayout, so
+    // the scroll position it lands on afterwards is computed from estimates
+    // of rows that no longer exist.
+    //
+    // Six pages of text is a few hundred kilobytes. A visibly broken scroll
+    // is not worth that. If memory ever becomes the real problem, the fix is
+    // to trim only while the list is at rest, not mid-drag.
+    applyWindow(win.appendNewer(currentWindow(), newer, MESSAGES_PAGE_SIZE));
   }
 
   /**
@@ -725,6 +729,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
    * fetched, exactly as it is when the chat is first opened.
    */
   async function jumpToBottom() {
+    // A jump to a message keeps re-scrolling to it for the next 700ms while
+    // the layout settles. Tapping "go to newest" inside that window used to
+    // scroll to the bottom and then be dragged straight back to the search
+    // result by a timer nobody had cancelled — which is exactly what "the
+    // button doesn't work" looks like.
+    cancelSettling();
     if (!hasMoreNewerRef.current) { scrollBottom(); return; }
     setJumping(true);
     try {
@@ -2172,18 +2182,37 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   /** A touch went down on a selectable text bubble (observed, not claimed). */
-  function noteTextTouch(id: MsgId) {
+  function noteTextTouch(id: MsgId, e?: any) {
     clearTimeout(holdTimer.current);
     clearTimeout(tapTimer.current);
     textTouchAt.current = Date.now();
+    textTouchFrom.current = {
+      x: e?.nativeEvent?.pageX ?? 0, y: e?.nativeEvent?.pageY ?? 0,
+    };
+    textTouchMoved.current = false;
     selectionEvent({ type: 'down', id, at: textTouchAt.current });
+    // Did that touch COMPLETE a double-tap?
+    //
+    // If so the OS is selecting a word right now and this touch is spent. The
+    // release must not go on to schedule a tap — which is exactly what it did,
+    // and 300ms later that tap was read as "a tap while something is selected"
+    // and dismissed the selection. That is the reported "the word is selected
+    // and then deselected".
+    spentByDoubleTap.current = String(selState.current.selecting ?? '') === String(id);
     // No tap within the long-press window means the finger was held, which is
     // the other way the OS starts a selection.
     holdTimer.current = setTimeout(() => selectionEvent({ type: 'held', id }), LONG_PRESS_MS);
   }
 
-  /** When the finger that landed on a text bubble went down. */
+  /** When the finger that landed on a text bubble went down, and where. */
   const textTouchAt = useRef(0);
+  const textTouchFrom = useRef({ x: 0, y: 0 });
+  /** Did that finger travel far enough to be a scroll rather than a tap? */
+  const textTouchMoved = useRef(false);
+  /** Was the touch spent completing a double-tap? */
+  const spentByDoubleTap = useRef(false);
+  /** Beyond this many pixels it is a drag, not a tap. */
+  const TAP_SLOP = 10;
 
   /**
    * The finger came off a text bubble.
@@ -2200,11 +2229,20 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
    * a single tap on a message ought to do and previously did nothing at all.
    */
   function noteTextRelease(msg: Message) {
+    clearTimeout(holdTimer.current);
+    // That touch made a selection. It is spent; anything else it went on to
+    // do would be undoing what the user just asked for.
+    if (spentByDoubleTap.current) { spentByDoubleTap.current = false; return; }
+    // The finger travelled: this was a scroll or a swipe that happened to
+    // start on some text. Treating it as a tap opened the message menu at the
+    // end of every flick — and THAT is why double-tap "did not work after
+    // scrolling up" until you tapped elsewhere: the elsewhere-tap was
+    // dismissing a menu nobody meant to open.
+    if (textTouchMoved.current) return;
     const held = Date.now() - textTouchAt.current;
     // Long enough to be a press, not a tap: the OS is selecting a word, and
     // the hold timer has already said so. Nothing to do.
     if (held >= LONG_PRESS_MS) return;
-    clearTimeout(holdTimer.current);
     // Wait to find out whether a second tap is coming. A double-tap is how the
     // OS starts a word selection, so opening the menu on the first tap would
     // make selecting text by double-tap impossible. noteTextTouch cancels this
@@ -2860,17 +2898,26 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               // going down without claiming it, so native text selection still
               // works exactly as before. It is the only signal available for
               // guessing that a selection is about to start.
-              onStartShouldSetResponderCapture: () => {
-                if (canTakeContent(msg)) noteTextTouch(msg.id);
+              onStartShouldSetResponderCapture: (e: any) => {
+                if (canTakeContent(msg)) noteTextTouch(msg.id, e);
                 return false;
               },
               // The other half of the same observation. Touch handlers on a
               // View are delivered whether or not it owns the responder, which
               // is the only way to see a tap that landed on selectable text.
               onTouchEnd: () => { if (canTakeContent(msg)) noteTextRelease(msg); },
-              // A finger that moved is a scroll or a swipe, not a tap, and
-              // must not leave a menu waiting to open behind it.
-              onTouchMove: () => { clearTimeout(tapTimer.current); },
+              // Measured against where the finger LANDED, not against the
+              // previous move: a slow drag never moves far between two events
+              // and would never trip a per-event threshold.
+              onTouchMove: (e: any) => {
+                const dx = (e?.nativeEvent?.pageX ?? 0) - textTouchFrom.current.x;
+                const dy = (e?.nativeEvent?.pageY ?? 0) - textTouchFrom.current.y;
+                if (dx * dx + dy * dy > TAP_SLOP * TAP_SLOP) {
+                  textTouchMoved.current = true;
+                  clearTimeout(tapTimer.current);
+                  clearTimeout(holdTimer.current);
+                }
+              },
             }
           : {
               onPress: selectMode ? () => toggleSelected(msg) : undefined,
@@ -3228,7 +3275,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           <TouchableOpacity onPress={exitSelectMode} style={s.selBarBtn} hitSlop={hitSlop10}>
             <Ionicons name="close" size={24} color={C.text} />
           </TouchableOpacity>
-          <Text style={s.selBarCount}>{selectedCount} selected</Text>
+          <SelectionCount>{n => <Text style={s.selBarCount}>{n} selected</Text>}</SelectionCount>
           <TouchableOpacity onPress={openForwardPickerForSelection} style={s.selBarBtn} hitSlop={hitSlop10}>
             <Ionicons name="arrow-redo-outline" size={23} color={C.accent} />
           </TouchableOpacity>
@@ -3539,6 +3586,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           ref={flatListRef}
           data={invertedMessages}
           inverted
+          // Anchor what the user is looking at.
+          //
+          // Loading a page of history adds rows the list has never measured,
+          // and without an anchor it keeps the SCROLL OFFSET rather than the
+          // content — so the view slides by however much its estimate of the
+          // new rows was wrong. This pins the visible content instead and
+          // lets the offset move to suit, which is what makes paging feel
+          // like paper rather than like a jump.
+          maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
           keyExtractor={keyExtractor}
           // Render a screenful, not the whole history. Without these the list
           // mounts far more rows than are visible, and every one of them costs
@@ -3588,7 +3644,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           ListHeaderComponent={loadingNewer ? (
             <ActivityIndicator color={C.accent} size="small" style={{ marginVertical: 10 }} />
           ) : null}
+          // Only while a jump is actually trying to reach something.
+          //
+          // It used to retry unconditionally, 100ms later, with an animated
+          // scroll that centred whatever index it had been given. During
+          // ordinary scrolling through history that is a view being yanked
+          // somewhere for no reason the user can see — the "suddenly goes too
+          // much down or up" in the report.
           onScrollToIndexFailed={info => {
+            if (!settleTimers.current.length) return;
             // Retried against the list as it is A HUNDRED MILLISECONDS LATER,
             // not as it was when the scroll failed. In between, a jump can
             // replace the whole window with a shorter one — and asking
@@ -4196,7 +4260,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           <Pressable style={StyleSheet.absoluteFill} onPress={() => { setForwardOpen(false); setForwardMsg(null); }} />
           <View style={s.attachSheet}>
             <View style={s.sheetHandle} />
-            <Text style={s.forwardTitle}>{forwardMsg ? 'Forward to…' : `Forward ${selectedCount} message${selectedCount > 1 ? 's' : ''} to…`}</Text>
+            <SelectionCount>{n => (
+              <Text style={s.forwardTitle}>{forwardMsg ? 'Forward to…' : `Forward ${n} message${n > 1 ? 's' : ''} to…`}</Text>
+            )}</SelectionCount>
             <ScrollView style={{ maxHeight: 380 }} nestedScrollEnabled>
               {forwardTargets.map(t => (
                 <TouchableOpacity key={`${t.is_dm ? 'd' : 'r'}${t.id}`} style={s.attachOption} onPress={() => doForward(t)}>

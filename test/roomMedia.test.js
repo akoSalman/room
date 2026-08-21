@@ -224,6 +224,62 @@ test('cells divide the screen with the gaps taken out', () => {
   assert.strictEqual(M.cellSize(1080, 3, 0), 360);
 });
 
+// ── Coming back from a photo ────────────────────────────────────────────────
+//
+// Reported as: after closing an image, the gallery scrolls down until that
+// image is on the top row of the screen.
+//
+// It restored by ROW INDEX, and scrolling to an index puts that row at the top
+// — so a photo opened from the middle of the screen came back at the top,
+// dragging the whole grid with it.
+
+const ROW = 120;      // a row of tiles
+const VIEW = 600;     // five rows visible
+
+test('THE BUG: closing a photo you can already see moves nothing at all', () => {
+  // The grid is at 1000; row 9 spans 1080..1200, comfortably on screen.
+  const at = M.restoreOffset({ savedOffset: 1000, focusRow: 9, rowHeight: ROW, viewportHeight: VIEW });
+  assert.strictEqual(at, 1000, 'the grid scrolled even though the photo was in view');
+});
+
+test('a photo at the very top of the view is still "in view"', () => {
+  assert.strictEqual(
+    M.restoreOffset({ savedOffset: 1200, focusRow: 10, rowHeight: ROW, viewportHeight: VIEW }), 1200);
+});
+
+test('a photo swiped to off screen is brought back, centred', () => {
+  // Swiping through the viewer can end on a photo hundreds of rows away.
+  const at = M.restoreOffset({ savedOffset: 0, focusRow: 40, rowHeight: ROW, viewportHeight: VIEW });
+  assert.strictEqual(at, 4560);
+  assert.ok(at < 40 * ROW && at + VIEW > 40 * ROW + ROW, 'the photo is not actually on screen');
+});
+
+test('a photo just past the bottom edge is scrolled to', () => {
+  const at = M.restoreOffset({ savedOffset: 0, focusRow: 5, rowHeight: ROW, viewportHeight: VIEW });
+  assert.notStrictEqual(at, 0, 'a photo past the bottom edge was left off screen');
+});
+
+test('it never scrolls above the top of the grid', () => {
+  assert.strictEqual(
+    M.restoreOffset({ savedOffset: 5000, focusRow: 0, rowHeight: ROW, viewportHeight: VIEW }), 0);
+});
+
+test('it never scrolls past the end of the grid', () => {
+  const at = M.restoreOffset({
+    savedOffset: 0, focusRow: 100, rowHeight: ROW, viewportHeight: VIEW, maxOffset: 2000,
+  });
+  assert.strictEqual(at, 2000, 'scrolled into empty space below the last row');
+});
+
+test('nonsense measurements leave the grid where it is', () => {
+  // Before the grid has laid out its height is 0; doing arithmetic with that
+  // and scrolling somewhere is worse than doing nothing.
+  assert.strictEqual(
+    M.restoreOffset({ savedOffset: 800, focusRow: 3, rowHeight: 0, viewportHeight: VIEW }), 800);
+  assert.strictEqual(
+    M.restoreOffset({ savedOffset: 800, focusRow: 3, rowHeight: ROW, viewportHeight: 0 }), 800);
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

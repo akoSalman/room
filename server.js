@@ -1935,6 +1935,19 @@ io.on('connection', (socket) => {
     // in a group it would silently remove somebody from a conversation the
     // rest of the room is still having.
     const peer = dmPeerId(room, socket.user.id);
+
+    // Blocking runs BOTH ways, and the two directions are handled differently
+    // on purpose.
+    //
+    // I blocked THEM: refuse, and say so. I made this decision and can undo it
+    // in two taps, so a message that silently went nowhere would just be
+    // baffling — and carrying on a conversation with somebody I have blocked
+    // is not a thing to support quietly.
+    if (peer && hasBlocked(socket.user.id, peer)) {
+      return reply({ error: 'blocked-by-me', message: 'You blocked this person. Unblock them to send messages.' });
+    }
+    // THEY blocked me: the case above stays silent. Telling the sender would
+    // turn one person's quiet decision into a confrontation with them.
     const blockedDelivery = peer && hasBlocked(peer, socket.user.id) ? 1 : 0;
     const msgType = CLIENT_MSG_TYPES.has(type) ? type : 'text';
     const oneTime = Number.isInteger(oneTimeSeconds) && oneTimeSeconds >= 1 && oneTimeSeconds <= 3600

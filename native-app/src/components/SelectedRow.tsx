@@ -35,6 +35,21 @@ export default function SelectedRow({
   return <View style={[base, on && picked]}>{children}</View>;
 }
 
+/**
+ * How many are ticked, WITHOUT re-rendering whoever wanted to know.
+ *
+ * The hook below does the counting, and calling it from a screen re-renders
+ * that whole screen on every tick. In ChatScreen that meant a new `renderItem`
+ * identity on every tap, which makes VirtualizedList re-render every mounted
+ * cell — every photo, video and map on screen — precisely the work SelectedRow
+ * exists to avoid. Wrapping the count in its own component keeps the re-render
+ * inside these few characters of text.
+ */
+export function SelectionCount({ children }: { children: (n: number) => React.ReactNode }) {
+  const n = useSelectionCount();
+  return <>{children(n)}</>;
+}
+
 /** Anything that just needs to be redrawn when the selection changes. */
 export function useSelectionCount(): number {
   const [n, setN] = useState(() => selection.size());
