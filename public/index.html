@@ -160,6 +160,7 @@
       <button onclick="composerAttach()">📎 Media</button>
       <button onclick="composerRecord()">🎙 Voice</button>
       <button id="composer-one-time" onclick="composerOneTime()">🔥 One-time</button>
+      <button onclick="LocPicker.open()">📍 Location</button>
       <button id="composer-emoji" class="hidden" onclick="openQuickEmoji()" title="Quick emojis">😊</button>
     </div>
     <!-- Staged media preview (media is sent only when the user hits send) -->
@@ -278,6 +279,42 @@
       <button class="media-tab" data-tab="links" onclick="setMediaTab('links')">Links</button>
     </div>
     <div id="media-body" class="modal-section"></div>
+  </div>
+</div>
+
+<!-- Placing the pin by hand, because the browser's own answer is sometimes a
+     neighbourhood rather than a street — and on a desktop, sometimes a city. -->
+<div id="loc-modal" class="modal-overlay hidden" onclick="LocPicker.close()">
+  <div class="modal-card loc-card-modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h2>Choose a location</h2>
+      <button class="icon-btn" onclick="LocPicker.close()">✕</button>
+    </div>
+    <div class="loc-picker-hint">Move the map to place the pin</div>
+    <div id="loc-map-wrap">
+      <div id="loc-map"
+           onmousedown="LocPicker.onDown(event)" onmousemove="LocPicker.onMove(event)"
+           onmouseup="LocPicker.onUp()" onmouseleave="LocPicker.onUp()"
+           ontouchstart="LocPicker.onDown(event)" ontouchmove="LocPicker.onMove(event)"
+           ontouchend="LocPicker.onUp()"></div>
+      <!-- Dead centre and untouchable: the map slides under it. -->
+      <div id="loc-cross">📍</div>
+      <div class="loc-zoom">
+        <button onclick="LocPicker.zoomBy(1)" title="Zoom in">＋</button>
+        <button onclick="LocPicker.zoomBy(-1)" title="Zoom out">－</button>
+        <button onclick="LocPicker.recentre()" title="Find me">◎</button>
+      </div>
+    </div>
+    <div id="loc-label" class="loc-picker-label"></div>
+    <div id="loc-live-note" class="loc-picker-note hidden">
+      Live sharing needs to know where you are, so it is unavailable until your
+      position is found.
+    </div>
+    <div class="loc-picker-actions">
+      <button class="loc-send" onclick="LocPicker.send(0)">Send this location</button>
+      <button class="loc-live" onclick="LocPicker.send(15)">Share live · 15 min</button>
+      <button class="loc-live" onclick="LocPicker.send(60)">1 hour</button>
+    </div>
   </div>
 </div>
 
@@ -433,6 +470,8 @@
 <script src="/js/e2e.js"></script>
 <script src="/js/peerActions.js"></script>
 <script src="/js/peer.js"></script>
+<script src="/js/locationPick.js"></script>
+<script src="/js/locpicker.js"></script>
 <script src="/js/mentions.js"></script>
 <script src="/js/resumable.js"></script>
 <script src="/js/localSearch.js"></script>

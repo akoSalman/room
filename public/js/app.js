@@ -2536,6 +2536,10 @@ function buildLocationCard(msg) {
     wrap.textContent = '📍 Location (unreadable)';
     return wrap;
   }
+  // Read back by the picker, so a browser that cannot find you still opens
+  // somewhere near the conversation rather than in the middle of the ocean.
+  wrap.dataset.lat = p.lat;
+  wrap.dataset.lng = p.lng;
   const live = !!(p.liveUntil && p.liveUntil > Date.now());
   const url = `https://www.openstreetmap.org/?mlat=${p.lat}&mlon=${p.lng}#map=16/${p.lat}/${p.lng}`;
 

@@ -165,6 +165,47 @@ test('an unknown accuracy is not reported as a number', () => {
   assert.ok(!/accurate to/.test(label), `invented an accuracy: ${label}`);
 });
 
+// ── The web copy must not drift ─────────────────────────────────────────────
+//
+// public/js/locationPick.js mirrors this module. The two rules that stop a
+// false claim reaching a message — dropping accuracy from a hand-placed pin,
+// and forcing a live share back onto the real fix — are exactly the sort of
+// thing that gets simplified away in a second implementation.
+
+const WEB = require(path.join(__dirname, '..', 'public', 'js', 'locationPick.js'));
+
+test('the web build agrees on the constants', () => {
+  assert.strictEqual(WEB.PICK_ZOOM, P.PICK_ZOOM);
+  assert.strictEqual(WEB.UNKNOWN_ZOOM, P.UNKNOWN_ZOOM);
+  assert.strictEqual(WEB.PIN_MOVED_M, P.PIN_MOVED_M);
+});
+
+test('THE DRIFT CHECK: web and app place and describe the pin identically', () => {
+  const fixes = [null, fixAt(HERE), fixAt(HERE, 400), { ...HERE, accuracy: null }];
+  const points = [HERE, north(HERE, 3), north(HERE, 120), north(HERE, 2500)];
+  const bad = [];
+  const same = (what, a, b) => {
+    if (JSON.stringify(a) !== JSON.stringify(b)) {
+      bad.push(`${what}\n        app: ${JSON.stringify(a)}\n        web: ${JSON.stringify(b)}`);
+    }
+  };
+
+  for (const fix of fixes) {
+    same(`openingView(${!!fix})`, P.openingView(fix), WEB.openingView(fix));
+    same(`openingView(${!!fix}, nearby)`, P.openingView(fix, [HERE]), WEB.openingView(fix, [HERE]));
+    same(`canShareLive(${!!fix})`, P.canShareLive(fix), WEB.canShareLive(fix));
+    for (const at of points) {
+      same(`pinMoved`, P.pinMoved(fix, at), WEB.pinMoved(fix, at));
+      same(`chosenLabel`, P.chosenLabel(fix, at), WEB.chosenLabel(fix, at));
+      for (const liveUntil of [null, 9000, 500]) {
+        const args = { chosen: at, fix, liveUntil, now: 1000 };
+        same(`locationPayload(live=${liveUntil})`, P.locationPayload(args), WEB.locationPayload(args));
+      }
+    }
+  }
+  assert.deepStrictEqual(bad, [], `the web copy has drifted:\n      ${bad.join('\n      ')}`);
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }
