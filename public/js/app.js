@@ -72,6 +72,29 @@ let onlineUsers = [];
 const unreadCounts = {};
 const openNotifications = {}; // msg id -> Notification, so deletes can close them
 let dmDividerInserted = false;
+// Who the open direct chat is with, for the profile sheet.
+let currentDMPeerName = null;
+
+/** The header's profile button. */
+function openPeerFromHeader() {
+  if (!currentRoomIsDM || !currentDMPeerName) return;
+  window.Peer.open(currentDMPeerName, { isDm: true, roomId: currentRoomId });
+}
+
+/**
+ * A chat was cleared — here, or on another device, or by the other person.
+ *
+ * The room list has to lose it too, or it sits there showing a last message
+ * that no longer exists.
+ */
+window.onHistoryCleared = function (roomId) {
+  if (String(roomId) === String(currentRoomId)) {
+    document.getElementById('messages').innerHTML = '';
+    oldestLoadedMsgId = null;
+    hasMoreOlderMsgs = true;
+  }
+  loadRooms();
+};
 
 function getSupportedMimeType() {
   const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'];
@@ -488,6 +511,10 @@ function connectSocket() {
       applyEdit(messageId, content);
     });
     socket.on('message_deleted', ({ messageId }) => applyDelete(messageId));
+    // Cleared — by me on another device, or by the other person for both of
+    // us. Showing messages the server has already dropped would be showing a
+    // lie until the next reload.
+    socket.on('history_cleared', ({ roomId }) => window.onHistoryCleared(roomId));
     // A countdown started somewhere — remember the deadline so a later render
     // does not re-report the message as newly seen.
     socket.on('expiry_started', ({ roomId, started }) => {
@@ -535,6 +562,7 @@ function connectSocket() {
         document.getElementById('messages').innerHTML = '';
         document.getElementById('room-title').textContent = 'Select a room';
         document.getElementById('room-media-btn').classList.add('hidden');
+    document.getElementById('peer-btn').classList.add('hidden');
         document.getElementById('join-bar').classList.add('hidden');
       }
     };
@@ -923,6 +951,7 @@ function leaveCurrentRoom() {
     document.getElementById('messages').innerHTML = '';
     document.getElementById('room-title').textContent = 'Select a room';
     document.getElementById('room-media-btn').classList.add('hidden');
+    document.getElementById('peer-btn').classList.add('hidden');
     document.getElementById('join-bar').classList.add('hidden');
   });
 }
@@ -1120,6 +1149,7 @@ function removeRoomFromList(roomId) {
     currentRoomId = null;
     document.getElementById('room-title').textContent = 'Select a room';
     document.getElementById('room-media-btn').classList.add('hidden');
+    document.getElementById('peer-btn').classList.add('hidden');
     document.getElementById('messages').innerHTML = '';
   }
 }
@@ -1227,6 +1257,10 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   document.getElementById('room-link-btn').classList.toggle('hidden', isDM);
   // Shared content works for DMs too — that's where most media lives.
   document.getElementById('room-media-btn').classList.remove('hidden');
+  // Mute, block and clear are about a PERSON, so the button only appears
+  // where there is exactly one of them.
+  document.getElementById('peer-btn').classList.toggle('hidden', !isDM);
+  currentDMPeerName = isDM ? String(roomName || '').replace(/^💬\s*/, '') : null;
   refreshJoinBar(roomId, isDM);
   // Whether THIS chat destroys its messages — the skin must follow the room,
   // not linger from the last one.
@@ -2389,7 +2423,10 @@ function buildMessageElement(msg) {
     if (!currentRoomIsDM) {
       sender.classList.add('clickable');
       sender.title = `Message ${msg.username}`;
-      sender.onclick = (e) => { e.stopPropagation(); openDM(msg.username); };
+      // The person's sheet, not straight into a DM. Mute, block and clear are
+      // things you reach for ABOUT somebody, and jumping into a conversation
+      // with them is the one thing you may not want.
+      sender.onclick = (e) => { e.stopPropagation(); window.Peer.open(msg.username, { isDm: false }); };
     }
     wrapper.appendChild(sender);
   }
@@ -2626,7 +2663,15 @@ function buildMessageElement(msg) {
     footer.appendChild(ot);
   }
 
-  if (isMine && !msg._uploading) {
+  // A message the server accepted and deliberately never delivered, because
+  // the other person has blocked me. Drawn faded and dashed, with NO tick — a
+  // ✓ claiming delivery would be the one outright lie in the design. Nothing
+  // says "you have been blocked"; it is meant to feel wrong, not to announce
+  // somebody else's decision.
+  const vanished = window.PeerActions.vanishedStyle(msg.blocked_delivery);
+  if (vanished.faded) wrapper.classList.add('msg-vanished');
+
+  if (isMine && !msg._uploading && vanished.showTicks) {
     const status = document.createElement('span');
     status.className = 'msg-status';
     status.dataset.msgId = msg.id;

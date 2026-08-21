@@ -990,3 +990,36 @@ body.disappearing-on #messages { background: #141a24; }
 body.disappearing-on .msg-bubble { background: #1e2836; color: #dbe6f5; }
 body.disappearing-on .msg-caption, body.disappearing-on .msg-time { color: #8fa3c0; }
 .room-disappearing { margin-left: auto; font-size: 13px; opacity: .85; }
+
+/* ── One person, and what you can do about them ──────────────────────────── */
+.peer-head { display: flex; align-items: center; gap: 12px; padding: 6px 18px 12px; }
+.peer-avatar {
+  width: 46px; height: 46px; border-radius: 50%; background: var(--msg-bg, #eef1f5);
+  display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700;
+}
+.peer-id { display: flex; flex-direction: column; min-width: 0; }
+.peer-id b { font-size: 17px; }
+.peer-tag { font-size: 12px; color: var(--muted, #6b7280); margin-top: 2px; }
+.peer-tag-blocked { color: #dc2626; font-weight: 700; }
+.peer-actions { display: flex; flex-direction: column; padding-bottom: 10px; }
+.peer-sep { height: 1px; background: var(--border, #e0e4e9); margin: 6px 18px; }
+.peer-row {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 12px 18px; background: none; border: 0; text-align: start; cursor: pointer;
+  font: inherit; color: inherit;
+}
+.peer-row:hover { background: rgba(128, 128, 128, 0.08); }
+.peer-row-icon { font-size: 19px; width: 24px; text-align: center; }
+.peer-row-text { display: flex; flex-direction: column; min-width: 0; }
+.peer-row-text b { font-size: 15px; font-weight: 700; }
+.peer-row-text em {
+  font-style: normal; font-size: 11.5px; color: var(--muted, #6b7280); margin-top: 2px;
+}
+.peer-row-danger .peer-row-text b { color: #dc2626; }
+
+/* A message of mine the server accepted and never delivered. */
+.msg-vanished { opacity: 0.45; }
+.msg-vanished .msg-bubble {
+  border: 1px dashed var(--muted, #9ca3af);
+  background: transparent !important;
+}

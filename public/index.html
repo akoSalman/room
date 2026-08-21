@@ -96,6 +96,7 @@
       <button id="call-video-btn" class="icon-btn hidden" title="Video call" onclick="Calls.startDM('video')">🎥</button>
       <button id="room-voice-btn" class="icon-btn hidden" title="Join voice chat" onclick="Calls.toggleRoomVoice()">📞</button>
       <button id="room-media-btn" class="icon-btn hidden" title="Media, files & links" onclick="openMedia()">🖼</button>
+      <button id="peer-btn" class="icon-btn hidden" title="Profile, mute, block, clear" onclick="openPeerFromHeader()">👤</button>
       <button id="room-link-btn" class="icon-btn hidden" title="Room info" onclick="openRoomInfo()">ℹ️</button>
       <button id="online-indicator" class="online-badge hidden" onclick="toggleOnlinePanel()"></button>
     </header>
@@ -258,6 +259,24 @@
   </div>
 </div>
 
+<!-- One person, and what you can do about them. -->
+<div id="peer-modal" class="modal-overlay hidden" onclick="Peer.close()">
+  <div class="modal-card" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h2>Profile</h2>
+      <button class="icon-btn" onclick="Peer.close()">✕</button>
+    </div>
+    <div class="peer-head">
+      <div id="peer-avatar" class="peer-avatar"></div>
+      <div class="peer-id">
+        <b id="peer-name"></b>
+        <span id="peer-tag" class="peer-tag"></span>
+      </div>
+    </div>
+    <div id="peer-actions" class="peer-actions"></div>
+  </div>
+</div>
+
 <div id="room-info-modal" class="modal-overlay hidden" onclick="closeRoomInfo()">
   <div class="modal-card" onclick="event.stopPropagation()">
     <div class="modal-header">
@@ -390,6 +409,8 @@
 <script src="/js/credentials.js"></script>
 <script src="/js/nacl-fast.min.js"></script>
 <script src="/js/e2e.js"></script>
+<script src="/js/peerActions.js"></script>
+<script src="/js/peer.js"></script>
 <script src="/js/app.js"></script>
 <script src="/js/calls.js"></script>
 </body>

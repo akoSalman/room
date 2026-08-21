@@ -173,6 +173,66 @@ test('and by their initials when they do not', () => {
   assert.strictEqual(P.avatarFor({ username: 'sara', avatar: '' }), 'SA');
 });
 
+// ── The web copy must not drift ─────────────────────────────────────────────
+//
+// public/js/peerActions.js says it mirrors the TypeScript exactly. That claim
+// rots the first time somebody edits one and not the other, and the symptom is
+// the worst possible kind: two clients quietly disagreeing about what "block"
+// or "clear for both" means, with no error anywhere.
+//
+// So it is checked, over every input that changes an answer, rather than
+// trusted.
+
+const WEB = require(path.join(__dirname, '..', 'public', 'js', 'peerActions.js'));
+
+test('the web build exposes the same functions as the app', () => {
+  const missing = Object.keys(P).filter(k => typeof P[k] === 'function' && typeof WEB[k] !== 'function');
+  assert.deepStrictEqual(missing, [], `the web copy is missing: ${missing.join(', ')}`);
+});
+
+test('THE DRIFT CHECK: web and app agree on every answer', () => {
+  const names = ['sara', 'ali_2', 'کاربر'];
+  const bools = [true, false];
+  const mismatches = [];
+  const same = (what, a, b) => {
+    if (JSON.stringify(a) !== JSON.stringify(b)) {
+      mismatches.push(`${what}\n        app: ${JSON.stringify(a)}\n        web: ${JSON.stringify(b)}`);
+    }
+  };
+
+  for (const isDm of bools) {
+    same(`clearScopes(${isDm})`, P.clearScopes(isDm), WEB.clearScopes(isDm));
+    same(`canClearForBoth(${isDm})`, P.canClearForBoth(isDm), WEB.canClearForBoth(isDm));
+    for (const isSelf of bools) {
+      const peer = someone({ isSelf });
+      same(`actionsFor(self=${isSelf}, dm=${isDm})`, P.actionsFor(peer, isDm), WEB.actionsFor(peer, isDm));
+    }
+  }
+  for (const name of names) {
+    for (const scope of ['me', 'both']) {
+      same(`clearLabel(${scope})`, P.clearLabel(scope), WEB.clearLabel(scope));
+      same(`clearHint(${scope}, ${name})`, P.clearHint(scope, name), WEB.clearHint(scope, name));
+      same(`clearConfirm(${scope}, ${name})`, P.clearConfirm(scope, name), WEB.clearConfirm(scope, name));
+    }
+    for (const on of bools) {
+      same(`muteLabel(${on})`, P.muteLabel(on), WEB.muteLabel(on));
+      same(`muteHint(${on}, ${name})`, P.muteHint(on, name), WEB.muteHint(on, name));
+      same(`blockLabel(${on})`, P.blockLabel(on), WEB.blockLabel(on));
+      same(`blockHint(${on}, ${name})`, P.blockHint(on, name), WEB.blockHint(on, name));
+      same(`blockConfirm(${on}, ${name})`, P.blockConfirm(on, name), WEB.blockConfirm(on, name));
+    }
+    same(`avatarFor(${name})`, P.avatarFor({ username: name }), WEB.avatarFor({ username: name }));
+    same(`avatarFor(${name} + emoji)`,
+      P.avatarFor({ username: name, avatar: '🦊' }), WEB.avatarFor({ username: name, avatar: '🦊' }));
+  }
+  for (const v of [1, 0, true, false, undefined, null]) {
+    same(`vanishedStyle(${v})`, P.vanishedStyle(v), WEB.vanishedStyle(v));
+  }
+
+  assert.deepStrictEqual(mismatches, [],
+    `the web copy has drifted from the app:\n      ${mismatches.join('\n      ')}`);
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }
