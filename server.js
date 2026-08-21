@@ -641,38 +641,23 @@ async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
         body: JSON.stringify({
           message: {
             token: t,
-            ...(android.dataOnly ? {} : { notification: { title, body } }),
-            // `title` and `body` are kept OUT of the data payload for a call.
-            //
-            // Leaving the top-level `notification` block off is not enough on
-            // its own: expo-notifications builds and presents a notification
-            // of its OWN whenever the data payload carries title/body, using
-            // the default channel and the default sound. So a call arrived as a
-            // plain notification that chimed once — "it doesn't ring, I just
-            // get a notification" — while the ringing notification the app was
-            // supposed to raise never got the chance.
-            //
-            // Nothing is lost by omitting them: the ringing notification is
-            // built on the device from `fromUsername` and `kind`, which travel
-            // as their own fields.
+            notification: { title, body },
             data: Object.fromEntries(
-              Object.entries(android.dataOnly ? data : { ...data, title, body })
-                .map(([k, v]) => [k, String(v)]),
+              Object.entries({ ...data, title, body }).map(([k, v]) => [k, String(v)]),
             ),
             android: {
               priority: 'high',
-              // Tag the tray notification with the message id so a later
-              // delete can replace/collapse it on the recipient's device.
-              ...(android.dataOnly ? {} : {
-                notification: {
-                  channel_id: android.channelId || 'messages-v3',
-                  sound: android.sound || 'notify',
-                  ...(android.categoryId ? { click_action: android.categoryId, notification_priority: 'PRIORITY_MAX' } : {}),
-                  ...(data.msgId ? { tag: `msg-${data.msgId}` } : {}),
-                },
-              }),
+              notification: {
+                channel_id: android.channelId || 'messages-v3',
+                sound: android.sound || 'notify',
+                ...(android.categoryId ? { click_action: android.categoryId, notification_priority: 'PRIORITY_MAX' } : {}),
+                // Tag the tray notification with the message id so a later
+                // delete can replace/collapse it on the recipient's device.
+                ...(data.msgId ? { tag: `msg-${data.msgId}` } : {}),
+                ...(android.tag ? { tag: android.tag } : {}),
+              },
               // Calls must not be held back by Doze or app-standby buckets.
-              ...(android.dataOnly ? { ttl: '45s', direct_boot_ok: true } : {}),
+              ...(android.ttl ? { ttl: android.ttl, direct_boot_ok: true } : {}),
             },
           },
         }),
@@ -2072,10 +2057,30 @@ io.on('connection', (socket) => {
         fromUserId: socket.user.id, fromUsername: socket.user.username,
         kind: k, sdp, candidates: [], ts: Date.now(),
       });
-      // Data-only: the app has to WAKE UP and ring, rather than the OS drawing
-      // a banner that chimes once and goes quiet. `fromUsername` travels in the
-      // payload because the ringing notification is built on the device, with
-      // no chance to look anything up.
+      // ── Why this is a NOTIFICATION message and not data-only ────────────
+      //
+      // Reported, repeatedly: the phone does not ring when the app is closed.
+      //
+      // It was sent data-only so the app would wake and raise its own looping,
+      // full-screen ring. The app cannot. expo-notifications delivers a data
+      // message to JavaScript through Android's JobScheduler
+      // (BackgroundRemoteNotificationTaskConsumer.scheduleJob), and a
+      // JobScheduler job is DEFERRABLE — the system runs it when it feels like
+      // it, which under Doze is minutes later or not at all. A ringing phone
+      // cannot wait for a job queue. Sending data-only therefore traded "a
+      // notification that chimes once" for silence, which is what the last
+      // three attempts at this were fixing the wrong end of.
+      //
+      // The other half of onMessageReceived is immediate and needs no
+      // JavaScript at all: expo-notifications presents the message itself, on
+      // whatever channel it names. So the call now arrives as a real
+      // notification on the calls channel — high importance, and a thirty
+      // second ringtone — and it rings the moment it lands, with the app
+      // closed, force-stopped, or missing entirely from memory.
+      //
+      // The data payload is still carried, so that when JavaScript IS alive
+      // notifee can take over and add what a plain notification cannot do:
+      // looping, a full-screen intent, and Accept/Decline in the shade.
       sendPushToUsers(
         [toUserId],
         (socket.user.avatar ? socket.user.avatar + ' ' : '') + socket.user.username,
@@ -2085,7 +2090,17 @@ io.on('connection', (socket) => {
           fromUserId: socket.user.id,
           fromUsername: socket.user.username,
         },
-        { dataOnly: true, fromUserId: socket.user.id },
+        {
+          channelId: 'calls-v2',
+          sound: 'ring',
+          categoryId: 'call',
+          // One tag, so a second offer replaces the first rather than stacking.
+          tag: 'incoming-call',
+          // A call is worthless once it has been missed; do not deliver it
+          // late from a queue.
+          ttl: '45s',
+          fromUserId: socket.user.id,
+        },
       );
     }
   });

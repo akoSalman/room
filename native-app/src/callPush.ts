@@ -21,7 +21,37 @@ import * as TaskManager from 'expo-task-manager';
 import notifee, { EventType } from '@notifee/react-native';
 import { ringIncoming, stopRinging, ensureCallChannel } from './incomingCall';
 
+// ── What actually rings, and when ────────────────────────────────────────────
+//
+// The RING itself no longer depends on any of this. A call arrives as an
+// ordinary high-importance notification on the calls channel, and Android
+// plays it the moment it lands — with the app closed, force-stopped, or never
+// opened since boot. That path runs no JavaScript at all, which is the whole
+// point: expo-notifications hands data messages to JS through Android's
+// JobScheduler, and a deferrable job cannot ring a phone.
+//
+// What the code below adds, WHEN JavaScript happens to be alive, is everything
+// a plain notification cannot do: a looping ring, a full-screen intent, and
+// Accept/Decline without opening the app. It is an upgrade on top of a ring
+// that has already started, not the thing responsible for starting it.
+
 export const CALL_PUSH_TASK = 'chatroom-incoming-call';
+
+/** The tag the server puts on the plain call notification. */
+const SERVER_CALL_TAG = 'incoming-call';
+
+/** Take down the server's plain notification once notifee is ringing. */
+async function dismissPlainCallNotification(): Promise<void> {
+  try {
+    const shown = await Notifications.getPresentedNotificationsAsync();
+    await Promise.all(shown
+      .filter(n => {
+        const d: any = n.request?.content?.data || {};
+        return String(d.type) === 'call' || String(d.tag) === SERVER_CALL_TAG;
+      })
+      .map(n => Notifications.dismissNotificationAsync(n.request.identifier).catch(() => {})));
+  } catch {}
+}
 
 let registered = false;
 
@@ -36,11 +66,17 @@ export function registerCallPush() {
       // depending on Android version and whether the app was alive.
       const d = data?.notification?.data || data?.data || data || {};
       if (String(d.type) !== 'call') return;
-      await ringIncoming(
+      const rang = await ringIncoming(
         String(d.fromUsername || 'Someone'),
         d.kind === 'video' ? 'video' : 'voice',
         d.fromUserId,
       );
+      // Notifee has taken over with the looping, full-screen version, so the
+      // plain notification Android already put up has to go — otherwise the
+      // two ring over each other and there are two entries in the shade for
+      // one call. Only once the replacement is actually up: dismissing it
+      // after a failed ring would leave nothing at all.
+      if (rang) await dismissPlainCallNotification();
     } catch {}
   });
   Notifications.registerTaskAsync(CALL_PUSH_TASK).catch(() => {});
@@ -74,7 +110,9 @@ export function registerCallPush() {
     }
   });
 
-  // The channel has to exist before a notification can use it, and creating it
-  // here means it exists on a background start too.
+  // The channel has to exist before a notification can use it — including
+  // before the SERVER's notification can use it, which is now what rings. A
+  // channel Android has never heard of falls back to the default one, with the
+  // default sound and no ring at all.
   ensureCallChannel().catch(() => {});
 }

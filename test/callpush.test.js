@@ -1,11 +1,24 @@
 // Tests the shape of the push that rings an incoming call.
 //
-// This one field decides whether the phone rings at all. A Firebase message
-// carrying a `notification` block is drawn by Android itself and the app's JS
-// never runs while it is backgrounded or closed — so the ring sound plays once
-// and stops, which is exactly the "it doesn't ring when the app is closed"
-// report. Only a DATA-ONLY message wakes the app to raise a real ringing call
-// notification.
+// THIS FILE USED TO ASSERT THE OPPOSITE, and that is why the bug kept coming
+// back. It required the call push to be DATA-ONLY, on the theory that a data
+// message wakes the app so it can raise a real ringing notification, whereas a
+// notification message is drawn by Android and merely chimes.
+//
+// The first half of that is wrong. expo-notifications hands data messages to
+// JavaScript through Android's JobScheduler — see
+// BackgroundRemoteNotificationTaskConsumer.scheduleJob in the library — and a
+// JobScheduler job is DEFERRABLE. The system runs it when it suits the system,
+// which under Doze is minutes later or never. A ringing phone cannot wait in a
+// job queue, so data-only did not mean "wakes up and rings", it meant silence.
+//
+// The other half of onMessageReceived is immediate and runs no JavaScript at
+// all: expo-notifications presents the message itself, on the channel it
+// names. So a call is sent as a real notification on the calls channel, with a
+// thirty-second ringtone, and it rings the moment it lands however dead the
+// app is. The data payload rides along so that when JavaScript IS alive,
+// notifee can upgrade it to a looping, full-screen ring with Accept and
+// Decline.
 //
 // The outgoing FCM request is captured rather than sent.
 const assert = require('assert');
@@ -74,7 +87,7 @@ const connect = token => new Promise((res, rej) => {
 });
 const settle = () => new Promise(r => setTimeout(r, 250));
 
-test('an incoming call is pushed DATA-ONLY, so the app wakes up and rings', async () => {
+test('THE BUG: a call rings without needing any JavaScript to run', async () => {
   const caller = await signUp('ringcaller');
   const callee = await signUp('ringcallee');
   const calleeId = db.prepare('SELECT id FROM users WHERE username = ?').get('ringcallee').id;
@@ -89,28 +102,41 @@ test('an incoming call is pushed DATA-ONLY, so the app wakes up and rings', asyn
 
   assert.strictEqual(sent.length, 1, `expected one push, got ${sent.length}`);
   const msg = sent[0].message;
-  assert.ok(!msg.notification,
-    'the call push carried a notification block — Android would draw it itself and '
-    + 'the app would never run, so it chimes once instead of ringing');
+
+  // A notification block, so Android presents it the instant it arrives. This
+  // is the assertion that was inverted before, and the reason the phone stayed
+  // silent: without it the ring waited on a deferrable background job.
+  assert.ok(msg.notification,
+    'the call push has no notification block, so nothing rings until a '
+    + 'deferrable background job happens to run — which under Doze is minutes '
+    + 'later or never');
+  assert.strictEqual(msg.notification.title, 'ringcaller');
+
+  // On the CALLS channel, which is where the thirty-second ringtone lives. The
+  // default channel chimes once, which is the complaint.
+  assert.strictEqual(msg.android.notification.channel_id, 'calls-v2',
+    'a call went out on the ordinary message channel, which chimes once');
+  assert.strictEqual(msg.android.notification.sound, 'ring');
+  assert.strictEqual(msg.android.notification.notification_priority, 'PRIORITY_MAX');
   assert.strictEqual(msg.android.priority, 'high', 'a call push must be high priority');
+
+  // A call is worthless once missed: it must expire rather than be delivered
+  // late out of a queue.
+  assert.strictEqual(msg.android.ttl, '45s');
+  assert.strictEqual(msg.android.direct_boot_ok, true);
+
+  // One tag, so a second offer replaces the first rather than stacking two
+  // ringing notifications for one call.
+  assert.strictEqual(msg.android.notification.tag, 'incoming-call');
+
+  // The data still rides along, so that when JavaScript IS alive notifee can
+  // upgrade this to a looping, full-screen ring. It is built on the device,
+  // which cannot look anything up, so the caller has to be named in it.
   assert.strictEqual(msg.data.type, 'call');
   assert.strictEqual(msg.data.kind, 'voice');
-  // The ringing notification is built on the device, which cannot look
-  // anything up — the caller's name has to be in the payload.
   assert.strictEqual(msg.data.fromUsername, 'ringcaller',
     'the callee would have nothing to show as the caller');
-  assert.ok(!msg.android.notification,
-    'the android block still declared a notification');
-  // THE SECOND HALF OF THE SAME BUG. Omitting the top-level notification block
-  // is not enough: expo-notifications presents a notification of its own
-  // whenever the DATA payload carries title/body, on the default channel with
-  // the default sound. That is a single chime, and it is what arrived instead
-  // of a ring.
-  assert.ok(!('title' in msg.data),
-    'the call push carries data.title — expo-notifications will draw its own '
-    + 'plain notification from it and the phone chimes once instead of ringing');
-  assert.ok(!('body' in msg.data), 'the call push carries data.body');
-  callee && sock.close();
+  sock.close();
 });
 
 test('a video call is marked as one', async () => {
