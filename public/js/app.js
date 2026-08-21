@@ -518,6 +518,13 @@ function connectSocket() {
     // us. Showing messages the server has already dropped would be showing a
     // lie until the next reload.
     socket.on('history_cleared', ({ roomId }) => window.onHistoryCleared(roomId));
+    // Named in a message. It joins the queue even while the chat is open — it
+    // is only cleared once it has actually been jumped to.
+    socket.on('mentioned', ({ roomId, messageId }) => {
+      if (String(roomId) !== String(currentRoomId)) return;
+      if (!pendingMentions.includes(messageId)) pendingMentions.push(messageId);
+      updateMentionFab();
+    });
     // A countdown started somewhere — remember the deadline so a later render
     // does not re-report the message as newly seen.
     socket.on('expiry_started', ({ roomId, started }) => {
@@ -639,6 +646,7 @@ function clearUnread(roomId) {
 // ─── Typing ───────────────────────────────────────────────────────────────────
 function onTypingInput() {
   updateComposerButtons();
+  refreshMentionSuggestions();
   if (!currentRoomId || !socketReady) return;
   if (!isTyping) { isTyping = true; socket.emit('typing_start', { roomId: currentRoomId }); }
   clearTimeout(typingTimer);
@@ -1268,6 +1276,9 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   document.getElementById('peer-btn').classList.toggle('hidden', !isDM);
   document.getElementById('chat-search-btn').classList.remove('hidden');
   window.ChatSearch.close();
+  closeMentionBox();
+  loadMentionables(roomId);
+  loadMentions(roomId);
   currentDMPeerName = isDM ? String(roomName || '').replace(/^💬\s*/, '') : null;
   refreshJoinBar(roomId, isDM);
   // Whether THIS chat destroys its messages — the skin must follow the room,
@@ -1382,7 +1393,119 @@ function renderOnlinePanel() {
 }
 
 // ─── Messaging ────────────────────────────────────────────────────────────────
-function handleInputKey(e) { if (e.key === 'Enter') sendOrSave(); }
+function handleInputKey(e) {
+  // The suggestion list gets first refusal on the keys that mean something to
+  // it, or Enter sends "@al" instead of completing it to "@ali".
+  if (mentionSuggestions.length) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); moveMentionPick(1); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); moveMentionPick(-1); return; }
+    if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); chooseMention(mentionPick); return; }
+    if (e.key === 'Escape') { closeMentionBox(); return; }
+  }
+  if (e.key === 'Enter') sendOrSave();
+}
+
+// ─── @mentions ───────────────────────────────────────────────────────────────
+//
+// The rules for when "@" starts a mention live in mentions.js, shared with the
+// app: the fiddly part is telling a mention from an email address, and getting
+// it wrong pops this list over somebody typing one.
+let mentionables = [];        // who is in this chat
+let mentionSuggestions = [];
+let mentionPick = 0;
+let mentionAnchor = null;     // { start, query } while a name is being typed
+
+/** Everyone who can be mentioned here. Loaded once per chat, not per keystroke. */
+async function loadMentionables(roomId) {
+  mentionables = [];
+  if (!roomId || currentRoomIsDM) return;
+  const info = await api('/room-info/' + roomId);
+  if (!info || info.error || !Array.isArray(info.members)) return;
+  if (String(roomId) !== String(currentRoomId)) return;
+  mentionables = info.members.map(m => m.username).filter(u => u && u !== username);
+}
+
+function refreshMentionSuggestions() {
+  const input = document.getElementById('msg-input');
+  const q = window.Mentions.mentionQuery(input.value, input.selectionStart ?? input.value.length);
+  if (!q || !mentionables.length) { closeMentionBox(); return; }
+  mentionAnchor = q;
+  mentionSuggestions = window.Mentions.filterUsernames(mentionables, q.query);
+  if (!mentionSuggestions.length) { closeMentionBox(); return; }
+  mentionPick = 0;
+  renderMentionBox();
+}
+
+function renderMentionBox() {
+  const box = document.getElementById('mention-box');
+  box.innerHTML = '';
+  mentionSuggestions.forEach((name, i) => {
+    const d = document.createElement('div');
+    d.className = 'mention-item' + (i === mentionPick ? ' active' : '');
+    d.textContent = '@' + name;
+    d.onmousedown = (e) => { e.preventDefault(); chooseMention(i); };
+    box.appendChild(d);
+  });
+  box.classList.remove('hidden');
+}
+
+function moveMentionPick(delta) {
+  mentionPick = (mentionPick + delta + mentionSuggestions.length) % mentionSuggestions.length;
+  renderMentionBox();
+}
+
+function chooseMention(i) {
+  const name = mentionSuggestions[i];
+  if (!name || !mentionAnchor) return;
+  const input = document.getElementById('msg-input');
+  const caret = input.selectionStart ?? input.value.length;
+  const next = window.Mentions.applyMention(input.value, mentionAnchor.start, caret, name);
+  input.value = next.text;
+  input.setSelectionRange(next.caret, next.caret);
+  closeMentionBox();
+  input.focus();
+  updateComposerButtons();
+}
+
+function closeMentionBox() {
+  mentionSuggestions = [];
+  mentionAnchor = null;
+  const box = document.getElementById('mention-box');
+  if (box) { box.classList.add('hidden'); box.innerHTML = ''; }
+}
+
+// ─── Being mentioned ─────────────────────────────────────────────────────────
+//
+// A button that walks you through them oldest-first, because the point of a
+// mention is that somebody wanted an answer — and that is rarely the newest
+// message in the room.
+let pendingMentions = [];
+
+async function loadMentions(roomId) {
+  pendingMentions = [];
+  updateMentionFab();
+  if (!roomId || currentRoomIsDM) return;
+  const r = await api('/mentions/' + roomId);
+  if (!r || r.error || !Array.isArray(r.mentions)) return;
+  if (String(roomId) !== String(currentRoomId)) return;
+  pendingMentions = r.mentions;
+  updateMentionFab();
+}
+
+function updateMentionFab() {
+  const fab = document.getElementById('mention-fab');
+  if (!fab) return;
+  fab.classList.toggle('hidden', !pendingMentions.length);
+  fab.textContent = pendingMentions.length > 1 ? '@' + pendingMentions.length : '@';
+}
+
+function goToNextMention() {
+  const next = pendingMentions.shift();
+  updateMentionFab();
+  // Cleared only once it has actually been jumped to, so closing the app
+  // half-way through does not lose the rest.
+  if (next) jumpToMessage(next);
+}
 function sendOrSave() {
   if (editingMsgId) return saveEdit();
   if (pendingFiles.length) return sendPendingFiles();

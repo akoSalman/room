@@ -165,6 +165,13 @@
     <!-- Staged media preview (media is sent only when the user hits send) -->
     <div id="media-preview-bar" class="hidden"></div>
 
+    <!-- Who you can @mention, while you are typing one. -->
+    <div id="mention-box" class="mention-box hidden"></div>
+
+    <!-- Jump to the oldest message that named me and has not been read. -->
+    <button id="mention-fab" class="mention-fab hidden" title="Go to the next mention of you"
+            onclick="goToNextMention()">@</button>
+
     <!-- Normal input bar -->
     <div id="input-bar">
       <input type="file" id="file-input" style="display:none" multiple onchange="stageFile()" />
@@ -426,6 +433,7 @@
 <script src="/js/e2e.js"></script>
 <script src="/js/peerActions.js"></script>
 <script src="/js/peer.js"></script>
+<script src="/js/mentions.js"></script>
 <script src="/js/resumable.js"></script>
 <script src="/js/localSearch.js"></script>
 <script src="/js/encsearch.js"></script>

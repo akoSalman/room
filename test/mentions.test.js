@@ -94,6 +94,56 @@ test('an empty query offers the whole (capped) list', () => {
   assert.deepStrictEqual(M.filterUsernames(['a', 'b'], ''), ['a', 'b']);
 });
 
+// ── The web copy must not drift ─────────────────────────────────────────────
+//
+// public/js/mentions.js mirrors this module. The rule about when "@" starts a
+// mention is the whole substance of it, and a copy that gets it slightly wrong
+// pops a suggestion list over somebody typing an email address — on one client
+// only, with no error anywhere.
+
+const WEB = require(path.join(__dirname, '..', 'public', 'js', 'mentions.js'));
+
+test('THE DRIFT CHECK: web and app agree on when an @ starts a mention', () => {
+  const cases = [
+    ['', 0], ['@', 1], ['@al', 3], ['hi @al', 6], ['hi @al', 4],
+    ['mail me at a@b.com', 18], ['a@b', 3], ['x@', 2],
+    ['@ali ', 5], ['@ali there', 10], ['hi @ali there', 7],
+    ['@' + 'a'.repeat(25), 26],
+    ['line\n@al', 8], ['@AL_2.x', 7],
+    ['hi @al', 0], ['hi', 99], ['hi', -1],
+  ];
+  const bad = [];
+  for (const [text, caret] of cases) {
+    const a = M.mentionQuery(text, caret);
+    const b = WEB.mentionQuery(text, caret);
+    if (JSON.stringify(a) !== JSON.stringify(b)) {
+      bad.push(`mentionQuery(${JSON.stringify(text)}, ${caret}): app=${JSON.stringify(a)} web=${JSON.stringify(b)}`);
+    }
+  }
+  assert.deepStrictEqual(bad, [], `mentions have drifted:\n      ${bad.join('\n      ')}`);
+});
+
+test('THE DRIFT CHECK: web and app splice the chosen name in identically', () => {
+  const cases = [
+    ['@al', 0, 3, 'ali'], ['hi @al', 3, 6, 'ali'],
+    ['hi @al there', 3, 6, 'ali'], ['@a b', 0, 2, 'ali'],
+  ];
+  for (const [text, start, caret, name] of cases) {
+    assert.deepStrictEqual(
+      WEB.applyMention(text, start, caret, name),
+      M.applyMention(text, start, caret, name),
+      `applyMention(${JSON.stringify(text)}, ${start}, ${caret}, ${name})`);
+  }
+});
+
+test('THE DRIFT CHECK: web and app rank suggestions identically', () => {
+  const names = ['ali', 'kamal', 'alireza', 'sara', 'Ali_2'];
+  for (const q of ['', 'a', 'al', 'AL', 'ma', 'zzz']) {
+    assert.deepStrictEqual(WEB.filterUsernames(names, q), M.filterUsernames(names, q), `q=${q}`);
+    assert.deepStrictEqual(WEB.filterUsernames(names, q, 2), M.filterUsernames(names, q, 2), `q=${q} limit`);
+  }
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }
