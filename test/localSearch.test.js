@@ -128,6 +128,78 @@ test('ids are compared as strings when merging', () => {
   assert.strictEqual(merged.length, 1);
 });
 
+// ── The web copy must not drift ─────────────────────────────────────────────
+//
+// public/js/localSearch.js mirrors this module for the browser. Several of the
+// character classes involved are invisible (zero-width joiners) or differ by a
+// single code point, so a mistranscription does not look like a bug — it looks
+// like a search that quietly stops finding half of somebody's messages, in one
+// client only.
+//
+// The web file's normalise() body was copied from the TypeScript mechanically
+// rather than retyped, and this checks the result over the awkward cases.
+
+const WEB = require(path.join(__dirname, '..', 'public', 'js', 'localSearch.js'));
+
+test('the web build exposes the same functions', () => {
+  for (const k of ['normalise', 'matches', 'searchLocal', 'mergeResults']) {
+    assert.strictEqual(typeof WEB[k], 'function', `web copy is missing ${k}`);
+  }
+});
+
+test('THE DRIFT CHECK: web and app normalise identically', () => {
+  const cases = [
+    'می‌روم', 'ميروم', 'مي‌روم', 'میروم',
+    'كتاب', 'کتاب',
+    'أحمد', 'إسم', 'آب', 'ٱب', 'اب',
+    'خانهٔ', 'خانة', 'خانه',
+    'سَلامٌ', 'سلام',
+    '١٢٣', '۱۲۳', '123',
+    'ســلام',                       // tatweel
+    '  spaced   out  ',
+    'MiXeD CaSe',
+    'Hello, world!',
+    '',
+  ];
+  const bad = [];
+  for (const c of cases) {
+    const a = L.normalise(c), b = WEB.normalise(c);
+    if (a !== b) bad.push(`${JSON.stringify(c)}\n        app: ${JSON.stringify(a)}\n        web: ${JSON.stringify(b)}`);
+  }
+  assert.deepStrictEqual(bad, [], `normalise has drifted:\n      ${bad.join('\n      ')}`);
+});
+
+test('THE DRIFT CHECK: web and app match identically', () => {
+  const pairs = [
+    ['می‌روم', 'میروم'], ['میروم', 'می‌روم'], ['كتاب من', 'کتاب'],
+    ['شماره ١٢٣', '123'], ['Hello there', 'hello'], ['nothing', 'zzz'],
+  ];
+  const bad = [];
+  for (const [text, q] of pairs) {
+    const a = L.matches(text, q), b = WEB.matches(text, q);
+    if (a !== b) bad.push(`matches(${JSON.stringify(text)}, ${JSON.stringify(q)}): app=${a} web=${b}`);
+  }
+  assert.deepStrictEqual(bad, []);
+});
+
+test('THE DRIFT CHECK: web and app search and merge identically', () => {
+  const msgs = [
+    { id: 1, content: 'سلام' },
+    { id: 2, content: 'می‌روم خانه' },
+    { id: 3, content: 'hello world' },
+    { id: 4, content: 'میروم بیرون' },
+  ];
+  // Includes one- and zero-character queries: the two-character minimum is
+  // itself a rule the two copies have to agree on, and a search box that
+  // starts matching one letter earlier on web floods the user with hits.
+  for (const q of ['میروم', 'سلام', 'hello', 'zz', 'h', 'م', '', ' ']) {
+    assert.deepStrictEqual(WEB.searchLocal(msgs, q), L.searchLocal(msgs, q), `searchLocal(${q})`);
+  }
+  const server = [{ id: 3, content: 'a' }, { id: 1, content: 'b' }];
+  const local = [{ id: 4, content: 'c' }, { id: 3, content: 'a' }];
+  assert.deepStrictEqual(WEB.mergeResults(server, local), L.mergeResults(server, local));
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

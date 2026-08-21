@@ -4,6 +4,9 @@ let currentRoomId = null;
 let currentRoomIsDM = false;
 let maxOtherReadMsgId = 0; // highest message id any other room member has read (for seen checkmarks)
 let currentDMPeerPk = null; // the DM partner's public key (E2E) or null
+// Mirrored onto window so the separately-loaded search modules can read it
+// without app.js having to hand it to them on every call.
+function setDMPeerPk(k) { currentDMPeerPk = k; window.currentDMPeerPk = k; }
 let allChatImages = []; // every image of the current chat (from /room-media)
 let e2eUnlockAsked = false;
 
@@ -1279,7 +1282,7 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   hasMoreOlderMsgs = true;
   loadingOlderMsgs = false;
   maxOtherReadMsgId = 0;
-  currentDMPeerPk = null;
+  setDMPeerPk(null);
   allChatImages = [];
   api('/room-media/' + roomId).then(m => {
     if (m && !m.error && String(roomId) === String(currentRoomId)) {
@@ -1297,7 +1300,7 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
       const pk = await api('/dm-peer-key/' + roomId);
       Calls.setDMPeer(pk?.userId || null, roomName);
       if (E2E.ready() && pk?.publicKey) {
-        currentDMPeerPk = E2E.decodeKey(pk.publicKey);
+        setDMPeerPk(E2E.decodeKey(pk.publicKey));
         document.getElementById('room-title').textContent = '🔒 ' + roomName;
       }
     } catch {}
