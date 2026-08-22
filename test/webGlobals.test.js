@@ -154,6 +154,7 @@ test('every module the page needs is actually loaded, in an order that works', (
     ['resumable.js', 'app.js'],
     ['mentions.js', 'app.js'],
     ['callMedia.js', 'calls.js'],
+    ['callStatus.js', 'calls.js'],
   ];
   for (const [first, second] of pairs) {
     assert.ok(pos(first) !== -1, `${first} is never loaded`);

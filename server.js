@@ -2059,7 +2059,14 @@ io.on('connection', (socket) => {
 
   // ── WebRTC signaling ────────────────────────────────────────────────────────
   // The server only relays SDP/ICE blobs between users; media flows P2P.
-  socket.on('call_offer', ({ toUserId, roomId, kind, sdp }) => {
+  socket.on('call_offer', ({ toUserId, roomId, kind, sdp }, ack) => {
+    // Whether anyone is actually there to hear it. The caller's screen used to
+    // say "Ringing…" the instant this was emitted, which is a claim about the
+    // OTHER phone made without hearing from it — and simply untrue when the
+    // callee was offline and being woken by a push.
+    const live = io.sockets.adapter.rooms.get('user:' + toUserId);
+    const delivered = !!(live && live.size > 0);
+    if (typeof ack === 'function') ack({ delivered });
     io.to('user:' + toUserId).emit('call_offer', {
       fromUserId: socket.user.id, fromUsername: socket.user.username,
       roomId: roomId || null, kind: kind === 'video' ? 'video' : 'voice', sdp,
@@ -2158,6 +2165,11 @@ io.on('connection', (socket) => {
     const pc = pendingCalls.get(parseInt(toUserId, 10));
     if (pc && pc.fromUserId === socket.user.id && pc.candidates.length < 60) pc.candidates.push(candidate);
     io.to('user:' + toUserId).emit('call_ice', { fromUserId: socket.user.id, candidate });
+  });
+  // The callee's app reporting that it is alerting — the only thing that
+  // entitles the caller's screen to say "Ringing…".
+  socket.on('call_ringing', ({ toUserId }) => {
+    io.to('user:' + toUserId).emit('call_ringing', { fromUserId: socket.user.id });
   });
   socket.on('call_end', ({ toUserId }) => {
     clearPendingCallsBetween(socket.user.id, parseInt(toUserId, 10));

@@ -157,12 +157,27 @@ export async function e2eDMPeerKey(roomId: number): Promise<Uint8Array | null> {
 // expensive step (hundreds of ms per call in pure JS on slow phones). Do it
 // ONCE per peer with box.before and reuse the shared key for every message —
 // otherwise a DM with history freezes the whole app while it decrypts.
-let sharedCache: { pk: string; sk: Uint8Array; key: Uint8Array } | null = null;
+// Once per PEER, not once in total. This used to hold a single entry, so
+// opening a different chat threw it away — and alternating between two
+// conversations redid the most expensive operation in the file on every
+// switch, which is a large part of what "it decrypts again every time I open a
+// chat" felt like.
+const SHARED_MAX = 20;
+const sharedCache = new Map<string, Uint8Array>();
+let sharedFor: Uint8Array | null = null;   // whose secret key these came from
 function sharedKey(peerPk: Uint8Array, tag = b64enc(peerPk)): Uint8Array {
-  if (!sharedCache || sharedCache.pk !== tag || sharedCache.sk !== myKeys!.secretKey) {
-    sharedCache = { pk: tag, sk: myKeys!.secretKey, key: nacl.box.before(peerPk, myKeys!.secretKey) };
+  if (sharedFor !== myKeys!.secretKey) { sharedCache.clear(); sharedFor = myKeys!.secretKey; }
+  let key = sharedCache.get(tag);
+  if (!key) {
+    key = nacl.box.before(peerPk, myKeys!.secretKey);
+    sharedCache.set(tag, key);
+    while (sharedCache.size > SHARED_MAX) {
+      const oldest = sharedCache.keys().next().value;
+      if (oldest === undefined) break;
+      sharedCache.delete(oldest);
+    }
   }
-  return sharedCache.key;
+  return key;
 }
 
 // ── Decrypting the same message over and over ────────────────────────────────
@@ -220,7 +235,8 @@ export function e2eForgetPlaintext() {
  */
 export function _setKeysForTest(keys: { publicKey: Uint8Array; secretKey: Uint8Array } | null) {
   myKeys = keys as any;
-  sharedCache = null;
+  sharedCache.clear();
+  sharedFor = null;
   // Deliberately does NOT touch the plaintext cache. The real key-change paths
   // (loadLocal, storeLocal, e2eClear) each clear it explicitly, and a test hook
   // that cleared it too would make those clears impossible to test — every
@@ -266,7 +282,8 @@ export const e2eIsEncrypted = (content: string | null | undefined) =>
 
 export async function e2eClear() {
   myKeys = null;
-  sharedCache = null;
+  sharedCache.clear();
+  sharedFor = null;
   e2eForgetPlaintext();
   await AsyncStorage.multiRemove(['e2e_pk', 'e2e_sk']);
 }

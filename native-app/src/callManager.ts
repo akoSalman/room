@@ -7,6 +7,7 @@ import { Audio } from 'expo-av';
 import { mediaDevices, RTCPeerConnection, MediaStream } from 'react-native-webrtc';
 import { apiFetch, getSocket } from './api';
 import { stopRinging } from './incomingCall';
+import { routeFor, outgoingStatus, CallMode, CallPhase, OutgoingState } from './callAudio';
 import { audioManager } from './audioManager';
 
 // react-native-incall-manager routes call audio (earpiece/speaker/proximity)
@@ -37,12 +38,42 @@ class CallManager {
   private outgoing = false; // did we initiate?
   private logged = false;
 
+  // What is actually known about the far end, as opposed to what we hoped.
+  private out: OutgoingState = {};
+
   private ringSound: Audio.Sound | null = null;
+
+  /**
+   * Open the call's audio session, and point the tones at the right speaker.
+   *
+   * Called when the call STARTS, not when it connects. Opening it on connect
+   * was what made the ringback come out of the loudspeaker at media volume:
+   * until InCallManager.start() runs there is no voice-call route, so anything
+   * played is just media.
+   */
+  private applyRoute(phase: CallPhase) {
+    if (!this.mode) return;
+    const r = routeFor({ mode: this.mode as CallMode, phase, speakerOn: this.speakerOn });
+    try {
+      InCallManager?.start({ media: r.media });
+      InCallManager?.setForceSpeakerphoneOn(r.speaker);
+    } catch {}
+    this.speakerOn = r.speaker;
+    // Our own ringback is an expo-av sound, and expo-av has its own idea of
+    // where to play. Without this it ignores the call route entirely.
+    Audio.setAudioModeAsync({
+      playThroughEarpieceAndroid: r.earpiece,
+      staysActiveInBackground: true,
+    }).catch(() => {});
+  }
+
   private async startRing() {
     this.stopRing();
     try {
       const { sound } = await Audio.Sound.createAsync(
-        require('../assets/ring.wav'), { isLooping: true, shouldPlay: true, volume: 0.8 },
+        // Quieter, too: at the earpiece this is an inch from an ear, where
+        // 0.8 of a ringtone written to be heard across a room is painful.
+        require('../assets/ring.wav'), { isLooping: true, shouldPlay: true, volume: 0.5 },
       );
       this.ringSound = sound;
     } catch {}
@@ -65,13 +96,9 @@ class CallManager {
   private markRoomAudioStarted() {
     if (this.roomAudioStarted) return;
     this.roomAudioStarted = true;
-    try {
-      InCallManager?.start({ media: 'audio' });
-      // Group calls are hands-free by nature — default to speaker, like every
-      // other app's group voice chat.
-      this.speakerOn = true;
-      InCallManager?.setForceSpeakerphoneOn(true);
-    } catch {}
+    // Group calls are hands-free by nature — routeFor says so, like every
+    // other app's group voice chat.
+    this.applyRoute('connected');
     this.emit();
   }
   private roomAudioStarted = false;
@@ -84,14 +111,12 @@ class CallManager {
     try { InCallManager?.stopRingback?.(); InCallManager?.stopRingtone?.(); } catch {}
     if (!this.connectedAt) {
       this.connectedAt = Date.now();
-      // Hand audio to InCallManager for proper phone-call routing. Video calls
-      // default to speaker; voice calls to the earpiece (like a real call).
-      try {
-        InCallManager?.start({ media: this.mode === 'dm-video' ? 'video' : 'audio' });
-        this.speakerOn = this.mode === 'dm-video';
-        InCallManager?.setForceSpeakerphoneOn(this.speakerOn);
-      } catch {}
+      // The session is already open (it was opened when the call started, so
+      // the ringback would route properly); this settles the final speaker
+      // choice for the conversation itself.
+      this.applyRoute('connected');
     }
+    this.out = { ...this.out, connected: true };
     this.status = 'Connected';
     this.emit();
   }
@@ -175,8 +200,17 @@ class CallManager {
       if (this.mode !== 'room-voice') {
         this.stopRing();
         try { InCallManager?.stopRingback?.(); } catch {}
-        this.status = 'Connecting…'; this.emit();
+        this.out = { ...this.out, answered: true };
+        this.status = outgoingStatus(this.out); this.emit();
       }
+    });
+    // The callee's app confirming it is actually alerting. Until this lands,
+    // "Ringing…" would be a guess about a phone we have not heard from.
+    s.on('call_ringing', ({ fromUserId }: any) => {
+      if (!this.mode?.startsWith('dm') || this.peerId !== fromUserId) return;
+      this.out = { ...this.out, ringing: true };
+      this.status = outgoingStatus(this.out);
+      this.emit();
     });
     s.on('call_ice', ({ fromUserId, candidate }: any) => {
       const pc = this.pcs.get(fromUserId);
@@ -291,9 +325,19 @@ class CallManager {
     const pc = this.newPc(userId);
     const offer = await pc.createOffer({});
     await pc.setLocalDescription(offer);
+    // The ack says whether the server had a live socket to hand this to. It
+    // is the difference between "their phone has the call" and "a push has
+    // been sent to a phone that may be face down in a drawer", and the caller
+    // is entitled to know which one they are waiting on.
     this.sock.emit('call_offer', {
       toUserId: userId, kind: this.mode === 'dm-video' ? 'video' : 'voice',
       sdp: (pc as any).localDescription, ...extra,
+    }, (res: any) => {
+      if (!this.mode?.startsWith('dm') || this.peerId !== userId) return;
+      if (this.out.ringing || this.out.answered || this.out.connected) return;
+      this.out = { ...this.out, delivered: !!res?.delivered };
+      this.status = outgoingStatus(this.out);
+      this.emit();
     });
   }
 
@@ -335,6 +379,12 @@ class CallManager {
     this.muted = false;
     this.cameraOff = false;
     this.speakerOn = false;
+    this.out = {};
+    // Hand the earpiece routing back, or every voice note played afterwards
+    // comes out of it too — silent, as far as anyone holding the phone
+    // normally can tell.
+    Audio.setAudioModeAsync({ playThroughEarpieceAndroid: false, staysActiveInBackground: true })
+      .catch(() => {});
     this.frontCamera = true;
     this.roomAudioStarted = false;
     this.connectedAt = null;
@@ -369,7 +419,15 @@ class CallManager {
       this.accept();
       return;
     }
+    // An incoming ring is the phone ringing at somebody who is not holding it,
+    // so it goes to the loudspeaker — the one tone routeFor deliberately keeps
+    // off the earpiece.
+    Audio.setAudioModeAsync({ playThroughEarpieceAndroid: false, staysActiveInBackground: true })
+      .catch(() => {});
     this.startRing();
+    // Tell the caller their phone is actually ringing here. Without this the
+    // caller's screen has nothing to go on but hope.
+    try { this.sock.emit('call_ringing', { toUserId: offer.fromUserId }); } catch {}
     this.emit();
   }
 
@@ -410,10 +468,14 @@ class CallManager {
     if (!stream) return;
     this.localStream = stream;
     this.peerId = peerId; this.peerName = peerName; this.outgoing = true; this.logged = false;
-    try { InCallManager?.startRingback?.('_DTMF_'); } catch {}
     this.mode = kind === 'video' ? 'dm-video' : 'dm-voice';
     this.title = (kind === 'video' ? '🎥 ' : '📞 ') + peerName;
-    this.status = 'Ringing…';
+    // Route first, THEN make a noise: the order is the whole fix for a
+    // ringback that came out of the loudspeaker.
+    this.applyRoute('outgoing');
+    try { InCallManager?.startRingback?.('_DTMF_'); } catch {}
+    this.out = {};
+    this.status = outgoingStatus(this.out);
     this.startRing();
     this.emit();
     // Give up after 45s of no answer (logged as a missed call)

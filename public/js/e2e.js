@@ -26,12 +26,20 @@ const E2E = (() => {
 
   function loadLocal() {
     const pk = localStorage.getItem('e2e_pk'), sk = localStorage.getItem('e2e_sk');
-    if (pk && sk) myKeys = { publicKey: b64.dec(pk), secretKey: b64.dec(sk) };
+    if (pk && sk) {
+      myKeys = { publicKey: b64.dec(pk), secretKey: b64.dec(sk) };
+      // Plaintext is cached against the PEER's key, so a change to OURS would
+      // not invalidate it on its own — and text produced under a different key
+      // pair belongs to somebody else's conversation.
+      forgetPlaintext();
+    }
     return !!myKeys;
   }
 
   function storeLocal(keys) {
     myKeys = keys;
+    forgetPlaintext();   // same reason as in loadLocal
+
     localStorage.setItem('e2e_pk', b64.enc(keys.publicKey));
     localStorage.setItem('e2e_sk', b64.enc(keys.secretKey));
   }
@@ -98,14 +106,50 @@ const E2E = (() => {
   // The Diffie-Hellman step in nacl.box dominates the cost of every call.
   // Compute it once per peer (box.before) and reuse the shared key so
   // encrypting/decrypting a long DM history doesn't freeze the page.
-  let sharedCache = null;
-  function sharedKey(peerPk) {
-    const tag = b64.enc(peerPk);
-    if (!sharedCache || sharedCache.pk !== tag || sharedCache.sk !== myKeys.secretKey) {
-      sharedCache = { pk: tag, sk: myKeys.secretKey, key: nacl.box.before(peerPk, myKeys.secretKey) };
+  //
+  // Once per PEER, not once in total. This used to hold a single entry, so
+  // opening a different chat threw it away — and switching back and forth
+  // between two conversations redid the most expensive operation in the file
+  // on every switch, which is a large part of what "it decrypts again every
+  // time I open a chat" felt like.
+  const SHARED_MAX = 20;
+  const sharedCache = new Map();   // peer public key (base64) -> shared key
+  let sharedFor = null;            // whose secret key those were derived with
+  function sharedKey(peerPk, tag) {
+    tag = tag || b64.enc(peerPk);
+    if (sharedFor !== myKeys.secretKey) { sharedCache.clear(); sharedFor = myKeys.secretKey; }
+    let key = sharedCache.get(tag);
+    if (!key) {
+      key = nacl.box.before(peerPk, myKeys.secretKey);
+      sharedCache.set(tag, key);
+      while (sharedCache.size > SHARED_MAX) sharedCache.delete(sharedCache.keys().next().value);
     }
-    return sharedCache.key;
+    return key;
   }
+
+  // ── Decrypting the same message over and over ──────────────────────────────
+  //
+  // Reported as: every time a chat is opened, it decrypts everything again.
+  //
+  // It did, and worse: decryption ran while rendering, so re-rendering the
+  // list — a new message, a reaction, a read receipt — decrypted the visible
+  // history again too. tweetnacl is pure JavaScript on the same thread that
+  // draws the page, so all of it is felt.
+  //
+  // A message's plaintext cannot change, so decrypt it once and remember it.
+  // Keyed by peer AND ciphertext, so a message can never be handed plaintext
+  // that was produced under a different identity. Bounded, or a long chat
+  // would hold every message it has ever shown.
+  const PLAIN_CACHE_MAX = 3000;
+  const plainCache = new Map();
+  function rememberPlain(key, value) {
+    plainCache.set(key, value);
+    // Map iterates in insertion order, so the front is the oldest.
+    while (plainCache.size > PLAIN_CACHE_MAX) plainCache.delete(plainCache.keys().next().value);
+    return value;
+  }
+  /** Plaintext must not outlive the keys that produced it. */
+  function forgetPlaintext() { plainCache.clear(); }
 
   function encrypt(text, peerPk) {
     if (!myKeys || !peerPk) return null;
@@ -118,19 +162,41 @@ const E2E = (() => {
 
   function decrypt(content, peerPk) {
     if (!content || !content.startsWith('e2e:')) return content;
+    // Not a failed decryption — one that has not been attempted, because the
+    // keys are not loaded yet. Deliberately NOT remembered: caching it would
+    // leave a perfectly readable message showing the padlock for the rest of
+    // the session, moments after the keys arrived.
     if (!myKeys || !peerPk) return null;
+    const tag = b64.enc(peerPk);
+    const cacheKey = tag + '|' + content;
+    const hit = plainCache.get(cacheKey);
+    // `undefined` is "not tried"; a stored null is "tried, and failed" — which
+    // with these keys it will fail again, so that is worth remembering too.
+    if (hit !== undefined) return hit;
     try {
       const packed = b64.dec(content.slice(4));
-      const opened = nacl.box.open.after(packed.subarray(24), packed.subarray(0, 24), sharedKey(peerPk));
-      return opened ? new TextDecoder().decode(opened) : null;
-    } catch { return null; }
+      const opened = nacl.box.open.after(packed.subarray(24), packed.subarray(0, 24), sharedKey(peerPk, tag));
+      return rememberPlain(cacheKey, opened ? new TextDecoder().decode(opened) : null);
+    } catch { return rememberPlain(cacheKey, null); }
   }
 
   const isEncrypted = (content) => !!content && String(content).startsWith('e2e:');
-  const clear = () => { myKeys = null; sharedCache = null; localStorage.removeItem('e2e_pk'); localStorage.removeItem('e2e_sk'); };
+  const clear = () => {
+    myKeys = null;
+    sharedCache.clear();
+    sharedFor = null;
+    forgetPlaintext();
+    localStorage.removeItem('e2e_pk');
+    localStorage.removeItem('e2e_sk');
+  };
   const ready = () => !!myKeys || loadLocal();
 
-  return { setup, rewrap, getPeerKey, encrypt, decrypt, isEncrypted, clear, ready, decodeKey: b64.dec };
+  return {
+    setup, rewrap, getPeerKey, encrypt, decrypt, isEncrypted, clear, ready,
+    forgetPlaintext, decodeKey: b64.dec,
+    /** Tests only; see test/webE2eCache.test.js. */
+    _setKeysForTest(keys) { myKeys = keys; sharedCache.clear(); sharedFor = null; },
+  };
 })();
 
 // `const` does not land on window, and the scripts loaded beside this one read

@@ -258,7 +258,30 @@ test('the cache does not grow without limit', () => {
 });
 
 (async () => {
-  let passed = 0, failed = 0;
+  test('switching between two chats does not redo the key exchange', () => {
+  // The shared key used to be a single slot, so opening another chat evicted
+  // it and coming back redid nacl.box.before — hundreds of milliseconds of
+  // pure JavaScript, on the thread that draws the chat.
+  useMyKeys();
+  E.e2eForgetPlaintext();
+  const a = sealFor(peer.secretKey, me.publicKey, 'from peer');
+  const b = sealFor(other.secretKey, me.publicKey, 'from other');
+  E.e2eDecrypt(a, peer.publicKey);
+  E.e2eDecrypt(b, other.publicKey);
+  E.e2eForgetPlaintext();   // plaintext gone; the shared keys must not be
+  const real = nacl.box.before;
+  let dh = 0;
+  nacl.box.before = function (...args) { dh++; return real.apply(this, args); };
+  try {
+    for (let i = 0; i < 6; i++) {
+      E.e2eDecrypt(a, peer.publicKey);
+      E.e2eDecrypt(b, other.publicKey);
+    }
+  } finally { nacl.box.before = real; }
+  assert.strictEqual(dh, 0, `alternating between two chats redid the DH ${dh} times`);
+});
+
+let passed = 0, failed = 0;
   for (const { n, f } of tests) {
     try { await f(); console.log(`  ✓ ${n}`); passed++; }
     catch (e) { console.error(`  ✗ ${n}\n      ${e.message}`); failed++; }

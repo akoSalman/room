@@ -12,6 +12,8 @@ const Calls = (() => {
   let dmPeer = null; // { userId, username }
   let roomVoiceId = null;
   let incoming = null; // pending DM offer
+  // What is actually known about the far end, as opposed to what we hoped.
+  let out = {};
   let muted = false;
 
   const $ = (id) => document.getElementById(id);
@@ -31,7 +33,16 @@ const Calls = (() => {
       const pc = pcs.get(fromUserId);
       if (pc) await pc.setRemoteDescription(sdp).catch(() => {});
       flushIce(fromUserId);
-      stopRing(); setStatus('Connecting…');
+      stopRing();
+      out = Object.assign({}, out, { answered: true });
+      setStatus(CallStatus.outgoingStatus(out));
+    });
+    // The callee's page confirming it is actually alerting — the only thing
+    // that entitles this screen to say "Ringing…".
+    s.on('call_ringing', ({ fromUserId }) => {
+      if (!dmPeer || dmPeer.userId !== fromUserId) return;
+      out = Object.assign({}, out, { ringing: true });
+      setStatus(CallStatus.outgoingStatus(out));
     });
     s.on('call_ice', ({ fromUserId, candidate }) => {
       const pc = pcs.get(fromUserId);
@@ -116,9 +127,16 @@ const Calls = (() => {
     const pc = newPc(userId);
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
+    // The ack says whether the server had a live socket to hand this to — the
+    // difference between "their device has the call" and "a push has been sent
+    // to a phone that may be face down in a drawer".
     sock.emit('call_offer', {
       toUserId: userId, kind: mode === 'dm-video' ? 'video' : 'voice',
       sdp: pc.localDescription, ...extra,
+    }, (res) => {
+      if (out.ringing || out.answered || out.connected) return;
+      out = Object.assign({}, out, { delivered: !!(res && res.delivered) });
+      setStatus(CallStatus.outgoingStatus(out));
     });
   }
 
@@ -182,8 +200,15 @@ const Calls = (() => {
   let connectedAt = null, timerInterval = null;
   function markConnected() {
     stopRing();
+    out = Object.assign({}, out, { connected: true });
     if (!connectedAt) {
       connectedAt = Date.now();
+      // "Connected" until the timer's first tick a second later. This line
+      // used to read `markConnected()` — the function calling itself,
+      // unconditionally, forever: every connected call on the web blew the
+      // stack here, so the status never left "Connecting…" and the timer never
+      // appeared.
+      setStatus(CallStatus.outgoingStatus(out));
       clearInterval(timerInterval);
       timerInterval = setInterval(() => {
         const sec = Math.floor((Date.now() - connectedAt) / 1000);
@@ -191,7 +216,6 @@ const Calls = (() => {
         setStatus(`${m}:${ss}`);
       }, 1000);
     }
-    markConnected();
   }
 
   function teardown() {
@@ -208,6 +232,7 @@ const Calls = (() => {
     mode = null;
     roomVoiceId = null;
     incoming = null;
+    out = {};
     stopRing();
     connectedAt = null;
     clearInterval(timerInterval);
@@ -229,7 +254,8 @@ const Calls = (() => {
     await ice;
     mode = kind === 'video' ? 'dm-video' : 'dm-voice';
     showOverlay((kind === 'video' ? '🎥 ' : '📞 ') + dmPeer.username, kind === 'video');
-    setStatus('Ringing…');
+    out = {};
+    setStatus(CallStatus.outgoingStatus(out));
     startRing();
     if (kind === 'video') { $('call-local-video').srcObject = localStream; $('call-local-video').muted = true; }
     await makeOffer(dmPeer.userId);
@@ -251,6 +277,8 @@ const Calls = (() => {
     if (mode) { sock.emit('call_end', { toUserId: offer.fromUserId }); return; } // busy
     incoming = offer;
     startRing();
+    // Tell the caller their call is really ringing here.
+    sock.emit('call_ringing', { toUserId: offer.fromUserId });
     $('incoming-call-text').textContent =
       `${offer.kind === 'video' ? '🎥' : '📞'} ${offer.fromUsername} is calling…`;
     $('incoming-call').classList.remove('hidden');
