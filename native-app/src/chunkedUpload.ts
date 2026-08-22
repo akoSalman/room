@@ -80,15 +80,28 @@ type ChunkResult = { ok: boolean; status?: number; offset?: number };
 function sendChunk(
   url: string, token: string, at: number, body: any, base64: boolean,
   onXhr: (x: XMLHttpRequest) => void,
+  onBytes?: (loaded: number) => void,
 ): Promise<ChunkResult> {
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('PATCH', url);
+    // POST, not PATCH: there is no semantic need for PATCH here, and PATCH
+    // with a body is the least well-trodden path through a reverse proxy or a
+    // middlebox. The server accepts both.
+    xhr.open('POST', url);
     xhr.setRequestHeader('Authorization', `Bearer ${token}`);
     xhr.setRequestHeader('x-offset', String(at));
     // Content-Type is what tells the server which of the two bodies this is.
     xhr.setRequestHeader('Content-Type', base64 ? 'text/plain' : 'application/octet-stream');
     if (base64) xhr.setRequestHeader('x-encoding', 'base64');
+    // Progress WITHIN the chunk. Without it nothing is reported until a whole
+    // half-megabyte lands, so anything smaller than that — which is most
+    // photos — shows no movement at all before it finishes. That is not a
+    // stall, but on screen it is indistinguishable from one.
+    if (onBytes && xhr.upload) {
+      xhr.upload.onprogress = (e: any) => {
+        if (e?.lengthComputable) onBytes(e.loaded);
+      };
+    }
     xhr.onload = () => {
       let parsed: any = {};
       try { parsed = JSON.parse(xhr.responseText || '{}'); } catch {}
@@ -199,7 +212,8 @@ export function uploadResumable(
       if (stopped || paused) return;
       const res = await sendChunk(
         api(`/upload/session/${sessionId}`), token, range.start, body, base64,
-        (x) => { inFlight = x; });
+        (x) => { inFlight = x; },
+        (loaded) => cb.onProgress(range.start + loaded, total));
       inFlight = null;
 
       if (res.ok) {

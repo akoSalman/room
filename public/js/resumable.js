@@ -21,6 +21,15 @@
   'use strict';
 
   var CHUNK = 512 * 1024;
+  /**
+   * How long a chunk may go without a single byte moving before it is
+   * abandoned and retried.
+   *
+   * Generous, because a slow connection is not a broken one and re-sending
+   * half a megabyte for nothing is worse than waiting. But bounded: a request
+   * that hangs forever leaves an upload at zero with no way out but cancel.
+   */
+  var STALL_MS = 45000;
   var MAX_BYTES = 80 * 1024 * 1024;
   var MAX_ATTEMPTS = 5;
 
@@ -59,6 +68,9 @@
     var attempt = 0;
     var inFlight = null;
     var wake = null, timer = null;
+    var lastByteAt = 0;
+    var stallTimer = null;
+    var stalled = false;
 
     function headers(extra) {
       var h = { Authorization: 'Bearer ' + window.token };
@@ -77,6 +89,7 @@
     // second, pausing between two retries parks the loop on a promise nobody
     // will ever settle, and resume does nothing at all.
     function stopWaiting() {
+      clearInterval(stallTimer);
       try { if (inFlight) inFlight.abort(); } catch (e) {}
       if (wake) wake();
     }
@@ -85,10 +98,33 @@
       return new Promise(function (resolve) {
         var xhr = new XMLHttpRequest();
         inFlight = xhr;
-        xhr.open('PATCH', '/upload/session/' + sessionId);
+        // POST, not PATCH. There is no semantic need for PATCH — this appends
+        // to a session — and PATCH with a body is the least well-trodden path
+        // through the Apache reverse proxy in front of this app. Whole-file
+        // POST uploads have always worked through it.
+        xhr.open('POST', '/upload/session/' + sessionId);
         xhr.setRequestHeader('Authorization', 'Bearer ' + window.token);
         xhr.setRequestHeader('x-offset', String(start));
         xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+
+        // ── Progress WITHIN the chunk ──────────────────────────────────────
+        //
+        // Reported as: the bar never advances; pausing and resuming is the
+        // only way to move it.
+        //
+        // Progress was reported only BETWEEN chunks, and a chunk is half a
+        // megabyte — so anything smaller is a SINGLE chunk, and the bar sat at
+        // "0 B / 239 KB" for the whole upload before jumping to done. Not a
+        // stall, but indistinguishable from one. Pause-and-resume appeared to
+        // fix it because resuming asks the server how much it already has, and
+        // by then it had all of it.
+        //
+        // The stall watchdog is fed from here too: bytes actually moving is
+        // the only evidence that anything is still happening.
+        xhr.upload.onprogress = function (e) {
+          lastByteAt = Date.now();
+          if (e.lengthComputable) cb.onProgress(start + e.loaded, total);
+        };
         xhr.onload = function () {
           var body = {};
           try { body = JSON.parse(xhr.responseText || '{}'); } catch (e) {}
@@ -102,10 +138,24 @@
         };
         xhr.onerror = function () { resolve({ ok: false, status: 0 }); };
         xhr.ontimeout = function () { resolve({ ok: false, status: 0 }); };
-        xhr.onabort = function () { resolve({ ok: false, status: -1 }); };  // our own pause
+        // Aborted by pause or cancel, or by the watchdog below. The watchdog
+        // marks itself, so a stall is retried while a deliberate pause is not.
+        xhr.onabort = function () { resolve({ ok: false, status: stalled ? 0 : -1 }); };
         // Blob.slice is a reference to a range of the file, not a copy: the
         // bytes never pass through JavaScript.
         xhr.send(file.slice(start, end));
+
+        // Restarted for each chunk, and only fires when nothing at all has
+        // moved for STALL_MS.
+        stalled = false;
+        lastByteAt = Date.now();
+        clearInterval(stallTimer);
+        stallTimer = setInterval(function () {
+          if (Date.now() - lastByteAt < STALL_MS) return;
+          clearInterval(stallTimer);
+          stalled = true;
+          try { xhr.abort(); } catch (err) {}
+        }, 5000);
       });
     }
 
@@ -142,6 +192,7 @@
         var end = Math.min(offset + CHUNK, total);
         var res = await sendChunk(offset, end);
         inFlight = null;
+        clearInterval(stallTimer);
 
         if (res.ok) {
           attempt = 0;

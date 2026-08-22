@@ -1823,10 +1823,10 @@ test('the gallery refuses a room the viewer is not in', async () => {
 // wrong: bytes landing in the wrong order, or a gap in the middle of a file
 // that then uploads "successfully" and is broken.
 
-/** PATCH one chunk of a session. */
-async function patchChunk(id, offset, buf, token, encoding) {
+/** Send one chunk of a session. POST by default; PATCH still accepted. */
+async function patchChunk(id, offset, buf, token, encoding, method) {
   return fetch(`${baseUrl}/upload/session/${id}`, {
-    method: 'PATCH',
+    method: method || 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': encoding === 'base64' ? 'text/plain' : 'application/octet-stream',
@@ -2391,6 +2391,42 @@ test('the chat list carries the other person\'s avatar', async () => {
   const row = (await api('/dm-rooms', 'GET', null, a.token)).find(r => r.id === dm.id);
   assert.strictEqual(row.other_avatar, '🦊');
   assert.strictEqual((await api('/user-profile/ava84b', 'GET', null, a.token)).avatar, '🦊');
+});
+
+test('a chunk can be sent by POST or by PATCH, and they behave identically', async () => {
+  // POST is what the clients use. There is no semantic need for PATCH here,
+  // and PATCH with a body is the least well-trodden path through a reverse
+  // proxy, a WAF or a corporate middlebox — a stalled chunk with no error is
+  // exactly what that looks like from the browser. PATCH stays because app
+  // versions already installed use it and must keep working.
+  const u = await signUp('upverb62');
+  const data = require('crypto').randomBytes(3000);
+
+  const byPost = await api('/upload/session', 'POST', { name: 'p.bin', size: data.length }, u.token);
+  const byPatch = await api('/upload/session', 'POST', { name: 'q.bin', size: data.length }, u.token);
+
+  for (const [id, method] of [[byPost.id, 'POST'], [byPatch.id, 'PATCH']]) {
+    let at = 0;
+    while (at < data.length) {
+      const end = Math.min(at + 1000, data.length);
+      const r = await patchChunk(id, at, data.subarray(at, end), u.token, null, method);
+      assert.strictEqual(r.status, 200, `${method} chunk at ${at} was refused`);
+      at = (await r.json()).offset;
+    }
+    const fin = await api(`/upload/session/${id}/finish`, 'POST', null, u.token);
+    assert.ok(fin.url, `${method}: finish failed`);
+    const res = await fetch(baseUrl + fin.url + signUpload(fin.url.replace('/uploads/', '')));
+    assert.ok(Buffer.from(await res.arrayBuffer()).equals(data),
+      `${method} produced a different file`);
+  }
+});
+
+test('the offset check is enforced whichever verb is used', async () => {
+  const u = await signUp('upverb63');
+  const open = await api('/upload/session', 'POST', { name: 'v.bin', size: 3000 }, u.token);
+  await patchChunk(open.id, 0, Buffer.alloc(1000, 1), u.token, null, 'POST');
+  const gap = await patchChunk(open.id, 2000, Buffer.alloc(500, 2), u.token, null, 'PATCH');
+  assert.strictEqual(gap.status, 409, 'PATCH skipped the offset check that POST enforces');
 });
 
 main().catch(err => { console.error(err); process.exit(1); });

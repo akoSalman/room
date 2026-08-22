@@ -1648,12 +1648,21 @@ app.get('/upload/session/:id', authMiddleware, (req, res) => {
 // One chunk. Raw bytes, or base64 text on devices where handing a binary body
 // to the network stack is not available — the server accepts either so the app
 // never has to fall back to sending the whole file again.
-app.patch('/upload/session/:id',
-  authMiddleware,
-  express.raw({ type: () => true, limit: CHUNK_LIMIT_BYTES }),
-  (req, res) => {
-    const s = openSession(req, res);
-    if (!s) return;
+//
+// POST *and* PATCH. POST is what the clients use: there is no semantic need
+// for PATCH here, and PATCH with a body is the least well-trodden path through
+// a reverse proxy, a WAF or a corporate middlebox — whereas a POST with a body
+// is the most ordinary request on the web. PATCH stays because app versions
+// already installed use it, and they must keep working.
+app.route('/upload/session/:id').post(chunkHandler()).patch(chunkHandler());
+
+function chunkHandler() {
+  return [
+    authMiddleware,
+    express.raw({ type: () => true, limit: CHUNK_LIMIT_BYTES }),
+    (req, res) => {
+      const s = openSession(req, res);
+      if (!s) return;
     const at = parseInt(req.get('x-offset'), 10);
     if (!isFinite(at) || at < 0) return res.status(400).json({ error: 'Bad offset' });
     // Not an error worth failing on: a chunk that was already received, then
@@ -1671,10 +1680,12 @@ app.patch('/upload/session/:id',
     // able to fill the disk one chunk at a time.
     if (s.offset + buf.length > s.meta.size) return res.status(413).json({ error: 'Past end of file' });
 
-    try { fs.appendFileSync(partPath(s.id), buf); }
-    catch { return res.status(500).json({ error: 'Write failed' }); }
-    res.json({ offset: s.offset + buf.length, size: s.meta.size });
-  });
+      try { fs.appendFileSync(partPath(s.id), buf); }
+      catch { return res.status(500).json({ error: 'Write failed' }); }
+      res.json({ offset: s.offset + buf.length, size: s.meta.size });
+    },
+  ];
+}
 
 // All bytes in: turn the partial into a real upload.
 app.post('/upload/session/:id/finish', authMiddleware, (req, res) => {
