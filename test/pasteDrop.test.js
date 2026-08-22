@@ -1,0 +1,338 @@
+// Pasting and dropping images and files.
+//
+// Asked for as: let the app and the web accept pasted and dropped images and
+// files.
+//
+// The failure modes worth pinning down are not "does a file arrive" — they are
+// the ones that quietly do the wrong thing:
+//
+//   - a plain text paste being swallowed, so typing breaks;
+//   - the text half of a rich copy being taken instead of the image, so
+//     pasting a screenshot from a document inserts a filename and drops the
+//     picture;
+//   - a dropped file the browser opens instead of the page, losing the chat
+//     and whatever was typed;
+//   - a dropped FOLDER becoming an upload that hangs forever;
+//   - three pasted screenshots all called "image.png".
+const assert = require('assert');
+const { execFileSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const NAT = path.join(__dirname, '..', 'native-app');
+const TSC = path.join(NAT, 'node_modules', '.bin', 'tsc');
+if (!fs.existsSync(TSC)) {
+  console.log('  ! skipping paste/drop tests (native-app deps not installed)');
+  process.exit(0);
+}
+const OUT = fs.mkdtempSync(path.join(os.tmpdir(), 'pastedrop-'));
+execFileSync(TSC, [path.join(NAT, 'src', 'pasteDrop.ts'),
+  '--outDir', OUT, '--module', 'commonjs', '--target', 'es2019', '--skipLibCheck'], { stdio: 'pipe' });
+const N = require(path.join(OUT, 'pasteDrop.js'));
+
+global.window = global;
+require(path.join(__dirname, '..', 'public', 'js', 'pasteDrop.js'));
+const W = global.window.PasteDrop;
+
+const tests = [];
+const test = (n, f) => tests.push({ n, f });
+
+// ── What a paste is carrying ────────────────────────────────────────────────
+
+test('THE BUG: a screenshot on the clipboard is recognised as a file', () => {
+  assert.strictEqual(W.pasteCarriesFiles([{ kind: 'file', type: 'image/png' }]), true);
+});
+
+test('an ordinary text paste is left completely alone', () => {
+  // If this ever returns true, pasting into the message box stops working.
+  assert.strictEqual(W.pasteCarriesFiles([{ kind: 'string', type: 'text/plain' }]), false);
+  assert.strictEqual(W.pasteCarriesFiles([]), false);
+  assert.strictEqual(W.pasteCarriesFiles(null), false);
+});
+
+test('copying a picture out of a document takes the picture, not the caption', () => {
+  // A rich copy puts several things on the clipboard at once. Taking the text
+  // would paste a stray filename and silently drop the image.
+  const rich = [
+    { kind: 'string', type: 'text/plain' },
+    { kind: 'string', type: 'text/html' },
+    { kind: 'file', type: 'image/png' },
+  ];
+  assert.strictEqual(W.pasteCarriesFiles(rich), true);
+});
+
+test('an entry with no type at all is not treated as a file', () => {
+  // Chrome reports a phantom `kind: 'file'` with an empty type for some
+  // in-page drags; acting on it produces a paste of nothing.
+  assert.strictEqual(W.pasteCarriesFiles([{ kind: 'file', type: '' }]), false);
+});
+
+// ── What a drag is carrying ─────────────────────────────────────────────────
+
+test('THE BUG: a file drag is intercepted so the browser cannot open it', () => {
+  // Left alone, dropping a photo on the page navigates away from the chat to
+  // display a JPEG, taking the half-written message with it.
+  assert.strictEqual(W.dragCarriesFiles(['Files']), true);
+  assert.strictEqual(W.dragCarriesFiles(['text/plain', 'Files']), true);
+});
+
+test('dragging text or a link within the page is none of our business', () => {
+  assert.strictEqual(W.dragCarriesFiles(['text/plain']), false);
+  assert.strictEqual(W.dragCarriesFiles(['text/uri-list', 'text/plain']), false);
+  assert.strictEqual(W.dragCarriesFiles([]), false);
+});
+
+// ── Naming ──────────────────────────────────────────────────────────────────
+
+const AT = Date.parse('2026-08-22T19:03:45Z') + new Date().getTimezoneOffset() * 0;
+
+test('THE BUG: pasted screenshots do not all end up called "image.png"', () => {
+  const a = W.pastedName('image/png', AT, 'image.png');
+  assert.ok(/^photo-\d{8}-\d{6}\.png$/.test(a), `unhelpful name: ${a}`);
+  const b = W.pastedName('image/png', AT + 61_000, 'image.png');
+  assert.notStrictEqual(a, b, 'two pastes a minute apart got the same name');
+});
+
+test('a real filename is kept, because it is better than one we invent', () => {
+  assert.strictEqual(W.pastedName('application/pdf', AT, 'contract-final.pdf'), 'contract-final.pdf');
+  assert.strictEqual(W.pastedName('image/jpeg', AT, 'IMG_2043.JPG'), 'IMG_2043.JPG');
+});
+
+test('a name with no extension is not trusted as a name', () => {
+  const n = W.pastedName('image/png', AT, 'blob');
+  assert.ok(n.endsWith('.png'), n);
+  assert.ok(W.pastedName('video/mp4', AT, '').startsWith('video-'));
+  assert.ok(W.pastedName('audio/mpeg', AT, undefined).startsWith('audio-'));
+  assert.ok(W.pastedName('application/pdf', AT, '').startsWith('file-'));
+});
+
+test('a type that is not an extension does not become one', () => {
+  // Otherwise a pasted Word document arrives called
+  // "file-….vnd.openxmlformats-officedocument.wordprocessingml.document".
+  assert.strictEqual(W.extensionFor(
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'), 'bin');
+  assert.strictEqual(W.extensionFor('image/svg+xml'), 'svg');
+  assert.strictEqual(W.extensionFor('image/png;charset=binary'), 'png');
+  assert.strictEqual(W.extensionFor(''), 'bin');
+  assert.strictEqual(W.extensionFor('video/quicktime'), 'mov');
+});
+
+// ── What gets refused ───────────────────────────────────────────────────────
+
+test('THE BUG: a dropped folder is refused rather than uploaded forever', () => {
+  // A directory arrives as a zero-byte entry with no type. Sent as a file it
+  // produces an upload that never progresses and never fails.
+  const r = W.partitionDropped([{ name: 'Holiday', type: '', size: 0 }]);
+  assert.strictEqual(r.folders.length, 1);
+  assert.strictEqual(r.accepted.length, 0);
+  assert.ok(/folder/.test(W.rejectionMessage(r)), W.rejectionMessage(r));
+});
+
+test('an empty FILE with a real type is still a file', () => {
+  // A zero-byte .txt is a legitimate thing to send, and the difference from a
+  // folder is the type.
+  const r = W.partitionDropped([{ name: 'notes.txt', type: 'text/plain', size: 0 }]);
+  assert.strictEqual(r.accepted.length, 1, 'an empty text file was mistaken for a folder');
+});
+
+test('anything over the limit is refused here, by name', () => {
+  const r = W.partitionDropped([
+    { name: 'small.jpg', type: 'image/jpeg', size: 1000 },
+    { name: 'film.mkv', type: 'video/x-matroska', size: 90 * 1024 * 1024 },
+  ]);
+  assert.deepStrictEqual(r.accepted.map(f => f.name), ['small.jpg']);
+  assert.deepStrictEqual(r.tooLarge.map(f => f.name), ['film.mkv']);
+  const msg = W.rejectionMessage(r);
+  assert.ok(msg.includes('film.mkv'), `the message does not say which file: ${msg}`);
+  assert.ok(msg.includes('80 MB'), msg);
+});
+
+test('a file exactly at the limit is accepted', () => {
+  const r = W.partitionDropped([{ name: 'edge.bin', type: 'application/octet-stream', size: W.MAX_BYTES }]);
+  assert.strictEqual(r.accepted.length, 1, 'the limit is off by one');
+});
+
+test('nothing to complain about produces no complaint', () => {
+  const r = W.partitionDropped([{ name: 'a.png', type: 'image/png', size: 10 }]);
+  assert.strictEqual(W.rejectionMessage(r), '');
+});
+
+// ── Reading the clipboard/drop itself ───────────────────────────────────────
+
+/** The shape a browser hands over, near enough for what filesFrom touches. */
+function fakeFile(name, type, size) {
+  return { name, type, size: size || 4, lastModified: AT };
+}
+
+test('a pasted blob is renamed, and the SAME bytes are used', () => {
+  const original = fakeFile('image.png', 'image/png');
+  let constructed = null;
+  const RealFile = global.File;
+  global.File = function (parts, name, opts) {
+    constructed = { parts, name, opts };
+    return { name, type: opts.type, size: original.size };
+  };
+  try {
+    const out = W.filesFrom({
+      items: [{ kind: 'file', type: 'image/png', getAsFile: () => original }],
+    }, AT);
+    assert.strictEqual(out.length, 1);
+    assert.ok(/^photo-/.test(out[0].name), out[0].name);
+    assert.strictEqual(constructed.parts.length, 1, 'the blob was split or padded');
+    assert.strictEqual(constructed.parts[0], original,
+      'the file was copied rather than wrapped — a 60 MB paste would be read into memory twice');
+    assert.strictEqual(constructed.opts.type, 'image/png', 'the renamed file lost its type');
+  } finally { global.File = RealFile; }
+});
+
+test('a dropped file that already has a good name is passed through untouched', () => {
+  const f = fakeFile('report.pdf', 'application/pdf');
+  const out = W.filesFrom({ files: [f] }, AT);
+  assert.strictEqual(out[0], f, 'a perfectly good file was needlessly rebuilt');
+});
+
+test('items win over files, because only items carry a pasted screenshot', () => {
+  // A real paste populates BOTH: the same image appears under items and under
+  // files. Reading both would stage every pasted photo twice.
+  const viaItems = fakeFile('image.png', 'image/png');
+  const out = W.filesFrom({
+    items: [{ kind: 'file', type: 'image/png', getAsFile: () => viaItems },
+            { kind: 'string', type: 'text/plain', getAsFile: () => null }],
+    files: [viaItems],
+  }, AT);
+  assert.strictEqual(out.length, 1,
+    `one pasted image produced ${out.length} attachments`);
+});
+
+test('a drop with no items still yields its files', () => {
+  // Older browsers, and some file managers, populate only `files`.
+  const out = W.filesFrom({ items: [], files: [fakeFile('a.txt', 'text/plain')] }, AT);
+  assert.strictEqual(out.length, 1);
+});
+
+// ── The phone's half ────────────────────────────────────────────────────────
+
+test('THE BUG: a clipboard image comes back as bytes that can be written', () => {
+  const p = N.parseDataUri('data:image/png;base64,iVBORw0KGgo=');
+  assert.deepStrictEqual(p, { mime: 'image/png', base64: 'iVBORw0KGgo=' });
+});
+
+test('a non-base64 data URI is refused rather than written as garbage', () => {
+  // Decoding percent-encoded text as base64 writes a corrupt file that fails
+  // silently on the way up.
+  assert.strictEqual(N.parseDataUri('data:text/plain,hello%20there'), null);
+  assert.strictEqual(N.parseDataUri('file:///tmp/a.png'), null);
+  assert.strictEqual(N.parseDataUri(''), null);
+  assert.strictEqual(N.parseDataUri('data:image/png;base64,'), null);
+});
+
+test('a charset in the middle does not defeat the parse', () => {
+  const p = N.parseDataUri('data:image/png;charset=utf-8;base64,AAAA');
+  assert.deepStrictEqual(p, { mime: 'image/png', base64: 'AAAA' });
+});
+
+test('a file URI copied as text is sent as a file, not as a line of text', () => {
+  assert.strictEqual(N.fileUriFromText('content://media/external/images/1'),
+    'content://media/external/images/1');
+  assert.strictEqual(N.fileUriFromText('  file:///storage/emulated/0/a.pdf  '),
+    'file:///storage/emulated/0/a.pdf');
+});
+
+test('a sentence that merely mentions a path stays a sentence', () => {
+  assert.strictEqual(N.fileUriFromText('look at file:///tmp/a.pdf'), null);
+  assert.strictEqual(N.fileUriFromText('https://example.com/a.pdf'), null);
+  assert.strictEqual(N.fileUriFromText('file:///tmp/my holiday.pdf'), null);
+  // Nothing that merely CONTAINS the scheme: only something that is one.
+  assert.strictEqual(N.fileUriFromText('notfile:///tmp/a.pdf'), null);
+  assert.strictEqual(N.fileUriFromText('x-content://media/1'), null);
+  assert.strictEqual(N.fileUriFromText(''), null);
+});
+
+// ── The two platforms must agree ────────────────────────────────────────────
+
+test('the web and the app answer identically, over every input that matters', () => {
+  let checked = 0;
+  const mimes = ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp', 'image/heic',
+    'image/svg+xml', 'video/mp4', 'video/quicktime', 'video/webm', 'audio/mpeg', 'audio/mp4',
+    'audio/ogg', 'audio/wav', 'application/pdf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'text/plain', '', 'image/png;charset=binary', 'weird', 'x/y', 'application/octet-stream'];
+  const names = ['image.png', 'blob', '', 'report.pdf', 'IMG_1.JPG', 'noext', 'a.b.c.zip'];
+  for (const m of mimes) {
+    assert.strictEqual(W.extensionFor(m), N.extensionFor(m), `extensionFor drifted on "${m}"`);
+    for (const n of names) {
+      for (const at of [AT, 0, AT + 86_400_000]) {
+        assert.strictEqual(W.pastedName(m, at, n), N.pastedName(m, at, n),
+          `pastedName drifted on ("${m}", ${at}, "${n}")`);
+        checked++;
+      }
+    }
+  }
+  assert.ok(checked > 200, `the drift check only ran ${checked} times`);
+
+  const drops = [
+    [], [{ name: 'a', type: '', size: 0 }], [{ name: 'b', type: 'image/png', size: 0 }],
+    [{ name: 'c', type: 'image/png', size: W.MAX_BYTES + 1 }],
+    [{ name: 'd', type: 'image/png', size: W.MAX_BYTES }],
+    [{ name: 'e', type: 'image/png' }],
+    [{ name: 'f', type: '', size: 0 }, { name: 'g', type: 'x/y', size: 999 }],
+  ];
+  for (const d of drops) {
+    assert.deepStrictEqual(W.partitionDropped(d), N.partitionDropped(d),
+      `partitionDropped drifted on ${JSON.stringify(d)}`);
+    assert.strictEqual(W.rejectionMessage(W.partitionDropped(d)),
+      N.rejectionMessage(N.partitionDropped(d)),
+      `rejectionMessage drifted on ${JSON.stringify(d)}`);
+  }
+  for (const t of [['Files'], [], ['text/plain'], ['text/plain', 'Files']]) {
+    assert.strictEqual(W.dragCarriesFiles(t), N.dragCarriesFiles(t));
+  }
+  for (const k of [[{ kind: 'file', type: 'image/png' }], [{ kind: 'string', type: 'text/plain' }],
+    [{ kind: 'file', type: '' }], []]) {
+    assert.strictEqual(W.pasteCarriesFiles(k), N.pasteCarriesFiles(k));
+  }
+  assert.strictEqual(W.MAX_BYTES, N.MAX_BYTES, 'the two platforms disagree about the size limit');
+});
+
+// ── The wiring, which no unit test can reach ────────────────────────────────
+
+test('the web actually listens for paste and drop', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'app.js'), 'utf8');
+  for (const ev of ['paste', 'dragover', 'dragenter', 'drop']) {
+    assert.ok(new RegExp(`addEventListener\\('${ev}'`).test(src), `nothing listens for ${ev}`);
+  }
+  assert.ok(/window\.addEventListener\('drop'/.test(src),
+    'a file dropped outside the chat is still opened by the browser, losing the conversation');
+  assert.ok(src.includes('setupPasteAndDrop()'), 'the handlers are never installed');
+});
+
+test('the paste handler cannot swallow an ordinary text paste', () => {
+  // preventDefault() before the check would break typing in every text box on
+  // the page — the worst possible regression from this feature.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'app.js'), 'utf8');
+  const start = src.indexOf("document.addEventListener('paste'");
+  assert.ok(start > 0, 'the paste handler is gone — this check is vacuous');
+  const body = src.slice(start, src.indexOf('const zone =', start));
+  assert.ok(body.indexOf('pasteCarriesFiles') < body.indexOf('preventDefault'),
+    'preventDefault runs before the paste is known to carry files');
+});
+
+test('the app offers paste only when there is something to paste', () => {
+  const src = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  assert.ok(src.includes('Clipboard.hasImageAsync'), 'the app never checks the clipboard');
+  assert.ok(src.includes('pasteFromClipboard'), 'the app has no paste action');
+  assert.ok(/\{clipboardHas && \(/.test(src),
+    'the paste option is shown even when the clipboard is empty');
+  assert.ok(src.includes('onShow={checkClipboard}'),
+    'the clipboard is never re-checked, so the option reflects a stale answer');
+});
+
+let passed = 0, failed = 0;
+for (const { n, f } of tests) {
+  try { f(); console.log(`  ✓ ${n}`); passed++; }
+  catch (e) { console.error(`  ✗ ${n}\n      ${e.message}`); failed++; }
+}
+fs.rmSync(OUT, { recursive: true, force: true });
+console.log(`\n${passed} passed, ${failed} failed`);
+process.exit(failed ? 1 : 0);

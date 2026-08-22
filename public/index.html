@@ -89,6 +89,15 @@
   </aside>
 
   <main id="chat-area">
+    <!-- Shown while a file is being dragged over the chat, so the drop has a
+         visible target instead of being a guess. -->
+    <div id="drop-overlay" class="hidden">
+      <div id="drop-overlay-inner">
+        <div class="drop-icon">📎</div>
+        <div class="drop-title">Drop to send</div>
+        <div class="drop-sub">Images, videos and files — up to 80 MB each</div>
+      </div>
+    </div>
     <header id="chat-header">
       <button id="menu-btn" class="icon-btn" onclick="openSidebar()">☰</button>
       <span id="room-title">Select a room</span>
@@ -478,6 +487,7 @@
 <script src="/js/localSearch.js"></script>
 <script src="/js/encsearch.js"></script>
 <script src="/js/chatsearch.js"></script>
+<script src="/js/pasteDrop.js"></script>
 <script src="/js/app.js"></script>
 <script src="/js/callMedia.js"></script>
 <script src="/js/callStatus.js"></script>

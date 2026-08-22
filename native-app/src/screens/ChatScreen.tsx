@@ -32,6 +32,7 @@ import * as up from '../uploadProgress';
 import UploadOverlay from '../components/UploadOverlay';
 import SaveOverlay from '../components/SaveOverlay';
 import * as save from '../saveProgress';
+import { parseDataUri, pastedName, fileUriFromText, extensionFor } from '../pasteDrop';
 import LocationPicker from '../components/LocationPicker';
 import PeerSheet from '../components/PeerSheet';
 import { PeerView, ClearScope, vanishedStyle } from '../peerActions';
@@ -1493,6 +1494,50 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   function emitStopTyping() {
     clearTimeout(typingTimer.current);
     socketRef.current?.emit('typing_stop', { roomId: room.id });
+  }
+
+  // ── Pasting ────────────────────────────────────────────────────────────────
+  //
+  // Android's message box is a text field: a screenshot on the clipboard is
+  // invisible to it, and there is no keyboard gesture that would hand one
+  // over. What the system does offer is a clipboard the app can ASK, so paste
+  // is an action here rather than something that happens to the text field.
+  //
+  // Whether there is anything to paste is checked when the attach menu opens,
+  // so the option is only offered when it would do something.
+  const [clipboardHas, setClipboardHas] = useState<'image' | 'file' | null>(null);
+
+  async function checkClipboard() {
+    try {
+      if (await Clipboard.hasImageAsync()) { setClipboardHas('image'); return; }
+      const text = await Clipboard.getStringAsync();
+      setClipboardHas(fileUriFromText(text) ? 'file' : null);
+    } catch { setClipboardHas(null); }
+  }
+
+  async function pasteFromClipboard() {
+    setShowAttachMenu(false);
+    try {
+      // A file URI copied as text by a file manager. Sending the text would be
+      // sending somebody a line of gibberish ending in .pdf.
+      const asUri = fileUriFromText(await Clipboard.getStringAsync());
+      if (asUri) {
+        const name = decodeURIComponent(asUri.split('/').pop() || '') || `file-${Date.now()}`;
+        setPendingMedia(prev => [...prev, { uri: asUri, name, mime: guessMime(name) }]);
+        return;
+      }
+      const img = await Clipboard.getImageAsync({ format: 'png' });
+      const parsed = img?.data ? parseDataUri(img.data) : null;
+      if (!parsed) { Alert.alert('Nothing to paste', 'There is no image or file on the clipboard.'); return; }
+      // The clipboard hands back base64; it has to become a real file before
+      // anything can upload it.
+      const name = pastedName(parsed.mime, Date.now());
+      const uri = `${FileSystem.cacheDirectory}paste-${Date.now()}.${extensionFor(parsed.mime)}`;
+      await FileSystem.writeAsStringAsync(uri, parsed.base64, { encoding: FileSystem.EncodingType.Base64 });
+      setPendingMedia(prev => [...prev, { uri, name, mime: parsed.mime }]);
+    } catch {
+      Alert.alert('Could not paste', 'The clipboard could not be read.');
+    }
   }
 
   async function pickFile() {
@@ -3783,7 +3828,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       )}
 
       {/* Attach menu */}
-      <Modal visible={showAttachMenu} transparent animationType="slide" onRequestClose={() => setShowAttachMenu(false)}>
+      <Modal visible={showAttachMenu} transparent animationType="slide"
+        onShow={checkClipboard}
+        onRequestClose={() => setShowAttachMenu(false)}>
         <View style={s.overlay}>
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowAttachMenu(false)} />
           <View style={s.attachSheet}>
@@ -3804,6 +3851,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               <Text style={s.attachOptionIcon}>📄</Text>
               <Text style={s.attachOptionText}>Choose File</Text>
             </TouchableOpacity>
+            {/* Only when there is something on the clipboard: an option that
+                does nothing is worse than no option. */}
+            {clipboardHas && (
+              <TouchableOpacity style={s.attachOption} onPress={pasteFromClipboard}>
+                <Text style={s.attachOptionIcon}>📋</Text>
+                <Text style={s.attachOptionText}>
+                  {clipboardHas === 'image' ? 'Paste image' : 'Paste file'}
+                </Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity style={s.attachCancel} onPress={() => setShowAttachMenu(false)}>
               <Text style={s.attachCancelText}>Cancel</Text>
             </TouchableOpacity>

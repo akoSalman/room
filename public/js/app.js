@@ -211,6 +211,7 @@ window.addEventListener('DOMContentLoaded', () => {
   setAuthMode('signin');
   buildEmojiPicker();
   initQuickEmoji();
+  setupPasteAndDrop();
 
   // Keep the layout inside the visual viewport so the composer isn't hidden
   // behind the on-screen keyboard (iOS Safari doesn't resize the layout
@@ -1959,13 +1960,100 @@ async function compressForSend(file, quality) {
     return file;
   }
 }
+// ── Pasting and dropping ─────────────────────────────────────────────────────
+//
+// Asked for as: accept pasted and dropped images and files.
+//
+// Dropping a photo onto the page used to make the BROWSER open it, throwing
+// away the conversation to display a JPEG, and Ctrl+V with a screenshot on the
+// clipboard did nothing at all. Both now stage the files exactly as the ＋
+// button does, so everything downstream — the preview strip, the HD/standard
+// toggle, captions, galleries, resumable upload — works without knowing where
+// the files came from.
+//
+// The rules (which of the things a paste carries was meant, what to call a
+// nameless blob, what to refuse) are in pasteDrop.js and are tested; this is
+// only the wiring.
+
+/** Stage files that arrived by paste, drop, or the file picker. */
+function stageFiles(files, opts) {
+  if (!currentRoomId) return false;
+  const { accepted, tooLarge, folders } = PasteDrop.partitionDropped(files);
+  const complaint = PasteDrop.rejectionMessage({ tooLarge, folders });
+  if (complaint) showToast(complaint);
+  if (!accepted.length) return false;
+  accepted.forEach(f => pendingFiles.push({ file: f, url: URL.createObjectURL(f) }));
+  renderPendingFiles();
+  if (!opts || !opts.keepFocus) document.getElementById('msg-input').focus();
+  return true;
+}
+
+function setupPasteAndDrop() {
+  // Paste anywhere in the page: the composer rarely has focus when somebody
+  // takes a screenshot and hits Ctrl+V, and requiring them to click into the
+  // box first is exactly the kind of small refusal that makes a feature feel
+  // absent.
+  document.addEventListener('paste', (e) => {
+    const dt = e.clipboardData;
+    if (!dt || !currentRoomId) return;
+    const kinds = [...(dt.items || [])].map(i => ({ kind: i.kind, type: i.type }));
+    if (!PasteDrop.pasteCarriesFiles(kinds)) return;   // ordinary text paste
+    const files = PasteDrop.filesFrom(dt, Date.now());
+    if (!files.length) return;
+    // Only now: preventing default on a text paste would break typing.
+    e.preventDefault();
+    // Keep the caret where it was — the message being typed is the caption.
+    stageFiles(files, { keepFocus: document.activeElement === document.getElementById('msg-input') });
+  });
+
+  const zone = document.getElementById('chat-area') || document.body;
+  let depth = 0;   // dragenter/dragleave fire for every child element crossed
+  const overlay = () => document.getElementById('drop-overlay');
+  const show = () => overlay()?.classList.remove('hidden');
+  const hideOverlay = () => { depth = 0; overlay()?.classList.add('hidden'); };
+
+  // A drop only happens where dragover was prevented, on EVERY event — the
+  // browser re-asks continuously, and one unhandled frame is enough to lose
+  // the drop.
+  zone.addEventListener('dragover', (e) => {
+    if (!PasteDrop.dragCarriesFiles([...(e.dataTransfer?.types || [])])) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  });
+  zone.addEventListener('dragenter', (e) => {
+    if (!PasteDrop.dragCarriesFiles([...(e.dataTransfer?.types || [])])) return;
+    e.preventDefault();
+    depth++;
+    if (currentRoomId) show();
+  });
+  zone.addEventListener('dragleave', () => { if (--depth <= 0) hideOverlay(); });
+  zone.addEventListener('drop', (e) => {
+    if (!PasteDrop.dragCarriesFiles([...(e.dataTransfer?.types || [])])) return;
+    e.preventDefault();
+    hideOverlay();
+    if (!currentRoomId) return showToast('Open a chat first, then drop the files in.');
+    stageFiles(PasteDrop.filesFrom(e.dataTransfer, Date.now()));
+  });
+  // Anywhere else in the window, a dropped file must NOT be opened by the
+  // browser — that navigates away from the chat and loses whatever was typed.
+  window.addEventListener('dragover', (e) => {
+    if (PasteDrop.dragCarriesFiles([...(e.dataTransfer?.types || [])])) e.preventDefault();
+  });
+  window.addEventListener('drop', (e) => {
+    if (!PasteDrop.dragCarriesFiles([...(e.dataTransfer?.types || [])])) return;
+    e.preventDefault();
+    hideOverlay();
+  });
+  // A drag that ends outside the window never fires dragleave on the zone.
+  window.addEventListener('dragend', hideOverlay);
+  window.addEventListener('blur', hideOverlay);
+}
+
 function stageFile() {
   const files = [...document.getElementById('file-input').files];
   if (!files.length || !currentRoomId) return;
-  files.forEach(f => pendingFiles.push({ file: f, url: URL.createObjectURL(f) }));
   document.getElementById('file-input').value = '';
-  renderPendingFiles();
-  document.getElementById('msg-input').focus();
+  stageFiles(files);
 }
 
 function renderPendingFiles() {
