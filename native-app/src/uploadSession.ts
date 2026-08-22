@@ -242,6 +242,22 @@ export function formatEta(seconds: number | null): string {
 }
 
 /**
+ * Can the bar be trusted to move?
+ *
+ * Until the first byte is reported there is nothing to draw a bar from, and a
+ * bar sitting at 0% is a claim — that the upload has started and got nowhere.
+ * A spinner claims only that something is happening, which is all that is
+ * known. The distinction matters most for the smallest files, where the whole
+ * upload is one chunk and there is exactly one report at each end of it.
+ */
+export function uploadDeterminate(o: {
+  phase: Phase; sent: number; total: number;
+}): boolean {
+  if (o.phase === 'processing') return true;   // transcoding reports properly
+  return o.total > 0 && o.sent > 0;
+}
+
+/**
  * The line under the progress bar.
  *
  * A percentage on its own does not answer "is this stuck?". The bytes and the

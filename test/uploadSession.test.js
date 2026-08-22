@@ -247,6 +247,60 @@ test('a paused upload says how far it got, not how fast it is going', () => {
   assert.ok(!line.includes('/s'), `a paused upload claimed a speed: ${line}`);
 });
 
+// ── Nothing to draw a bar from yet ──────────────────────────────────────────
+//
+// Reported with a screenshot: a 20-second voice message sitting at "0%" with
+// the status line squeezed down to a bare ellipsis. Two separate faults — the
+// 0% is this one.
+
+test('THE BUG: before the first byte lands there is no bar to draw', () => {
+  assert.strictEqual(U.uploadDeterminate({ phase: 'uploading', sent: 0, total: 239000 }), false,
+    '0% claims the upload has started and got nowhere; only a spinner is honest here');
+});
+
+test('once bytes are reported the bar is real', () => {
+  assert.strictEqual(U.uploadDeterminate({ phase: 'uploading', sent: 1, total: 239000 }), true);
+  assert.strictEqual(U.uploadDeterminate({ phase: 'uploading', sent: 239000, total: 239000 }), true);
+});
+
+test('a file of unknown size never gets a bar', () => {
+  assert.strictEqual(U.uploadDeterminate({ phase: 'uploading', sent: 100, total: 0 }), false);
+});
+
+test('transcoding keeps its bar — the encoder reports properly from the start', () => {
+  assert.strictEqual(U.uploadDeterminate({ phase: 'processing', sent: 0, total: 0 }), true);
+});
+
+test('a paused upload that never sent a byte still has no bar', () => {
+  // The status line says "Paused · 0 B of 239 KB", which is the whole story;
+  // a bar at 0% would add a claim nobody can support.
+  assert.strictEqual(U.uploadDeterminate({ phase: 'paused', sent: 0, total: 239000 }), false);
+});
+
+// ── The status line has to fit ──────────────────────────────────────────────
+
+test('THE BUG: the status line is not squeezed in beside the buttons', () => {
+  // A voice bubble is about as wide as the words "Voice message". With the
+  // status sharing a row with the percentage and two 26px buttons there was
+  // room for roughly one character, and it rendered as "…".
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'native-app', 'src', 'components', 'UploadOverlay.tsx'), 'utf8');
+  const row = src.slice(src.indexOf('<View style={s.row}>'), src.indexOf('</View>', src.indexOf('accessibilityLabel="Cancel upload"')));
+  assert.ok(!row.includes('statusLine('),
+    'the status line is back inside the button row, where it has no room');
+  assert.ok(/<Text style=\{s\.status\}[\s\S]*statusLine\(/.test(src),
+    'the status line is not rendered at all');
+});
+
+test('the overlay asks uploadDeterminate rather than deciding for itself', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'native-app', 'src', 'components', 'UploadOverlay.tsx'), 'utf8');
+  assert.ok(src.includes('uploadDeterminate(view)'), 'the overlay no longer uses the rule');
+  assert.ok(/determinate \? \(/.test(src), 'the bar is drawn regardless of the rule');
+  assert.ok(/\{determinate && <Text style=\{s\.pct\}/.test(src),
+    'the percentage is shown even when there is no byte count behind it');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

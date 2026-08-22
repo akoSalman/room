@@ -14,7 +14,7 @@ import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'rea
 import { Ionicons } from '@expo/vector-icons';
 import { C } from '../theme';
 import * as up from '../uploadProgress';
-import { canPause, canResume, canCancel, statusLine } from '../uploadSession';
+import { canPause, canResume, canCancel, statusLine, uploadDeterminate, isActive } from '../uploadSession';
 
 export default function UploadOverlay({ msgId }: { msgId: string | number }) {
   const id = String(msgId);
@@ -31,30 +31,30 @@ export default function UploadOverlay({ msgId }: { msgId: string | number }) {
   const resumable = canResume(view.phase);
   const stoppable = canCancel(view.phase);
 
+  const determinate = uploadDeterminate(view);
+
   return (
     <View style={s.wrap}>
-      <View style={s.track}>
-        <View style={[s.fill, { width: `${Math.max(0, Math.min(100, view.percent))}%` },
-          view.phase === 'paused' && s.fillPaused]} />
-      </View>
+      {/* A bar only once there is something real to draw it from. Before the
+          first byte is reported a bar at 0% is a claim — that this has started
+          and got nowhere — where a spinner claims only that something is
+          happening, which is all anybody knows. */}
+      {determinate ? (
+        <View style={s.track}>
+          <View style={[s.fill, { width: `${Math.max(0, Math.min(100, view.percent))}%` },
+            view.phase === 'paused' && s.fillPaused]} />
+        </View>
+      ) : null}
 
       <View style={s.row}>
-        {view.phase === 'processing' && (
+        {/* A spinner only while something is actually happening — a failed or
+            cancelled upload spinning forever would say the opposite of what is
+            true. */}
+        {!determinate && isActive(view.phase) && (
           <ActivityIndicator size="small" color={C.accent} style={{ marginRight: 2 }} />
         )}
-        <Text style={s.pct}>{view.percent}%</Text>
-        {/* flex:1 with minWidth:0 so the line SHRINKS to whatever room is left
-            instead of demanding room of its own. Without the minWidth a text
-            child refuses to go below its content width, and this line is at
-            its longest right at the end of the upload ("11.4 MB / 11.4 MB ·
-            2.1 MB/s · almost done") — which is exactly when the bubble was
-            seen to stretch, and why it snapped back once the upload finished
-            and the overlay went away. */}
-        <Text style={s.status} numberOfLines={1} ellipsizeMode="tail">
-          {statusLine({
-            phase: view.phase, sent: view.sent, total: view.total, bytesPerSec: view.bytesPerSec,
-          })}
-        </Text>
+        {determinate && <Text style={s.pct}>{view.percent}%</Text>}
+        <View style={{ flex: 1 }} />
 
         {pausable && (
           <TouchableOpacity onPress={() => up.pause(id)} style={s.btn} hitSlop={hit}
@@ -75,6 +75,17 @@ export default function UploadOverlay({ msgId }: { msgId: string | number }) {
           </TouchableOpacity>
         )}
       </View>
+
+      {/* On its own row, with the whole bubble to itself.
+          It used to share a row with the percentage and both buttons, and a
+          voice message bubble is only as wide as the words "Voice message" —
+          so after the fixed parts there was room for about one character and
+          the line rendered as a bare ellipsis. */}
+      <Text style={s.status} numberOfLines={1} ellipsizeMode="tail">
+        {statusLine({
+          phase: view.phase, sent: view.sent, total: view.total, bytesPerSec: view.bytesPerSec,
+        })}
+      </Text>
     </View>
   );
 }
@@ -91,7 +102,7 @@ const s = StyleSheet.create({
   fillPaused: { backgroundColor: C.muted },
   row: { flexDirection: 'row', alignItems: 'center', gap: 7 },
   pct: { color: C.text, fontSize: 11.5, fontWeight: '800', minWidth: 30 },
-  status: { color: C.muted, fontSize: 11, flex: 1, minWidth: 0 },
+  status: { color: C.muted, fontSize: 11 },
   btn: {
     width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center',
     backgroundColor: 'rgba(0,0,0,0.06)',
