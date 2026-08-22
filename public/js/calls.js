@@ -172,6 +172,32 @@ const Calls = (() => {
     if (mode === 'room-voice' && !pcs.size) setStatus('Voice chat · waiting for others…');
   }
 
+  // ── Putting the call down without hanging up ───────────────────────────────
+  //
+  // The panel sits over the corner of the chat, which is exactly where the
+  // newest messages are. Collapsing it to a bar leaves the call running and
+  // the conversation readable; the choice is remembered, because somebody who
+  // wants calls out of the way wants that every time.
+  function minimized() { return localStorage.getItem('callMinimized') === '1'; }
+
+  function applyMinimized() {
+    const el = $('call-overlay');
+    if (!el) return;
+    const phase = !mode ? 'idle' : (connectedAt ? 'connected' : 'outgoing');
+    const on = minimized() && CallStatus.canMinimize(phase);
+    el.classList.toggle('minimized', on);
+    const btn = $('call-min-btn');
+    if (btn) {
+      btn.textContent = on ? '▴' : '▾';
+      btn.title = on ? 'Expand call' : 'Minimize call';
+    }
+  }
+
+  function toggleMinimize() {
+    localStorage.setItem('callMinimized', minimized() ? '0' : '1');
+    applyMinimized();
+  }
+
   function showOverlay(title, video) {
     $('call-overlay').classList.remove('hidden');
     $('call-title').textContent = title;
@@ -180,6 +206,7 @@ const Calls = (() => {
     $('call-cam-btn').classList.toggle('hidden', !video);
     muted = false;
     $('call-mute-btn').textContent = '🎙';
+    applyMinimized();
   }
 
   function setStatus(text) { const el = $('call-status'); if (el) el.textContent = text; }
@@ -209,6 +236,7 @@ const Calls = (() => {
       // stack here, so the status never left "Connecting…" and the timer never
       // appeared.
       setStatus(CallStatus.outgoingStatus(out));
+      applyMinimized();
       clearInterval(timerInterval);
       timerInterval = setInterval(() => {
         const sec = Math.floor((Date.now() - connectedAt) / 1000);
@@ -356,5 +384,5 @@ const Calls = (() => {
     $('call-cam-btn').textContent = on ? '🚫🎥' : '🎥';
   }
 
-  return { bindSocket, setDMPeer, startDM, toggleRoomVoice, accept, decline, end, toggleMute, toggleCam };
+  return { bindSocket, setDMPeer, startDM, toggleRoomVoice, accept, decline, end, toggleMute, toggleCam, toggleMinimize };
 })();

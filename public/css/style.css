@@ -612,6 +612,27 @@ html {
 #call-title { font-weight: 700; font-size: 0.95rem; }
 #call-status { font-size: 0.78rem; color: var(--muted); margin-top: 2px; }
 #call-controls { display: flex; justify-content: center; gap: 14px; }
+#call-min-btn {
+  position: absolute; top: 6px; left: 8px;
+  background: none; border: none; color: inherit; opacity: .65;
+  font-size: 1rem; line-height: 1; cursor: pointer; padding: 4px 6px;
+}
+#call-min-btn:hover { opacity: 1; }
+
+/* Minimized: one row — who, how long, mute, hang up. Everything that only
+   makes sense at full size is out of the flow rather than merely invisible,
+   so the bar is the height of its contents. */
+#call-overlay.minimized { width: 210px; padding: 8px 10px 8px 26px; gap: 6px; }
+#call-overlay.minimized #call-remote-video,
+#call-overlay.minimized #call-local-video { display: none; }
+#call-overlay.minimized #call-info {
+  display: flex; align-items: baseline; gap: 8px; text-align: left; min-width: 0;
+}
+#call-overlay.minimized #call-title {
+  font-size: .85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#call-overlay.minimized #call-status { margin-top: 0; white-space: nowrap; }
+#call-overlay.minimized #call-controls { gap: 10px; }
 #call-controls button {
   width: 44px; height: 44px; border-radius: 50%; border: none; cursor: pointer;
   font-size: 1.15rem; background: rgba(59,125,216,0.18);

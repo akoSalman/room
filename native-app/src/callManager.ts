@@ -8,6 +8,8 @@ import { mediaDevices, RTCPeerConnection, MediaStream } from 'react-native-webrt
 import { apiFetch, getSocket } from './api';
 import { stopRinging } from './incomingCall';
 import { routeFor, outgoingStatus, CallMode, CallPhase, OutgoingState } from './callAudio';
+import { canMinimize, CallPhase as WindowPhase } from './callWindow';
+import * as ongoing from './ongoingCall';
 import { audioManager } from './audioManager';
 
 // react-native-incall-manager routes call audio (earpiece/speaker/proximity)
@@ -30,6 +32,8 @@ class CallManager {
   cameraOff = false;
   speakerOn = false;    // voice calls: earpiece by default, toggle to speaker
   frontCamera = true;   // video calls: front/back camera
+  /** Shrunk to a bubble, so the chat underneath can be used. */
+  minimized = false;
   connectedAt: number | null = null; // for the in-call timer
 
   // Details needed to write the call into chat history when it ends.
@@ -96,6 +100,7 @@ class CallManager {
   private markRoomAudioStarted() {
     if (this.roomAudioStarted) return;
     this.roomAudioStarted = true;
+    this.syncOngoing();
     // Group calls are hands-free by nature — routeFor says so, like every
     // other app's group voice chat.
     this.applyRoute('connected');
@@ -118,7 +123,47 @@ class CallManager {
     }
     this.out = { ...this.out, connected: true };
     this.status = 'Connected';
+    this.syncOngoing();
     this.emit();
+  }
+
+  /** Which of the four states this call is in, for the rules that care. */
+  get windowPhase(): WindowPhase {
+    if (this.incoming) return 'incoming';
+    if (!this.mode) return 'idle';
+    return this.connectedAt || this.mode === 'room-voice' ? 'connected' : 'outgoing';
+  }
+
+  minimize() {
+    // An incoming call is a question that wants an answer now; shrinking it is
+    // how a call ends up ringing in the corner while somebody keeps scrolling.
+    if (!canMinimize(this.windowPhase)) return;
+    this.minimized = true;
+    this.emit();
+  }
+
+  expand() {
+    this.minimized = false;
+    this.emit();
+  }
+
+  /**
+   * Tell the shade where the call is up to.
+   *
+   * Also what keeps the process alive: without a foreground service Android is
+   * free to freeze a backgrounded app, and a frozen app is a call whose audio
+   * stops and whose socket dies with nobody told.
+   */
+  private syncOngoing() {
+    const phase = this.windowPhase;
+    if (phase === 'idle') { ongoing.stopOngoing(); return; }
+    ongoing.startOngoing({
+      title: this.incoming ? this.incoming.fromUsername : this.title.replace(/^[^ ]+ /, ''),
+      kind: (this.incoming?.kind === 'video' || this.mode === 'dm-video') ? 'video' : 'voice',
+      phase,
+      connected: !!this.connectedAt || this.mode === 'room-voice',
+      connectedAt: this.connectedAt,
+    });
   }
 
   toggleSpeaker() {
@@ -379,7 +424,9 @@ class CallManager {
     this.muted = false;
     this.cameraOff = false;
     this.speakerOn = false;
+    this.minimized = false;
     this.out = {};
+    ongoing.stopOngoing();
     // Hand the earpiece routing back, or every voice note played afterwards
     // comes out of it too — silent, as far as anyone holding the phone
     // normally can tell.
@@ -425,6 +472,7 @@ class CallManager {
     Audio.setAudioModeAsync({ playThroughEarpieceAndroid: false, staysActiveInBackground: true })
       .catch(() => {});
     this.startRing();
+    this.syncOngoing();
     // Tell the caller their phone is actually ringing here. Without this the
     // caller's screen has nothing to go on but hope.
     try { this.sock.emit('call_ringing', { toUserId: offer.fromUserId }); } catch {}
@@ -475,8 +523,10 @@ class CallManager {
     this.applyRoute('outgoing');
     try { InCallManager?.startRingback?.('_DTMF_'); } catch {}
     this.out = {};
+    this.minimized = false;
     this.status = outgoingStatus(this.out);
     this.startRing();
+    this.syncOngoing();
     this.emit();
     // Give up after 45s of no answer (logged as a missed call)
     clearTimeout(this.noAnswerTimer);
@@ -508,6 +558,8 @@ class CallManager {
     this.mode = offer.kind === 'video' ? 'dm-video' : 'dm-voice';
     this.title = (offer.kind === 'video' ? '🎥 ' : '📞 ') + offer.fromUsername;
     this.status = 'Connecting…';
+    this.minimized = false;
+    this.syncOngoing();
     this.emit();
     try {
       const pc = this.newPc(offer.fromUserId);

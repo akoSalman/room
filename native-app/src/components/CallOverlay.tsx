@@ -1,12 +1,16 @@
 // App-wide call UI: full-screen incoming-call screen and full-screen active
 // call, in the spirit of Telegram/WhatsApp — big avatar, name, live timer,
 // round controls at the bottom.
-import React, { useEffect, useReducer } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Dimensions } from 'react-native';
+import React, { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, Dimensions, PanResponder } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { RTCView } from 'react-native-webrtc';
 import { C } from '../theme';
 import { callManager } from '../callManager';
+import { canMinimize, clampToScreen, snapToEdge, defaultPosition, isDrag } from '../callWindow';
+
+/** The bubble a minimized call shrinks to. */
+const PILL = { w: 168, h: 56 };
 
 function fmtElapsed(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -34,9 +38,63 @@ export default function CallOverlay() {
     return () => clearInterval(t);
   }, [cm.connectedAt]);
 
+  const screen = Dimensions.get('window');
+  const { height: H } = screen;
+
+  // Hooks cannot live behind the early return below, so the bubble's position
+  // is set up whether or not there is a call to draw.
+  const [pos, setPos] = useState(() => defaultPosition(PILL, { w: screen.width, h: screen.height }));
+  const posRef = useRef(pos);
+  posRef.current = pos;
+  const draggedRef = useRef(false);
+  const pan = useMemo(() => PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    // Claim the gesture only once it is a drag, so a tap still reaches the
+    // buttons inside the bubble.
+    onMoveShouldSetPanResponder: (_e, g) => isDrag(g.dx, g.dy),
+    onPanResponderGrant: () => { draggedRef.current = false; },
+    onPanResponderMove: (_e, g) => {
+      draggedRef.current = draggedRef.current || isDrag(g.dx, g.dy);
+      setPos(clampToScreen(
+        { x: posRef.current.x + g.dx, y: posRef.current.y + g.dy },
+        PILL, { w: screen.width, h: screen.height }));
+      posRef.current = { x: posRef.current.x + g.dx, y: posRef.current.y + g.dy };
+    },
+    onPanResponderRelease: () => {
+      // Snap to the nearer edge: a bubble left floating in the middle sits on
+      // top of the message you are trying to read.
+      setPos(p => snapToEdge(p, PILL, { w: screen.width, h: screen.height }));
+    },
+  }), [screen.width, screen.height]);
+
   if (!cm.mode && !cm.incoming) return null;
 
-  const { height: H } = Dimensions.get('window');
+  // ── Minimized: a bubble over the chat, which stays usable ──
+  if (cm.minimized && cm.mode && !cm.incoming) {
+    const mini = cm.connectedAt ? fmtElapsed(Date.now() - cm.connectedAt) : cm.status;
+    return (
+      <View style={[s.pill, { left: pos.x, top: pos.y, width: PILL.w, height: PILL.h }]}
+        {...pan.panHandlers}>
+        <TouchableOpacity style={s.pillBody} activeOpacity={0.8}
+          onPress={() => { if (!draggedRef.current) cm.expand(); }}
+          accessibilityLabel="Return to call">
+          <Ionicons name={cm.mode === 'dm-video' ? 'videocam' : 'call'} size={16} color="#fff" />
+          <View style={s.pillText}>
+            <Text style={s.pillName} numberOfLines={1}>{cm.title.replace(/^[^ ]+ /, '')}</Text>
+            <Text style={s.pillTime} numberOfLines={1}>{mini}</Text>
+          </View>
+        </TouchableOpacity>
+        <TouchableOpacity style={s.pillBtn} onPress={() => cm.toggleMute()} hitSlop={hit8}
+          accessibilityLabel={cm.muted ? 'Unmute' : 'Mute'}>
+          <Ionicons name={cm.muted ? 'mic-off' : 'mic'} size={16} color="#fff" />
+        </TouchableOpacity>
+        <TouchableOpacity style={[s.pillBtn, s.pillEnd]} onPress={() => cm.end()} hitSlop={hit8}
+          accessibilityLabel="End call">
+          <Ionicons name="call" size={15} color="#fff" style={s.endIcon} />
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   // ── Incoming call: full-screen like a real phone call ──
   if (cm.incoming) {
@@ -75,6 +133,14 @@ export default function CallOverlay() {
   const elapsed = cm.connectedAt ? fmtElapsed(Date.now() - cm.connectedAt) : null;
   return (
     <View style={s.fullscreen}>
+      {/* Put the call down without hanging up. Not offered on an incoming
+          call, which is a question that wants an answer now. */}
+      {canMinimize(cm.windowPhase) && (
+        <TouchableOpacity style={s.minimizeBtn} onPress={() => cm.minimize()} hitSlop={hit8}
+          accessibilityLabel="Minimize call">
+          <Ionicons name="chevron-down" size={26} color="#fff" />
+        </TouchableOpacity>
+      )}
       {isVideo && cm.remoteStream && (
         <RTCView streamURL={cm.remoteStream.toURL()} style={StyleSheet.absoluteFill as any} objectFit="cover" />
       )}
@@ -143,7 +209,34 @@ export default function CallOverlay() {
   );
 }
 
+const hit8 = { top: 8, bottom: 8, left: 8, right: 8 };
+
 const s = StyleSheet.create({
+  minimizeBtn: {
+    position: 'absolute', top: 44, left: 14, zIndex: 10,
+    width: 40, height: 40, borderRadius: 20,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+  },
+  pill: {
+    position: 'absolute', zIndex: 400,
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 10, borderRadius: 28,
+    backgroundColor: '#0c1220',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.18)',
+    shadowColor: '#000', shadowOpacity: 0.4, shadowRadius: 10, shadowOffset: { width: 0, height: 4 },
+    elevation: 12,
+  },
+  pillBody: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 7, minWidth: 0 },
+  pillText: { flex: 1, minWidth: 0 },
+  pillName: { color: '#fff', fontSize: 12.5, fontWeight: '700' },
+  pillTime: { color: 'rgba(255,255,255,0.6)', fontSize: 11, fontVariant: ['tabular-nums'] },
+  pillBtn: {
+    width: 30, height: 30, borderRadius: 15,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+  },
+  pillEnd: { backgroundColor: '#e5484d' },
   fullscreen: {
     ...StyleSheet.absoluteFillObject, zIndex: 400,
     backgroundColor: '#0c1220', alignItems: 'center',

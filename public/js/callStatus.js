@@ -31,7 +31,18 @@
     return 'Connecting…';
   }
 
-  root.CallStatus = { outgoingStatus: outgoingStatus };
+  /**
+   * May this call be put down without hanging up?
+   *
+   * Not while it is ringing IN: an incoming call is a question that wants an
+   * answer now, and shrinking it is how a call ends up ringing in a corner
+   * while somebody carries on scrolling. Mirrors callWindow.ts on the app.
+   */
+  function canMinimize(phase) {
+    return phase === 'outgoing' || phase === 'connected';
+  }
+
+  root.CallStatus = { outgoingStatus: outgoingStatus, canMinimize: canMinimize };
 })(typeof window !== 'undefined' ? window : globalThis);
 
 if (typeof module !== 'undefined' && module.exports) {

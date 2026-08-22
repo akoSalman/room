@@ -460,6 +460,9 @@
 </div>
 
 <div id="call-overlay" class="hidden">
+  <!-- Collapses the panel to a bar: the call keeps running and the corner of
+       the chat it was covering becomes readable again. -->
+  <button id="call-min-btn" onclick="Calls.toggleMinimize()" title="Minimize call">▾</button>
   <video id="call-remote-video" class="hidden" autoplay playsinline></video>
   <video id="call-local-video" class="hidden" autoplay playsinline muted></video>
   <div id="call-audios"></div>

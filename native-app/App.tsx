@@ -10,6 +10,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import * as Notifications from 'expo-notifications';
 import notifee, { EventType } from '@notifee/react-native';
 import { registerCallPush } from './src/callPush';
+import { registerCallService, onEndFromShade, handleNotifeeEvent } from './src/ongoingCall';
 import * as mediaCache from './src/mediaCache';
 import * as offlineStore from './src/offlineStore';
 import AuthScreen from './src/screens/AuthScreen';
@@ -64,9 +65,18 @@ Notifications.setNotificationChannelAsync('messages-v3', {
 // a foregrounded app still rings.
 registerCallPush();
 
+// The ongoing-call foreground service. Registering the task must happen at
+// import time: notifee requires it to exist before any foreground-service
+// notification is displayed, and a registration done when a call starts is
+// already too late — Android kills the service on the spot.
+registerCallService();
+onEndFromShade(() => { try { callManager.end(); } catch {} });
+
 // Actions pressed while the app IS running — onBackgroundEvent is not called
 // then, so both paths have to exist.
 notifee.onForegroundEvent(async ({ type, detail }) => {
+  // "End call" in the shade, and the press that brings the app back.
+  if (handleNotifeeEvent(type, detail as any)) return;
   if (type !== EventType.ACTION_PRESS) return;
   if (detail.pressAction?.id === 'stop-location') {
     try {
