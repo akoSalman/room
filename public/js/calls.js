@@ -70,11 +70,23 @@ const Calls = (() => {
 
   function setDMPeer(userId, name) { dmPeer = userId ? { userId, username: name } : null; }
 
-  async function getMedia(video) {
-    return navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true },
-      video: video ? { facingMode: 'user', width: { ideal: 640 } } : false,
-    });
+  // Deliberately NOT async, and deliberately called before any await.
+  //
+  // Safari discards the user gesture as soon as the task handling the tap
+  // yields, so a single `await` before this — loading the ICE config, say —
+  // makes getUserMedia reject with NotAllowedError and show no prompt at all.
+  // From the user's side that is indistinguishable from having refused, and
+  // there is no way to recover because Safari does not ask twice.
+  function getMedia(video) {
+    return window.CallMedia.requestMedia(video);
+  }
+
+  /** Say what actually went wrong, and what to do about it. */
+  function mediaFailed(err) {
+    alert(window.CallMedia.mediaErrorMessage(err, {
+      secure: window.CallMedia.isSecure(),
+      isApple: window.CallMedia.isApple(),
+    }));
   }
 
   function newPc(userId) {
@@ -206,10 +218,15 @@ const Calls = (() => {
   async function startDM(kind) {
     if (mode) return alert('You are already in a call.');
     if (!dmPeer) return;
-    await loadIce();
+    // The microphone is asked for FIRST, in the same task as the tap, and the
+    // ICE config is fetched alongside it. Awaiting the config first is what
+    // made an iPhone refuse without asking.
+    const media = getMedia(kind === 'video');
+    const ice = loadIce();
     try {
-      localStream = await getMedia(kind === 'video');
-    } catch { return alert('Microphone/camera access is required.'); }
+      localStream = await media;
+    } catch (err) { ice.catch(() => {}); return mediaFailed(err); }
+    await ice;
     mode = kind === 'video' ? 'dm-video' : 'dm-voice';
     showOverlay((kind === 'video' ? '🎥 ' : '📞 ') + dmPeer.username, kind === 'video');
     setStatus('Ringing…');
@@ -245,10 +262,17 @@ const Calls = (() => {
     stopRing();
     $('incoming-call').classList.add('hidden');
     if (!offer) return;
-    await loadIce();
+    // Accepting is a tap too, and the same rule applies to it.
+    const media = getMedia(offer.kind === 'video');
+    const ice = loadIce();
     try {
-      localStream = await getMedia(offer.kind === 'video');
-    } catch { sock.emit('call_end', { toUserId: offer.fromUserId }); return alert('Microphone/camera access is required.'); }
+      localStream = await media;
+    } catch (err) {
+      ice.catch(() => {});
+      sock.emit('call_end', { toUserId: offer.fromUserId });
+      return mediaFailed(err);
+    }
+    await ice;
     mode = offer.kind === 'video' ? 'dm-video' : 'dm-voice';
     showOverlay((offer.kind === 'video' ? '🎥 ' : '📞 ') + offer.fromUsername, offer.kind === 'video');
     setStatus('Connecting…');
@@ -277,10 +301,12 @@ const Calls = (() => {
   async function toggleRoomVoice() {
     if (mode === 'room-voice') return end();
     if (mode) return alert('You are already in a call.');
-    await loadIce();
+    const media = getMedia(false);
+    const ice = loadIce();
     try {
-      localStream = await getMedia(false);
-    } catch { return alert('Microphone access is required.'); }
+      localStream = await media;
+    } catch (err) { ice.catch(() => {}); return mediaFailed(err); }
+    await ice;
     mode = 'room-voice';
     roomVoiceId = currentRoomId;
     showOverlay('📞 ' + document.getElementById('room-title').textContent.replace(/^[#💬🔒 ]+/, ''), false);
