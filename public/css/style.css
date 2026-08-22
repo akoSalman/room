@@ -1104,3 +1104,11 @@ body.disappearing-on .msg-caption, body.disappearing-on .msg-time { color: #8fa3
   background: var(--sidebar, #fff); color: inherit;
 }
 .loc-picker-actions .loc-send { background: var(--accent, #3b7dd8); color: #fff; border-color: transparent; }
+
+/* Standard / HD, beside the staged photos it applies to. */
+.pending-quality {
+  align-self: center; margin-inline-start: 4px; padding: 6px 12px;
+  border-radius: 14px; cursor: pointer; font: inherit; font-size: 12px; font-weight: 700;
+  border: 1px solid var(--border, #e0e4e9); background: var(--sidebar, #fff); color: inherit;
+}
+.pending-quality.on { background: var(--accent, #3b7dd8); border-color: transparent; color: #fff; }

@@ -84,6 +84,54 @@ test('the toggle reads clearly', () => {
   assert.strictEqual(Q.qualityLabel('standard'), 'Standard');
 });
 
+// ── The web copy must not drift ─────────────────────────────────────────────
+//
+// public/js/imageQuality.js mirrors this module. If the two disagree, the same
+// photo sent from a phone and from a browser comes out at different sizes and
+// different quality, and nothing anywhere reports a problem.
+
+const WEB = require(path.join(__dirname, '..', 'public', 'js', 'imageQuality.js'));
+
+test('the web copy agrees on the limits', () => {
+  assert.strictEqual(WEB.STANDARD_MAX_EDGE, Q.STANDARD_MAX_EDGE);
+  assert.strictEqual(WEB.STANDARD_JPEG_QUALITY, Q.STANDARD_JPEG_QUALITY);
+});
+
+test('THE DRIFT CHECK: web and app resize identically', () => {
+  const sizes = [
+    [4032, 3024], [3024, 4032], [1600, 1200], [1601, 1200], [1200, 900],
+    [8000, 100], [100, 8000], [1, 1], [0, 0], [-5, 10], [NaN, 100], [Infinity, 100],
+  ];
+  const bad = [];
+  for (const [w, h] of sizes) {
+    for (const q of ['standard', 'hd']) {
+      const a = Q.resizeTarget(w, h, q), b = WEB.resizeTarget(w, h, q);
+      if (JSON.stringify(a) !== JSON.stringify(b)) {
+        bad.push(`resizeTarget(${w}, ${h}, ${q}): app=${JSON.stringify(a)} web=${JSON.stringify(b)}`);
+      }
+    }
+  }
+  assert.deepStrictEqual(bad, [], `resizing has drifted:\n      ${bad.join('\n      ')}`);
+});
+
+test('THE DRIFT CHECK: web and app agree on what is worth re-encoding', () => {
+  const mimes = [
+    'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml',
+    'video/mp4', 'application/pdf', '', 'IMAGE/JPEG',
+  ];
+  for (const m of mimes) {
+    for (const q of ['standard', 'hd']) {
+      assert.strictEqual(WEB.shouldCompress(m, q), Q.shouldCompress(m, q), `${m} @ ${q}`);
+    }
+  }
+});
+
+test('THE DRIFT CHECK: web and app label the toggle identically', () => {
+  for (const q of ['standard', 'hd']) {
+    assert.strictEqual(WEB.qualityLabel(q), Q.qualityLabel(q));
+  }
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

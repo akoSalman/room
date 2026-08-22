@@ -1916,6 +1916,49 @@ function cancelUpload(clientId) {
 // hits send (with any typed text as the first item's caption). Multiple
 // selection supported; staged images can be previewed and removed.
 let pendingFiles = [];
+// 'standard' re-encodes to something that still looks right on a screen and is
+// typically five to ten times smaller; 'hd' sends the original untouched. The
+// rules are shared with the app (imageQuality.js) so the same photo comes out
+// the same size whichever one sent it.
+let sendQuality = localStorage.getItem('sendQuality') === 'hd' ? 'hd' : 'standard';
+
+function toggleSendQuality() {
+  sendQuality = sendQuality === 'hd' ? 'standard' : 'hd';
+  localStorage.setItem('sendQuality', sendQuality);
+  renderPendingFiles();
+}
+
+/**
+ * Re-encode one picture for sending, or hand it back untouched.
+ *
+ * Drawn through a canvas, which is the only resizer a browser has. Untouched
+ * when the rules say so — HD, a format that must not be re-encoded, an image
+ * already small enough — and untouched on any failure, because a photo that
+ * sends at full size is better than a photo that does not send.
+ */
+async function compressForSend(file, quality) {
+  if (!window.ImageQuality.shouldCompress(file.type, quality)) return file;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const target = window.ImageQuality.resizeTarget(bitmap.width, bitmap.height, quality);
+    if (!target) { bitmap.close?.(); return file; }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = target.width;
+    canvas.height = target.height;
+    canvas.getContext('2d').drawImage(bitmap, 0, 0, target.width, target.height);
+    bitmap.close?.();
+
+    const blob = await new Promise(res =>
+      canvas.toBlob(res, 'image/jpeg', window.ImageQuality.STANDARD_JPEG_QUALITY));
+    if (!blob) return file;
+    // A re-encode that came out BIGGER is not a saving; keep the original.
+    if (blob.size >= file.size) return file;
+    return new File([blob], file.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' });
+  } catch {
+    return file;
+  }
+}
 function stageFile() {
   const files = [...document.getElementById('file-input').files];
   if (!files.length || !currentRoomId) return;
@@ -1958,6 +2001,19 @@ function renderPendingFiles() {
   add.title = 'Add more';
   add.onclick = () => document.getElementById('file-input').click();
   bar.appendChild(add);
+
+  // Only when there is a photo to apply it to: the toggle does nothing to a
+  // PDF, and a control that does nothing is worse than no control.
+  if (pendingFiles.some(p => window.ImageQuality.shouldCompress(p.file.type, 'standard'))) {
+    const q = document.createElement('button');
+    q.className = 'pending-quality' + (sendQuality === 'hd' ? ' on' : '');
+    q.textContent = window.ImageQuality.qualityLabel(sendQuality);
+    q.title = sendQuality === 'hd'
+      ? 'Sending the original file. Tap for a smaller, faster upload.'
+      : 'Resized for a faster upload. Tap to send the original.';
+    q.onclick = toggleSendQuality;
+    bar.appendChild(q);
+  }
 }
 
 function sendPendingFiles() {
@@ -1975,6 +2031,19 @@ function sendPendingFiles() {
   }
   const roomId = currentRoomId, replyToId = replyTo?.id || null;
 
+  // Re-encoded HERE, once, before anything is sent — not inside each upload,
+  // so a gallery of ten photos is resized once each rather than a bubble at a
+  // time while the user watches.
+  const quality = sendQuality;
+  const prepared = Promise.all(items.map(async p => (
+    { ...p, file: await compressForSend(p.file, quality) }
+  )));
+
+  prepared.then(ready => sendPrepared(ready, caption, oneTimeSeconds, roomId, replyToId));
+  cancelReply();
+}
+
+function sendPrepared(items, caption, oneTimeSeconds, roomId, replyToId) {
   const images = items.filter(p => p.file.type.startsWith('image/'));
   const others = items.filter(p => !p.file.type.startsWith('image/'));
   if (images.length > 1) {
@@ -1984,7 +2053,6 @@ function sendPendingFiles() {
   } else {
     items.forEach((p, i) => stagedSendOne(p, i === 0 ? caption : null, oneTimeSeconds, roomId, replyToId));
   }
-  cancelReply();
 }
 
 function stagedSendOne(p, caption, oneTimeSeconds, roomId, replyToId) {

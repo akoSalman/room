@@ -30,6 +30,8 @@ import MediaBrowser, { MediaAction, MediaItem, MediaTab } from '../components/Me
 import * as rm from '../roomMedia';
 import * as up from '../uploadProgress';
 import UploadOverlay from '../components/UploadOverlay';
+import SaveOverlay from '../components/SaveOverlay';
+import * as save from '../saveProgress';
 import LocationPicker from '../components/LocationPicker';
 import PeerSheet from '../components/PeerSheet';
 import { PeerView, ClearScope, vanishedStyle } from '../peerActions';
@@ -1826,41 +1828,68 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     }
   }
 
+  /**
+   * One file, fetched with its progress reported.
+   *
+   * createDownloadResumable rather than downloadAsync: the plain one reports
+   * no progress at all, which is why Download looked like it had not
+   * registered the tap for however long the file took.
+   */
+  async function fetchWithProgress(url: string, to: string): Promise<string> {
+    const task = FileSystem.createDownloadResumable(url, to, {}, (p) => {
+      save.report(p.totalBytesWritten, p.totalBytesExpectedToWrite);
+    });
+    const res = await task.downloadAsync();
+    if (!res?.uri) throw new Error('Download failed');
+    return res.uri;
+  }
+
+  /**
+   * Save a message's media to the device.
+   *
+   * The indicator goes up BEFORE the permission prompt and before the first
+   * byte, because the complaint was not that it was slow — it was that
+   * nothing acknowledged the tap, so people tap again and a large video
+   * downloads twice.
+   */
   async function downloadMedia(msg: Message) {
     if (!msg.file_path) return;
     if (msg.one_time_seconds) { Alert.alert('Not allowed', 'One-time media cannot be downloaded.'); return; }
-    if (msg.type === 'gallery') {
-      try {
-        let urls: string[] = [];
-        try { urls = JSON.parse(msg.file_path); } catch {}
-        const { status } = await MediaLibrary.requestPermissionsAsync();
-        if (status !== 'granted') { Alert.alert('Permission required', 'Allow media access to save downloads.'); return; }
-        for (const u of urls) {
-          const local = FileSystem.cacheDirectory + (u.split('/').pop() || `img-${Date.now()}.jpg`);
-          const { uri } = await FileSystem.downloadAsync(`${BASE_URL}${u}`, local);
-          await MediaLibrary.saveToLibraryAsync(uri);
-        }
-        Alert.alert('Saved', `${urls.length} photos saved to your gallery.`);
-      } catch {
-        Alert.alert('Error', 'Download failed.');
-      }
-      return;
-    }
+
+    const urls: string[] = msg.type === 'gallery'
+      ? (() => { try { return JSON.parse(msg.file_path!); } catch { return []; } })()
+      : [msg.file_path];
+    if (!urls.length) return;
+
+    const toGallery = msg.type === 'gallery' || msg.type === 'image' || msg.type === 'video';
+    save.begin(urls.length);
     try {
-      const url = `${BASE_URL}${msg.file_path}`;
-      const name = (msg.file_name && !msg.file_name.includes(',')) ? msg.file_name : msg.file_path.split('/').pop() || `file-${Date.now()}`;
-      const local = FileSystem.cacheDirectory + name;
-      const { uri } = await FileSystem.downloadAsync(url, local);
-      if (msg.type === 'image' || msg.type === 'video') {
+      if (toGallery) {
         const { status } = await MediaLibrary.requestPermissionsAsync();
-        if (status !== 'granted') { Alert.alert('Permission required', 'Allow media access to save downloads.'); return; }
-        await MediaLibrary.saveToLibraryAsync(uri);
-        Alert.alert('Saved', msg.type === 'image' ? 'Image saved to your gallery.' : 'Video saved to your gallery.');
-      } else {
-        Alert.alert('Downloaded', `Saved as ${name}`);
+        if (status !== 'granted') {
+          save.clear();
+          Alert.alert('Permission required', 'Allow media access to save downloads.');
+          return;
+        }
       }
+      let lastName = '';
+      for (let i = 0; i < urls.length; i++) {
+        save.advance(i);
+        const u = urls[i];
+        lastName = (urls.length === 1 && msg.file_name && !msg.file_name.includes(','))
+          ? msg.file_name
+          : (u.split('/').pop() || `file-${Date.now()}`);
+        const uri = await fetchWithProgress(`${BASE_URL}${u}`, FileSystem.cacheDirectory + lastName);
+        if (toGallery) await MediaLibrary.saveToLibraryAsync(uri);
+      }
+      save.finish('saved');
+      // No alert for media any more: the indicator has been saying so all
+      // along and finishes with a tick, and a dialog on top of that is one
+      // more thing to dismiss. A document still gets one, because "saved as
+      // <name>" is information the indicator has no room for.
+      if (!toGallery) Alert.alert('Downloaded', `Saved as ${lastName}`);
     } catch {
-      Alert.alert('Error', 'Download failed.');
+      save.finish('failed');
     }
   }
 
@@ -4049,6 +4078,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           </Text>
         </View>
       )}
+
+      {/* Says a download has started, and how far along it is. */}
+      <SaveOverlay />
 
       {/* One person, and what you can do about them. */}
       <PeerSheet
