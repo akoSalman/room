@@ -18,7 +18,11 @@
 
 <!-- ── Auth Screen ─────────────────────────────────── -->
 <div id="auth-screen" class="screen">
-  <a id="apk-banner" href="https://github.com/akoSalman/room-releases/releases/download/latest-apk/ChatRoom-latest.apk" rel="noopener">
+  <!-- This server, not GitHub: for the people this is built for GitHub is
+       unreliable at best and unreachable at worst, and if this page loaded
+       then this link works. app.js falls back to the GitHub release when the
+       server has no build yet. -->
+  <a id="apk-banner" href="/app/download" rel="noopener">
     <span class="apk-banner-icon">📱</span>
     <span class="apk-banner-text"><b>Get the Android app</b><small id="apk-banner-sub">Download the latest build (APK)</small></span>
     <span class="apk-banner-cta">⬇ Download</span>

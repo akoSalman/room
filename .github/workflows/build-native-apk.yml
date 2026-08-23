@@ -262,6 +262,66 @@ jobs:
           path: native-app/android/app/build/outputs/apk/release/app-release.apk
           retention-days: 2
 
+      # ── The real update channel: this brand's own server ──────────────────
+      #
+      # Asked for as: upload the newest version to each brand's server and get
+      # the update from there instead of from GitHub.
+      #
+      # GitHub is unreliable at best and unreachable at worst for the people
+      # this app is for — so the update check and the download both failed for
+      # exactly the users who most needed them. The chat server, on the other
+      # hand, is a host they are already talking to.
+      #
+      # Copied over SSH with the same key the server deploy uses: no upload
+      # endpoint, no shared secret, nothing new exposed to the internet.
+      - name: Publish APK to ${{ matrix.brand }}'s own server
+        if: steps.want.outputs.build == 'yes'
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets[matrix.brand == 'akosalman' && 'DEPLOY_HOST_AKOSALMAN' || 'DEPLOY_HOST_BISTBARG'] }}
+          APP_DIR: ${{ secrets[matrix.brand == 'akosalman' && 'DEPLOY_DIR_AKOSALMAN' || 'DEPLOY_DIR_BISTBARG'] }}
+          VERSION: ${{ github.run_number }}
+          TITLE: ${{ env.RELEASE_TITLE }}
+        run: |
+          if [ -z "$HOST" ] || [ -z "$APP_DIR" ] || [ -z "$SSH_KEY" ]; then
+            echo "::warning::Deploy secrets for ${{ matrix.brand }} are not configured — the APK stays on GitHub only."
+            exit 0
+          fi
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          SHA=$(sha256sum "$APK" | cut -d' ' -f1)
+          SIZE=$(stat -c%s "$APK")
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/apk_key
+          chmod 600 ~/.ssh/apk_key
+          SSH="ssh -i ~/.ssh/apk_key -o StrictHostKeyChecking=accept-new"
+          # Uploaded beside the live file and moved into place afterwards: a
+          # phone downloading while this runs must never get half a file.
+          $SSH "root@$HOST" "mkdir -p '$APP_DIR/uploads/.app'"
+          scp -i ~/.ssh/apk_key -o StrictHostKeyChecking=accept-new \
+            "$APK" "root@$HOST:$APP_DIR/uploads/.app/latest.apk.part"
+          $SSH "root@$HOST" \
+            "APP_DIR='$APP_DIR' VERSION='$VERSION' SHA='$SHA' SIZE='$SIZE' TITLE='$TITLE' bash -s" <<'EOF'
+          set -e
+          cd "$APP_DIR/uploads/.app"
+          # The manifest is written FIRST as a temp file and both are moved
+          # into place together, so /app/latest.json never advertises a version
+          # whose file is not there yet.
+          cat > latest.json.part <<JSON
+          {
+            "version": $VERSION,
+            "size": $SIZE,
+            "sha256": "$SHA",
+            "fileName": "$TITLE-v$VERSION.apk",
+            "builtAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "notes": "Automated build $VERSION"
+          }
+          JSON
+          mv -f latest.apk.part latest.apk
+          mv -f latest.json.part latest.json
+          ls -l latest.apk latest.json
+          EOF
+          echo "### ${{ matrix.brand }}: published v$VERSION to its own server" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Publish latest APK to public releases repo
         if: steps.want.outputs.build == 'yes'
         env:

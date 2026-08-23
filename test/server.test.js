@@ -18,6 +18,9 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'roomtest-'));
 process.env.DB_PATH = path.join(TMP, 'test.db');
 process.env.PORT = '0'; // let the OS pick a free port
 process.env.JWT_SECRET = 'test-secret';
+// The APK the server offers as an update lives in a directory too, and these
+// tests publish one — into the scratch tree, never beside the real uploads.
+process.env.APK_DIR = path.join(TMP, 'uploads', '.app');
 
 const { io: ioClient } = require('socket.io-client');
 
@@ -2427,6 +2430,71 @@ test('the offset check is enforced whichever verb is used', async () => {
   await patchChunk(open.id, 0, Buffer.alloc(1000, 1), u.token, null, 'POST');
   const gap = await patchChunk(open.id, 2000, Buffer.alloc(500, 2), u.token, null, 'PATCH');
   assert.strictEqual(gap.status, 409, 'PATCH skipped the offset check that POST enforces');
+});
+
+// ── The app's own updates, served from this server ──────────────────────────
+//
+// Asked for as: upload the newest version to each brand's server and get the
+// update file from there instead of from GitHub. GitHub is unreliable at best
+// and unreachable at worst for the people this is built for, so this endpoint
+// IS the update channel — a phone that cannot read it cannot update at all.
+
+test('with no build published, the manifest says so rather than lying', async () => {
+  // A server that has not been given a build yet is a fact, not a fault: the
+  // app falls back to GitHub, and a 500 would look like a broken server to
+  // whoever is reading the logs.
+  const r = await raw('/app/latest.json');
+  assert.strictEqual(r.status, 404);
+  const body = await r.json();
+  assert.strictEqual(body.error, 'no-build');
+});
+
+test('THE POINT: a published build is announced and can be downloaded', async () => {
+  const dir = process.env.APK_DIR;
+  fs.mkdirSync(dir, { recursive: true });
+  const apk = Buffer.from('PK\u0003\u0004 pretend apk');
+  fs.writeFileSync(path.join(dir, 'latest.apk'), apk);
+  fs.writeFileSync(path.join(dir, 'latest.json'), JSON.stringify({
+    version: 181, sha256: 'abc', fileName: 'ChatRoom-v181.apk', builtAt: '2026-08-23T00:00:00Z',
+  }));
+
+  const meta = await (await raw('/app/latest.json')).json();
+  assert.strictEqual(meta.version, 181);
+  assert.strictEqual(meta.size, apk.length, 'the size is claimed rather than measured');
+  assert.strictEqual(meta.url, '/app/download');
+
+  const dl = await raw('/app/download');
+  assert.strictEqual(dl.status, 200);
+  assert.strictEqual(dl.headers.get('content-type'), 'application/vnd.android.package-archive');
+  const got = Buffer.from(await dl.arrayBuffer());
+  assert.ok(got.equals(apk), 'the file served is not the file published');
+});
+
+test('a resumed download works, or a 40MB update restarts from zero', async () => {
+  // These users are not on generous connections, and appUpdate resumes a
+  // partly-finished download rather than starting again.
+  const r = await fetch(baseUrl + '/app/download', { headers: { Range: 'bytes=2-5' } });
+  assert.strictEqual(r.status, 206, 'the server ignored a Range request');
+  const part = Buffer.from(await r.arrayBuffer());
+  assert.strictEqual(part.length, 4);
+});
+
+test('a zero-byte APK is not advertised as a build either', async () => {
+  // A truncated or half-copied file passes "does it exist" and fails every
+  // install. The check is on the SIZE, not merely on the stat succeeding.
+  const dir = process.env.APK_DIR;
+  fs.writeFileSync(path.join(dir, 'latest.apk'), '');
+  assert.strictEqual((await raw('/app/latest.json')).status, 404,
+    'an empty file was announced as an installable build');
+});
+
+test('a manifest whose APK has gone is not advertised', async () => {
+  // Otherwise every phone is told to update and every download fails.
+  const dir = process.env.APK_DIR;
+  fs.unlinkSync(path.join(dir, 'latest.apk'));
+  assert.strictEqual((await raw('/app/latest.json')).status, 404);
+  assert.strictEqual((await raw('/app/download')).status, 404);
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 main().catch(err => { console.error(err); process.exit(1); });

@@ -72,6 +72,79 @@ app.use(express.static('public', {
 // `attachment` means a direct navigation downloads the file instead of
 // rendering it. Embedding still works: <img>/<video>/<audio> ignore
 // Content-Disposition, so media in the chat displays normally.
+// ── The app's own updates, served from this server ───────────────────────────
+//
+// Asked for as: upload the newest version to each brand's server and get the
+// update from there instead of from GitHub.
+//
+// The reason it matters is not tidiness. The app asked api.github.com whether
+// a newer build existed and downloaded the APK from a GitHub release — and for
+// the people this app is for, GitHub is unreliable at best and unreachable at
+// worst. When that check failed the app could not tell "you are up to date"
+// from "I could not ask", which is how the update button ended up offered in
+// one place and not in another.
+//
+// This server is the one host every user of this brand can definitely reach:
+// they are talking to it right now. So the build is copied here (over SSH by
+// the release workflow — no upload endpoint, no shared secret, nothing new
+// exposed) and served as two files:
+//
+//   GET /app/latest.json  — what the newest build is
+//   GET /app/download     — the APK itself
+//
+// GitHub stays as a fallback in the app, because a server that has not been
+// given a build yet must not mean no updates at all.
+const APK_DIR = process.env.APK_DIR || path.join('uploads', '.app');
+const APK_FILE = path.join(APK_DIR, 'latest.apk');
+const APK_META = path.join(APK_DIR, 'latest.json');
+
+/** What the release workflow left here, or null if it has not run yet. */
+function apkManifest() {
+  try {
+    const meta = JSON.parse(fs.readFileSync(APK_META, 'utf8'));
+    const stat = fs.statSync(APK_FILE);
+    if (!stat.isFile() || stat.size <= 0) return null;
+    const version = parseInt(meta.version, 10);
+    if (!Number.isInteger(version) || version <= 0) return null;
+    return {
+      version,
+      size: stat.size,
+      sha256: typeof meta.sha256 === 'string' ? meta.sha256 : null,
+      builtAt: meta.builtAt || null,
+      notes: typeof meta.notes === 'string' ? meta.notes : '',
+      fileName: typeof meta.fileName === 'string' ? meta.fileName : 'app-latest.apk',
+    };
+  } catch {
+    return null;
+  }
+}
+
+app.get('/app/latest.json', (req, res) => {
+  const m = apkManifest();
+  // No build here yet is a fact, not an error: the app falls back to GitHub,
+  // and a 500 would look like a server fault to whoever is reading the logs.
+  if (!m) return res.status(404).json({ error: 'no-build', message: 'No build has been published to this server yet.' });
+  res.set('Cache-Control', 'no-cache, must-revalidate');
+  res.json({ ...m, url: '/app/download' });
+});
+
+app.get('/app/download', (req, res) => {
+  const m = apkManifest();
+  if (!m) return res.status(404).json({ error: 'no-build' });
+  // sendFile, so Range requests work: the app resumes a partly-finished
+  // download rather than starting a forty-megabyte file again.
+  res.set('Content-Type', 'application/vnd.android.package-archive');
+  res.set('Content-Disposition', `attachment; filename="${m.fileName.replace(/[^A-Za-z0-9._-]/g, '')}"`);
+  // dotfiles: 'allow' is NOT optional here. The directory is `.app` — hidden,
+  // like `.tiles` next door, so it stays out of any listing — and sendFile
+  // refuses a path containing a dot-segment by default, answering 404 for a
+  // file that is plainly there. The path is a constant, not user input, so
+  // there is nothing to traverse into.
+  res.sendFile(path.resolve(APK_FILE), { dotfiles: 'allow' }, (err) => {
+    if (err && !res.headersSent) res.status(404).end();
+  });
+});
+
 // ── Signed media URLs ────────────────────────────────────────────────────────
 // /uploads was served with NO authentication: anyone holding a URL could
 // download any voice message, photo or file, forever, without an account —

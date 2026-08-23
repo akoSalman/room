@@ -28,6 +28,11 @@ async function ensureE2EUnlocked() {
 const IS_BISTBARG = location.hostname.includes('bistbarg');
 const APK_RELEASE_TAG = IS_BISTBARG ? 'latest-apk-bistbarg' : 'latest-apk';
 const APK_FILE_NAME = IS_BISTBARG ? 'BistbargChat-latest.apk' : 'ChatRoom-latest.apk';
+// This server first. For the people this is built for, GitHub is unreliable at
+// best and unreachable at worst — and if this page loaded, this link works.
+// The GitHub release stays as the fallback for a server with no build yet.
+const APK_SERVER_MANIFEST = '/app/latest.json';
+const APK_SERVER_DOWNLOAD = '/app/download';
 const APK_DOWNLOAD_URL = `https://github.com/akoSalman/room-releases/releases/download/${APK_RELEASE_TAG}/${APK_FILE_NAME}`;
 const APK_RELEASE_API = `https://api.github.com/repos/akoSalman/room-releases/releases/tags/${APK_RELEASE_TAG}`;
 const pendingUploads = {}; // clientId -> { wrapper, previewUrl, file, type, fileName, roomId, replyToId }
@@ -226,18 +231,14 @@ window.addEventListener('DOMContentLoaded', () => {
     window.visualViewport.addEventListener('scroll', syncViewport);
   }
 
-  // Point the APK download links at this domain's own branded build
-  document.querySelectorAll('#apk-banner, #update-download-btn').forEach(a => { a.href = APK_DOWNLOAD_URL; });
-
-  // Show the latest Android build number on the login banner
-  fetch(APK_RELEASE_API)
-    .then(r => r.json())
-    .then(res => {
-      const match = /version:(\d+)/.exec(res.body || '') || /v(\d+)/.exec(res.name || '');
-      const sub = document.getElementById('apk-banner-sub');
-      if (match && sub) sub.textContent = `Latest build: version ${match[1]} (APK)`;
-    })
-    .catch(() => {});
+  // The download links and the build number both come from this server when it
+  // has a build, and from the GitHub release only when it does not.
+  latestAppBuild().then(info => {
+    document.querySelectorAll('#apk-banner, #update-download-btn')
+      .forEach(a => { a.href = info.url; });
+    const sub = document.getElementById('apk-banner-sub');
+    if (sub && info.version) sub.textContent = `Latest build: version ${info.version} (APK)`;
+  });
   document.addEventListener('click', handleGlobalClick);
   document.addEventListener('contextmenu', e => e.preventDefault());
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
@@ -1061,13 +1062,38 @@ async function submitCreateRoom() {
   if (li) joinRoom(res.id, res.name, li, false);
 }
 
-async function loadLatestAppVersion() {
-  const hint = document.getElementById('update-hint');
+/**
+ * The newest Android build, and where to get it.
+ *
+ * This server is asked first — it is the host this page came from, so it is
+ * reachable by definition — and GitHub only if it has nothing. Neither
+ * answering leaves the GitHub link in place, which is no worse than before.
+ */
+async function latestAppBuild() {
+  try {
+    const r = await fetch(APK_SERVER_MANIFEST, { cache: 'no-store' });
+    if (r.ok) {
+      const m = await r.json();
+      const version = parseInt(m && m.version, 10);
+      if (Number.isInteger(version) && version > 0) {
+        return { version: version, url: m.url || APK_SERVER_DOWNLOAD, source: 'server' };
+      }
+    }
+  } catch {}
   try {
     const res = await fetch(APK_RELEASE_API).then(r => r.json());
     const match = /version:(\d+)/.exec(res.body || '') || /v(\d+)/.exec(res.name || '');
-    if (match) hint.textContent = `Latest Android build: version ${match[1]} (mobile only).`;
-  } catch { /* keep default hint */ }
+    if (match) return { version: parseInt(match[1], 10), url: APK_DOWNLOAD_URL, source: 'github' };
+  } catch {}
+  return { version: null, url: APK_DOWNLOAD_URL, source: null };
+}
+
+async function loadLatestAppVersion() {
+  const hint = document.getElementById('update-hint');
+  const info = await latestAppBuild();
+  if (info.version && hint) {
+    hint.textContent = `Latest Android build: version ${info.version} (mobile only).`;
+  }
 }
 
 async function loadMyRooms() {

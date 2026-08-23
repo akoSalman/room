@@ -12,11 +12,18 @@ import * as IntentLauncher from 'expo-intent-launcher';
 import { Ionicons } from '@expo/vector-icons';
 import { C, isRTL } from '../theme';
 import { ClearScope, clearScopes, clearLabel, clearHint, clearConfirm } from '../peerActions';
-import { apiFetch, getUsername, getUserId, getSocket, setAuth, getAvatar, RELEASE_TAG, RELEASE_FILE } from '../api';
+import { apiFetch, getUsername, getUserId, getSocket, setAuth, getAvatar, RELEASE_TAG, RELEASE_FILE, BASE_URL } from '../api';
+import * as upd from '../updateSource';
 import { BUILD_VERSION } from '../version';
 
 const AVATAR_EMOJIS = ['🦄','🐉','🧙‍♂️','🧚‍♀️','🧛‍♂️','🧞‍♂️','🦊','🐺','🦁','🐯','🐼','🐸','🦉','🐙','🦋','🤖','👽','🐲','🦅','🐬','🔥','⚡','🌙','⭐'];
 
+// The brand's own server first — it is the one host every user of this brand
+// can definitely reach, since they are talking to it right now. GitHub is kept
+// as a fallback for a server that has not been given a build yet; for users
+// where GitHub is blocked it was the only channel, which is why an update
+// could be impossible to see or to fetch.
+const SERVER_MANIFEST_URL = `${BASE_URL}/app/latest.json`;
 const LATEST_APK_URL = `https://github.com/akoSalman/room-releases/releases/download/${RELEASE_TAG}/${RELEASE_FILE}`;
 const LATEST_RELEASE_API = `https://api.github.com/repos/akoSalman/room-releases/releases/tags/${RELEASE_TAG}`;
 
@@ -58,6 +65,8 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   // ordinary traffic — being addressed by name is not the same as a busy room.
   const [mentions, setMentions] = useState<Record<number, boolean>>({});
   const [latestVersion, setLatestVersion] = useState<number | null>(null);
+  /** Where the newest build will be fetched from, once a check has answered. */
+  const [apkUrl, setApkUrl] = useState<string | null>(null);
   // An APK already on the phone that was downloaded but never installed —
   // backing out of Android's installer is easy to do and easy not to notice.
   const [downloadedUpdate, setDownloadedUpdate] =
@@ -308,23 +317,35 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
 
   async function checkLatestVersion() {
     setVersionCheckFailed(false);
+    // Our own server, then GitHub. Each is wrapped on its own so an
+    // unreachable GitHub — which is the normal case for many of these users —
+    // cannot stop the server's answer from being used.
+    let server: upd.Manifest | null = null;
     try {
-      const res = await fetch(LATEST_RELEASE_API).then(r => r.json());
-      const match = /version:(\d+)/.exec(res.body || '') || /v(\d+)/.exec(res.name || '');
-      if (match) setLatestVersion(parseInt(match[1]));
-      else setVersionCheckFailed(true);
-    } catch {
-      setVersionCheckFailed(true);
+      const r = await fetch(SERVER_MANIFEST_URL);
+      if (r.ok) server = upd.parseServerManifest(await r.json());
+    } catch {}
+    let github: number | null = null;
+    if (!server) {
+      try { github = upd.parseGithubRelease(await fetch(LATEST_RELEASE_API).then(r => r.json())); }
+      catch {}
     }
+    const info = upd.chooseSource({
+      server, github, baseUrl: BASE_URL, githubUrl: LATEST_APK_URL,
+    });
+    setLatestVersion(info.latestVersion);
+    setApkUrl(info.apkUrl);
+    setVersionCheckFailed(info.failed);
   }
 
   async function downloadAndInstallUpdate() {
-    if (Platform.OS !== 'android') { Linking.openURL(LATEST_APK_URL); return; }
+    const from = apkUrl || LATEST_APK_URL;
+    if (Platform.OS !== 'android') { Linking.openURL(from); return; }
     // Owned by appUpdate at module scope: closing this screen, or the app,
     // no longer cancels the download.
     // The version travels with it so a download the user never installs can be
     // offered as Install next time instead of being fetched all over again.
-    appUpdate.start(LATEST_APK_URL, latestVersion ?? undefined).catch(() => {});
+    appUpdate.start(from, latestVersion ?? undefined).catch(() => {});
   }
 
   /** Hand the already-downloaded APK back to Android's installer. */
@@ -390,7 +411,13 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
           </View>
         </TouchableOpacity>
         <Text style={s.headerTitle}>{me}</Text>
-        {latestVersion !== null && BUILD_VERSION !== latestVersion ? (
+        {/* One rule, shared with the profile sheet. This used to be its own
+            comparison — "different from what is running" — which advertised
+            an update to anyone on a build AHEAD of the server's, and which
+            hid the badge whenever the check failed even though the profile
+            went on offering a confident Update button. That mismatch is the
+            reported "active in the profile but not in the header". */}
+        {upd.updateAvailable({ latestVersion, currentVersion: BUILD_VERSION }) ? (
           <TouchableOpacity style={s.updateBadge} onPress={() => { setShowProfile(true); checkLatestVersion(); scrollToUpdate(); }}>
             <Text style={s.updateBadgeText}>⚡ v{latestVersion}</Text>
           </TouchableOpacity>
@@ -670,6 +697,21 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
                     Already downloaded — no data needed to install it.
                   </Text>
                 </>
+              ) : updateChoice === 'unknown' ? (
+                // Not knowing is its OWN state. This used to fall through to a
+                // confident "Update now", which is how the profile came to
+                // offer an update while the header — which required a known
+                // version — showed nothing at all. Trying again is the useful
+                // thing to offer; downloading whatever GitHub last published
+                // is still there for anyone who wants it.
+                <>
+                  <TouchableOpacity style={s.updateBtn} onPress={checkLatestVersion}>
+                    <Text style={s.updateBtnText}>↻ Check again</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={s.updateGhostBtn} onPress={downloadAndInstallUpdate}>
+                    <Text style={s.updateGhostText}>Download the latest build anyway</Text>
+                  </TouchableOpacity>
+                </>
               ) : (
                 <TouchableOpacity style={s.updateBtn} onPress={downloadAndInstallUpdate}>
                   <Text style={s.updateBtnText}>
@@ -678,7 +720,9 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
                 </TouchableOpacity>
               )}
               {versionCheckFailed && (
-                <Text style={s.versionCheckError}>Could not check for updates</Text>
+                <Text style={s.versionCheckError}>
+                  Could not reach this server or GitHub to check for updates.
+                </Text>
               )}
             </View>
 
@@ -817,6 +861,11 @@ const s = StyleSheet.create({
   avatarEmoji: { fontSize: 20 },
   headerTitle: { flex: 1, color: C.text, fontWeight: '600', fontSize: 15 },
   logout: { color: C.danger, fontSize: 20, padding: 4 },
+  updateGhostBtn: {
+    marginTop: 8, paddingVertical: 10, borderRadius: 10,
+    borderWidth: 1, borderColor: C.border, alignItems: 'center',
+  },
+  updateGhostText: { color: C.muted, fontSize: 13, fontWeight: '600' },
   updateBadge: {
     backgroundColor: 'rgba(74,222,128,0.15)', borderWidth: 1, borderColor: C.online,
     borderRadius: 16, paddingHorizontal: 10, paddingVertical: 4,
