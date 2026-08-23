@@ -16,7 +16,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Image,
-  Animated, Pressable, ScrollView, Platform,
+  Animated, Pressable, ScrollView, Platform, Dimensions,
 } from 'react-native';
 import {
   CameraView, CameraType, FlashMode, CameraMode, CameraRatio,
@@ -26,6 +26,11 @@ import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-g
 import { Ionicons } from '@expo/vector-icons';
 import { C } from '../theme';
 import { pinchToLinear, linearToFactor, formatFactor, zoomStops } from '../cameraZoom';
+import {
+  Makeup, clampEv, evFromDrag, knobFraction, previewOverlay, placeTarget,
+  tuningAvailable, TARGET_FADE_MS, needsProcessing,
+} from '../cameraTune';
+import { tunePhoto } from '../photoTune';
 
 export type Shot = { uri: string; name: string; mime: string };
 
@@ -52,6 +57,28 @@ export default function CameraScreen({ onClose, onDone, initialMode = 'photo' }:
   const [mode, setMode] = useState<CameraMode>(initialMode === 'video' ? 'video' : 'picture');
   const [ratio, setRatio] = useState<CameraRatio>('4:3');
   const [zoom, setZoom] = useState(0);
+  // ── Tap to set the brightness, and the makeup pass ──
+  //
+  // The tap cannot tell the SENSOR to expose for that spot: expo-camera has no
+  // metering-point API, and its exposure settings are web-only. What it can do
+  // is correct the picture the sensor gives — so the preview is dimmed or
+  // brightened to show the choice, and the photo is corrected by exactly that
+  // amount. The two numbers come from one place so they cannot disagree.
+  const [ev, setEv] = useState(0);
+  const [makeup, setMakeup] = useState<Makeup>('off');
+  const [target, setTarget] = useState<ReturnType<typeof placeTarget> | null>(null);
+  const evStart = useRef(0);
+  const targetTimer = useRef<any>(null);
+  const SLIDER = { w: 34, h: 150 };
+
+  /** Show the ring, and take it away again if it is left alone. */
+  const showTarget = useCallback((t: ReturnType<typeof placeTarget> | null) => {
+    setTarget(t);
+    clearTimeout(targetTimer.current);
+    if (t) targetTimer.current = setTimeout(() => setTarget(null), TARGET_FADE_MS);
+  }, []);
+
+  useEffect(() => () => clearTimeout(targetTimer.current), []);
   const [grid, setGrid] = useState(false);
   const [timer, setTimer] = useState<number>(0);
   const [countdown, setCountdown] = useState(0);
@@ -97,6 +124,33 @@ export default function CameraScreen({ onClose, onDone, initialMode = 'photo' }:
     })
     .runOnJS(true);
 
+  // A tap places the brightness target. Photo mode only: an overlay on the
+  // preview is not in the recorded frames, so on video this control would look
+  // like it worked and change nothing about the file.
+  const tapTarget = Gesture.Tap()
+    .maxDuration(300)
+    .onEnd((e) => {
+      if (!tuningAvailable(mode as 'photo' | 'video')) return;
+      const win = Dimensions.get('window');
+      showTarget(placeTarget({ x: e.x, y: e.y }, { w: win.width, h: win.height }, 72, SLIDER));
+    })
+    .runOnJS(true);
+
+  // Dragging anywhere near the ring moves the brightness, the way a phone
+  // camera does — the slider is the indicator, not a hit target the size of a
+  // fingernail.
+  const dragEv = Gesture.Pan()
+    .minDistance(4)
+    .onStart(() => { evStart.current = ev; })
+    .onUpdate((e) => {
+      if (!target || !tuningAvailable(mode as 'photo' | 'video')) return;
+      setEv(evFromDrag(evStart.current, e.translationY, SLIDER.h));
+      showTarget(target);   // keep it alive while it is being used
+    })
+    .runOnJS(true);
+
+  const previewGestures = Gesture.Simultaneous(pinch, Gesture.Exclusive(dragEv, tapTarget));
+
   function playShutterFlash() {
     flashAnim.setValue(0.85);
     Animated.timing(flashAnim, { toValue: 0, duration: 220, useNativeDriver: true }).start();
@@ -115,17 +169,26 @@ export default function CameraScreen({ onClose, onDone, initialMode = 'photo' }:
     bumpShutter();
     playShutterFlash();
     try {
+      // Read once, here: the correction applied to the file must be the one
+      // that was on screen when the shutter was pressed, not whatever the
+      // sliders say by the time the file has been written.
+      const tune = { ev, makeup };
       await camRef.current?.takePictureAsync({
         quality: 0.7,
         exif: false,
         // Resolves the call as soon as the frame is grabbed; the saved file
         // arrives here a beat later. The user is never waiting on the write.
         onPictureSaved: (pic) => {
-          setShots(prev => [...prev, {
-            uri: pic.uri,
-            name: `photo-${Date.now()}.jpg`,
-            mime: 'image/jpeg',
-          }]);
+          const shot = { uri: pic.uri, name: `photo-${Date.now()}.jpg`, mime: 'image/jpeg' };
+          // Staged immediately, corrected in the background: a thumbnail that
+          // appears at once and improves a moment later beats a shutter that
+          // seems to hang while Skia works.
+          setShots(prev => [...prev, shot]);
+          if (!needsProcessing(tune)) return;
+          tunePhoto(pic.uri, tune).then(out => {
+            if (out === pic.uri) return;
+            setShots(prev => prev.map(sh => (sh.uri === pic.uri ? { ...sh, uri: out } : sh)));
+          }).catch(() => {});
         },
       });
     } catch {}
@@ -238,7 +301,7 @@ export default function CameraScreen({ onClose, onDone, initialMode = 'photo' }:
 
   return (
     <GestureHandlerRootView style={s.fill}>
-      <GestureDetector gesture={pinch}>
+      <GestureDetector gesture={previewGestures}>
         <View style={s.previewWrap}>
           <CameraView
             ref={camRef}
@@ -257,6 +320,43 @@ export default function CameraScreen({ onClose, onDone, initialMode = 'photo' }:
             autofocus="off"
             onCameraReady={() => setReady(true)}
           />
+
+          {/* The brightness correction, shown on the preview.
+              Not the same operation as the multiply applied to the photo — the
+              preview is a native surface with no filter of its own — but at
+              these strengths it is close, and it is the only honest way to let
+              somebody choose an exposure they can see. */}
+          {ev !== 0 && tuningAvailable(mode as 'photo' | 'video') && (() => {
+            const o = previewOverlay(ev);
+            return (
+              <View
+                pointerEvents="none"
+                style={[StyleSheet.absoluteFill, {
+                  backgroundColor: o.color === 'white' ? '#fff' : '#000',
+                  opacity: o.opacity,
+                }]}
+              />
+            );
+          })()}
+
+          {/* The tap target: a focus ring and, beside it, the brightness slider. */}
+          {target && tuningAvailable(mode as 'photo' | 'video') && (
+            <>
+              <View pointerEvents="none"
+                style={[s.focusRing, { left: target.x - 36, top: target.y - 36 }]} />
+              <View pointerEvents="none"
+                style={[s.evTrack, {
+                  left: target.sliderX, top: target.sliderY,
+                  width: SLIDER.w, height: SLIDER.h,
+                }]}>
+                <Ionicons name="sunny" size={15} color="#fff" style={{ opacity: 0.9 }} />
+                <View style={s.evLine} />
+                <View style={[s.evKnob, {
+                  bottom: 22 + knobFraction(ev) * (SLIDER.h - 60),
+                }]} />
+              </View>
+            </>
+          )}
 
           {/* Rule-of-thirds grid */}
           {grid && (
@@ -314,6 +414,21 @@ export default function CameraScreen({ onClose, onDone, initialMode = 'photo' }:
           <TouchableOpacity style={s.topBtn} onPress={() => setGrid(g => !g)} hitSlop={hit}>
             <Ionicons name="grid-outline" size={21} color={grid ? C.accent : '#fff'} />
           </TouchableOpacity>
+
+          {/* Makeup: off → light → strong. Photo only, and shown only there:
+              a control that silently does nothing to a video is worse than no
+              control at all. */}
+          {tuningAvailable(mode as 'photo' | 'video') && (
+            <TouchableOpacity
+              style={s.topBtn}
+              onPress={() => setMakeup(m => (m === 'off' ? 'light' : m === 'light' ? 'strong' : 'off'))}
+              hitSlop={hit}
+              accessibilityLabel={`Makeup ${makeup}`}
+            >
+              <Ionicons name="sparkles-outline" size={21} color={makeup === 'off' ? '#fff' : C.accent} />
+              {makeup !== 'off' && <Text style={s.topBadge}>{makeup === 'light' ? '1' : '2'}</Text>}
+            </TouchableOpacity>
+          )}
 
           {Platform.OS === 'android' && (
             <TouchableOpacity style={s.topBtn} onPress={() => setRatio(r => (r === '4:3' ? '16:9' : r === '16:9' ? '1:1' : '4:3'))} hitSlop={hit}>
@@ -454,6 +569,25 @@ const s = StyleSheet.create({
   loadingWrap: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
 
   gridLine: { position: 'absolute', backgroundColor: 'rgba(255,255,255,0.28)' },
+
+  // The tap target. A ring rather than a filled shape, so it says "here" about
+  // the thing underneath instead of hiding it.
+  focusRing: {
+    position: 'absolute', width: 72, height: 72, borderRadius: 8,
+    borderWidth: 1.5, borderColor: 'rgba(255,214,102,0.95)',
+  },
+  evTrack: {
+    position: 'absolute', alignItems: 'center', paddingTop: 4,
+  },
+  evLine: {
+    position: 'absolute', bottom: 18, top: 26, width: 2,
+    backgroundColor: 'rgba(255,255,255,0.45)', borderRadius: 1,
+  },
+  evKnob: {
+    position: 'absolute', width: 14, height: 14, borderRadius: 7,
+    backgroundColor: 'rgba(255,214,102,0.95)',
+    borderWidth: 1, borderColor: 'rgba(0,0,0,0.35)',
+  },
 
   countdownWrap: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
   countdownText: { color: '#fff', fontSize: 96, fontWeight: '200' },

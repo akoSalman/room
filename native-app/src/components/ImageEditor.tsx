@@ -28,6 +28,8 @@ import {
   PanResponder, ActivityIndicator, Alert, Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { Makeup, clampEv, EV_MIN, EV_MAX, needsProcessing } from '../cameraTune';
+import { tunePhoto } from '../photoTune';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { C } from '../theme';
 import {
@@ -85,6 +87,10 @@ export default function ImageEditor({
   const natural: Size | null = current ? { width: current.width, height: current.height } : null;
   const [area, setArea] = useState<Size>({ width: 0, height: 0 });
   const [tool, setTool] = useState<Tool>('crop');
+  // Brightness and makeup, the same two corrections the camera offers — a
+  // photo from the gallery deserves them as much as one just taken.
+  const [ev, setEv] = useState(0);
+  const [makeup, setMakeup] = useState<Makeup>('off');
   const [busy, setBusy] = useState(false);
 
   const [crop, setCrop] = useState<FracRect>({ ...WHOLE_IMAGE });
@@ -298,7 +304,11 @@ export default function ImageEditor({
       // Forgetting to press Done must not throw the last edit away. At most one
       // kind of edit can be pending, so one pass is enough.
       const out = pending ? await rasterise() : current;
-      onDone({ uri: out?.uri || working, action });
+      let uri = out?.uri || working;
+      // Applied last, over the finished crop and drawing: correcting first and
+      // then cropping would re-encode the photo twice for no reason.
+      if (needsProcessing({ ev, makeup })) uri = await tunePhoto(uri, { ev, makeup });
+      onDone({ uri, action });
     } catch {
       Alert.alert('Could not edit', 'The photo could not be saved.');
     } finally {
@@ -421,11 +431,35 @@ export default function ImageEditor({
           </View>
         )}
 
+        {/* Brightness. A photo that is too dark to see is the commonest thing
+            wrong with one, and until now the editor could crop it and draw on
+            it but not fix that. */}
+        <View style={s.tuneRow}>
+          <Ionicons name="moon-outline" size={15} color="rgba(255,255,255,0.7)" />
+          <View style={s.tuneTrack}>
+            {[-1, -0.5, 0, 0.5, 1].map(v => (
+              <TouchableOpacity
+                key={v}
+                style={[s.tuneStop, Math.abs(ev - v) < 0.01 && s.tuneStopOn]}
+                onPress={() => setEv(clampEv(v))}
+                accessibilityLabel={v === 0 ? 'Original brightness' : `Brightness ${v > 0 ? '+' : ''}${v}`}
+              />
+            ))}
+          </View>
+          <Ionicons name="sunny-outline" size={16} color="rgba(255,255,255,0.9)" />
+        </View>
+
         <View style={s.tools}>
           <ToolBtn icon="crop-outline" label="Crop" on={tool === 'crop'} onPress={() => selectTool('crop')} />
           {!!captureRef && (
             <ToolBtn icon="brush-outline" label="Draw" on={tool === 'pen'} onPress={() => selectTool('pen')} />
           )}
+          <ToolBtn
+            icon="sparkles-outline"
+            label={makeup === 'off' ? 'Makeup' : makeup === 'light' ? 'Makeup 1' : 'Makeup 2'}
+            on={makeup !== 'off'}
+            onPress={() => setMakeup(m => (m === 'off' ? 'light' : m === 'light' ? 'strong' : 'off'))}
+          />
         </View>
 
         <View style={s.actions}>
@@ -514,6 +548,19 @@ const s = StyleSheet.create({
     flexDirection: 'row', justifyContent: 'center', gap: 10,
     paddingVertical: 10, backgroundColor: '#0b0b0b',
   },
+  // Five stops rather than a free slider: a photo needs "a bit brighter", not
+  // a number, and discrete stops are far easier to hit with a thumb.
+  tuneRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 22, paddingTop: 10, backgroundColor: '#0b0b0b',
+  },
+  tuneTrack: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  tuneStop: {
+    width: 20, height: 20, borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)',
+  },
+  tuneStopOn: { backgroundColor: '#ffd666', borderColor: '#ffd666' },
   tool: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     paddingHorizontal: 18, paddingVertical: 8, borderRadius: 20,
