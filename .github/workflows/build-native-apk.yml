@@ -167,6 +167,15 @@ jobs:
         run: |
           sed -i '/^reactNativeArchitectures=/d' android/gradle.properties
           echo 'reactNativeArchitectures=armeabi-v7a,arm64-v8a' >> android/gradle.properties
+          # Heap, because the build got bigger.
+          #
+          # Expo's default is 2 GB, which was enough until Skia and the video
+          # thumbnailer joined WebRTC in the native build. A Gradle daemon that
+          # exhausts its heap does not say "out of memory" — it says "Expiring
+          # Daemon" and then fails a task, which reads like a compile error and
+          # is not one. The runner has 16 GB; 4 is not greedy.
+          sed -i '/^org.gradle.jvmargs=/d' android/gradle.properties
+          echo 'org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8' >> android/gradle.properties
           node -e "
             const fs = require('fs');
             const p = 'android/app/build.gradle';
@@ -222,15 +231,21 @@ jobs:
         if: steps.want.outputs.build == 'yes'
         run: |
           KEYSTORE=$(pwd)/android/app/chatroom.keystore
+          mkdir -p android/build
+          GRADLE_LOG=$(pwd)/android/build/gradle-build.log
           cd android
           for attempt in 1 2 3; do
             echo "── gradle attempt $attempt ─────────────────────────────"
+            # Tee'd to a file as well as the console: when the run log cannot
+            # be downloaded, the summary step below is the only way anyone
+            # finds out WHY. pipefail, or the exit status would be tee's.
+            set -o pipefail
             if ./gradlew assembleRelease --no-daemon \
                 -x lint -x lintVitalRelease -x lintReportRelease -x lintVitalAnalyzeRelease \
                 -Pandroid.injected.signing.store.file=$KEYSTORE \
                 -Pandroid.injected.signing.store.password=chatroom123 \
                 -Pandroid.injected.signing.key.alias=chatroom \
-                -Pandroid.injected.signing.key.password=chatroom123; then
+                -Pandroid.injected.signing.key.password=chatroom123 2>&1 | tee -a "$GRADLE_LOG"; then
               exit 0
             fi
             if [ "$attempt" -lt 3 ]; then
@@ -240,6 +255,24 @@ jobs:
           done
           echo "::error::Gradle failed three times."
           exit 1
+
+      - name: Why the build failed
+        if: failure() && steps.want.outputs.build == 'yes'
+        run: |
+          {
+            echo "### ${{ matrix.brand }} build FAILED"
+            echo ''
+            echo 'Last 60 lines of the Gradle log:'
+            echo '```'
+            tail -n 60 android/build/gradle-build.log 2>/dev/null \
+              || echo '(no captured log — see the run log for the Build release APK step)'
+            echo '```'
+            echo ''
+            echo 'Free disk:'
+            echo '```'
+            df -h / | tail -1
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Report APK size
         if: steps.want.outputs.build == 'yes'
