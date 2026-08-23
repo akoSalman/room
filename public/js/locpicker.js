@@ -44,6 +44,7 @@
     var view = window.LocationPick.openingView(null, nearbyPins());
     center = view.center; zoom = view.zoom;
     $('loc-modal').classList.remove('hidden');
+    bindMap();
     draw();
     // The map goes up FIRST and the fix arrives into it. Waiting would mean a
     // blank dialog for however long the browser takes — and a browser that
@@ -131,27 +132,154 @@
     $('loc-live-note').classList.toggle('hidden', window.LocationPick.canShareLive(fix));
   }
 
-  // ── Dragging the map under the pin ────────────────────────────────────────
-  function onDown(e) {
-    var p = e.touches ? e.touches[0] : e;
-    drag = { x: p.clientX, y: p.clientY, lat: center.lat, lng: center.lng };
+  // ── Moving the map under the pin ──────────────────────────────────────────
+  //
+  // Reported as: swiping the map to move it closes the map, as though the
+  // swipe were the back button — and pinching does nothing.
+  //
+  // Both came from the same thing: the map never really took the touch. It
+  // listened through inline HTML attributes, handled exactly one finger, and
+  // never told the browser it wanted the gesture, so a drag starting anywhere
+  // near the side of the screen was taken by the browser's own edge swipe —
+  // which navigates BACK, and back in a single-page app closes whatever is
+  // open. Two fingers were ignored outright.
+  //
+  // Now the handlers are registered from JavaScript with { passive: false } so
+  // preventDefault actually applies (an inline attribute handler cannot be
+  // relied on to be non-passive), the first move is claimed on touchSTART
+  // rather than after the browser has already begun its own gesture, and two
+  // fingers pinch about their midpoint. `touch-action: none` and
+  // `overscroll-behavior: none` on the map say the same thing to the browser
+  // declaratively — belt and braces, because this is the difference between a
+  // map and a way to leave the page by accident.
+
+  /** Two fingers: the distance between them, and their midpoint on the map. */
+  function touchPair(e, rect) {
+    var a = e.touches[0], b = e.touches[1];
+    var dx = a.clientX - b.clientX, dy = a.clientY - b.clientY;
+    return {
+      dist: Math.sqrt(dx * dx + dy * dy) || 1,
+      fx: (a.clientX + b.clientX) / 2 - rect.left,
+      fy: (a.clientY + b.clientY) / 2 - rect.top,
+    };
   }
+
+  function mapRect() {
+    var el = $('loc-map');
+    return el ? el.getBoundingClientRect() : { left: 0, top: 0, width: 320, height: 260 };
+  }
+
+  function onDown(e) {
+    var rect = mapRect();
+    if (e.touches && e.touches.length >= 2) {
+      var p = touchPair(e, rect);
+      drag = {
+        kind: 'pinch', dist: p.dist, fx: p.fx, fy: p.fy,
+        baseZoom: Math.round(zoom), lat: center.lat, lng: center.lng,
+        w: rect.width, h: rect.height,
+      };
+    } else {
+      var t = e.touches ? e.touches[0] : e;
+      drag = {
+        kind: 'pan', x: t.clientX, y: t.clientY,
+        lat: center.lat, lng: center.lng, w: rect.width, h: rect.height,
+      };
+    }
+    // Ours now. Without this the browser starts its own scroll or edge-swipe
+    // on the very same touch.
+    if (e.cancelable) e.preventDefault();
+  }
+
   function onMove(e) {
     if (!drag) return;
-    e.preventDefault();
-    var p = e.touches ? e.touches[0] : e;
+    if (e.cancelable) e.preventDefault();
+    var rect = mapRect();
+
+    // A second finger landing mid-drag becomes a pinch, rather than the map
+    // lurching sideways to follow whichever finger the browser reports first.
+    if (e.touches && e.touches.length >= 2) {
+      var p = touchPair(e, rect);
+      if (drag.kind !== 'pinch') {
+        drag = {
+          kind: 'pinch', dist: p.dist, fx: p.fx, fy: p.fy,
+          baseZoom: Math.round(zoom), lat: center.lat, lng: center.lng,
+          w: rect.width, h: rect.height,
+        };
+        return;
+      }
+      var want = window.GeoZoom.clampZoom(
+        drag.baseZoom + window.GeoZoom.pinchZoomDelta(p.dist / drag.dist));
+      if (want !== Math.round(zoom)) {
+        // About the fingers, so the street between them stays between them.
+        center = window.GeoZoom.zoomAbout(
+          center, Math.round(zoom), want, { x: p.fx, y: p.fy }, rect.width, rect.height);
+        zoom = want;
+        draw();
+      }
+      return;
+    }
+
+    if (drag.kind !== 'pan') return;
+    var t = e.touches ? e.touches[0] : e;
     var z = Math.round(zoom);
-    var dx = p.clientX - drag.x, dy = p.clientY - drag.y;
+    var dx = t.clientX - drag.x, dy = t.clientY - drag.y;
     center = {
       lng: xToLng(lngToX(drag.lng, z) - dx / TILE, z),
       lat: yToLat(latToY(drag.lat, z) - dy / TILE, z),
     };
     draw();
   }
-  function onUp() { drag = null; }
+
+  function onUp(e) {
+    // One finger lifting out of a pinch must not become a pan from wherever
+    // that finger happens to be — it would fling the map across the city.
+    if (e && e.touches && e.touches.length === 1 && drag && drag.kind === 'pinch') {
+      var rect = mapRect();
+      drag = {
+        kind: 'pan', x: e.touches[0].clientX, y: e.touches[0].clientY,
+        lat: center.lat, lng: center.lng, w: rect.width, h: rect.height,
+      };
+      return;
+    }
+    drag = null;
+  }
+
+  /**
+   * Wire the map up from JavaScript.
+   *
+   * Not from inline onto*= attributes: those cannot be registered
+   * { passive: false }, and a passive touchmove listener is forbidden from
+   * calling preventDefault — so the browser goes on with its own gesture no
+   * matter what the handler does.
+   */
+  function bindMap() {
+    var el = $('loc-map');
+    if (!el || el.__geoBound) return;
+    el.__geoBound = true;
+    el.addEventListener('touchstart', onDown, { passive: false });
+    el.addEventListener('touchmove', onMove, { passive: false });
+    el.addEventListener('touchend', onUp, { passive: false });
+    el.addEventListener('touchcancel', onUp, { passive: false });
+    el.addEventListener('mousedown', onDown);
+    el.addEventListener('mousemove', onMove);
+    el.addEventListener('mouseup', onUp);
+    el.addEventListener('mouseleave', onUp);
+    // A trackpad or a mouse wheel zooms, about the pointer.
+    el.addEventListener('wheel', function (ev) {
+      ev.preventDefault();
+      var rect = mapRect();
+      var want = window.GeoZoom.clampZoom(Math.round(zoom) + (ev.deltaY < 0 ? 1 : -1));
+      if (want === Math.round(zoom)) return;
+      center = window.GeoZoom.zoomAbout(
+        center, Math.round(zoom), want,
+        { x: ev.clientX - rect.left, y: ev.clientY - rect.top }, rect.width, rect.height);
+      zoom = want;
+      draw();
+    }, { passive: false });
+  }
 
   function zoomBy(d) {
-    zoom = Math.max(3, Math.min(18, Math.round(zoom) + d));
+    zoom = window.GeoZoom.clampZoom(Math.round(zoom) + d);
     draw();
   }
 

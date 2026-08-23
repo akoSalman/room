@@ -3432,8 +3432,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // out of a half-finished selection would be a surprise.
     <EdgeBack
       onBack={onBack}
+      // Never while a MAP is on screen. A map wants every drag it can get —
+      // and the one gesture it must never lose is a horizontal one, which is
+      // both how you move a map sideways and how this goes back. The picker is
+      // in a Modal, so its touches cannot reach here anyway; it is named all
+      // the same, because relying on that is relying on a detail of how
+      // Android windows work rather than on a rule anyone can read.
       enabled={
-        !videoItem && openLocationId == null && !cameraMode
+        !videoItem && openLocationId == null && !showLocationPicker && !cameraMode
         && !selectMode && !searching
         && !forwardOpen && !showPlayer && !recording
       }

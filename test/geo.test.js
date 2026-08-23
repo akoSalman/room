@@ -351,6 +351,131 @@ test('zoom never leaves the range the tile server serves', () => {
   assert.strictEqual(G.clampZoom(14.6), 15);
 });
 
+// ── The web map ─────────────────────────────────────────────────────────────
+//
+// Reported as: swiping the map to move it closes the map, as though the swipe
+// were the back button — and pinching to zoom does nothing.
+//
+// Both came from the same fault: the map never really took the touch. It
+// listened through inline HTML attributes (which cannot be registered
+// { passive: false }, so preventDefault is ignored), handled exactly one
+// finger, and left the browser free to run its own edge-swipe — which
+// navigates BACK, and back in a single-page app closes whatever is open.
+
+global.window = global;
+require(path.join(__dirname, '..', 'public', 'js', 'geoZoom.js'));
+const Z = global.window.GeoZoom;
+
+const WEB = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'locpicker.js'), 'utf8');
+const HTML = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+const CSS = fs.readFileSync(path.join(__dirname, '..', 'public', 'css', 'style.css'), 'utf8');
+
+test('THE BUG: the map claims the touch instead of leaving it to the browser', () => {
+  // A passive touchmove listener may not call preventDefault, so the browser
+  // carries on with its own gesture whatever the handler does.
+  assert.ok(/addEventListener\('touchstart', onDown, \{ passive: false \}\)/.test(WEB),
+    'touchstart is not bound non-passively');
+  assert.ok(/addEventListener\('touchmove', onMove, \{ passive: false \}\)/.test(WEB),
+    'touchmove is not bound non-passively — the swipe still goes to the browser');
+  assert.ok(!/ontouchstart="LocPicker/.test(HTML) && !/ontouchmove="LocPicker/.test(HTML),
+    'the inline attribute handlers are back, and they cannot be non-passive');
+  assert.ok(WEB.includes('bindMap()'), 'nothing ever binds the map');
+});
+
+test('and it says so declaratively as well', () => {
+  // BOTH elements: the wrapper is the one that scrolls and overscrolls, and
+  // the inner map is the one the finger actually lands on. Checking a slice
+  // spanning the two passes when either has the properties, which is exactly
+  // the mistake that lets one of them lose them.
+  const blockFor = (sel) => {
+    const i = CSS.indexOf(sel + ' {');
+    assert.ok(i > -1, `${sel} is gone — this check would be vacuous`);
+    return CSS.slice(i, CSS.indexOf('}', i));
+  };
+  for (const sel of ['#loc-map-wrap', '#loc-map']) {
+    const block = blockFor(sel);
+    assert.ok(/touch-action: none/.test(block), `${sel} does not claim the gesture in CSS`);
+    assert.ok(/overscroll-behavior: none/.test(block),
+      `${sel} still lets a horizontal drag become the browser's swipe-to-go-back`);
+  }
+});
+
+test('the drag is prevented from the FIRST event, not after the browser has begun', () => {
+  const down = WEB.slice(WEB.indexOf('function onDown('), WEB.indexOf('function onMove('));
+  assert.ok(down.includes('preventDefault()'),
+    'the browser gets a head start on its own gesture before we object');
+});
+
+test('THE OTHER HALF: two fingers pinch, about their midpoint', () => {
+  assert.ok(WEB.includes('touchPair('), 'two fingers are still ignored');
+  assert.ok(WEB.includes('GeoZoom.pinchZoomDelta('), 'the pinch is not turned into zoom levels');
+  assert.ok(/GeoZoom\.zoomAbout\(\s*\n?\s*center/.test(WEB),
+    'zooming does not keep the place between the fingers where it was');
+});
+
+test('a second finger landing mid-drag becomes a pinch', () => {
+  const move = WEB.slice(WEB.indexOf('function onMove('), WEB.indexOf('function onUp('));
+  assert.ok(/if \(drag\.kind !== 'pinch'\)/.test(move),
+    'a drag that grows a second finger goes on panning from one of them');
+});
+
+test('lifting one finger out of a pinch does not fling the map', () => {
+  const up = WEB.slice(WEB.indexOf('function onUp('), WEB.indexOf('function bindMap('));
+  assert.ok(up.includes("drag.kind === 'pinch'"),
+    'the remaining finger continues the pan from wherever the pinch left it');
+});
+
+// ── The two maps must agree ─────────────────────────────────────────────────
+
+test('the web zoom maths matches the app, everywhere it matters', () => {
+  let checked = 0;
+  const places = [TEHRAN, LONDON, { lat: -33.86, lng: 151.2 }, { lat: 0, lng: 0 }];
+  const size = { w: 360, h: 300 };
+  for (const c of places) {
+    for (const z of [3, 8, 12, 15, 18]) {
+      for (const nz of [z - 1, z, z + 1, z + 3]) {
+        for (const focal of [{ x: 0, y: 0 }, { x: 180, y: 150 }, { x: 359, y: 299 }]) {
+          const a = Z.zoomAbout(c, z, nz, focal, size.w, size.h);
+          const b = G.zoomAbout(c, z, nz, focal, size.w, size.h);
+          near(a.lat, b.lat, 1e-9, `zoomAbout lat drifted at z${z}→${nz}`);
+          near(a.lng, b.lng, 1e-9, `zoomAbout lng drifted at z${z}→${nz}`);
+          checked++;
+        }
+      }
+    }
+  }
+  assert.ok(checked > 150, `the drift check only ran ${checked} times`);
+  for (const s of [0.25, 0.5, 0.9, 1, 1.1, 2, 4, 0, -1]) {
+    assert.strictEqual(Z.pinchZoomDelta(s), G.pinchZoomDelta(s), `pinchZoomDelta drifted at ${s}`);
+  }
+  for (const z of [-5, 0, 3, 3.4, 12.6, 18, 25]) {
+    assert.strictEqual(Z.clampZoom(z), G.clampZoom(z), `clampZoom drifted at ${z}`);
+  }
+  assert.strictEqual(Z.MIN_ZOOM, G.MIN_ZOOM);
+  assert.strictEqual(Z.MAX_ZOOM, G.MAX_ZOOM);
+});
+
+test('the projection itself agrees, or every tile would be in the wrong place', () => {
+  for (const c of [TEHRAN, LONDON, { lat: 85, lng: 179 }, { lat: -85, lng: -179 }]) {
+    for (const z of [3, 10, 18]) {
+      const a = Z.screenToLatLng({ x: 40, y: 90 }, c, z, 360, 300);
+      const b = G.screenToLatLng({ x: 40, y: 90 }, c, z, 360, 300);
+      near(a.lat, b.lat, 1e-9, 'screenToLatLng lat drifted');
+      near(a.lng, b.lng, 1e-9, 'screenToLatLng lng drifted');
+    }
+  }
+});
+
+// ── The app's own back gesture must not fight a map ─────────────────────────
+
+test('the app never runs its edge-back gesture while a map is open', () => {
+  const screen = fs.readFileSync(
+    path.join(__dirname, '..', 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  const gate = screen.slice(screen.indexOf('<EdgeBack'), screen.indexOf('<KeyboardAvoidingView'));
+  assert.ok(gate.includes('openLocationId == null'), 'the fullscreen map can be swiped away');
+  assert.ok(gate.includes('!showLocationPicker'), 'the picker can be swiped away mid-drag');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

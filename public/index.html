@@ -301,11 +301,12 @@
     </div>
     <div class="loc-picker-hint">Move the map to place the pin</div>
     <div id="loc-map-wrap">
-      <div id="loc-map"
-           onmousedown="LocPicker.onDown(event)" onmousemove="LocPicker.onMove(event)"
-           onmouseup="LocPicker.onUp()" onmouseleave="LocPicker.onUp()"
-           ontouchstart="LocPicker.onDown(event)" ontouchmove="LocPicker.onMove(event)"
-           ontouchend="LocPicker.onUp()"></div>
+      <!-- No inline onto*= handlers: a touchmove listener registered that way
+           cannot be marked { passive: false }, and a passive listener may not
+           call preventDefault — so the browser carried on with its own
+           edge-swipe (which navigates back and closes this) whatever the
+           handler did. LocPicker binds these itself; see bindMap(). -->
+      <div id="loc-map"></div>
       <!-- Dead centre and untouchable: the map slides under it. -->
       <div id="loc-cross">📍</div>
       <div class="loc-zoom">
@@ -484,6 +485,7 @@
 <script src="/js/peerActions.js"></script>
 <script src="/js/peer.js"></script>
 <script src="/js/locationPick.js"></script>
+<script src="/js/geoZoom.js"></script>
 <script src="/js/locpicker.js"></script>
 <script src="/js/mentions.js"></script>
 <script src="/js/imageQuality.js"></script>

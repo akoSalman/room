@@ -154,6 +154,7 @@ test('every module the page needs is actually loaded, in an order that works', (
     ['resumable.js', 'app.js'],
     ['mentions.js', 'app.js'],
     ['pasteDrop.js', 'app.js'],
+    ['geoZoom.js', 'locpicker.js'],
     ['callMedia.js', 'calls.js'],
     ['callStatus.js', 'calls.js'],
   ];

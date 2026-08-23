@@ -1125,8 +1125,19 @@ body.disappearing-on .msg-caption, body.disappearing-on .msg-time { color: #8fa3
 /* ── Choosing where the pin goes ─────────────────────────────────────────── */
 .loc-card-modal { width: min(460px, 94vw); }
 .loc-picker-hint { padding: 0 18px 8px; font-size: 12px; color: var(--muted, #6b7280); }
-#loc-map-wrap { position: relative; height: 300px; overflow: hidden; background: #e8ecf0; }
-#loc-map { position: absolute; inset: 0; cursor: grab; user-select: none; }
+/* The map owns every touch that lands on it.
+   touch-action:none stops the browser scrolling or zooming the page with a
+   gesture meant for the map; overscroll-behavior stops a horizontal drag
+   turning into the browser's swipe-to-go-back, which in a single-page app
+   closes whatever is open — the reported "swiping the map closes it". */
+#loc-map-wrap {
+  position: relative; height: 300px; overflow: hidden; background: #e8ecf0;
+  touch-action: none; overscroll-behavior: none;
+}
+#loc-map {
+  position: absolute; inset: 0; cursor: grab; user-select: none;
+  touch-action: none; overscroll-behavior: none;
+}
 #loc-map:active { cursor: grabbing; }
 .loc-tile { position: absolute; width: 256px; height: 256px; pointer-events: none; }
 /* The fix, so it can be told apart from where the pin will land. */
