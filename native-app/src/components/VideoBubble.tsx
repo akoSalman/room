@@ -8,11 +8,13 @@
 // Streaming still works without downloading: tapping the tile opens the player,
 // which plays while it buffers. The button is for keeping it.
 import React, { useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { C } from '../theme';
 import { fmtBytes, progressPercent } from '../download';
 import * as downloads from '../videoDownloads';
+import * as covers from '../videoCoverStore';
+import { coverToShow } from '../videoCover';
 
 export default function VideoBubble({
   url, uploading, onOpen, onLongPress,
@@ -25,8 +27,12 @@ export default function VideoBubble({
 }) {
   const [dl, setDl] = useState(() => downloads.get(url));
   const [size, setSize] = useState(0);
+  // A frame from the video, so a chat full of videos is not a column of
+  // identical dark rectangles.
+  const [cover, setCover] = useState(() => covers.get(url));
 
   useEffect(() => downloads.subscribe(() => setDl(downloads.get(url))), [url]);
+  useEffect(() => covers.subscribe(() => setCover(covers.get(url))), [url]);
 
   useEffect(() => {
     if (uploading) return;
@@ -36,6 +42,22 @@ export default function VideoBubble({
     downloads.sizeOf(url).then(n => { if (alive) setSize(n); });
     return () => { alive = false; };
   }, [url, uploading]);
+
+  // Extract the cover from the local copy when there is one — reading from
+  // disk is faster and costs nothing — and from the remote file otherwise,
+  // but only when it is small enough to be worth streaming for a picture.
+  const localUri = dl?.status === 'done' ? dl.uri : undefined;
+  useEffect(() => {
+    if (uploading) return;
+    covers.ensureCover({
+      url,
+      source: localUri || url,
+      local: !!localUri,
+      sizeBytes: size || dl?.total || 0,
+    }).catch(() => {});
+  }, [url, uploading, localUri, size, dl?.total]);
+
+  const coverUri = coverToShow(cover);
 
   const status = dl?.status;
   const total = dl?.total || size;
@@ -54,7 +76,14 @@ export default function VideoBubble({
       disabled={uploading}
     >
       <View style={s.thumb}>
-        <Ionicons name="play" size={34} color="#fff" style={{ opacity: 0.9 }} />
+        {coverUri && (
+          <Image source={{ uri: coverUri }} style={StyleSheet.absoluteFill as any} resizeMode="cover" />
+        )}
+        {/* Over a real frame the play mark needs its own backing, or it
+            disappears into whatever the picture happens to be. */}
+        <View style={coverUri ? s.playOnCover : undefined}>
+          <Ionicons name="play" size={34} color="#fff" style={{ opacity: 0.9 }} />
+        </View>
 
         {/* Size, always visible: the point of a download button is knowing
             what it will cost before pressing it. */}
@@ -125,6 +154,11 @@ export default function VideoBubble({
 const hit = { top: 8, bottom: 8, left: 8, right: 8 };
 
 const s = StyleSheet.create({
+  playOnCover: {
+    width: 62, height: 62, borderRadius: 31,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.42)',
+  },
   savedMark: {
     position: 'absolute', top: 6, right: 6,
     backgroundColor: 'rgba(0,0,0,0.45)', borderRadius: 9, padding: 2,

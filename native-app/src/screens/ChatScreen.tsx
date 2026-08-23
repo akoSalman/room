@@ -33,6 +33,7 @@ import UploadOverlay from '../components/UploadOverlay';
 import SaveOverlay from '../components/SaveOverlay';
 import * as save from '../saveProgress';
 import { parseDataUri, pastedName, fileUriFromText, extensionFor } from '../pasteDrop';
+import * as pending from '../pendingMedia';
 import LocationPicker from '../components/LocationPicker';
 import PeerSheet from '../components/PeerSheet';
 import { PeerView, ClearScope, vanishedStyle } from '../peerActions';
@@ -203,9 +204,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // scrolls to this index when it reappears.
     setMediaFocusIndex(viewerIdx);
     setViewer(null);
-    // Coming back from a photo is a fresh open of the gallery as far as the
-    // grid is concerned: that is what entitles it to restore its position once.
-    if (viewerFromMedia) { setViewerFromMedia(false); setMediaOpenId(n => n + 1); setShowMedia(true); }
+    // The grid was never closed, so there is nothing to re-open — it has been
+    // sitting underneath the whole time.
+    //
+    // It used to be closed on the way in and opened again here, which meant
+    // two Android modal windows swapping places: the photo's window is torn
+    // down before the grid's is created, and in between the chat behind them
+    // both is on screen. That single frame is the reported "for one instant
+    // you see the chat and then the gallery".
+    if (viewerFromMedia) { setViewerFromMedia(false); setMediaOpenId(n => n + 1); }
   }
   const [replyTo, setReplyTo] = useState<ReplyTo | null>(null);
   const [showOnline, setShowOnline] = useState(false);
@@ -276,6 +283,54 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // instant double-tap turns it into a selectable field; released a moment
   // later so the handles become draggable.
   const [pendingMedia, setPendingMedia] = useState<{ uri: string; name: string; mime: string }[]>([]);
+  /**
+   * Staged photos survive leaving the chat.
+   *
+   * Reported as: take pictures, go back to the chat list, come back — the
+   * images are gone. They were: this screen unmounts when you leave it, and
+   * the photos lived only in its state. The files were still on the device,
+   * with nothing pointing at them.
+   *
+   * Restored before the first paint the user can act on, and written on every
+   * change. `restoredDraft` guards the write: an empty list on the very first
+   * render is "not loaded yet", not "the user removed everything", and saving
+   * it would erase the draft we are about to read.
+   */
+  const restoredDraft = useRef(false);
+
+  useEffect(() => {
+    let alive = true;
+    restoredDraft.current = false;
+    (async () => {
+      let items: pending.Staged[] = [];
+      try {
+        items = pending.parse(await AsyncStorage.getItem(pending.draftKey(room.id)), Date.now());
+        // The cache directory is Android's to empty. Anything gone is dropped
+        // here rather than becoming a broken tile that fails on send.
+        const present = new Set<string>();
+        await Promise.all(items.map(async m => {
+          try { if ((await FileSystem.getInfoAsync(m.uri)).exists) present.add(m.uri); } catch {}
+        }));
+        const alive2 = pending.keepExisting(items, uri => present.has(uri));
+        const note = pending.lostMessage(items.length, alive2.length);
+        items = alive2;
+        if (note && alive) toast(note);
+      } catch { items = []; }
+      if (!alive) return;
+      // Merge rather than replace: a photo shared into the app, or taken
+      // while this was loading, must not be thrown away by the restore.
+      if (items.length) setPendingMedia(prev => (prev.length ? [...items, ...prev] : items));
+      restoredDraft.current = true;
+    })();
+    return () => { alive = false; };
+  }, [room.id]);
+
+  useEffect(() => {
+    if (!restoredDraft.current) return;
+    const key = pending.draftKey(room.id);
+    const raw = pending.serialize(pendingMedia, Date.now());
+    (raw ? AsyncStorage.setItem(key, raw) : AsyncStorage.removeItem(key)).catch(() => {});
+  }, [pendingMedia, room.id]);
   // Photos are sent re-encoded by default — a phone camera's 8 MB original is
   // what makes sending "take a couple of seconds". HD sends the file untouched.
   const [sendQuality, setSendQuality] = useState<Quality>('standard');
@@ -4106,7 +4161,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         focusIndex={mediaFocusIndex}
         openId={mediaOpenId}
         onOpenImage={(i, all) => {
-          setShowMedia(false);
+          // The grid stays mounted underneath; the viewer opens on top of it.
+          // See closeViewer for why closing it here was the flash of chat.
           setViewerFromMedia(true);
           openViewer(all[i], all);
         }}
