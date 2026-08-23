@@ -140,3 +140,52 @@ export function inverted<T extends Msg>(win: Window<T>): T[] {
 export function byId(a: Msg, b: Msg): number {
   return num(a.id) - num(b.id);
 }
+
+// ── Following the conversation ───────────────────────────────────────────────
+//
+// Reported as: on a new message arriving, the auto scroll down is not
+// happening.
+//
+// It was not, and the cause was a fix for a different problem. The list is
+// INVERTED, so a new message is inserted at index 0 — the start of the
+// content — and `maintainVisibleContentPosition` exists precisely to stop the
+// content already on screen from moving when that happens. Anchoring
+// unconditionally therefore did exactly what it says: it held the view still
+// and left the new message sitting just off the bottom edge.
+//
+// Both behaviours are wanted, in different places, and which one applies is
+// decided by whether the list is showing the present or is parked in the
+// middle of the history after a jump.
+
+/**
+ * Should the list pin its visible content when rows are inserted?
+ *
+ * Only when parked mid-history. There, rows are inserted at the top of the
+ * content as newer pages load, and without an anchor the view slides by
+ * however wrong the list's estimate of the new rows was — the "history loading
+ * hops" report.
+ *
+ * At the present there is nothing above to insert: a new message is the
+ * newest thing there is, and the right response to it is to move, not to hold
+ * still. Anchoring here is what stopped the chat following the conversation.
+ */
+export function anchorsContent(o: { hasNewer: boolean }): boolean {
+  return !!o.hasNewer;
+}
+
+/**
+ * Should the view follow a message that just arrived?
+ *
+ * Only if the reader is already at the newest end. Someone reading back
+ * through yesterday does not want to be yanked to the bottom because a
+ * message came in — that is what the unseen badge is for.
+ *
+ * A message the user sent THEMSELVES is different: pressing send is a request
+ * to be at the bottom, and every chat app in the world obliges.
+ */
+export function followsNewMessage(o: {
+  atEnd: boolean; fromMe: boolean; windowAcceptsLive: boolean;
+}): boolean {
+  if (!o.windowAcceptsLive) return false;   // parked mid-history; it is not even shown
+  return o.fromMe || o.atEnd;
+}

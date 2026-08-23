@@ -379,6 +379,20 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // chat is loaded from its newest message backwards and the only direction
   // that can run out is older, which is why this did not exist before.
   const hasMoreNewerRef = useRef(false);
+  /**
+   * The same answer, as state.
+   *
+   * The ref is what the socket handlers and scroll maths read — they run
+   * outside render and must not be a frame behind. But whether the list
+   * anchors its content is a PROP, so it has to be rendered, and a ref cannot
+   * cause that. They are written together, through setHasMoreNewer, rather
+   * than being two facts that can disagree.
+   */
+  const [hasMoreNewer, setHasMoreNewerState] = useState(false);
+  const setHasMoreNewer = useCallback((v: boolean) => {
+    hasMoreNewerRef.current = v;
+    setHasMoreNewerState(v);
+  }, []);
   const loadingNewerRef = useRef(false);
   // Has the user dragged the list since the window was last replaced?
   //
@@ -449,6 +463,23 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const scrollBottom = useCallback(() => {
     flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
   }, []);
+
+  /**
+   * Follow a message that has just arrived.
+   *
+   * Deferred, and then done again. Calling scrollToOffset in the socket
+   * handler asks the list to move before the row it is moving to exists —
+   * React has not rendered it yet — so it scrolls to where the bottom already
+   * was, which is nowhere. The second pass covers a row whose height settles
+   * later, which is most of them: an image, a reply preview, a link card.
+   */
+  const followNewMessage = useCallback(() => {
+    requestAnimationFrame(() => {
+      if (isNearBottomRef.current) scrollBottom();
+    });
+    const t = setTimeout(() => { if (isNearBottomRef.current) scrollBottom(); }, 180);
+    settleTimers.current.push(t);
+  }, [scrollBottom]);
 
   useEffect(() => { messagesRef.current = messages; }, [messages]);
 
@@ -674,7 +705,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // backfill, for one) see it without waiting for a render.
     messagesRef.current = next.messages;
     hasMoreOlderRef.current = next.hasOlder;
-    hasMoreNewerRef.current = next.hasNewer;
+    setHasMoreNewer(next.hasNewer);
     setMessages(next.messages);
   }
 
@@ -704,7 +735,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     const newer = await apiFetch(`/messages/${room.id}?after=${newestId}`);
     loadingNewerRef.current = false;
     setLoadingNewer(false);
-    if (!Array.isArray(newer)) { hasMoreNewerRef.current = false; return; }
+    if (!Array.isArray(newer)) { setHasMoreNewer(false); return; }
     // appendNewer decides the flag: a short page means we have caught up with
     // the present, and live messages can be appended again from here on.
     // NOT trimmed any more.
@@ -974,7 +1005,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         setMessages(msgs);
         messagesRef.current = msgs;
         hasMoreOlderRef.current = msgs.length >= MESSAGES_PAGE_SIZE;
-        hasMoreNewerRef.current = false;
+        setHasMoreNewer(false);
         if (msgs.length) sock.emit('mark_read', { roomId: room.id, lastMsgId: msgs[msgs.length - 1].id });
         offline.saveMessages(room.id, msgs);
         // Emoji effect received while we were away: if the newest message is a
@@ -1121,8 +1152,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           locationManager.startSharing(msg.id, room.id, until,
             room.is_dm ? (room.other_username || room.name) : room.name).catch(() => {});
         }
-        if (isNearBottomRef.current) scrollBottom();
-        else if (msg.username !== meRef.current) bumpMissed();
+        if (win.followsNewMessage({
+          atEnd: isNearBottomRef.current,
+          fromMe: msg.username === meRef.current,
+          windowAcceptsLive: win.acceptsLive(currentWindow()),
+        })) {
+          followNewMessage();
+        } else if (msg.username !== meRef.current) bumpMissed();
         sock.emit('mark_read', { roomId: room.id, lastMsgId: msg.id });
       });
       // The owner removed us: leave the chat immediately.
@@ -3690,15 +3726,21 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           ref={flatListRef}
           data={invertedMessages}
           inverted
-          // Anchor what the user is looking at.
+          // Anchor what the user is looking at — but ONLY while parked in the
+          // middle of the history.
           //
-          // Loading a page of history adds rows the list has never measured,
-          // and without an anchor it keeps the SCROLL OFFSET rather than the
-          // content — so the view slides by however much its estimate of the
-          // new rows was wrong. This pins the visible content instead and
-          // lets the offset move to suit, which is what makes paging feel
-          // like paper rather than like a jump.
-          maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
+          // There, newer pages are inserted at the top of the content as the
+          // user scrolls down, and without an anchor the view slides by however
+          // wrong the list's estimate of the new rows was.
+          //
+          // At the present it is the opposite. The list is inverted, so a new
+          // message is inserted at index 0 — and anchoring did exactly what it
+          // promises: it held the view still and left the arriving message just
+          // off the bottom edge. That is "on new message arrival the auto
+          // scroll down is not happening".
+          maintainVisibleContentPosition={
+            win.anchorsContent({ hasNewer: hasMoreNewer }) ? { minIndexForVisible: 1 } : undefined
+          }
           keyExtractor={keyExtractor}
           // Render a screenful, not the whole history. Without these the list
           // mounts far more rows than are visible, and every one of them costs

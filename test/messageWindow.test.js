@@ -175,6 +175,93 @@ test('inverted gives newest first without disturbing the window', () => {
   assert.deepStrictEqual(win.messages.map(m => m.id), [1, 2, 3], 'the window was mutated');
 });
 
+// ── Following the conversation ──────────────────────────────────────────────
+//
+// Reported as: on a new message arriving, the auto scroll down is not
+// happening.
+//
+// It was not, and the cause was a fix for something else. The list is
+// INVERTED, so an arriving message is inserted at index 0 — the start of the
+// content — and maintainVisibleContentPosition exists precisely to stop what
+// is on screen from moving when that happens. Anchoring unconditionally did
+// exactly what it promises: it held the view still and left the new message
+// just off the bottom edge.
+
+test('THE BUG: at the present the list does NOT anchor, so it can follow', () => {
+  assert.strictEqual(W.anchorsContent({ hasNewer: false }), false,
+    'the view is pinned at the present, so an arriving message cannot push it');
+});
+
+test('parked mid-history it DOES anchor, which is what stopped the hopping', () => {
+  // Newer pages are inserted above the reader there; without an anchor the
+  // view slides by however wrong the list's guess at their height was.
+  assert.strictEqual(W.anchorsContent({ hasNewer: true }), true);
+});
+
+test('a message arriving while reading the newest end is followed', () => {
+  assert.strictEqual(W.followsNewMessage(
+    { atEnd: true, fromMe: false, windowAcceptsLive: true }), true);
+});
+
+test('somebody reading back through yesterday is not yanked to the bottom', () => {
+  // That is what the unseen badge is for.
+  assert.strictEqual(W.followsNewMessage(
+    { atEnd: false, fromMe: false, windowAcceptsLive: true }), false);
+});
+
+test('but pressing send always takes you to the bottom', () => {
+  // Sending IS a request to be at the newest end, wherever you were reading.
+  assert.strictEqual(W.followsNewMessage(
+    { atEnd: false, fromMe: true, windowAcceptsLive: true }), true);
+});
+
+test('nothing is followed into a window that will not show it', () => {
+  // Parked after a jump, the message is not appended at all — scrolling to the
+  // bottom of THIS window would land on a message from March.
+  assert.strictEqual(W.followsNewMessage(
+    { atEnd: true, fromMe: true, windowAcceptsLive: false }), false);
+  assert.strictEqual(W.followsNewMessage(
+    { atEnd: true, fromMe: false, windowAcceptsLive: false }), false);
+});
+
+// ── The wiring ──────────────────────────────────────────────────────────────
+
+test('the screen uses the rule for both halves', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  assert.ok(/maintainVisibleContentPosition=\{\s*\n?\s*win\.anchorsContent/.test(src),
+    'the list anchors unconditionally again, which is the bug');
+  assert.ok(src.includes('win.followsNewMessage({'),
+    'the arrival path decides for itself whether to follow');
+});
+
+test('what the anchor depends on is STATE, or the prop can never change', () => {
+  // A ref does not re-render, so an anchor driven by one would keep whatever
+  // value it had when the list last happened to render.
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  assert.ok(/anchorsContent\(\{ hasNewer: hasMoreNewer \}\)/.test(src),
+    'the anchor reads something other than the rendered state');
+  assert.ok(/const \[hasMoreNewer, setHasMoreNewerState\] = useState/.test(src),
+    'there is no state behind it');
+  // And the two must be written together, or they drift.
+  assert.ok(!/hasMoreNewerRef\.current = (?!v;)/.test(src),
+    'the ref is assigned directly somewhere, so the state can fall out of step');
+});
+
+test('the follow happens AFTER the row exists, not during the socket handler', () => {
+  // Scrolling to the bottom before React has rendered the new row scrolls to
+  // where the bottom already was, which is nowhere.
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  const fn = src.slice(src.indexOf('const followNewMessage'), src.indexOf('useEffect(() => { messagesRef'));
+  assert.ok(fn.includes('requestAnimationFrame'), 'the scroll is still attempted in the same tick');
+  assert.ok(/setTimeout\(\(\) => \{ if \(isNearBottomRef\.current\) scrollBottom\(\); \}, \d+\)/.test(fn),
+    'nothing corrects a row whose height settles later — an image, a reply preview');
+  assert.ok((fn.match(/isNearBottomRef\.current/g) || []).length >= 2,
+    'the deferred scroll does not re-check that the user is still at the bottom');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }
