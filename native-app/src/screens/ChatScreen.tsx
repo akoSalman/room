@@ -34,6 +34,7 @@ import SaveOverlay from '../components/SaveOverlay';
 import * as save from '../saveProgress';
 import { parseDataUri, pastedName, fileUriFromText, extensionFor } from '../pasteDrop';
 import * as pending from '../pendingMedia';
+import { dropExpired, msUntilNextExpiry } from '../expiryRing';
 import LocationPicker from '../components/LocationPicker';
 import PeerSheet from '../components/PeerSheet';
 import { PeerView, ClearScope, vanishedStyle } from '../peerActions';
@@ -2917,6 +2918,35 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     return () => { sock.off('disappearing_changed', onChanged); };
   }, [room.id, socketRef.current]);
 
+  // ── A message goes when its time is up, not when the server gets round to
+  //    saying so ──
+  //
+  // Reported as: disappearing messages do not disappear exactly after the set
+  // time. Half of that was the server sweeping on a thirty-second interval —
+  // fixed there — and half was this end waiting to be told: the bubble stayed
+  // on screen until the delete event arrived, which on a slow connection is a
+  // pause and on a dropped socket is forever.
+  //
+  // Both ends know the deadline. The server still destroys the message; this
+  // just stops showing something it knows has gone.
+  useEffect(() => {
+    const tick = () => {
+      const now = Date.now();
+      setMessages(prev => {
+        const kept = dropExpired(prev, now);
+        return kept.length === prev.length ? prev : kept;
+      });
+    };
+    tick();
+    const wait = msUntilNextExpiry(messages);
+    if (wait === null) return;
+    // One timer, for the EARLIEST deadline in the list. It re-arms from the
+    // state change the removal causes, so a chat full of countdowns still only
+    // ever holds one.
+    const t = setTimeout(tick, Math.min(wait, 60_000));
+    return () => clearTimeout(t);
+  }, [messages]);
+
   // A countdown started somewhere — record the deadline so the ring can be
   // drawn, on the sender's side as well as the reader's.
   useEffect(() => {
@@ -3455,7 +3485,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       {disappearing > 0 && (
         <View style={s.secretBar}>
           <Text style={s.secretBarText} numberOfLines={1}>
-            ⏳  Disappearing messages on · {disappearingLabel(disappearing)}
+            ⏳  Disappearing messages on · {disappearingLabel(disappearing)} after reading
           </Text>
         </View>
       )}

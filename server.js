@@ -794,13 +794,57 @@ setInterval(() => {
     // Disappearing messages. Swept the same way, so a timer that elapsed while
     // the server was down is still honoured on the next tick rather than
     // leaving the message sitting there forever.
-    db.prepare('SELECT * FROM messages WHERE expires_at IS NOT NULL AND expires_at <= ?')
-      .all(now)
-      .forEach(destroyMessage);
+    sweepExpired(now);
   } catch (err) {
     console.error('[one-time] sweep error:', err.message);
   }
 }, 30 * 1000);
+
+// ── Disappearing messages go at the moment they are due ──────────────────────
+//
+// Reported as: they do not disappear exactly after the time they were set to.
+//
+// The sweep above runs every thirty seconds, so a message with a thirty-second
+// timer could sit there for a full minute — twice as long as the setting says,
+// and the shorter the timer the worse the proportion. A sweep is the right
+// safety net (a timer that elapsed while the server was down is still honoured
+// on the next tick) but it is the wrong primary mechanism.
+//
+// So the next deadline is also scheduled EXACTLY. One timer at a time, for the
+// earliest expiry there is, re-armed whenever that changes: a new countdown
+// starting, or a sweep finishing.
+let expiryTimer = null;
+
+function sweepExpired(now = Date.now()) {
+  const due = db.prepare('SELECT * FROM messages WHERE expires_at IS NOT NULL AND expires_at <= ?').all(now);
+  due.forEach(destroyMessage);
+  return due.length;
+}
+
+function scheduleNextExpiry() {
+  clearTimeout(expiryTimer);
+  let next;
+  try {
+    next = db.prepare('SELECT MIN(expires_at) AS at FROM messages WHERE expires_at IS NOT NULL').get();
+  } catch { return; }
+  if (!next || next.at == null) return;   // nothing is counting down
+  // Capped, so a week-long timer does not sit in a single setTimeout for a
+  // week — Node's timers drift over that kind of span, and the process is
+  // restarted by deploys long before it would fire. The periodic sweep covers
+  // anything the cap defers.
+  const delay = Math.min(Math.max(0, next.at - Date.now()), 60 * 1000);
+  expiryTimer = setTimeout(() => {
+    try { sweepExpired(); } catch (err) { console.error('[expiry] sweep:', err.message); }
+    scheduleNextExpiry();
+  }, delay);
+  expiryTimer.unref?.();
+}
+
+// At startup, and after every sweep, so a deadline that passed while the
+// process was down is dealt with immediately rather than up to thirty seconds
+// later.
+try { sweepExpired(); } catch {}
+scheduleNextExpiry();
 
 // Notifications never preview message content — only the kind of message.
 function messagePreview(msg) {
@@ -2496,6 +2540,8 @@ io.on('connection', (socket) => {
           .run(expiresAt, m.id);
         started.push({ messageId: m.id, expiresAt, seconds: m.disappear_seconds });
       }
+      // A new countdown may now be the earliest one there is.
+      if (started.length) scheduleNextExpiry();
 
       if (started.length) {
         const payload = { roomId: room.id, started };
@@ -2837,4 +2883,8 @@ server.listen(PORT, () => console.log(`Chat server running on http://localhost:$
 
 // Exported so the integration tests can boot the real server on an ephemeral
 // port and drive it over HTTP + Socket.IO. Has no effect in production.
-module.exports = { app, server, io };
+// scheduleNextExpiry is exported so the test suite can drive the exact-timer
+// path with a deadline a second away instead of the thirty seconds the
+// shortest real setting allows. It is the SAME function the server calls after
+// every countdown starts — a seam, not a second implementation.
+module.exports = { app, server, io, scheduleNextExpiry, sweepExpired };

@@ -860,6 +860,71 @@ test('disappearing messages: announced, applied to BOTH sides, and swept', async
     'a message sent after switching off still expires');
 });
 
+test('THE BUG: an expired message is destroyed at its deadline, not up to 30s later', async () => {
+  // Reported as: disappearing messages do not disappear exactly after the set
+  // time. The sweep ran every thirty seconds, so a thirty-second timer could
+  // last a minute — twice what the setting says.
+  //
+  // The shortest real setting is 30s, far too slow for a test, so the deadline
+  // is moved to a second away and the SAME function the server calls after
+  // every countdown starts is used to re-arm the timer.
+  const db = require('../db.js');
+  const a = await signUp('quicka');
+  const b = await signUp('quickb');
+  const room = await api('/rooms', 'POST', { name: 'quick-room' }, a.token);
+  const sa = await connect(a.token);
+  const sb = await connect(b.token);
+  await emit(sb, 'accept_invite', { roomId: room.id });
+  await emit(sa, 'set_disappearing', { roomId: room.id, seconds: 30 });
+
+  await emit(sb, 'send_message', { roomId: room.id, type: 'text', content: 'tick tock' });
+  await new Promise(r => setTimeout(r, 150));
+  const msg = (await api(`/messages/${room.id}`, 'GET', null, a.token))
+    .find(m => m.content === 'tick tock');
+  assert.ok(msg, 'the message was not stored');
+  const seen = await emit(sa, 'messages_seen', { roomId: room.id, messageIds: [msg.id] });
+  assert.strictEqual(seen.started.length, 1, 'the countdown did not start');
+
+  const gone = waitFor(sa, 'message_deleted', d => String(d.messageId) === String(msg.id), 4000);
+  const due = Date.now() + 700;
+  db.prepare('UPDATE messages SET expires_at = ? WHERE id = ?').run(due, msg.id);
+  require('../server.js').scheduleNextExpiry();
+
+  await gone;
+  const late = Date.now() - due;
+  // Generous, because CI is not a real-time system — but far inside the thirty
+  // seconds the old sweep could take.
+  assert.ok(late < 2000, `the message was destroyed ${late}ms after its deadline`);
+  assert.ok(!(await api(`/messages/${room.id}`, 'GET', null, a.token))
+    .some(m => String(m.id) === String(msg.id)), 'the message is still in the history');
+});
+
+test('a deadline that passed while the server was down is honoured at startup', async () => {
+  // The exact timer does not survive a restart; the sweep is what covers that,
+  // and it runs once at boot rather than up to thirty seconds later.
+  const db = require('../db.js');
+  const a = await signUp('boota');
+  const b = await signUp('bootb');
+  const room = await api('/rooms', 'POST', { name: 'boot-room' }, a.token);
+  const sa = await connect(a.token);
+  const sb = await connect(b.token);
+  await emit(sb, 'accept_invite', { roomId: room.id });
+  await emit(sa, 'set_disappearing', { roomId: room.id, seconds: 30 });
+  await emit(sb, 'send_message', { roomId: room.id, type: 'text', content: 'while we were away' });
+  await new Promise(r => setTimeout(r, 150));
+  const msg = (await api(`/messages/${room.id}`, 'GET', null, a.token))
+    .find(m => m.content === 'while we were away');
+  await emit(sa, 'messages_seen', { roomId: room.id, messageIds: [msg.id] });
+
+  // Long past due, and nothing scheduled for it — exactly the state a restart
+  // leaves behind.
+  db.prepare('UPDATE messages SET expires_at = ? WHERE id = ?').run(Date.now() - 60_000, msg.id);
+  const destroyed = require('../server.js').sweepExpired();
+  assert.ok(destroyed >= 1, 'the sweep found nothing, so a restart would strand the message');
+  assert.ok(!(await api(`/messages/${room.id}`, 'GET', null, a.token))
+    .some(m => String(m.id) === String(msg.id)), 'the overdue message survived the sweep');
+});
+
 test('a message does NOT start expiring until it has been SEEN', async () => {
   // The reported bug: messages vanished on a timer even though the recipient
   // was offline and never read them. That is not disappearing, it is losing

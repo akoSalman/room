@@ -1,8 +1,20 @@
 // ── Disappearing messages ────────────────────────────────────────────────────
 //
 // A chat-wide timer: once it is on, everything EITHER side sends is destroyed
-// that long after it was sent. Distinct from a one-time message, which is
-// destroyed after it is opened, and which only affects the one message.
+// that long after the other person has READ it. Distinct from a one-time
+// message, which is destroyed after it is opened, and which only affects the
+// one message.
+//
+// Read, not sent — and the wording says so, because it did not.
+//
+// Reported as: they do not disappear exactly after the set time. Two of the
+// three causes were real delays (a server sweeping on a thirty-second
+// interval, and clients waiting to be told rather than acting on a deadline
+// they already knew) and both are fixed. The third was this: a message sitting
+// unread does not start counting, so "vanish after 30 seconds" was a promise
+// about a clock the reader had not started yet. Starting it at send time
+// instead would mean destroying messages nobody ever saw, which is worse — so
+// the sentence changed rather than the rule.
 //
 // The durations are a fixed list, matched by the server — a client cannot
 // invent its own — so they live here and are shared by the menu, the banner
@@ -38,7 +50,7 @@ export function disappearingLabel(seconds: number): string {
  */
 export function disappearingPredicate(seconds: number): string {
   return seconds > 0
-    ? `turned on disappearing messages — new messages vanish after ${disappearingLabel(seconds)}`
+    ? `turned on disappearing messages — new messages vanish ${disappearingLabel(seconds)} after they are read`
     : 'turned off disappearing messages';
 }
 

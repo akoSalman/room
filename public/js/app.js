@@ -556,7 +556,12 @@ function connectSocket() {
     // does not re-report the message as newly seen.
     socket.on('expiry_started', ({ roomId, started }) => {
       if (roomId != null && String(roomId) !== String(currentRoomId)) return;
-      (started || []).forEach(x => seenReported.add(String(x.messageId)));
+      (started || []).forEach(x => {
+        seenReported.add(String(x.messageId));
+        const el = document.querySelector(`[data-msg-id="${x.messageId}"]`);
+        if (el && x.expiresAt) el.dataset.expiresAt = String(x.expiresAt);
+      });
+      scheduleExpirySweep();
     });
     // Disappearing mode changed: re-skin the chat so it is obvious here too.
     socket.on('disappearing_changed', ({ roomId, seconds }) => {
@@ -1086,6 +1091,37 @@ async function latestAppBuild() {
     if (match) return { version: parseInt(match[1], 10), url: APK_DOWNLOAD_URL, source: 'github' };
   } catch {}
   return { version: null, url: APK_DOWNLOAD_URL, source: null };
+}
+
+// ── Taking an expired message off the screen ────────────────────────────────
+//
+// Reported as: disappearing messages do not disappear exactly after the set
+// time. Half of that was the server sweeping every thirty seconds — fixed
+// there — and half was this page waiting to be told: the bubble stayed until
+// the delete event arrived, which on a slow connection is a pause and on a
+// dropped socket is indefinite.
+//
+// Both ends know the deadline, so this end removes what it knows has gone. The
+// server is still what destroys the message.
+let expirySweepTimer = null;
+
+function renderedDeadlines() {
+  return [...document.querySelectorAll('#messages [data-expires-at]')].map(el => ({
+    el, expires_at: parseInt(el.dataset.expiresAt, 10) || 0,
+  }));
+}
+
+function scheduleExpirySweep() {
+  clearTimeout(expirySweepTimer);
+  const now = Date.now();
+  const rows = renderedDeadlines();
+  // Anything already past goes now.
+  rows.forEach(r => { if (Expiry.hasExpired(r.expires_at, now)) r.el.remove(); });
+  // One timer, for the EARLIEST remaining deadline: fifty countdowns on screen
+  // still only need the next one.
+  const wait = Expiry.msUntilNextExpiry(renderedDeadlines(), now);
+  if (wait === null) return;
+  expirySweepTimer = setTimeout(scheduleExpirySweep, Math.min(wait, 60000));
 }
 
 async function loadLatestAppVersion() {
@@ -2731,7 +2767,7 @@ function applyDisappearingSkin(seconds) {
   const label = seconds === 30 ? '30 seconds' : seconds === 300 ? '5 minutes'
     : seconds === 3600 ? '1 hour' : seconds === 86400 ? '24 hours'
     : seconds === 604800 ? '1 week' : `${seconds} seconds`;
-  bar.textContent = `\u23F3  Disappearing messages on \u00B7 ${label}`;
+  bar.textContent = `\u23F3  Disappearing messages on \u00B7 ${label} after reading`;
 }
 
 function buildLocationCard(msg) {
@@ -2817,6 +2853,9 @@ function buildMessageElement(msg) {
   const wrapper = document.createElement('div');
   wrapper.className = 'msg-wrapper ' + (isMine ? 'mine' : 'theirs');
   wrapper.dataset.msgId = msg.id;
+  // The deadline travels with the bubble, so the sweep below can find it
+  // without keeping a parallel list of what is on screen.
+  if (msg.expires_at) wrapper.dataset.expiresAt = String(msg.expires_at);
   if (!msg._uploading) addLongPress(wrapper, () => openCtxMenu(msg.id, msg.type, isMine, wrapper, msg));
   // Its disappearing clock starts when it is actually on screen.
   watchForSeen(wrapper, msg);
@@ -2928,7 +2967,7 @@ function buildMessageElement(msg) {
       : secs < 60 ? `${secs} seconds` : secs < 3600 ? `${Math.round(secs / 60)} minutes`
       : secs < 86400 ? `${Math.round(secs / 3600)} hours` : `${Math.round(secs / 86400)} days`;
     rest.textContent = d.kind === 'disappearing_on'
-      ? ` turned on disappearing messages — new messages vanish after ${durLabel(d.seconds || 0)}`
+      ? ` turned on disappearing messages — new messages vanish ${durLabel(d.seconds || 0)} after they are read`
       : d.kind === 'disappearing_off'
       ? ' turned off disappearing messages'
       : d.kind === 'removed'
@@ -3135,6 +3174,9 @@ function appendMessage(msg) {
   const container = document.getElementById('messages');
   container.appendChild(buildMessageElement(msg));
   scrollBottom();
+  // A message can arrive already counting down — the deadline is set when the
+  // reader sees it, and a second device is a reader too.
+  if (msg.expires_at) scheduleExpirySweep();
 }
 
 // Prepend a page of older messages (already in ascending/chronological order)
@@ -3528,6 +3570,9 @@ async function handleScrollFabClick() {
   }
   scrollBottom();
   updateScrollFab();
+  // History can contain messages already past their deadline (the phone was
+  // closed while they expired) and others still counting.
+  scheduleExpirySweep();
 }
 
 function updateScrollFab() {
