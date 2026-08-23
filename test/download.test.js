@@ -88,6 +88,34 @@ test('progress is a clamped percentage, and zero until the size is known', () =>
   assert.strictEqual(D.progressPercent(-10, 200), 0);
 });
 
+// ── The button on a video ───────────────────────────────────────────────────
+
+test('the download button on a video is an arrow, with no word beside it', () => {
+  // Asked for directly: "that download button on video should be just an
+  // arrow, remove the text Download." The word said nothing the arrow did not,
+  // on the one part of the screen that is meant to be a picture — and the
+  // size, which IS worth knowing before pressing, sits above it either way.
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'native-app', 'src', 'components', 'VideoBubble.tsx'), 'utf8');
+  assert.ok(!/>\s*Download\s*</.test(src) && !src.includes("'Download'"),
+    'the video still has the word "Download" on it');
+  assert.ok(!src.includes("'Retry'"), 'the failed state still carries a word');
+  assert.ok(/name=\{status === 'failed' \? 'refresh' : 'arrow-down'\}/.test(src),
+    'the arrow is gone');
+  // Unlabelled controls must still say what they are to a screen reader.
+  assert.ok(/accessibilityLabel=\{status === 'failed'/.test(src),
+    'the icon-only button has no accessible name');
+});
+
+test('what the download is COSTING is still shown while it runs', () => {
+  // Removing the label must not take the byte counter with it: a progress
+  // display with no numbers is what started this whole line of work.
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'native-app', 'src', 'components', 'VideoBubble.tsx'), 'utf8');
+  assert.ok(src.includes('fmtBytes(dl!.written)'), 'the running download no longer says how far it is');
+  assert.ok(src.includes('fmtBytes(total)'), 'the size before pressing is gone');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

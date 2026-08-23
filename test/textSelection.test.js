@@ -444,6 +444,153 @@ test('the release of a LONG press still opens the window for what follows', () =
   assert.strictEqual(state.selecting, 1);
 });
 
+// ── Scrolling, which is where this kept breaking ────────────────────────────
+//
+// Reported for the sixth time as: "double tap select still does not work when
+// I scroll up." Two separate causes, both of them the same mistake — believing
+// the OS had selected something when it had not, after which every tap on that
+// message was eaten as a "dismiss" of a selection that was never there.
+
+test('THE BUG: a finger that lands on a still-gliding list is not half a double-tap', () => {
+  // Android spends that touch stopping the fling. The child never sees a tap
+  // and no word is selected — so if we count it, the pair that follows looks
+  // to us like a completed double-tap and to the OS like nothing at all.
+  const { state } = run([
+    { type: 'down', id: 1, at: 1000, settling: true },   // stops the fling
+    { type: 'release', id: 1, at: 1060 },
+    { type: 'down', id: 1, at: 1150 },                   // the user's first real tap
+  ]);
+  assert.strictEqual(state.selecting, null,
+    'a fling-stopping touch was counted as the first tap of a double-tap');
+});
+
+test('…and the two taps AFTER it still select normally', () => {
+  const { state } = run([
+    { type: 'down', id: 1, at: 1000, settling: true },
+    { type: 'release', id: 1, at: 1060 },
+    { type: 'down', id: 1, at: 1150 },
+    { type: 'release', id: 1, at: 1210 },
+    { type: 'down', id: 1, at: 1330 },
+  ]);
+  assert.strictEqual(state.selecting, 1, 'double-tap stopped working after a flick');
+});
+
+test('a fling-stopping touch cannot COMPLETE a double-tap either', () => {
+  // Tap a word, then flick the list; the finger that catches the fling lands
+  // on the same message inside the window. The OS spends it stopping the
+  // scroll and selects nothing, so it must not look like a second tap to us.
+  const { state } = run([
+    { type: 'down', id: 1, at: 1000 },
+    { type: 'release', id: 1, at: 1060 },
+    { type: 'down', id: 1, at: 1150, settling: true },
+  ]);
+  assert.strictEqual(state.selecting, null,
+    'a touch spent stopping a fling was read as the second tap of a double-tap');
+});
+
+test('a still list is the ordinary case and is untouched by any of this', () => {
+  const { state } = run([
+    { type: 'down', id: 1, at: 1000, settling: false },
+    { type: 'release', id: 1, at: 1060 },
+    { type: 'down', id: 1, at: 1150 },
+  ]);
+  assert.strictEqual(state.selecting, 1);
+});
+
+test('THE OTHER CAUSE: a drag cannot become a long-press selection', () => {
+  // A scroll that starts on a message left the touch "pending", and 450ms
+  // later the hold timer declared a selection the OS had never made. A scroll
+  // lasting half a second is an ordinary scroll, so this happened constantly —
+  // and afterwards every tap on that message was swallowed.
+  const { state } = run([
+    { type: 'down', id: 1, at: 1000 },
+    { type: 'moved', id: 1 },
+    { type: 'held', id: 1 },      // the timer, if it somehow still fires
+  ]);
+  assert.strictEqual(state.selecting, null,
+    'a scroll was mistaken for a long press, so a selection was invented');
+  assert.strictEqual(state.pendingId, null, 'the drag is still being tracked as a pending tap');
+});
+
+test('a drag does not start the double-tap clock either', () => {
+  // The OS does not read a drag as a tap, so neither may we: a tap landing
+  // shortly after a flick would otherwise complete a "double-tap" nobody made.
+  const { state } = run([
+    { type: 'down', id: 1, at: 1000 },
+    { type: 'moved', id: 1 },
+    { type: 'down', id: 1, at: 1150 },
+  ]);
+  assert.strictEqual(state.selecting, null, 'a drag was counted as the first tap of a double-tap');
+});
+
+test('a tap after a scroll still opens the menu rather than being eaten', () => {
+  const { actions } = run([
+    { type: 'down', id: 1, at: 1000 },
+    { type: 'moved', id: 1 },
+    { type: 'clear' },                       // the scroll begins
+    { type: 'down', id: 1, at: 3000 },
+    { type: 'release', id: 1, at: 3060 },
+    { type: 'tap' },
+  ]);
+  assert.strictEqual(actions[actions.length - 1], 'menu',
+    'the first tap after a scroll was swallowed as a dismiss');
+});
+
+test('a move belonging to some other message leaves the tracked touch alone', () => {
+  const { state } = run([
+    { type: 'down', id: 1, at: 1000 },
+    { type: 'moved', id: 2 },
+    { type: 'release', id: 1, at: 1060 },
+    { type: 'down', id: 1, at: 1150 },
+  ]);
+  assert.strictEqual(state.selecting, 1, "another message's drag cancelled this double-tap");
+});
+
+test('a real selection is not undone by a later drag elsewhere', () => {
+  const { state, cleared } = run([
+    { type: 'down', id: 1, at: 1000 },
+    { type: 'release', id: 1, at: 1060 },
+    { type: 'down', id: 1, at: 1150 },       // selected
+    { type: 'moved', id: 1 },                // dragging the selection handles
+  ]);
+  assert.strictEqual(state.selecting, 1, 'dragging a selection handle dropped the selection');
+  assert.strictEqual(cleared[cleared.length - 1], null, 'the selected text was wiped mid-drag');
+});
+
+// ── The wiring, which the reducer alone cannot prove ────────────────────────
+//
+// Every one of these rules is dead unless the screen actually sends the event,
+// and the last six reports of this bug were all wiring rather than logic.
+
+test('the screen tells the reducer when a touch turns into a drag', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  assert.ok(/selectionEvent\(\{ type: 'moved'/.test(src),
+    'a scroll that starts on a message never reaches the reducer');
+  const move = src.slice(src.indexOf('onTouchMove:'), src.indexOf('onTouchMove:') + 1400);
+  assert.ok(move.includes("type: 'moved'"), 'the move event is sent from somewhere other than onTouchMove');
+});
+
+test('the screen knows whether the list was gliding', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  assert.ok(src.includes('onMomentumScrollBegin'), 'nothing notices a fling starting');
+  assert.ok(/listSettling\.current = false/.test(src), 'the flag is set and never cleared');
+  assert.ok(/type: 'down', id, at: textTouchAt\.current, settling/.test(src),
+    'the down event does not carry whether the list was still moving');
+  // …and that it carries the real answer, not a constant.
+  assert.ok(/const settling = listSettling\.current;/.test(src),
+    'the settling flag is hard-coded rather than read from the list');
+});
+
+test('no long-press timer runs while the list is gliding', () => {
+  // That finger is stopping a fling, not resting on a word.
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  assert.ok(/if \(!settling\) \{\s*\n\s*holdTimer\.current = setTimeout/.test(src),
+    'the hold timer is armed even when the touch was spent stopping a fling');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

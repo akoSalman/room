@@ -2259,12 +2259,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   function noteTextTouch(id: MsgId, e?: any) {
     clearTimeout(holdTimer.current);
     clearTimeout(tapTimer.current);
+    // A finger landing on a list that is still gliding is spent stopping it:
+    // Android never delivers that touch as a tap and starts no selection from
+    // it. Told to the reducer so it is not counted as half of a double-tap.
+    const settling = listSettling.current;
     textTouchAt.current = Date.now();
     textTouchFrom.current = {
       x: e?.nativeEvent?.pageX ?? 0, y: e?.nativeEvent?.pageY ?? 0,
     };
     textTouchMoved.current = false;
-    selectionEvent({ type: 'down', id, at: textTouchAt.current });
+    selectionEvent({ type: 'down', id, at: textTouchAt.current, settling });
     // Did that touch COMPLETE a double-tap?
     //
     // If so the OS is selecting a word right now and this touch is spent. The
@@ -2274,8 +2278,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // and then deselected".
     spentByDoubleTap.current = String(selState.current.selecting ?? '') === String(id);
     // No tap within the long-press window means the finger was held, which is
-    // the other way the OS starts a selection.
-    holdTimer.current = setTimeout(() => selectionEvent({ type: 'held', id }), LONG_PRESS_MS);
+    // the other way the OS starts a selection. Not while the list is still
+    // gliding: that finger is stopping a fling, not resting on a word.
+    if (!settling) {
+      holdTimer.current = setTimeout(() => selectionEvent({ type: 'held', id }), LONG_PRESS_MS);
+    }
   }
 
   /** When the finger that landed on a text bubble went down, and where. */
@@ -2285,6 +2292,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const textTouchMoved = useRef(false);
   /** Was the touch spent completing a double-tap? */
   const spentByDoubleTap = useRef(false);
+  /** Is the list still gliding after a flick? */
+  const listSettling = useRef(false);
   /** Beyond this many pixels it is a drag, not a tap. */
   const TAP_SLOP = 10;
 
@@ -2991,10 +3000,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               onTouchMove: (e: any) => {
                 const dx = (e?.nativeEvent?.pageX ?? 0) - textTouchFrom.current.x;
                 const dy = (e?.nativeEvent?.pageY ?? 0) - textTouchFrom.current.y;
-                if (dx * dx + dy * dy > TAP_SLOP * TAP_SLOP) {
+                if (dx * dx + dy * dy > TAP_SLOP * TAP_SLOP && !textTouchMoved.current) {
                   textTouchMoved.current = true;
                   clearTimeout(tapTimer.current);
                   clearTimeout(holdTimer.current);
+                  // The timers were already cancelled here; the STATE was not,
+                  // so the finger stayed "pending" and its touch-down stayed on
+                  // the clock as half of a double-tap. A tap landing shortly
+                  // after a flick was then read as completing a double-tap that
+                  // the OS had never seen, and from then on our idea of what was
+                  // selected was wrong.
+                  selectionEvent({ type: 'moved', id: msg.id });
                 }
               },
             }
@@ -3711,9 +3727,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           }}
           onScroll={onMessagesScroll}
           scrollEventThrottle={100}
+          onMomentumScrollBegin={() => { listSettling.current = true; }}
+          // A drag that grabs a gliding list ends the glide. Without this the
+          // flag would stay set until a momentum-end that never comes, and
+          // every later tap would be treated as one that stopped a fling.
+          onScrollEndDrag={() => { listSettling.current = false; }}
           // The throttled onScroll can miss the final resting position; this
           // fires once the list has actually stopped.
-          onMomentumScrollEnd={(e: any) => applyScrollPosition(e.nativeEvent.contentOffset.y)}
+          onMomentumScrollEnd={(e: any) => {
+            listSettling.current = false;
+            applyScrollPosition(e.nativeEvent.contentOffset.y);
+          }}
           onViewableItemsChanged={onViewableItemsChanged}
           viewabilityConfig={viewabilityConfigRef}
           onEndReached={loadOlderMessages}

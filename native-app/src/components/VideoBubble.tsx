@@ -92,19 +92,21 @@ export default function VideoBubble({
               // picture. The small tick in the corner says it is kept.
               null
             ) : (
+              // Just the arrow. The word "Download" said nothing the arrow
+              // did not, on the one part of the screen that is meant to be a
+              // picture — and the size, which IS worth knowing before
+              // pressing, sits above it either way.
               <TouchableOpacity
-                style={s.dockBtn}
+                style={[s.dockBtn, s.dockIconOnly]}
                 onPress={() => downloads.start(url)}
                 hitSlop={hit}
+                accessibilityLabel={status === 'failed' ? 'Retry download' : 'Download video'}
               >
                 <Ionicons
-                  name={status === 'failed' ? 'refresh' : 'arrow-down-circle'}
-                  size={16}
+                  name={status === 'failed' ? 'refresh' : 'arrow-down'}
+                  size={18}
                   color="#fff"
                 />
-                <Text style={s.dockText}>
-                  {status === 'failed' ? 'Retry' : 'Download'}
-                </Text>
               </TouchableOpacity>
             )}
           </View>
@@ -143,6 +145,12 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(15,23,42,0.82)', borderRadius: 14,
     paddingHorizontal: 11, paddingVertical: 6,
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.18)',
+  },
+  // A circle, not a pill: with the label gone the old padding left a wide
+  // lozenge with an arrow rattling around in the middle of it.
+  dockIconOnly: {
+    width: 34, height: 34, borderRadius: 17,
+    paddingHorizontal: 0, paddingVertical: 0, justifyContent: 'center',
   },
   dockText: { color: '#fff', fontSize: 11.5, fontWeight: '700' },
   progressTrack: {

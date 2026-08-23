@@ -61,7 +61,19 @@ export type SelectionState = {
 };
 
 export type SelectionEvent =
-  | { type: 'down'; id: MsgId; at: number }
+  | {
+      type: 'down'; id: MsgId; at: number;
+      /**
+       * The list was still gliding when this finger landed.
+       *
+       * Android spends that touch stopping the fling: the child never sees a
+       * tap and the OS starts no selection from it. Counting it as half of a
+       * double-tap is what left us believing a word was selected when nothing
+       * was — and the belief then ate the next tap as a "dismiss". This is the
+       * "double-tap does not work after scrolling up" report.
+       */
+      settling?: boolean;
+    }
   /** The pending touch never became a tap: the finger was held. */
   | { type: 'held'; id: MsgId }
   /**
@@ -71,6 +83,16 @@ export type SelectionEvent =
    */
   | { type: 'release'; id: MsgId; at: number }
   | { type: 'tap' }
+  /**
+   * The tracked finger travelled far enough to be a drag.
+   *
+   * Nothing else told the reducer this. A slow scroll that started on a
+   * message left the touch "pending", and 450ms later the hold timer declared
+   * a selection the OS had never made — after which every tap on that message
+   * was eaten as a dismiss. A scroll of half a second is an ordinary scroll,
+   * so this happened constantly.
+   */
+  | { type: 'moved'; id: MsgId }
   /** A swipe-to-reply took the gesture over on this message. */
   | { type: 'swipe'; id: MsgId }
   | { type: 'clear' };
@@ -106,7 +128,11 @@ export function reduceSelection(
     case 'down': {
       // A second tap on the same message within the double-tap window is how
       // the OS starts a word selection, so we know one is coming.
-      const isDouble = !!last && last.id === ev.id && ev.at - last.at < DOUBLE_TAP_MS;
+      // A touch spent stopping a fling is not a tap, so it can neither
+      // complete a double-tap nor begin one; the clock starts from the next
+      // finger that lands on a list which is standing still.
+      const isDouble = !ev.settling && !!last && last.id === ev.id
+        && ev.at - last.at < DOUBLE_TAP_MS;
 
       // Whatever the PREVIOUS message may be showing has to go, right now, on
       // the way down — and without first checking whether we think it is
@@ -139,7 +165,7 @@ export function reduceSelection(
           // so `selecting` must drop — keeping the old id would leave the next
           // tap thinking it still had a selection to dismiss.
           : { selecting: stale ? null : state.selecting, pendingId: ev.id, touchedId: ev.id },
-        last: { id: ev.id, at: ev.at },
+        last: ev.settling ? null : { id: ev.id, at: ev.at },
         // Never 'dismiss'. This clear is speculative — the previous message
         // may well have had nothing selected — so it must not be reported as
         // a gesture that got consumed dismissing something. 'dismiss' means
@@ -153,6 +179,23 @@ export function reduceSelection(
       // earlier message must not reset the clock for this one.
       if (!last || last.id !== ev.id) return { state, last, action: null, clearId: null };
       return { state, last: { id: ev.id, at: ev.at }, action: null, clearId: null };
+    }
+    case 'moved': {
+      // Only the touch being tracked. A stray move from an old finger must not
+      // cancel a fresh one.
+      if (state.pendingId !== ev.id && (!last || last.id !== ev.id)) {
+        return { state, last, action: null, clearId: null };
+      }
+      return {
+        // No longer pending: a finger that is travelling is not being held,
+        // whatever the timer is about to say.
+        state: { ...state, pendingId: null },
+        // And not the first half of a double-tap either — the OS did not read
+        // a drag as a tap, so neither may we.
+        last: null,
+        action: null,
+        clearId: null,
+      };
     }
     case 'held': {
       // Only the touch we are actually waiting on can turn into a hold.
