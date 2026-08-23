@@ -133,3 +133,72 @@ export function ongoingText(o: {
 export function showsChronometer(connected: boolean): boolean {
   return !!connected;
 }
+
+// ── Which video fills the screen ─────────────────────────────────────────────
+//
+// Asked for as: on a video call the user should be able to swap between their
+// own minimized video and the other side's maximized one.
+//
+// The two panes were fixed: the other person always filled the screen and you
+// were always the thumbnail in the corner. That is the right default and the
+// wrong rule — checking your own framing, showing something behind you, or
+// simply looking at yourself properly all want the sizes the other way round,
+// and every other video app lets you tap the small one to swap.
+//
+// Two things have to be got right, and both are about NOT stranding the user
+// with a blank screen:
+//   • there is nothing to swap with until the other side's video arrives;
+//   • turning your own camera off while you are the big pane must put the
+//     other person back, not leave a black rectangle with a name on it.
+
+export type VideoPanes = {
+  /** Whose stream fills the screen. */
+  big: 'remote' | 'local';
+  /** Whose stream sits in the corner, or none when there is only one. */
+  small: 'remote' | 'local' | null;
+};
+
+/**
+ * Where the two video streams go.
+ *
+ * `swapped` is the user's choice, and it is respected only while it means
+ * something: with no remote stream yet there is one video and it belongs on
+ * the screen, not in the corner of a black rectangle.
+ */
+export function videoPanes(o: {
+  swapped: boolean; hasRemote: boolean; hasLocal: boolean; cameraOff?: boolean;
+}): VideoPanes {
+  // Your own camera off means your pane has nothing in it. Being swapped in
+  // that state would fill the screen with black and hide the person talking.
+  const localShowable = o.hasLocal && !o.cameraOff;
+  if (!o.hasRemote) return { big: 'local', small: null };
+  if (!localShowable) return { big: 'remote', small: null };
+  return o.swapped
+    ? { big: 'local', small: 'remote' }
+    : { big: 'remote', small: 'local' };
+}
+
+/**
+ * Is there anything a tap on the small pane would achieve?
+ *
+ * Offering the gesture when there is only one video teaches people it does
+ * nothing, which is worse than not offering it.
+ */
+export function canSwapVideos(o: {
+  hasRemote: boolean; hasLocal: boolean; cameraOff?: boolean;
+}): boolean {
+  return !!o.hasRemote && !!o.hasLocal && !o.cameraOff;
+}
+
+/**
+ * Only your OWN camera is mirrored, and only on the front lens.
+ *
+ * A mirrored self-view is what everyone expects — it is what a mirror does —
+ * but mirroring the other person, or the back camera, shows their text
+ * backwards. Which pane it is in makes no difference to that, which is exactly
+ * the bug swapping would introduce if the mirror followed the pane instead of
+ * the stream.
+ */
+export function mirrors(pane: 'remote' | 'local', frontCamera: boolean): boolean {
+  return pane === 'local' && !!frontCamera;
+}

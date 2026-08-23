@@ -157,6 +157,82 @@ test('the shade\'s timer starts when the call connects, not when it was placed',
   assert.strictEqual(W.showsChronometer(false), false);
 });
 
+// ── Which video fills the screen ────────────────────────────────────────────
+//
+// Asked for as: on a video call the user should be able to swap between their
+// own minimized video and the other side's maximized one.
+//
+// The panes were fixed — the other person always full screen, you always the
+// corner. That is the right default and the wrong rule: checking your own
+// framing, or showing somebody what is behind you, wants them the other way
+// round.
+
+test('THE DEFAULT: the other person fills the screen, you are the corner', () => {
+  assert.deepStrictEqual(
+    W.videoPanes({ swapped: false, hasRemote: true, hasLocal: true }),
+    { big: 'remote', small: 'local' });
+});
+
+test('THE POINT: swapped, your own camera fills the screen', () => {
+  assert.deepStrictEqual(
+    W.videoPanes({ swapped: true, hasRemote: true, hasLocal: true }),
+    { big: 'local', small: 'remote' });
+});
+
+test('before the other side\'s video arrives there is one video, full screen', () => {
+  // Not you in the corner of a black rectangle, which is what a fixed layout
+  // gives during the seconds before the call connects.
+  assert.deepStrictEqual(
+    W.videoPanes({ swapped: false, hasRemote: false, hasLocal: true }),
+    { big: 'local', small: null });
+  // And a swap asked for earlier cannot strand them there either.
+  assert.deepStrictEqual(
+    W.videoPanes({ swapped: true, hasRemote: false, hasLocal: true }),
+    { big: 'local', small: null });
+});
+
+test('THE TRAP: turning your camera off while swapped puts them back', () => {
+  // Otherwise the screen fills with black and the person talking disappears.
+  assert.deepStrictEqual(
+    W.videoPanes({ swapped: true, hasRemote: true, hasLocal: true, cameraOff: true }),
+    { big: 'remote', small: null });
+});
+
+test('the swap gesture is only offered when it would do something', () => {
+  assert.strictEqual(W.canSwapVideos({ hasRemote: true, hasLocal: true }), true);
+  assert.strictEqual(W.canSwapVideos({ hasRemote: false, hasLocal: true }), false);
+  assert.strictEqual(W.canSwapVideos({ hasRemote: true, hasLocal: false }), false);
+  assert.strictEqual(W.canSwapVideos({ hasRemote: true, hasLocal: true, cameraOff: true }), false);
+});
+
+test('the mirror follows the STREAM, not the pane', () => {
+  // Your own front camera is mirrored wherever it is shown — that is what a
+  // mirror does. The other person never is: mirroring them shows their text
+  // backwards. Tying this to the pane instead is the bug swapping invites.
+  assert.strictEqual(W.mirrors('local', true), true);
+  assert.strictEqual(W.mirrors('remote', true), false, "the other person was mirrored");
+  assert.strictEqual(W.mirrors('local', false), false, 'the back camera was mirrored');
+});
+
+test('the web lays the panes out exactly as the app does', () => {
+  let checked = 0;
+  for (const swapped of [true, false]) {
+    for (const hasRemote of [true, false]) {
+      for (const hasLocal of [true, false]) {
+        for (const cameraOff of [true, false]) {
+          const o = { swapped, hasRemote, hasLocal, cameraOff };
+          assert.deepStrictEqual(Web.videoPanes(o), W.videoPanes(o),
+            `panes drifted for ${JSON.stringify(o)}`);
+          assert.strictEqual(Web.canSwapVideos(o), W.canSwapVideos(o),
+            `swappability drifted for ${JSON.stringify(o)}`);
+          checked++;
+        }
+      }
+    }
+  }
+  assert.strictEqual(checked, 16, 'the drift check did not run over every case');
+});
+
 // ── The wiring, which no unit test can reach ────────────────────────────────
 
 const manager = fs.readFileSync(path.join(NAT, 'src', 'callManager.ts'), 'utf8');
@@ -250,6 +326,40 @@ test('the web can collapse its call panel too', () => {
   assert.ok(calls.includes('CallStatus.canMinimize'), 'the web does not use the shared rule');
   const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
   assert.ok(html.includes('Calls.toggleMinimize()'), 'there is no button to collapse the panel');
+});
+
+test('the swap is wired up on the app, and kept where it survives a re-render', () => {
+  assert.ok(/swapVideos\(\) \{/.test(manager), 'the call manager cannot swap the panes');
+  // The GUARD, not merely a mention of it: `if (false && canSwapVideos(…))`
+  // reads the same to a search and swaps unconditionally.
+  assert.ok(/if \(!canSwapVideos\(\{/.test(manager),
+    'the manager swaps without asking whether there is anything to swap with');
+  assert.ok(/\}\)\) return;/.test(methodBody('swapVideos')),
+    'the guard does not actually stop the swap');
+  assert.ok(/videoSwapped = false;/.test(methodBody('teardown')),
+    'the swap survives the call, so the next one opens the wrong way round');
+  assert.ok(overlay.includes('cm.swapVideos()'), 'nothing on screen triggers the swap');
+  assert.ok(overlay.includes('videoPanes({'), 'the overlay lays the videos out by hand again');
+  assert.ok(/mirror=\{mirrors\(panes\.big/.test(overlay) && /mirror=\{mirrors\(panes\.small/.test(overlay),
+    'the mirror is not taken from the rule, so a swapped call mirrors the wrong person');
+});
+
+test('the web swap is wired up too', () => {
+  const calls = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'calls.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+  assert.ok(/function swapVideos\(\)/.test(calls), 'the web cannot swap');
+  assert.ok(/swapVideos,?\s*\n?\s*\}/.test(calls) || calls.includes('swapVideos,'),
+    'swapVideos is not exported, so the click handler cannot reach it');
+  assert.ok(calls.includes('CallStatus.videoPanes('), 'the web decides the layout on its own');
+  assert.ok((html.match(/onclick="Calls\.swapVideos\(\)"/g) || []).length >= 2,
+    'the videos are not clickable');
+  // Re-applied when the answer changes, not only when the user asks.
+  for (const anchor of ['attachRemote', 'toggleCam']) {
+    const i = calls.indexOf(`function ${anchor}`);
+    assert.ok(i > 0, `${anchor} is gone`);
+    assert.ok(calls.slice(i, i + 700).includes('applyVideoPanes()'),
+      `${anchor} does not re-lay the videos, so the panes go stale`);
+  }
 });
 
 let passed = 0, failed = 0;

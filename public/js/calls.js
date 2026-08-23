@@ -14,6 +14,8 @@ const Calls = (() => {
   let incoming = null; // pending DM offer
   // What is actually known about the far end, as opposed to what we hoped.
   let out = {};
+  // Video call: the user has put their own camera in the big pane.
+  let videoSwapped = false;
   let muted = false;
 
   const $ = (id) => document.getElementById(id);
@@ -145,6 +147,8 @@ const Calls = (() => {
       const v = $('call-remote-video');
       v.srcObject = stream;
       v.classList.remove('hidden');
+      // Until now there was only one video and it belonged full-width.
+      applyVideoPanes();
     } else {
       let a = $('call-audio-' + userId);
       if (!a) {
@@ -198,6 +202,47 @@ const Calls = (() => {
     applyMinimized();
   }
 
+  /** Is anybody's camera actually producing a picture? */
+  function videoState() {
+    const camOn = !!localStream && localStream.getVideoTracks().some(t => t.enabled);
+    return {
+      swapped: videoSwapped,
+      hasRemote: !!$('call-remote-video').srcObject,
+      hasLocal: !!localStream && localStream.getVideoTracks().length > 0,
+      cameraOff: !camOn,
+    };
+  }
+
+  /**
+   * Put the two videos where the rule says they go.
+   *
+   * The panel's layout is CSS, so this is one class: `swapped` exchanges which
+   * element is the full-width one and which is the corner. Called after
+   * anything that changes the answer — the remote stream arriving, the camera
+   * being turned off, the user asking.
+   */
+  function applyVideoPanes() {
+    const el = $('call-overlay');
+    if (!el) return;
+    const st = videoState();
+    const panes = CallStatus.videoPanes(st);
+    el.classList.toggle('swapped', panes.big === 'local' && panes.small === 'remote');
+    // Nothing to swap with: the class would put a live video in the corner of
+    // an empty box.
+    const swappable = CallStatus.canSwapVideos(st);
+    el.classList.toggle('swappable', swappable);
+    ['call-remote-video', 'call-local-video'].forEach(id => {
+      const v = $(id);
+      if (v) v.title = swappable ? 'Tap to swap the videos' : '';
+    });
+  }
+
+  function swapVideos() {
+    if (!CallStatus.canSwapVideos(videoState())) return;
+    videoSwapped = !videoSwapped;
+    applyVideoPanes();
+  }
+
   function showOverlay(title, video) {
     $('call-overlay').classList.remove('hidden');
     $('call-title').textContent = title;
@@ -207,6 +252,7 @@ const Calls = (() => {
     muted = false;
     $('call-mute-btn').textContent = '🎙';
     applyMinimized();
+    applyVideoPanes();
   }
 
   function setStatus(text) { const el = $('call-status'); if (el) el.textContent = text; }
@@ -261,6 +307,7 @@ const Calls = (() => {
     roomVoiceId = null;
     incoming = null;
     out = {};
+    videoSwapped = false;
     stopRing();
     connectedAt = null;
     clearInterval(timerInterval);
@@ -382,7 +429,13 @@ const Calls = (() => {
     const on = localStream.getVideoTracks().some(t => t.enabled);
     localStream.getVideoTracks().forEach(t => { t.enabled = !on; });
     $('call-cam-btn').textContent = on ? '🚫🎥' : '🎥';
+    // Turning your own camera off while you are the big pane must put the
+    // other person back, rather than filling the panel with black.
+    applyVideoPanes();
   }
 
-  return { bindSocket, setDMPeer, startDM, toggleRoomVoice, accept, decline, end, toggleMute, toggleCam, toggleMinimize };
+  return {
+    bindSocket, setDMPeer, startDM, toggleRoomVoice, accept, decline, end,
+    toggleMute, toggleCam, toggleMinimize, swapVideos,
+  };
 })();

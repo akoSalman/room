@@ -7,7 +7,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { RTCView } from 'react-native-webrtc';
 import { C } from '../theme';
 import { callManager } from '../callManager';
-import { canMinimize, clampToScreen, snapToEdge, defaultPosition, isDrag } from '../callWindow';
+import {
+  canMinimize, clampToScreen, snapToEdge, defaultPosition, isDrag,
+  videoPanes, canSwapVideos, mirrors,
+} from '../callWindow';
 
 /** The bubble a minimized call shrinks to. */
 const PILL = { w: 168, h: 56 };
@@ -141,19 +144,64 @@ export default function CallOverlay() {
           <Ionicons name="chevron-down" size={26} color="#fff" />
         </TouchableOpacity>
       )}
-      {isVideo && cm.remoteStream && (
-        <RTCView streamURL={cm.remoteStream.toURL()} style={StyleSheet.absoluteFill as any} objectFit="cover" />
-      )}
-      {isVideo && cm.localStream && !cm.cameraOff && (
-        // Mirror the self-view only for the front camera, like every phone.
-        <RTCView
-          streamURL={cm.localStream.toURL()}
-          style={s.localVideo}
-          objectFit="cover"
-          zOrder={1}
-          mirror={cm.frontCamera}
-        />
-      )}
+      {/* Which video fills the screen is the user's choice: tap the small one
+          to swap. The rule lives in callWindow so the two cases that would
+          otherwise strand somebody looking at black — no remote stream yet,
+          and your own camera turned off while you are the big pane — are
+          decided in one place rather than in three conditions here. */}
+      {isVideo && (() => {
+        const panes = videoPanes({
+          swapped: cm.videoSwapped,
+          hasRemote: !!cm.remoteStream,
+          hasLocal: !!cm.localStream,
+          cameraOff: cm.cameraOff,
+        });
+        const streamOf = (p: 'remote' | 'local') => (p === 'remote' ? cm.remoteStream : cm.localStream);
+        const bigStream = streamOf(panes.big);
+        const smallStream = panes.small ? streamOf(panes.small) : null;
+        const swappable = canSwapVideos({
+          hasRemote: !!cm.remoteStream, hasLocal: !!cm.localStream, cameraOff: cm.cameraOff,
+        });
+        return (
+          <>
+            {bigStream && (
+              <RTCView
+                streamURL={bigStream.toURL()}
+                style={StyleSheet.absoluteFill as any}
+                objectFit="cover"
+                // The mirror follows the STREAM, not the pane: your own front
+                // camera is mirrored wherever it is shown, and the other
+                // person never is — mirroring them shows their text backwards.
+                mirror={mirrors(panes.big, cm.frontCamera)}
+              />
+            )}
+            {smallStream && panes.small && (
+              <TouchableOpacity
+                style={s.localVideo}
+                activeOpacity={swappable ? 0.85 : 1}
+                onPress={() => cm.swapVideos()}
+                disabled={!swappable}
+                accessibilityLabel={panes.small === 'local'
+                  ? 'Show my video full screen' : "Show the other person's video full screen"}
+              >
+                <RTCView
+                  streamURL={smallStream.toURL()}
+                  style={StyleSheet.absoluteFill as any}
+                  objectFit="cover"
+                  zOrder={1}
+                  mirror={mirrors(panes.small, cm.frontCamera)}
+                />
+                {/* Says the corner is a control, not a decoration. */}
+                {swappable && (
+                  <View style={s.swapHint}>
+                    <Ionicons name="swap-horizontal" size={13} color="#fff" />
+                  </View>
+                )}
+              </TouchableOpacity>
+            )}
+          </>
+        );
+      })()}
 
       {!(isVideo && cm.remoteStream) && (
         <View style={[s.bigAvatar, { marginTop: H * 0.16 }]}>
@@ -261,6 +309,13 @@ const s = StyleSheet.create({
     position: 'absolute', top: 48, right: 16, width: 104, height: 148,
     borderRadius: 12, backgroundColor: '#000', zIndex: 5,
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)',
+    overflow: 'hidden',
+  },
+  swapHint: {
+    position: 'absolute', bottom: 5, right: 5,
+    width: 22, height: 22, borderRadius: 11,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.45)',
   },
   incomingActions: {
     position: 'absolute', bottom: 70, left: 0, right: 0,

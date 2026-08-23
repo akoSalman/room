@@ -603,11 +603,25 @@ html {
   border-radius: 16px; padding: 12px; box-shadow: 0 12px 34px rgba(0,0,0,0.45);
   display: flex; flex-direction: column; gap: 10px;
 }
+/* The two panes. Which element is which is decided by the `swapped` class on
+   the panel, so the swap is one class flip rather than moving DOM nodes —
+   moving a <video> re-attaches its stream and blinks it black. */
 #call-remote-video { width: 100%; border-radius: 10px; background: #000; max-height: 200px; }
 #call-local-video {
   position: absolute; top: 18px; right: 18px; width: 72px; border-radius: 8px;
   background: #000; border: 1px solid rgba(255,255,255,0.4);
 }
+#call-overlay.swapped #call-local-video {
+  position: static; top: auto; right: auto; width: 100%;
+  border-radius: 10px; max-height: 200px; border: none;
+}
+#call-overlay.swapped #call-remote-video {
+  position: absolute; top: 18px; right: 18px; width: 72px;
+  border-radius: 8px; max-height: none; border: 1px solid rgba(255,255,255,0.4);
+}
+/* Only a pointer when the tap does something. */
+#call-overlay.swappable #call-remote-video,
+#call-overlay.swappable #call-local-video { cursor: pointer; }
 #call-info { text-align: center; }
 #call-title { font-weight: 700; font-size: 0.95rem; }
 #call-status { font-size: 0.78rem; color: var(--muted); margin-top: 2px; }

@@ -8,7 +8,7 @@ import { mediaDevices, RTCPeerConnection, MediaStream } from 'react-native-webrt
 import { apiFetch, getSocket } from './api';
 import { stopRinging } from './incomingCall';
 import { routeFor, outgoingStatus, CallMode, CallPhase, OutgoingState } from './callAudio';
-import { canMinimize, CallPhase as WindowPhase } from './callWindow';
+import { canMinimize, canSwapVideos, CallPhase as WindowPhase } from './callWindow';
 import * as ongoing from './ongoingCall';
 import { audioManager } from './audioManager';
 
@@ -34,6 +34,8 @@ class CallManager {
   frontCamera = true;   // video calls: front/back camera
   /** Shrunk to a bubble, so the chat underneath can be used. */
   minimized = false;
+  /** Video call: the user has put their own camera in the big pane. */
+  videoSwapped = false;
   connectedAt: number | null = null; // for the in-call timer
 
   // Details needed to write the call into chat history when it ends.
@@ -144,6 +146,22 @@ class CallManager {
 
   expand() {
     this.minimized = false;
+    this.emit();
+  }
+
+  /**
+   * Swap the big and small video panes.
+   *
+   * Refused when there is nothing to swap with — one video belongs on the
+   * screen, not in the corner of a black rectangle. The choice itself is kept
+   * here rather than in the overlay so it survives minimising, rotating, and
+   * the overlay re-rendering on every timer tick.
+   */
+  swapVideos() {
+    if (!canSwapVideos({
+      hasRemote: !!this.remoteStream, hasLocal: !!this.localStream, cameraOff: this.cameraOff,
+    })) return;
+    this.videoSwapped = !this.videoSwapped;
     this.emit();
   }
 
@@ -425,6 +443,7 @@ class CallManager {
     this.cameraOff = false;
     this.speakerOn = false;
     this.minimized = false;
+    this.videoSwapped = false;
     this.out = {};
     ongoing.stopOngoing();
     // Hand the earpiece routing back, or every voice note played afterwards

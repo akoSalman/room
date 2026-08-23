@@ -42,7 +42,35 @@
     return phase === 'outgoing' || phase === 'connected';
   }
 
-  root.CallStatus = { outgoingStatus: outgoingStatus, canMinimize: canMinimize };
+  /**
+   * Which video fills the panel, and which sits in the corner.
+   *
+   * Mirrors callWindow.ts on the app. The two cases that matter are the ones
+   * that would strand somebody looking at black: no remote stream yet, and
+   * your own camera turned off while you are the big pane.
+   */
+  function videoPanes(o) {
+    o = o || {};
+    var localShowable = !!o.hasLocal && !o.cameraOff;
+    if (!o.hasRemote) return { big: 'local', small: null };
+    if (!localShowable) return { big: 'remote', small: null };
+    return o.swapped
+      ? { big: 'local', small: 'remote' }
+      : { big: 'remote', small: 'local' };
+  }
+
+  /** Is there anything a tap on the small pane would achieve? */
+  function canSwapVideos(o) {
+    o = o || {};
+    return !!o.hasRemote && !!o.hasLocal && !o.cameraOff;
+  }
+
+  root.CallStatus = {
+    outgoingStatus: outgoingStatus,
+    canMinimize: canMinimize,
+    videoPanes: videoPanes,
+    canSwapVideos: canSwapVideos,
+  };
 })(typeof window !== 'undefined' ? window : globalThis);
 
 if (typeof module !== 'undefined' && module.exports) {
