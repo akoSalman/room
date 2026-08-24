@@ -35,6 +35,7 @@ import { C } from '../theme';
 import {
   fitRect, strokeSegments, nextUndo,
   fracToScreen, screenToFrac, clampFrac, isWholeFrac, fracToNatural, WHOLE_IMAGE,
+  savePlan, canSend,
   Rect, Size, Stroke, Point, FracRect,
 } from '../imageEditor';
 
@@ -240,32 +241,48 @@ export default function ImageEditor({
     if (!natural || !current) return null;
     if (!pending) return current;
 
-    // A crop is done on the FILE, so the photo keeps its full resolution. The
-    // manipulator reports the size of what it produced, which is what the next
-    // crop will be measured against.
-    if (cropped) {
-      const box = fracToNatural(crop, natural);
-      const out = await ImageManipulator.manipulateAsync(
-        working, [{ crop: { originX: box.x, originY: box.y, width: box.width, height: box.height } }],
-        { compress: 0.95, format: ImageManipulator.SaveFormat.JPEG },
-      );
-      return { uri: out.uri, width: out.width, height: out.height };
+    // Drawing first, because a drawing can only be got at by photographing the
+    // screen — and the screen shows the picture UNCROPPED, with the strokes on
+    // top. The crop is a fraction of that same rectangle, so it applies just
+    // as well to the photograph afterwards.
+    //
+    // This used to return after the crop, which silently threw the strokes
+    // away whenever both were outstanding. The comment above selectTool
+    // promises that cannot happen; a promise the code does not enforce is
+    // exactly the kind that stops being true after the next change.
+    const plan = savePlan({ annotated, cropped });
+    if (plan.unchanged) return current;
+
+    let base: Version;
+    if (plan.capture) {
+      if (!captureRef || !shotRef.current) {
+        Alert.alert('Not available', 'Drawing needs a newer version of the app.');
+        return null;
+      }
+      // A capture has no orientation flag, and it is exactly the rectangle the
+      // picture occupies, so its size follows from the layout.
+      const shot = await captureRef(shotRef.current, { format: 'jpg', quality: 0.95 });
+      const size = await new Promise<Size>(resolve => {
+        Image.getSize(shot,
+          (width, height) => resolve({ width, height }),
+          () => resolve({ width: Math.round(displayed?.width || 1000), height: Math.round(displayed?.height || 1000) }));
+      });
+      base = { uri: shot, width: size.width, height: size.height };
+    } else {
+      base = current;
     }
 
-    if (!captureRef || !shotRef.current) {
-      Alert.alert('Not available', 'Drawing needs a newer version of the app.');
-      return null;
-    }
-    // Photographs the picture on screen, so the drawing is burnt in. A capture
-    // has no orientation flag, and it is exactly the rectangle the picture
-    // occupies, so its size follows from the layout.
-    const shot = await captureRef(shotRef.current, { format: 'jpg', quality: 0.95 });
-    const size = await new Promise<Size>(resolve => {
-      Image.getSize(shot,
-        (width, height) => resolve({ width, height }),
-        () => resolve({ width: Math.round(displayed?.width || 1000), height: Math.round(displayed?.height || 1000) }));
-    });
-    return { uri: shot, width: size.width, height: size.height };
+    if (!plan.crop) return base;
+
+    // A crop is done on the FILE, so an uncropped photo keeps its full
+    // resolution. The manipulator reports the size of what it produced, which
+    // is what the next crop will be measured against.
+    const box = fracToNatural(crop, { width: base.width, height: base.height });
+    const out = await ImageManipulator.manipulateAsync(
+      base.uri, [{ crop: { originX: box.x, originY: box.y, width: box.width, height: box.height } }],
+      { compress: 0.95, format: ImageManipulator.SaveFormat.JPEG },
+    );
+    return { uri: out.uri, width: out.width, height: out.height };
   }
 
   /** Make the current edits permanent and start a fresh step on top. */
@@ -301,10 +318,23 @@ export default function ImageEditor({
     if (busy) return;
     setBusy(true);
     try {
-      // Forgetting to press Done must not throw the last edit away. At most one
-      // kind of edit can be pending, so one pass is enough.
+      // Forgetting to press Done must not throw the last edit away.
       const out = pending ? await rasterise() : current;
-      let uri = out?.uri || working;
+      // Reported as: after drawing on a photo and sending it, the drawing is
+      // not there and the ORIGINAL goes.
+      //
+      // This is where that happened. When the edits could not be turned into a
+      // file — the capture unavailable, or a measurement that came back with
+      // nothing — the code fell back to `working`, the untouched photo, and
+      // sent it as though nothing had been asked for. Quietly substituting the
+      // original for the edit is the worst of the three options available:
+      // better to say so and let the user decide, and far better than a
+      // photograph arriving somewhere with the annotation missing.
+      if (!canSend(out)) {
+        Alert.alert('Edit not saved', 'The change could not be applied, so nothing was sent. Try again.');
+        return;
+      }
+      let uri = out.uri;
       // Applied last, over the finished crop and drawing: correcting first and
       // then cropping would re-encode the photo twice for no reason.
       if (needsProcessing({ ev, makeup })) uri = await tunePhoto(uri, { ev, makeup });

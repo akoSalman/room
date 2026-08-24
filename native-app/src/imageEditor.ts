@@ -185,3 +185,51 @@ export function strokeSegments(points: Point[], width: number): Segment[] {
   }
   return out;
 }
+
+// ── Turning the outstanding edits into one file ──────────────────────────────
+//
+// Reported as: after drawing on a photo and sending it, the drawing is not
+// there and the original goes.
+//
+// Two faults, both here in spirit even though the code was in the component.
+//
+// The first: a drawing can only be got at by photographing the screen, and a
+// crop is best done on the FILE (which keeps the photo's full resolution). The
+// old code did one OR the other and returned after the crop, so when both were
+// outstanding the strokes were silently discarded. A comment claimed that
+// could not happen; the code did not enforce it, and a promise like that stops
+// being true at the next change.
+//
+// The second: when the edits could not be turned into a file at all, the
+// component fell back to the untouched photo and sent THAT. Substituting the
+// original for the edit, quietly, is the worst of the options available.
+//
+// The plan is separated out so both can be tested, which is what neither had.
+
+export type SavePlan = {
+  /** Photograph the screen, because there are strokes on it. */
+  capture: boolean;
+  /** Crop afterwards, by the same fractions. */
+  crop: boolean;
+  /** Nothing outstanding: the current version is already the answer. */
+  unchanged: boolean;
+};
+
+export function savePlan(o: { annotated: boolean; cropped: boolean }): SavePlan {
+  return {
+    capture: !!o.annotated,
+    crop: !!o.cropped,
+    unchanged: !o.annotated && !o.cropped,
+  };
+}
+
+/**
+ * What a save may hand back.
+ *
+ * `null` means the edits could not be produced — and the caller must NOT treat
+ * that as "send the original". There is no third option that is honest: either
+ * the edit was made, or the user is told it was not.
+ */
+export function canSend(out: { uri?: string } | null): boolean {
+  return !!(out && out.uri);
+}

@@ -206,6 +206,87 @@ test('a pending crop is undone before an applied one is reverted', () => {
   assert.strictEqual(undoOf({ cropped: true, committed: 3 }), 'crop');
 });
 
+// ── Saving what was drawn ───────────────────────────────────────────────────
+//
+// Reported as: after editing an image with the pen and sending it, the edit is
+// not there and the ORIGINAL image goes.
+//
+// Two faults behind that.
+//
+// A drawing can only be got at by photographing the screen; a crop is best
+// done on the file, where the photo keeps its full resolution. The old code
+// did one or the other and RETURNED after the crop — so with both outstanding
+// the strokes were silently thrown away. A comment claimed that could not
+// happen. The code did not enforce it.
+//
+// And when the edits could not be turned into a file at all, the editor fell
+// back to the untouched photo and sent that. Quietly substituting the original
+// for the edit is the worst of the available outcomes: the user believes they
+// sent an annotated picture, and the person at the other end sees a plain one.
+
+test('THE BUG: a drawing and a crop together keep BOTH', () => {
+  const plan = E.savePlan({ annotated: true, cropped: true });
+  assert.strictEqual(plan.capture, true, 'the strokes are dropped when a crop is also pending');
+  assert.strictEqual(plan.crop, true, 'the crop is dropped');
+  assert.strictEqual(plan.unchanged, false);
+});
+
+test('a drawing alone is photographed, not cropped', () => {
+  const plan = E.savePlan({ annotated: true, cropped: false });
+  assert.deepStrictEqual(plan, { capture: true, crop: false, unchanged: false });
+});
+
+test('a crop alone touches the FILE, so the photo keeps its resolution', () => {
+  // Photographing the screen for a crop would silently downsample a 12MP photo
+  // to whatever the phone happens to be showing.
+  const plan = E.savePlan({ annotated: false, cropped: true });
+  assert.strictEqual(plan.capture, false, 'a plain crop went through a screen capture');
+  assert.strictEqual(plan.crop, true);
+});
+
+test('nothing outstanding does no work at all', () => {
+  const plan = E.savePlan({ annotated: false, cropped: false });
+  assert.strictEqual(plan.unchanged, true, 'an untouched photo would be re-encoded for nothing');
+});
+
+test('THE OTHER BUG: an edit that could not be made is never sent as the original', () => {
+  assert.strictEqual(E.canSend(null), false,
+    'a failed edit would be sent as the untouched photo');
+  assert.strictEqual(E.canSend({}), false, 'a version with no file was treated as sendable');
+  assert.strictEqual(E.canSend({ uri: '' }), false);
+  assert.strictEqual(E.canSend({ uri: 'file:///edited.jpg' }), true);
+});
+
+// ── The wiring ──────────────────────────────────────────────────────────────
+
+const ed = fs.readFileSync(
+  path.join(__dirname, '..', 'native-app', 'src', 'components', 'ImageEditor.tsx'), 'utf8');
+
+test('the editor follows the plan rather than deciding again', () => {
+  assert.ok(ed.includes('savePlan({ annotated, cropped })'), 'the editor decides for itself again');
+  assert.ok(/if \(plan\.capture\)/.test(ed), 'the capture is not driven by the plan');
+  assert.ok(/if \(!plan\.crop\) return base;/.test(ed), 'the crop is not driven by the plan');
+});
+
+test('the capture happens BEFORE the crop, or the strokes cannot survive it', () => {
+  // The screen shows the picture uncropped with the strokes on top; the crop is
+  // a fraction of that same rectangle, so it applies afterwards. Cropping first
+  // would leave nothing to photograph the strokes from.
+  const fn = ed.slice(ed.indexOf('async function rasterise('), ed.indexOf('async function apply('));
+  assert.ok(fn.length > 0, 'rasterise is gone — this check would be vacuous');
+  assert.ok(fn.indexOf('captureRef(') < fn.indexOf('manipulateAsync('),
+    'the crop runs before the capture, which is how the drawing was lost');
+});
+
+test('sending refuses rather than substituting the original', () => {
+  const fn = ed.slice(ed.indexOf("async function finish("), ed.indexOf('// Only the picture goes inside'));
+  assert.ok(fn.length > 0, 'finish is gone — this check would be vacuous');
+  assert.ok(fn.includes('canSend(out)'), 'the send no longer checks whether the edit was made');
+  assert.ok(!/out\?\.uri \|\| working/.test(fn),
+    'the untouched photo is used as a fallback again — this IS the reported bug');
+  assert.ok(/Alert\.alert\('Edit not saved'/.test(fn), 'a failed edit passes in silence');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }
