@@ -274,9 +274,19 @@ jobs:
       # always(), not failure(): a job killed by the timeout is CANCELLED, and
       # a failure() step does not run for a cancelled job — which is exactly
       # the case that left builds 184 and 185 unexplained.
+      #
+      # Whether an APK exists is decided in the SHELL, not in this condition.
+      # A hashFiles() call here was rejected outright: run 186 died five
+      # seconds after starting, having never begun a job — an invalid workflow
+      # file, not a failed build. Expressions in `if` are the one part of this
+      # file that cannot be tested before pushing it, so they stay boring.
       - name: Why the build failed
-        if: always() && steps.want.outputs.build == 'yes' && hashFiles('native-app/android/app/build/outputs/apk/release/app-release.apk') == ''
+        if: always() && steps.want.outputs.build == 'yes'
         run: |
+          if [ -f android/app/build/outputs/apk/release/app-release.apk ]; then
+            echo 'APK built; nothing to explain.'
+            exit 0
+          fi
           {
             echo "### ${{ matrix.brand }} build FAILED"
             echo ''
