@@ -1274,10 +1274,20 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       sock.on('user_stopped_recording', ({ username: u }: any) => {
         setRecordingUsers(prev => prev.filter(x => x !== u));
       });
-      sock.on('one_time_viewed', ({ messageId, roomId, seconds }: any) => {
+      sock.on('one_time_viewed', ({ messageId, roomId, viewedAt, seconds }: any) => {
         // Also delivered on our personal channel now, so ignore other rooms.
         if (roomId != null && roomId !== room.id) return;
         setOneTimeExpiry(prev => ({ ...prev, [messageId]: Date.now() + seconds * 1000 }));
+        // Stamped on the MESSAGE too, not only in the side map the badge
+        // reads. The sweep that removes finished messages works from the
+        // messages themselves — without this it cannot see that a one-time
+        // message has started counting, which is how one reached "0s" and
+        // stayed on screen.
+        setMessages(prev => prev.map(m => (
+          String(m.id) === String(messageId)
+            ? { ...m, viewed_at: viewedAt || Date.now() }
+            : m
+        )));
       });
 
       sock.on('voice_played', ({ messageId }: any) => {

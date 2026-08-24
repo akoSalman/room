@@ -148,6 +148,81 @@ test('the web agrees with the app, message for message', () => {
   }
 });
 
+// ── The OTHER clock ─────────────────────────────────────────────────────────
+//
+// Reported with a screenshot: a one-time message showing "🔥 0s" — its
+// countdown finished — still sitting in the chat.
+//
+// There are two clocks in this app and the previous fix only knew about one.
+// A disappearing message carries `expires_at`; a ONE-TIME message carries
+// `viewed_at` and `one_time_seconds` and is due that long after it was opened.
+// The sweep looked only at the first, so a one-time copy that came back from
+// the offline cache, or whose delete event was missed while the app was in the
+// background, had nothing to remove it.
+
+test('THE BUG: a one-time message is due one_time_seconds after it was opened', () => {
+  const at = R.deadlineOf({ viewed_at: NOW, one_time_seconds: 60 });
+  assert.strictEqual(at, NOW + 60_000);
+});
+
+test('an unopened one-time message is not counting at all', () => {
+  // It waits indefinitely for the person it was sent to — that is the point of
+  // it. Expiring it unopened would destroy a message nobody ever saw.
+  assert.strictEqual(R.deadlineOf({ one_time_seconds: 60 }), null);
+  assert.strictEqual(R.deadlineOf({ one_time_seconds: 60, viewed_at: null }), null);
+});
+
+test('an ordinary message is on no clock', () => {
+  assert.strictEqual(R.deadlineOf({ id: 1 }), null);
+  assert.strictEqual(R.deadlineOf(null), null);
+});
+
+test('a message on BOTH clocks goes at whichever comes first', () => {
+  // A one-time message in a disappearing chat has two deadlines, and the
+  // earlier one is the answer — taking the later would keep it past a promise
+  // already made.
+  const soonOneTime = R.deadlineOf({
+    expires_at: NOW + 60_000, viewed_at: NOW, one_time_seconds: 5,
+  });
+  assert.strictEqual(soonOneTime, NOW + 5_000);
+  const soonDisappear = R.deadlineOf({
+    expires_at: NOW + 1_000, viewed_at: NOW, one_time_seconds: 60,
+  });
+  assert.strictEqual(soonDisappear, NOW + 1_000);
+});
+
+test('a finished one-time message is dropped like any other', () => {
+  const msgs = [
+    { id: 1 },
+    { id: 2, viewed_at: NOW - 61_000, one_time_seconds: 60 },   // over
+    { id: 3, viewed_at: NOW - 10_000, one_time_seconds: 60 },   // still going
+  ];
+  assert.deepStrictEqual(R.dropExpired(msgs, NOW).map(m => m.id), [1, 3]);
+});
+
+test('the next wake-up counts one-time messages too', () => {
+  const msgs = [
+    { expires_at: NOW + 9_000 },
+    { viewed_at: NOW - 59_000, one_time_seconds: 60 },   // 1s away
+  ];
+  assert.strictEqual(R.msUntilNextExpiry(msgs, NOW), 1_000,
+    'the one-time deadline was ignored, so the message outlives its countdown');
+});
+
+test('the web knows about both clocks as well', () => {
+  const cases = [
+    {}, { id: 1 }, { one_time_seconds: 60 }, { one_time_seconds: 60, viewed_at: NOW },
+    { expires_at: NOW + 5, viewed_at: NOW, one_time_seconds: 60 },
+    { expires_at: NOW + 90_000, viewed_at: NOW, one_time_seconds: 5 },
+    { viewed_at: NOW - 120_000, one_time_seconds: 60 },
+  ];
+  for (const c of cases) {
+    assert.strictEqual(W.deadlineOf(c), R.deadlineOf(c), `deadlineOf drifted for ${JSON.stringify(c)}`);
+  }
+  assert.deepStrictEqual(W.dropExpired(cases, NOW), R.dropExpired(cases, NOW));
+  assert.strictEqual(W.msUntilNextExpiry(cases, NOW), R.msUntilNextExpiry(cases, NOW));
+});
+
 // ── The wiring ──────────────────────────────────────────────────────────────
 
 const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
@@ -158,7 +233,11 @@ const web = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'app.js')
 test('THE BUG: the server no longer waits for a thirty-second sweep', () => {
   assert.ok(server.includes('function scheduleNextExpiry()'),
     'expiry is still only handled by the periodic sweep, so a 30s timer can take 60s');
-  assert.ok(/MIN\(expires_at\)/.test(server), 'the next deadline is never looked up');
+  // The earliest deadline across BOTH clocks — a union now, since a one-time
+  // message's deadline is computed rather than stored.
+  assert.ok(/SELECT MIN\(at\) AS at FROM \(/.test(server), 'the next deadline is never looked up');
+  assert.ok(/SELECT expires_at AS at FROM messages WHERE expires_at IS NOT NULL/.test(server),
+    'the disappearing clock dropped out of the scheduler');
   // Inside the handler, not merely somewhere after it: the module's export
   // list mentions the function too, and a slice running to the end of the file
   // matched that instead — passing while the re-arm was gone.
@@ -188,10 +267,34 @@ test('the app removes an expired message itself', () => {
   assert.ok(screen.includes('msUntilNextExpiry(messages)'), 'nothing schedules the removal');
 });
 
+test('the countdown start is recorded on the MESSAGE, not only beside it', () => {
+  // Both clients kept the one-time deadline in a side map that only the badge
+  // read. The sweep works from the messages themselves, so it could not see
+  // that a one-time message had started counting — which is how one reached
+  // zero and stayed.
+  assert.ok(/viewed_at: viewedAt \|\| Date\.now\(\)/.test(screen),
+    'the app does not stamp viewed_at onto the message when the clock starts');
+  assert.ok(/el\.dataset\.expiresAt = String\(oneTimeExpiry\[messageId\]\)/.test(web),
+    'the web does not put the one-time deadline on the bubble');
+});
+
+test('the server sweeps and schedules BOTH clocks', () => {
+  assert.ok(/one_time_seconds IS NOT NULL AND viewed_at IS NOT NULL[\s\S]{0,80}viewed_at \+ one_time_seconds \* 1000 <= \?/.test(server),
+    'the sweep ignores one-time messages, so a restart strands them');
+  const sched = server.slice(server.indexOf('function scheduleNextExpiry()'),
+    server.indexOf('// At startup, and after every sweep'));
+  assert.ok(sched.includes('viewed_at + one_time_seconds * 1000'),
+    'the exact timer never wakes for a one-time deadline');
+  assert.ok(/scheduleNextExpiry\(\);/.test(server.slice(server.indexOf("socket.on('view_one_time'"),
+    server.indexOf("socket.on('toggle_reaction'"))),
+    'opening a one-time message does not re-arm the scheduler');
+});
+
 test('the page does too, and finds its deadlines on screen', () => {
   assert.ok(web.includes('function scheduleExpirySweep()'), 'the browser waits to be told');
   assert.ok(web.includes('Expiry.hasExpired('), 'the page decides expiry by its own rule');
-  assert.ok(/dataset\.expiresAt = String\(msg\.expires_at\)/.test(web),
+  assert.ok(/const due = Expiry\.deadlineOf\(msg\);/.test(web)
+    && /dataset\.expiresAt = String\(due\)/.test(web),
     'the deadline is never written onto the bubble, so the sweep cannot find it');
 });
 

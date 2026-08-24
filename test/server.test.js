@@ -899,6 +899,66 @@ test('THE BUG: an expired message is destroyed at its deadline, not up to 30s la
     .some(m => String(m.id) === String(msg.id)), 'the message is still in the history');
 });
 
+test('THE BUG: a one-time message whose minute ran out is destroyed too', async () => {
+  // Reported with a screenshot: a one-time message showing "0s" and still
+  // sitting in the chat. The exact timer for one of these is a setTimeout made
+  // when it is viewed, and that does not survive a restart — so the sweep and
+  // the scheduler have to know about this clock as well as the other one.
+  const db = require('../db.js');
+  const a = await signUp('onetimea');
+  const b = await signUp('onetimeb');
+  const room = await api('/rooms', 'POST', { name: 'one-time-room' }, a.token);
+  const sa = await connect(a.token);
+  const sb = await connect(b.token);
+  await emit(sb, 'accept_invite', { roomId: room.id });
+
+  await emit(sa, 'send_message', {
+    roomId: room.id, type: 'text', content: 'for your eyes only', oneTimeSeconds: 60,
+  });
+  await new Promise(r => setTimeout(r, 150));
+  const msg = (await api(`/messages/${room.id}`, 'GET', null, b.token))
+    .find(m => m.content === 'for your eyes only');
+  assert.ok(msg, 'the message was not stored');
+  assert.strictEqual(msg.one_time_seconds, 60);
+  assert.strictEqual(msg.viewed_at, null, 'the clock started before it was opened');
+
+  // The recipient opens it: the clock starts.
+  sb.emit('view_one_time', { messageId: msg.id });
+  await new Promise(r => setTimeout(r, 200));
+  const viewed = (await api(`/messages/${room.id}`, 'GET', null, b.token))
+    .find(m => String(m.id) === String(msg.id));
+  assert.ok(viewed && viewed.viewed_at, 'opening it did not start the clock');
+
+  // A minute is far too long for a test, and the setTimeout made at view time
+  // is not the path under test — a restart is what kills that. So the view is
+  // backdated and the SWEEP is asked, exactly as it is at startup.
+  db.prepare('UPDATE messages SET viewed_at = ? WHERE id = ?').run(Date.now() - 61_000, msg.id);
+  const destroyed = require('../server.js').sweepExpired();
+  assert.ok(destroyed >= 1, 'the sweep does not know about the one-time clock');
+  assert.ok(!(await api(`/messages/${room.id}`, 'GET', null, b.token))
+    .some(m => String(m.id) === String(msg.id)),
+    'the one-time message survived its own countdown');
+});
+
+test('a one-time message nobody opened is left alone by the sweep', async () => {
+  // It waits indefinitely for the person it was sent to. Sweeping it away
+  // unopened would destroy a message nobody ever saw.
+  const a = await signUp('unopeneda');
+  const b = await signUp('unopenedb');
+  const room = await api('/rooms', 'POST', { name: 'unopened-room' }, a.token);
+  const sa = await connect(a.token);
+  const sb = await connect(b.token);
+  await emit(sb, 'accept_invite', { roomId: room.id });
+  await emit(sa, 'send_message', {
+    roomId: room.id, type: 'text', content: 'never opened', oneTimeSeconds: 1,
+  });
+  await new Promise(r => setTimeout(r, 1400));   // well past its one second
+  require('../server.js').sweepExpired();
+  assert.ok((await api(`/messages/${room.id}`, 'GET', null, b.token))
+    .some(m => m.content === 'never opened'),
+    'an unopened one-time message was destroyed by the sweep');
+});
+
 test('a deadline that passed while the server was down is honoured at startup', async () => {
   // The exact timer does not survive a restart; the sweep is what covers that,
   // and it runs once at boot rather than up to thirty seconds later.

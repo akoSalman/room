@@ -25,6 +25,26 @@
   }
 
   /**
+   * When a message is due to be destroyed, whichever clock it is on.
+   *
+   * There are TWO — `expires_at` for a disappearing message, and
+   * `viewed_at + one_time_seconds` for a one-time one — and handling only the
+   * first is what left a one-time message showing "0s" and still sitting in
+   * the chat.
+   */
+  function deadlineOf(m) {
+    if (!m) return null;
+    var deadlines = [];
+    if (m.expires_at) deadlines.push(m.expires_at);
+    // Not yet opened is not yet counting.
+    if (m.one_time_seconds && m.viewed_at) {
+      deadlines.push(m.viewed_at + m.one_time_seconds * 1000);
+    }
+    if (!deadlines.length) return null;
+    return Math.min.apply(null, deadlines);
+  }
+
+  /**
    * Milliseconds until the next message expires, or null when none is counting.
    *
    * One timer for the whole list rather than one per message: the only
@@ -34,7 +54,7 @@
     if (now === undefined) now = Date.now();
     var soonest = null;
     (messages || []).forEach(function (m) {
-      var at = m && m.expires_at;
+      var at = deadlineOf(m);
       if (!at) return;
       if (soonest === null || at < soonest) soonest = at;
     });
@@ -48,12 +68,13 @@
   function dropExpired(messages, now) {
     if (now === undefined) now = Date.now();
     return (messages || []).filter(function (m) {
-      return !hasExpired(m && m.expires_at, now);
+      return !hasExpired(deadlineOf(m), now);
     });
   }
 
   root.Expiry = {
     hasExpired: hasExpired,
+    deadlineOf: deadlineOf,
     msUntilNextExpiry: msUntilNextExpiry,
     dropExpired: dropExpired,
   };

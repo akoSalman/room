@@ -43,6 +43,39 @@ export function hasExpired(
 }
 
 /**
+ * When a message is due to be destroyed, whichever clock it is on.
+ *
+ * There are TWO, and fixing one of them left the other exactly as it was.
+ *
+ *   • A disappearing message carries `expires_at`, set when the other person
+ *     reads it.
+ *   • A ONE-TIME message carries `viewed_at` and `one_time_seconds`, and is
+ *     due that long after it was opened.
+ *
+ * Reported with a screenshot: a one-time message showing "🔥 0s" — its
+ * countdown finished — still sitting in the chat. The server does destroy it,
+ * but this end only ever removed messages on the FIRST clock, and a copy that
+ * came back from the offline cache, or a delete event missed while the app was
+ * in the background, had nothing to remove it.
+ */
+export function deadlineOf(m: {
+  expires_at?: number | null;
+  viewed_at?: number | null;
+  one_time_seconds?: number | null;
+}): number | null {
+  if (!m) return null;
+  const deadlines: number[] = [];
+  if (m.expires_at) deadlines.push(m.expires_at);
+  // Not yet opened is not yet counting: a one-time message waits indefinitely
+  // for the person it was sent to, which is the whole point of it.
+  if (m.one_time_seconds && m.viewed_at) {
+    deadlines.push(m.viewed_at + m.one_time_seconds * 1000);
+  }
+  if (!deadlines.length) return null;
+  return Math.min(...deadlines);
+}
+
+/**
  * Milliseconds until the next message expires, or null when none is counting.
  *
  * One timer for the whole list rather than one per message: a chat showing
@@ -50,11 +83,14 @@ export function hasExpired(
  * that matters is the earliest.
  */
 export function msUntilNextExpiry(
-  messages: { expires_at?: number | null }[], now = Date.now(),
+  messages: {
+    expires_at?: number | null; viewed_at?: number | null; one_time_seconds?: number | null;
+  }[],
+  now = Date.now(),
 ): number | null {
   let soonest: number | null = null;
   for (const m of messages || []) {
-    const at = m && m.expires_at;
+    const at = deadlineOf(m);
     if (!at) continue;
     if (soonest === null || at < soonest) soonest = at;
   }
@@ -65,8 +101,8 @@ export function msUntilNextExpiry(
 }
 
 /** The messages still worth showing. */
-export function dropExpired<T extends { expires_at?: number | null }>(
-  messages: T[], now = Date.now(),
-): T[] {
-  return (messages || []).filter(m => !hasExpired(m && m.expires_at, now));
+export function dropExpired<T extends {
+  expires_at?: number | null; viewed_at?: number | null; one_time_seconds?: number | null;
+}>(messages: T[], now = Date.now()): T[] {
+  return (messages || []).filter(m => !hasExpired(deadlineOf(m), now));
 }

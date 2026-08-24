@@ -618,10 +618,16 @@ function connectSocket() {
     socket.on('user_recording', ({ username: u }) => showRecordingUser(u));
     socket.on('user_stopped_recording', ({ username: u }) => hideRecordingUser(u));
     socket.on('dm_activity', ({ room }) => ensureDMInSidebar(room));
-    socket.on('one_time_viewed', ({ messageId, seconds }) => {
-      oneTimeExpiry[messageId] = Date.now() + seconds * 1000;
+    socket.on('one_time_viewed', ({ messageId, viewedAt, seconds }) => {
+      oneTimeExpiry[messageId] = (viewedAt || Date.now()) + seconds * 1000;
       const tag = document.querySelector(`.one-time-countdown[data-msg-id="${messageId}"]`);
       if (tag) tag.dataset.expire = oneTimeExpiry[messageId];
+      // The bubble carries the deadline too, so the sweep that removes
+      // finished messages can see it. Without this a one-time message reaches
+      // zero and simply stays.
+      const el = document.querySelector(`[data-msg-id="${messageId}"]`);
+      if (el) el.dataset.expiresAt = String(oneTimeExpiry[messageId]);
+      scheduleExpirySweep();
     });
     socket.on('messages_read', ({ roomId, lastReadMsgId }) => {
       if (String(roomId) !== String(currentRoomId)) return;
@@ -2855,7 +2861,12 @@ function buildMessageElement(msg) {
   wrapper.dataset.msgId = msg.id;
   // The deadline travels with the bubble, so the sweep below can find it
   // without keeping a parallel list of what is on screen.
-  if (msg.expires_at) wrapper.dataset.expiresAt = String(msg.expires_at);
+  // Whichever clock it is on. A one-time message is due one_time_seconds
+  // after it was opened; a disappearing one carries its own deadline.
+  {
+    const due = Expiry.deadlineOf(msg);
+    if (due) wrapper.dataset.expiresAt = String(due);
+  }
   if (!msg._uploading) addLongPress(wrapper, () => openCtxMenu(msg.id, msg.type, isMine, wrapper, msg));
   // Its disappearing clock starts when it is actually on screen.
   watchForSeen(wrapper, msg);
@@ -3176,7 +3187,7 @@ function appendMessage(msg) {
   scrollBottom();
   // A message can arrive already counting down — the deadline is set when the
   // reader sees it, and a second device is a reader too.
-  if (msg.expires_at) scheduleExpirySweep();
+  if (Expiry.deadlineOf(msg)) scheduleExpirySweep();
 }
 
 // Prepend a page of older messages (already in ascending/chronological order)

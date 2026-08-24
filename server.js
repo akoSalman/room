@@ -816,7 +816,18 @@ setInterval(() => {
 let expiryTimer = null;
 
 function sweepExpired(now = Date.now()) {
-  const due = db.prepare('SELECT * FROM messages WHERE expires_at IS NOT NULL AND expires_at <= ?').all(now);
+  // BOTH clocks. A disappearing message is due at `expires_at`; a one-time
+  // message is due `one_time_seconds` after it was opened. The exact timer for
+  // a one-time message is a setTimeout created when it is viewed, which does
+  // not survive a restart — so it is swept here as well, or a message whose
+  // minute ran out while the server was down sits in the chat until somebody
+  // happens to reload.
+  const due = db.prepare(`
+    SELECT * FROM messages
+     WHERE (expires_at IS NOT NULL AND expires_at <= ?)
+        OR (one_time_seconds IS NOT NULL AND viewed_at IS NOT NULL
+            AND viewed_at + one_time_seconds * 1000 <= ?)
+  `).all(now, now);
   due.forEach(destroyMessage);
   return due.length;
 }
@@ -825,7 +836,14 @@ function scheduleNextExpiry() {
   clearTimeout(expiryTimer);
   let next;
   try {
-    next = db.prepare('SELECT MIN(expires_at) AS at FROM messages WHERE expires_at IS NOT NULL').get();
+    next = db.prepare(`
+      SELECT MIN(at) AS at FROM (
+        SELECT expires_at AS at FROM messages WHERE expires_at IS NOT NULL
+        UNION ALL
+        SELECT viewed_at + one_time_seconds * 1000 AS at FROM messages
+         WHERE one_time_seconds IS NOT NULL AND viewed_at IS NOT NULL
+      )
+    `).get();
   } catch { return; }
   if (!next || next.at == null) return;   // nothing is counting down
   // Capped, so a week-long timer does not sit in a single setTimeout for a
@@ -2801,6 +2819,9 @@ io.on('connection', (socket) => {
         const still = db.prepare('SELECT * FROM messages WHERE id = ?').get(msg.id);
         if (still) destroyMessage(still);
       }, msg.one_time_seconds * 1000);
+      // And through the shared scheduler as well, so a restart before that
+      // timer fires does not leave the message waiting for the next sweep.
+      scheduleNextExpiry();
     }
   });
 
