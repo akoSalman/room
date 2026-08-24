@@ -644,6 +644,32 @@ test('EVERY tappable thing in a message goes through it', () => {
     'these tokens act without marking the touch spent, so the menu opens over them');
 });
 
+test('THE SAME BUG, other places: everything inside a text bubble spends the touch', () => {
+  // Reported separately: tapping a reply to jump to the original scrolls to
+  // it and then opens the menu on top. Identical fault to the number — the
+  // quote answers the touch and the bubble opens the menu anyway.
+  //
+  // So this scans the whole region of a text bubble rather than naming the
+  // three handlers that exist today: the next one added is the one that gets
+  // forgotten, and the symptom (a menu over whatever you just tapped) is
+  // subtle enough to ship.
+  const from = chat.indexOf('{/* Reply quote */}');
+  const to = chat.indexOf("msg.type === 'image'", from);
+  assert.ok(from > 0 && to > from, 'the bubble body moved — this check would be vacuous');
+  const region = chat.slice(from, to);
+  const presses = region.match(/onPress=\{[^\n]*/g) || [];
+  assert.ok(presses.length >= 3, `only ${presses.length} handlers found — the scan is wrong`);
+  const bare = presses.filter(p => !p.includes('tokenPress('));
+  assert.deepStrictEqual(bare, [],
+    'these run inside a text bubble without spending the touch, so the menu opens over them');
+});
+
+test('the reply quote in particular still jumps', () => {
+  // Spending the touch must not cost the action itself.
+  assert.ok(/tokenPress\(\(\) => jumpToMessage\(msg\.reply_to_id!\)\)/.test(chat),
+    'the reply quote no longer jumps to the message it quotes');
+});
+
 test('a fresh touch forgets what the last one was spent on', () => {
   // Otherwise one tap on a number silences the menu for the NEXT ordinary tap
   // as well, which is the same bug wearing the opposite coat.

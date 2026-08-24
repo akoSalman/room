@@ -3195,7 +3195,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         >
           {/* Reply quote */}
           {msg.reply_to_id && msg.reply_username && (
-            <TouchableOpacity style={s.replyQuote} onPress={() => jumpToMessage(msg.reply_to_id!)}>
+            // Through tokenPress, like every other thing inside a bubble.
+            // Reported as: tapping a reply to go to the original scrolls to it
+            // and then opens the message menu on top. Same fault as tapping a
+            // number: the quote answers the touch, and the bubble — which
+            // cannot see that — went on treating it as an ordinary tap.
+            <TouchableOpacity style={s.replyQuote}
+              onPress={() => tokenPress(() => jumpToMessage(msg.reply_to_id!))}>
               <Text style={s.replyQuoteUser}>{msg.reply_username}</Text>
               <Text style={s.replyQuoteText} numberOfLines={1}>{replyPreview(msg)}</Text>
             </TouchableOpacity>
@@ -3205,7 +3211,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             <Text style={s.forwardedLabel}>↪ Forwarded from {msg.forwarded_from}</Text>
           ) : null}
           {hiddenOneTime && (
-            <TouchableOpacity onPress={() => revealOneTime(msg)}>
+            <TouchableOpacity onPress={() => tokenPress(() => revealOneTime(msg))}>
               <Text style={s.oneTimeReveal}>🔥 One-time message — tap to view ({msg.one_time_seconds}s)</Text>
             </TouchableOpacity>
           )}
@@ -3263,7 +3269,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 <Text style={s.inviteTitle}>🔒 Room invitation</Text>
                 <Text style={s.inviteText}>{msg.username === me ? `You invited someone to` : `${msg.username} invited you to`} “{inv?.roomName || 'a room'}”</Text>
                 {msg.username !== me && (
-                  <TouchableOpacity style={s.inviteBtn} onPress={() => acceptInvite(msg.content)}>
+                  <TouchableOpacity style={s.inviteBtn}
+                    onPress={() => tokenPress(() => acceptInvite(msg.content))}>
                     <Text style={s.inviteBtnText}>Join room</Text>
                   </TouchableOpacity>
                 )}
