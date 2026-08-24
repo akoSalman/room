@@ -31,6 +31,14 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       contains(github.event.head_commit.message, '[build apk]')
+    # Bounded, because it hung.
+    #
+    # Builds 184 and 185 both stopped making progress inside Gradle and were
+    # killed by GitHub's six-hour limit — two runners each, for six hours,
+    # to produce nothing and say nothing. A build that cannot finish in fifty
+    # minutes is stuck, and finding that out at 00:50 rather than 06:00 is the
+    # difference between a diagnosis and a lost night.
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
@@ -240,7 +248,14 @@ jobs:
             # be downloaded, the summary step below is the only way anyone
             # finds out WHY. pipefail, or the exit status would be tee's.
             set -o pipefail
-            if ./gradlew assembleRelease --no-daemon \
+            # --console=plain, so the log is readable rather than a redrawn
+            # progress bar; and explicit HTTP timeouts, because a Gradle task
+            # that stalls on a download waits FOREVER by default. A stalled
+            # fetch is the most likely way a build reaches six hours without
+            # printing anything new.
+            if ./gradlew assembleRelease --no-daemon --console=plain \
+                -Dorg.gradle.internal.http.connectionTimeout=60000 \
+                -Dorg.gradle.internal.http.socketTimeout=120000 \
                 -x lint -x lintVitalRelease -x lintReportRelease -x lintVitalAnalyzeRelease \
                 -Pandroid.injected.signing.store.file=$KEYSTORE \
                 -Pandroid.injected.signing.store.password=chatroom123 \
@@ -256,16 +271,24 @@ jobs:
           echo "::error::Gradle failed three times."
           exit 1
 
+      # always(), not failure(): a job killed by the timeout is CANCELLED, and
+      # a failure() step does not run for a cancelled job — which is exactly
+      # the case that left builds 184 and 185 unexplained.
       - name: Why the build failed
-        if: failure() && steps.want.outputs.build == 'yes'
+        if: always() && steps.want.outputs.build == 'yes' && hashFiles('native-app/android/app/build/outputs/apk/release/app-release.apk') == ''
         run: |
           {
             echo "### ${{ matrix.brand }} build FAILED"
             echo ''
-            echo 'Last 60 lines of the Gradle log:'
+            echo 'Last 80 lines of the Gradle log — the last line is where it stopped:'
             echo '```'
-            tail -n 60 android/build/gradle-build.log 2>/dev/null \
+            tail -n 80 android/build/gradle-build.log 2>/dev/null \
               || echo '(no captured log — see the run log for the Build release APK step)'
+            echo '```'
+            echo ''
+            echo 'Java processes still alive (a hung build is usually waiting on one):'
+            echo '```'
+            ps -eo pid,etime,pcpu,rss,args --sort=-rss | grep -i java | head -5 || echo 'none'
             echo '```'
             echo ''
             echo 'Free disk:'
