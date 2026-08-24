@@ -2157,20 +2157,21 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         const isMe = name.toLowerCase() === (me || '').toLowerCase();
         return (
           <Text key={i} style={[s.mention, isMe && s.mentionMe]}
-            onPress={() => openMentionedUser(name)}>{tok.text}</Text>
+            onPress={() => tokenPress(() => openMentionedUser(name))}>{tok.text}</Text>
         );
       }
       if (tok.kind === 'number') {
         return (
           <Text key={i} style={s.copyableNumber}
-            onPress={() => copy(tok.text, 'number')}>{tok.text}</Text>
+            onPress={() => tokenPress(() => copy(tok.text, 'number'))}>{tok.text}</Text>
         );
       }
       return (
         <Text
           key={i}
           style={tok.kind === 'url' ? s.link : s.copyablePhone}
-          onPress={() => setTokenAction({ kind: tok.kind as 'url' | 'phone', text: tok.text })}
+          onPress={() => tokenPress(
+            () => setTokenAction({ kind: tok.kind as 'url' | 'phone', text: tok.text }))}
         >{tok.text}</Text>
       );
     });
@@ -2351,6 +2352,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   function noteTextTouch(id: MsgId, e?: any) {
     clearTimeout(holdTimer.current);
     clearTimeout(tapTimer.current);
+    // A fresh touch: whatever the last one was spent on is over.
+    spentByToken.current = false;
     // A finger landing on a list that is still gliding is spent stopping it:
     // Android never delivers that touch as a tap and starts no selection from
     // it. Told to the reducer so it is not counted as half of a double-tap.
@@ -2384,6 +2387,36 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const textTouchMoved = useRef(false);
   /** Was the touch spent completing a double-tap? */
   const spentByDoubleTap = useRef(false);
+  /**
+   * Was the touch spent on something INSIDE the message?
+   *
+   * Reported as: tapping a number copies it and then the message menu pops up
+   * on top of the confirmation.
+   *
+   * A number, a link and an @name are each a <Text onPress> inside the
+   * bubble's selectable text. Pressing one runs its own action — and the
+   * bubble, which cannot see that, went on treating the same touch as an
+   * ordinary tap and opened the menu 300ms later. One finger, two answers.
+   *
+   * Which of the two handlers runs first is not guaranteed, so this does not
+   * depend on the order: the flag stops a tap that has not been scheduled yet,
+   * and the timer is cleared for one that already has.
+   */
+  const spentByToken = useRef(false);
+
+  /**
+   * Run a token's action, and mark the touch as spent.
+   *
+   * Everything tappable inside a message goes through here rather than each
+   * one remembering to do it — the next one added would forget, and the
+   * symptom (a menu appearing over what you just tapped) is subtle enough to
+   * ship.
+   */
+  function tokenPress(action: () => void) {
+    spentByToken.current = true;
+    clearTimeout(tapTimer.current);
+    action();
+  }
   /** Is the list still gliding after a flick? */
   const listSettling = useRef(false);
   /** Beyond this many pixels it is a drag, not a tap. */
@@ -2408,6 +2441,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // That touch made a selection. It is spent; anything else it went on to
     // do would be undoing what the user just asked for.
     if (spentByDoubleTap.current) { spentByDoubleTap.current = false; return; }
+    // It landed on a number, a link or an @name, which has already answered
+    // it. Opening the menu as well would put a sheet over the confirmation of
+    // what the user just did.
+    if (spentByToken.current) { spentByToken.current = false; return; }
     // The finger travelled: this was a scroll or a swipe that happened to
     // start on some text. Treating it as a tap opened the message menu at the
     // end of every flick — and THAT is why double-tap "did not work after

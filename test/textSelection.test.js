@@ -591,6 +591,68 @@ test('no long-press timer runs while the list is gliding', () => {
     'the hold timer is armed even when the touch was spent stopping a fling');
 });
 
+// ── Tapping something INSIDE a message ──────────────────────────────────────
+//
+// Reported as: tapping a number copies it, and immediately afterwards the
+// message menu pops up.
+//
+// A number, a link and an @name are each a <Text onPress> inside the bubble's
+// selectable text. Pressing one runs its own action — and the bubble, which
+// cannot see that, went on treating the same touch as an ordinary tap and
+// opened the menu 300ms later. One finger, two answers, the second one landing
+// on top of the first.
+//
+// The reducer cannot see this either: it is a component-level fact about which
+// child handled the touch. So these check the wiring, which is where the bug
+// was and where it would come back.
+
+const chat = fs.readFileSync(
+  path.join(__dirname, '..', 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+
+test('THE BUG: a tap spent on a token does not also open the menu', () => {
+  assert.ok(/const spentByToken = useRef\(false\)/.test(chat),
+    'nothing records that the touch was answered by something inside the message');
+  const release = chat.slice(chat.indexOf('function noteTextRelease('),
+    chat.indexOf('function dismissTextSelection('));
+  assert.ok(release.length > 0, 'noteTextRelease is gone — this check would be vacuous');
+  assert.ok(/if \(spentByToken\.current\) \{ spentByToken\.current = false; return; \}/.test(release),
+    'the release still schedules a tap after a token has answered it');
+});
+
+test('and the order of the two handlers cannot matter', () => {
+  // Whether the child's onPress or the parent's onTouchEnd runs first is not
+  // guaranteed. The flag covers the case where the tap has not been scheduled
+  // yet; clearing the timer covers the case where it already has. Only doing
+  // one of the two fixes the bug on some devices and not others.
+  const fn = chat.slice(chat.indexOf('function tokenPress('),
+    chat.indexOf('function tokenPress(') + 400);
+  assert.ok(fn.includes('spentByToken.current = true'), 'the flag is never set');
+  assert.ok(fn.includes('clearTimeout(tapTimer.current)'),
+    'a tap already scheduled is left to fire, so the menu still appears');
+});
+
+test('EVERY tappable thing in a message goes through it', () => {
+  // A number, a link, a phone and an @name all have the same problem; the one
+  // that forgets is the one that ships.
+  const render = chat.slice(chat.indexOf('function renderTextWithLinks('),
+    chat.indexOf('// Tapping an @name opens a direct chat'));
+  assert.ok(render.length > 0, 'renderTextWithLinks is gone — this check would be vacuous');
+  const presses = render.match(/onPress=\{[^}]*\}/g) || [];
+  assert.ok(presses.length >= 3, `only ${presses.length} tappable tokens found — the scan is wrong`);
+  const bare = presses.filter(p => !p.includes('tokenPress('));
+  assert.deepStrictEqual(bare, [],
+    'these tokens act without marking the touch spent, so the menu opens over them');
+});
+
+test('a fresh touch forgets what the last one was spent on', () => {
+  // Otherwise one tap on a number silences the menu for the NEXT ordinary tap
+  // as well, which is the same bug wearing the opposite coat.
+  const touch = chat.slice(chat.indexOf('function noteTextTouch('),
+    chat.indexOf('/** When the finger that landed on a text bubble went down'));
+  assert.ok(/spentByToken\.current = false;/.test(touch),
+    'the spent flag survives into the next touch');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }
