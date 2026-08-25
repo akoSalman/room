@@ -15,6 +15,8 @@ import { ClearScope, clearScopes, clearLabel, clearHint, clearConfirm } from '..
 import { apiFetch, getUsername, getUserId, getSocket, setAuth, getAvatar, RELEASE_TAG, RELEASE_FILE, BASE_URL } from '../api';
 import * as upd from '../updateSource';
 import { BUILD_VERSION } from '../version';
+import * as connection from '../connection';
+import { statusLine as updateStatusLine } from '../updateResume';
 
 const AVATAR_EMOJIS = ['🦄','🐉','🧙‍♂️','🧚‍♀️','🧛‍♂️','🧞‍♂️','🦊','🐺','🦁','🐯','🐼','🐸','🦉','🐙','🦋','🤖','👽','🐲','🦅','🐬','🔥','⚡','🌙','⭐'];
 
@@ -74,14 +76,23 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   const [versionCheckFailed, setVersionCheckFailed] = useState(false);
   // Mirrors the module-scope download, so re-opening this screen mid-download
   // shows the real progress instead of starting again.
-  const [updateProgress, setUpdateProgress] = useState<number | null>(
-    appUpdate.current().status === 'downloading' ? appUpdate.current().progress : null,
-  );
+  // A PAUSED download is still a download in progress as far as this screen is
+  // concerned: it is waiting for the network and will carry on by itself, so
+  // hiding the bar and offering "Update" again is how somebody ends up
+  // starting forty megabytes over.
+  const running = (st: appUpdate.UpdateState) =>
+    st.status === 'downloading' || st.status === 'paused';
+  const [updateState, setUpdateState] = useState<appUpdate.UpdateState>(() => appUpdate.current());
+  // Whether the phone can reach OUR server, which is the only sense in which
+  // "online" matters to a download from it.
+  const [online, setOnline] = useState(connection.isOnline());
+  useEffect(() => connection.subscribe(st => setOnline(st === 'online')), []);
+  const updateProgress = running(updateState) ? updateState.progress : null;
   useEffect(() => appUpdate.subscribe(() => {
     const st = appUpdate.current();
-    setUpdateProgress(st.status === 'downloading' ? st.progress : null);
+    setUpdateState(st);
     // A finished download becomes an offer to install it.
-    if (st.status !== 'downloading') appUpdate.downloaded().then(setDownloadedUpdate);
+    if (!running(st)) appUpdate.downloaded().then(setDownloadedUpdate);
   }), []);
   useEffect(() => { appUpdate.downloaded().then(setDownloadedUpdate).catch(() => {}); }, []);
   const updateChoice = appUpdate.installChoice({
@@ -680,7 +691,14 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
                   <View style={s.updateProgressTrack}>
                     <View style={[s.updateProgressFill, { width: `${Math.round(updateProgress * 100)}%` }]} />
                   </View>
-                  <Text style={s.updateProgressText}>Downloading update… {Math.round(updateProgress * 100)}%</Text>
+                  <Text style={s.updateProgressText}>
+                    {updateStatusLine({
+                      phase: updateState.status,
+                      percent: updateProgress * 100,
+                      online: online,
+                      canContinue: !!updateState.continues,
+                    })}
+                  </Text>
                 </View>
               ) : updateChoice === 'up-to-date' ? (
                 <View style={s.upToDateBox}>

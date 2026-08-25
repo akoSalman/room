@@ -14,6 +14,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { Platform } from 'react-native';
 import notifee, { AndroidImportance } from '@notifee/react-native';
+import * as connection from './connection';
+import {
+  DownloadPhase, phaseOnNetworkChange, shouldAutoResume, snapshotMatches, canContinue,
+} from './updateResume';
 // Re-exported so callers have one place to look.
 export { installChoice, UpdateChoice } from './updateChoice';
 
@@ -25,13 +29,68 @@ const NOTIFICATION_ID = 'app-update';
 
 export type UpdateState = {
   progress: number;          // 0..1
-  status: 'downloading' | 'done' | 'failed' | 'idle';
+  /**
+   * 'paused' is the one that matters here.
+   *
+   * Losing the connection is not a failure: the bytes on disk are fine and the
+   * download is going to carry on by itself. Calling it a failure is what
+   * invited people to start a forty-megabyte download again from zero.
+   */
+  status: DownloadPhase;
   uri?: string;
+  /** Whether resuming will really continue, or start over. See updateResume. */
+  continues?: boolean;
 };
 
 let state: UpdateState = { progress: 0, status: 'idle' };
 let task: FileSystem.DownloadResumable | null = null;
 const listeners = new Set<() => void>();
+/** What is being downloaded, so the watcher can resume it without being told. */
+let currentUrl: string | null = null;
+let currentVersion: number | undefined;
+let watching = false;
+
+/**
+ * Pause the moment the connection goes, resume the moment it returns.
+ *
+ * The pause is the whole point: expo's `savable()` only carries `resumeData`
+ * if the task was PAUSED, so a download that merely died of a network error
+ * left a snapshot that restarts at byte zero. Pausing while the task is still
+ * alive is what makes the snapshot worth having.
+ */
+function watchConnection() {
+  if (watching) return;
+  watching = true;
+  connection.subscribe(async (net) => {
+    const online = net === 'online';
+    const next = phaseOnNetworkChange(state.status, online);
+    if (next === state.status) return;
+
+    if (next === 'paused') {
+      const t = task;
+      task = null;
+      try {
+        await t?.pauseAsync();
+        const snapshot = await t?.savable();
+        if (snapshot) await AsyncStorage.setItem(RESUME_KEY, JSON.stringify(snapshot));
+        state = { ...state, status: 'paused', continues: canContinue(snapshot as any) };
+      } catch {
+        state = { ...state, status: 'paused', continues: false };
+      }
+      emit();
+      return;
+    }
+
+    if (shouldAutoResume({
+      phase: state.status, online, hasSnapshot: !!(await AsyncStorage.getItem(RESUME_KEY)),
+    }) && currentUrl) {
+      // Straight back to work, without asking. Somebody who tapped Update once
+      // has said what they want; a connection coming back is not a new
+      // decision for them to make.
+      start(currentUrl, currentVersion).catch(() => {});
+    }
+  });
+}
 
 export function subscribe(fn: () => void) {
   listeners.add(fn);
@@ -112,7 +171,12 @@ export async function forgetDownloaded(): Promise<void> {
  */
 export async function start(url: string, version?: number): Promise<void> {
   if (state.status === 'downloading') return;
-  state = { progress: 0, status: 'downloading' };
+  currentUrl = url;
+  currentVersion = version;
+  watchConnection();
+  // The progress already made is kept: this may be a resume, and zeroing the
+  // bar here is what made a continuing download look like a fresh one.
+  state = { ...state, progress: state.status === 'paused' ? state.progress : 0, status: 'downloading' };
   emit();
 
   const onProgress = (p: FileSystem.DownloadProgressData) => {
@@ -131,7 +195,7 @@ export async function start(url: string, version?: number): Promise<void> {
     if (saved) {
       try {
         const snapshot = JSON.parse(saved);
-        if (snapshot?.url === url) {
+        if (snapshotMatches(snapshot, url)) {
           task = new FileSystem.DownloadResumable(
             snapshot.url, snapshot.fileUri, snapshot.options, onProgress, snapshot.resumeData,
           );
@@ -160,13 +224,20 @@ export async function start(url: string, version?: number): Promise<void> {
   } catch {
     // Keep enough to resume: an interrupted 40 MB download should not start
     // again from zero next time.
+    let snapshot: any = null;
     try {
-      const snapshot = await task?.savable();
+      snapshot = await task?.savable();
       if (snapshot) await AsyncStorage.setItem(RESUME_KEY, JSON.stringify(snapshot));
     } catch {}
     task = null;
     await clearNotification();
-    state = { ...state, status: 'failed' };
+    // Offline is a PAUSE, not a failure — even when it arrived as an error,
+    // because the watcher may not have seen the drop before the socket did.
+    // The difference is whether the user is asked to do something: a pause
+    // continues on its own, a failure waits for a tap.
+    state = connection.isOnline()
+      ? { ...state, status: 'failed', continues: canContinue(snapshot) }
+      : { ...state, status: 'paused', continues: canContinue(snapshot) };
     emit();
   }
 }
@@ -174,6 +245,8 @@ export async function start(url: string, version?: number): Promise<void> {
 export async function cancel() {
   const t = task;
   task = null;
+  currentUrl = null;
+  currentVersion = undefined;
   state = { progress: 0, status: 'idle' };
   emit();
   try { await t?.cancelAsync(); } catch {}
