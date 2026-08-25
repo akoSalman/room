@@ -35,6 +35,7 @@ import * as save from '../saveProgress';
 import { parseDataUri, pastedName, fileUriFromText, extensionFor } from '../pasteDrop';
 import * as pending from '../pendingMedia';
 import { dropExpired, msUntilNextExpiry } from '../expiryRing';
+import { isMine, markMine } from '../messageSide';
 import LocationPicker from '../components/LocationPicker';
 import PeerSheet from '../components/PeerSheet';
 import { PeerView, ClearScope, vanishedStyle } from '../peerActions';
@@ -1107,10 +1108,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             }
             // Still-uploading sends are shown with their progress bar, not as failures.
             const running = failed.filter((f: any) => outbox.isInFlight(f.id) && !prev.some(p => p.id === f.id));
+            // Marked as ours on the way back in. Everything in the outbox is
+            // something this device tried to send, so the side it goes on is
+            // not a question — and rows persisted by an older build carry an
+            // empty username that would otherwise put them on the left.
             return [
               ...prev,
-              ...running.map((f: any) => ({ ...f, _uploading: true, _uploadFailed: false })),
-              ...keep.map((f: any) => ({ ...f, _uploading: false, _uploadFailed: true })),
+              ...running.map((f: any) => markMine({ ...f, _uploading: true, _uploadFailed: false })),
+              ...keep.map((f: any) => markMine({ ...f, _uploading: false, _uploadFailed: true })),
             ];
           });
         }
@@ -1437,15 +1442,19 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     const sock = socketRef.current;
     if (!sock) return;
     const clientId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const optimistic: Message = {
-      id: clientId, room_id: room.id, user_id: 0, username: me, avatar: myAvatar,
+    const optimistic: Message = markMine({
+      // meRef, not the `me` state: a retry dispatched from a timer runs with
+      // whatever value that closure captured, and an empty one stamped the row
+      // with a username that never matches — which is how a failed message
+      // came back on the other person's side.
+      id: clientId, room_id: room.id, user_id: 0, username: meRef.current || me, avatar: myAvatar,
       type: 'text', content: plain, file_path: null, file_name: null,
       edited: 0, created_at: new Date().toISOString(),
       reply_to_id: replyToId, reply_username: replyMeta?.username ?? null,
       reply_content: replyMeta?.content ?? null, reply_type: replyMeta?.type ?? null,
       one_time_seconds: oneTime ?? null,
       _uploading: true,
-    } as Message;
+    }) as Message;
     setMessages(prev => [...prev, optimistic]);
     // Persist right away (removed on server ack) so a kill/close mid-send on a
     // slow connection can't drop the message silently.
@@ -1576,7 +1585,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
   function revealOneTime(msg: Message) {
     setRevealedOneTime(prev => new Set(prev).add(msg.id));
-    const mine = msg.username === me;
+    const mine = isMine(msg, me);
     if (!mine && (msg.type === 'text' || msg.type === 'file')) startOneTimeClock(msg);
   }
 
@@ -1731,14 +1740,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   function addOptimisticMessage(clientId: string, type: string, localUri: string, fileName: string | null, replyToId: number | null, caption: string | null = null) {
-    const optimistic: Message = {
-      id: clientId, room_id: room.id, user_id: 0, username: me, avatar: myAvatar,
+    const optimistic: Message = markMine({
+      // See dispatchText: the ref is the one that is always current.
+      id: clientId, room_id: room.id, user_id: 0, username: meRef.current || me, avatar: myAvatar,
       type, content: caption, file_path: localUri, file_name: fileName,
       edited: 0, created_at: new Date().toISOString(),
       reply_to_id: replyToId, reply_username: replyTo?.username ?? null,
       reply_content: replyTo?.content ?? null, reply_type: replyTo?.type ?? null,
       _uploading: true,
-    };
+    }) as Message;
     setMessages(prev => [...prev, optimistic]);
     // Persist right away (removed again on server ack): if the app is killed
     // while the upload is still in flight — the common case on a bad network —
@@ -3072,7 +3082,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         </View>
       );
     }
-    const mine = msg.username === me;
+    const mine = isMine(msg, me);
     const hiddenOneTime = !!msg.one_time_seconds && !revealedOneTime.has(msg.id) && !msg._uploading;
     const rxns = reactions[msg.id] || [];
     const grouped: Record<string, { count: number; mine: boolean }> = {};
