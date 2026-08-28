@@ -24,6 +24,9 @@ import {
   pickUrl, worthShowing, trimTitle, trimDescription, displayHost, LinkMeta,
 } from '../linkPreview';
 import { C } from '../theme';
+import Ionicons from '@expo/vector-icons/Ionicons';
+import { detect, playLabel, PLATFORM_NAMES } from '../mediaEmbed';
+import MediaEmbedPlayer from './MediaEmbedPlayer';
 
 // url → what came back, or null for "asked, nothing to show".
 const cache = new Map<string, LinkMeta | null>();
@@ -56,6 +59,10 @@ export default function LinkCard({ content, onPress }: {
 }) {
   const url = React.useMemo(() => pickUrl(tokenize(String(content || ''))), [content]);
   const [meta, setMeta] = useState<LinkMeta | null>(() => (url ? cache.get(url) ?? null : null));
+  // A SoundCloud track or a YouTube video plays here rather than throwing the
+  // user out into a browser; anything else is still just a link.
+  const media = React.useMemo(() => detect(url), [url]);
+  const [playing, setPlaying] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -65,11 +72,18 @@ export default function LinkCard({ content, onPress }: {
     return () => { alive = false; };
   }, [url]);
 
-  if (!url || !worthShowing(meta)) return null;
-  const title = trimTitle(meta!.title);
-  const desc = trimDescription(meta!.description);
+  // A playable link always gets a card, even when the preview could not be
+  // fetched: where these platforms are blocked, the server cannot read their
+  // pages either, and losing the play button along with the cover would mean
+  // the feature disappeared exactly where it is most wanted.
+  if (!url || (!worthShowing(meta) && !media)) return null;
+  const title = trimTitle(meta?.title) || (media ? PLATFORM_NAMES[media.platform] : '');
+  const desc = trimDescription(meta?.description);
   const host = displayHost({ ...meta, url });
-  const open = () => { Linking.openURL(url).catch(() => {}); };
+  const open = () => {
+    if (media) { setPlaying(true); return; }
+    Linking.openURL(url).catch(() => {});
+  };
 
   return (
     <Pressable
@@ -79,18 +93,29 @@ export default function LinkCard({ content, onPress }: {
       // preview you cannot reply to or delete is a trap.
       android_ripple={{ color: 'rgba(255,255,255,0.06)' }}
     >
-      {!!meta!.image && (
-        <Image
-          source={{ uri: `${BASE_URL}${meta!.image}` }}
-          style={s.cover}
-          resizeMode="cover"
-        />
+      {!!meta?.image && (
+        <View>
+          <Image
+            source={{ uri: `${BASE_URL}${meta!.image}` }}
+            style={s.cover}
+            resizeMode="cover"
+          />
+          {!!media && (
+            <View style={s.playBadge} pointerEvents="none">
+              <Ionicons name={media.kind === 'audio' ? 'musical-notes' : 'play'} size={26} color="#fff" />
+            </View>
+          )}
+        </View>
       )}
       <View style={s.body}>
         {!!host && <Text style={s.host} numberOfLines={1}>{host}</Text>}
         {!!title && <Text style={s.title} numberOfLines={2}>{title}</Text>}
         {!!desc && <Text style={s.desc} numberOfLines={2}>{desc}</Text>}
+        {!!media && <Text style={s.playHint}>▶ {playLabel(media)}</Text>}
       </View>
+      {playing && !!media && (
+        <MediaEmbedPlayer media={media} title={title} onClose={() => setPlaying(false)} />
+      )}
     </Pressable>
   );
 }
@@ -112,4 +137,9 @@ const s = StyleSheet.create({
   host: { color: C.accent, fontSize: 11, marginBottom: 2 },
   title: { color: '#fff', fontSize: 13, fontWeight: '600' },
   desc: { color: 'rgba(255,255,255,0.7)', fontSize: 12, marginTop: 2 },
+  playHint: { color: C.accent, fontSize: 11, fontWeight: '600', marginTop: 4 },
+  playBadge: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    alignItems: 'center', justifyContent: 'center',
+  },
 });

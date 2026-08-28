@@ -931,6 +931,20 @@ html {
 .link-card-host { font-size: 0.68rem; color: var(--accent); margin-bottom: 2px; }
 .link-card-title { font-size: 0.82rem; font-weight: 600; }
 .link-card-desc { font-size: 0.75rem; opacity: 0.75; margin-top: 2px; }
+.link-card-play { font-size: 0.72rem; color: var(--accent); font-weight: 600; margin-top: 4px; }
+/* A cover you can play says so before it is tapped. */
+.link-card-playable .link-card-cover { filter: brightness(0.8); }
+
+/* The embedded player: the platform's own, in a dialog. */
+.embed-backdrop {
+  position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, 0.85);
+  display: flex; align-items: center; justify-content: center;
+}
+.embed-box { width: min(720px, calc(100vw - 32px)); background: #101418; border-radius: 12px; overflow: hidden; }
+.embed-bar { display: flex; align-items: center; gap: 12px; padding: 10px 12px; }
+.embed-title { flex: 1; font-size: 0.85rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.embed-out, .embed-close { background: none; border: none; color: var(--muted); font-size: 1rem; cursor: pointer; text-decoration: none; }
+.embed-frame { display: block; width: 100%; border: 0; background: #000; }
 
 .invite-card { display: flex; flex-direction: column; gap: 6px; min-width: 200px; }
 /* Room notices: "X joined the room" / "X was removed" — a centered line

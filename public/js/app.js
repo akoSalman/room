@@ -2629,6 +2629,7 @@ function firstUrlInMessage(content) {
 async function attachLinkCard(bubble, content) {
   const url = firstUrlInMessage(content);
   if (!url) return;
+  const media = MediaEmbed.detect(url);
   let meta = linkPreviewCache.get(url);
   if (meta === undefined) {
     try {
@@ -2639,14 +2640,22 @@ async function attachLinkCard(bubble, content) {
   }
   // The bubble may have been thrown away while we were asking — a room switch,
   // or the message being deleted.
-  if (!meta || !bubble.isConnected) return;
+  if (!bubble.isConnected) return;
+  // A playable link always gets a card, even when the preview could not be
+  // fetched: where these platforms are blocked the server cannot read their
+  // pages either, and the play button must not disappear with the cover.
+  if (!meta && !media) return;
+  meta = meta || { url: url, title: MediaEmbed.PLATFORM_NAMES[media.platform] };
 
   const card = document.createElement('a');
   card.className = 'link-card';
   card.href = /^https?:\/\//.test(url) ? url : 'https://' + url;
   card.target = '_blank';
   card.rel = 'noopener noreferrer';
-  card.onclick = (e) => { e.stopPropagation(); };   // not the message menu
+  card.onclick = (e) => {
+    e.stopPropagation();   // not the message menu
+    if (media) { e.preventDefault(); openEmbedPlayer(media, LinkPreview.trimTitle(meta.title)); }
+  };
   if (meta.image) {
     const img = document.createElement('img');
     img.className = 'link-card-cover';
@@ -2678,8 +2687,61 @@ async function attachLinkCard(bubble, content) {
     d.className = 'link-card-desc'; d.textContent = desc;
     body.appendChild(d);
   }
+  if (media) {
+    const hint = document.createElement('div');
+    hint.className = 'link-card-play';
+    hint.textContent = '▶ ' + MediaEmbed.playLabel(media);
+    body.appendChild(hint);
+    if (meta.image) card.classList.add('link-card-playable');
+  }
   card.appendChild(body);
   bubble.appendChild(card);
+}
+
+/**
+ * The platform's own embedded player, in a dialog.
+ *
+ * An iframe pointed at the player the platform publishes for this purpose —
+ * the media comes from them, which is the only arrangement that is theirs to
+ * give. See native-app/src/mediaEmbed.ts for what is deliberately not done.
+ */
+function openEmbedPlayer(media, title) {
+  const back = document.createElement('div');
+  back.className = 'embed-backdrop';
+  const box = document.createElement('div');
+  box.className = 'embed-box';
+
+  const bar = document.createElement('div');
+  bar.className = 'embed-bar';
+  const name = document.createElement('span');
+  name.className = 'embed-title';
+  name.textContent = title || MediaEmbed.PLATFORM_NAMES[media.platform];
+  const out = document.createElement('a');
+  out.className = 'embed-out';
+  out.href = media.original; out.target = '_blank'; out.rel = 'noopener noreferrer';
+  out.textContent = '↗';
+  out.title = 'Open in a new tab';
+  const close = document.createElement('button');
+  close.className = 'embed-close';
+  close.textContent = '✕';
+  close.onclick = () => back.remove();
+  bar.appendChild(name); bar.appendChild(out); bar.appendChild(close);
+
+  const frame = document.createElement('iframe');
+  frame.className = 'embed-frame';
+  frame.src = media.embed;
+  frame.allow = 'autoplay; encrypted-media; picture-in-picture; fullscreen';
+  frame.allowFullscreen = true;
+  // The player is a stranger's page: it gets to play media and nothing else.
+  frame.referrerPolicy = 'no-referrer';
+  frame.style.height = MediaEmbed.playerHeight(media.kind, Math.min(window.innerWidth - 32, 720)) + 'px';
+
+  box.appendChild(bar);
+  box.appendChild(frame);
+  back.appendChild(box);
+  // Only the darkness closes it — a click inside is the player's.
+  back.onclick = (e) => { if (e.target === back) back.remove(); };
+  document.body.appendChild(back);
 }
 
 // Open a public room found by search or reached by link. This only OPENS it —
