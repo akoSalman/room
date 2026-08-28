@@ -1713,7 +1713,10 @@ function triggerEmojiBurst(emoji) {
 }
 
 // ── Quick emoji bar ───────────────────────────────────────────────────────────
-const QUICK_EMOJIS = ['😂', '❤️', '👍', '🙏', '😍', '🔥', '🎉', '😢', '😮', '👌'];
+// Kept in step with the app's DEFAULT_FAV_EMOJIS (native-app/src/favEmojis.ts):
+// the same quick bar on two platforms that offered different emoji would be a
+// small, constant irritation.
+const QUICK_EMOJIS = ['😂', '❤️', '😘', '👍', '🙏', '😍', '🔥', '🍑', '🎉', '😢', '😮', '👌'];
 function initQuickEmoji() {
   const list = document.getElementById('quick-emoji-list');
   list.innerHTML = '';

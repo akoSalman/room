@@ -31,6 +31,7 @@ import {
   tuningAvailable, TARGET_FADE_MS, needsProcessing,
 } from '../cameraTune';
 import { tunePhoto } from '../photoTune';
+import { AttachAction, actionsFor } from '../attachActions';
 
 export type Shot = { uri: string; name: string; mime: string };
 
@@ -39,12 +40,24 @@ type Props = {
   onDone: (shots: Shot[]) => void;
   // 'photo' | 'video' — which mode to open in.
   initialMode?: 'photo' | 'video';
+  /**
+   * Something other than the camera was chosen.
+   *
+   * The ＋ next to the composer opens this screen straight away, so the four
+   * other ways to attach something have to live here — around the shutter,
+   * where a thumb already is — rather than behind the sheet this replaced.
+   */
+  onPick?: (action: AttachAction) => void;
+  /** Whether the clipboard holds anything, which decides if Paste is offered. */
+  clipboard?: 'image' | 'file' | null;
 };
 
 const TIMERS = [0, 3, 10] as const;
 const MAX_VIDEO_SECONDS = 60;
 
-export default function CameraScreen({ onClose, onDone, initialMode = 'photo' }: Props) {
+export default function CameraScreen({
+  onClose, onDone, initialMode = 'photo', onPick, clipboard = null,
+}: Props) {
   const camRef = useRef<CameraView>(null);
 
   const [perm, requestPerm] = useCameraPermissions();
@@ -411,6 +424,14 @@ export default function CameraScreen({ onClose, onDone, initialMode = 'photo' }:
             {!!timer && <Text style={s.topBadge}>{timer}</Text>}
           </TouchableOpacity>
 
+          {/* Flip lives up here now: the shutter row belongs to the shutter and
+              the four ways to attach something else. */}
+          <TouchableOpacity style={s.topBtn} hitSlop={hit} disabled={recording}
+            onPress={() => setFacing(f => (f === 'back' ? 'front' : 'back'))}
+            accessibilityLabel="Switch camera">
+            <Ionicons name="camera-reverse-outline" size={22} color={recording ? '#475569' : '#fff'} />
+          </TouchableOpacity>
+
           <TouchableOpacity style={s.topBtn} onPress={() => setGrid(g => !g)} hitSlop={hit}>
             <Ionicons name="grid-outline" size={21} color={grid ? C.accent : '#fff'} />
           </TouchableOpacity>
@@ -511,15 +532,18 @@ export default function CameraScreen({ onClose, onDone, initialMode = 'photo' }:
         )}
 
         <View style={s.actionRow}>
-          {/* Flip */}
-          <TouchableOpacity
-            style={s.sideBtn}
-            onPress={() => setFacing(f => (f === 'back' ? 'front' : 'back'))}
-            disabled={recording}
-            hitSlop={hit}
-          >
-            <Ionicons name="camera-reverse-outline" size={28} color={recording ? '#475569' : '#fff'} />
-          </TouchableOpacity>
+          {/* The other ways to attach something, flanking the shutter.
+              Hidden while recording: a tap that closed the camera mid-clip
+              would throw the recording away. */}
+          <View style={s.quickSide}>
+            {!recording && actionsFor({ side: 'left', clipboard }).map(a => (
+              <TouchableOpacity key={a.id} style={s.quickBtn} hitSlop={hit}
+                onPress={() => onPick?.(a.id)} accessibilityLabel={a.label}>
+                <Ionicons name={a.icon as any} size={22} color="#fff" />
+                <Text style={s.quickLabel}>{a.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
 
           {/* Shutter */}
           <Animated.View style={{ transform: [{ scale: shutterScale }] }}>
@@ -539,7 +563,20 @@ export default function CameraScreen({ onClose, onDone, initialMode = 'photo' }:
             </Pressable>
           </Animated.View>
 
-          {/* Send */}
+          {/* Right of the shutter: the rest of the actions — until there is
+              something to send, at which point sending is the only thing
+              anybody wants from that corner. */}
+          {shots.length === 0 && !recording ? (
+            <View style={s.quickSide}>
+              {actionsFor({ side: 'right', clipboard }).map(a => (
+                <TouchableOpacity key={a.id} style={s.quickBtn} hitSlop={hit}
+                  onPress={() => onPick?.(a.id)} accessibilityLabel={a.label}>
+                  <Ionicons name={a.icon as any} size={22} color="#fff" />
+                  <Text style={s.quickLabel}>{a.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          ) : (
           <TouchableOpacity
             style={[s.sideBtn, shots.length > 0 && s.sendBtn]}
             onPress={() => shots.length && onDone(shots)}
@@ -555,6 +592,7 @@ export default function CameraScreen({ onClose, onDone, initialMode = 'photo' }:
               <Ionicons name="arrow-forward" size={26} color="#475569" />
             )}
           </TouchableOpacity>
+          )}
         </View>
       </View>
     </GestureHandlerRootView>
@@ -663,6 +701,11 @@ const s = StyleSheet.create({
     paddingHorizontal: 34,
   },
   sideBtn: { width: 54, height: 54, borderRadius: 27, alignItems: 'center', justifyContent: 'center' },
+  // Two actions a side, flanking the shutter — close enough to a thumb that
+  // they are reachable one-handed, small enough not to compete with it.
+  quickSide: { flexDirection: 'row', alignItems: 'center', gap: 14, minWidth: 54 },
+  quickBtn: { alignItems: 'center', justifyContent: 'center', gap: 3, width: 46 },
+  quickLabel: { color: 'rgba(255,255,255,0.85)', fontSize: 10, fontWeight: '600' },
   sendBtn: { backgroundColor: C.accent },
   sendCount: {
     position: 'absolute', top: 2, right: 2,

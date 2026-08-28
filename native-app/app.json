@@ -126,6 +126,12 @@
           "locationWhenInUsePermission": "Allow ChatRoom to share your location in chats.",
           "isAndroidForegroundServiceEnabled": false
         }
+      ],
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "Allow ChatRoom to share a contact in a chat."
+        }
       ]
     ],
     "extra": {},

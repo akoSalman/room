@@ -4,13 +4,19 @@
 import { useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-export const DEFAULT_FAV_EMOJIS = ['😂', '❤️', '👍', '🙏', '😍', '🔥', '🎉', '😢', '😮', '👌'];
+// Asked for: 😘 and 🍑 among the most used. Added at the front of the two
+// halves they belong to — the quick bar is read left to right, and an addition
+// tacked on the end is one nobody reaches.
+export const DEFAULT_FAV_EMOJIS = [
+  '😂', '❤️', '😘', '👍', '🙏', '😍', '🔥', '🍑', '🎉', '😢', '😮', '👌',
+];
 export const MAX_FAV_EMOJIS = 16;
 
 // A broad palette to pick from when editing the list.
 export const EMOJI_PALETTE = [
   '😂', '🤣', '😊', '😍', '🥰', '😎', '🤔', '😐', '😴', '🤗',
   '😢', '😭', '😡', '🤯', '🥳', '😮', '😱', '🙄', '😇', '🤩',
+  '😘', '😗', '😚', '🤭', '😉', '🥺', '🤤', '😈', '🍑', '🍆',
   '👍', '👎', '👌', '🙏', '👏', '🙌', '💪', '🤝', '✌️', '🫶',
   '❤️', '🧡', '💛', '💚', '💙', '💜', '🖤', '💔', '💯', '✨',
   '🔥', '🎉', '🎊', '🎁', '⭐', '🌟', '⚡', '🌈', '🌸', '🍀',

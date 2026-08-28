@@ -34,6 +34,10 @@ import SaveOverlay from '../components/SaveOverlay';
 import * as save from '../saveProgress';
 import { parseDataUri, pastedName, fileUriFromText, extensionFor } from '../pasteDrop';
 import * as pending from '../pendingMedia';
+import * as Contacts from 'expo-contacts';
+import {
+  AttachAction, OPENS_IN, opensCamera, contactMessage, contactWorthSending,
+} from '../attachActions';
 import { dropExpired, msUntilNextExpiry } from '../expiryRing';
 import { isMine, markMine } from '../messageSide';
 import LocationPicker from '../components/LocationPicker';
@@ -1648,6 +1652,51 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       setPendingMedia(prev => [...prev, { uri, name, mime: parsed.mime }]);
     } catch {
       Alert.alert('Could not paste', 'The clipboard could not be read.');
+    }
+  }
+
+  /**
+   * One of the actions around the shutter.
+   *
+   * Deferred by a moment after the camera closes, because two Android modal
+   * windows opening across each other is the flash of chat this app has been
+   * bitten by before.
+   */
+  async function runAttachAction(action: AttachAction) {
+    switch (action) {
+      case 'gallery': return pickFromGallery();
+      case 'file': return pickFile();
+      case 'voice': return startRecordingUI();
+      case 'paste': return pasteFromClipboard();
+      case 'contact': return pickContact();
+    }
+  }
+
+  /**
+   * Send somebody's contact card.
+   *
+   * As ordinary text, deliberately: a dedicated message type would mean a
+   * server change, a new bubble and a card the web client would not
+   * understand, for something whose whole content is a name and a number —
+   * and the number arrives tappable, which is what the recipient wants to do
+   * with it anyway.
+   */
+  async function pickContact() {
+    try {
+      const { granted } = await Contacts.requestPermissionsAsync();
+      if (!granted) {
+        Alert.alert('Permission required', 'Allow access to contacts to share one.');
+        return;
+      }
+      const picked = await Contacts.presentContactPickerAsync();
+      if (!picked) return;   // cancelled, which is not a failure
+      if (!contactWorthSending(picked as any)) {
+        Alert.alert('Nothing to send', 'That contact has no phone number saved.');
+        return;
+      }
+      composerRef.current?.setText(contactMessage(picked as any));
+    } catch {
+      Alert.alert('Could not open contacts', 'The contact picker is not available on this device.');
     }
   }
 
@@ -3840,10 +3889,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         {cameraMode && (
           <CameraScreen
             initialMode={cameraMode}
+            clipboard={clipboardHas}
             onClose={() => setCameraMode(null)}
             onDone={(shots) => {
               setCameraMode(null);
               setPendingMedia(prev => [...prev, ...shots]);
+            }}
+            onPick={(action) => {
+              // The camera closes first, always: a picker the user may spend a
+              // minute in should not hold the preview — and the phone's camera
+              // — open behind it.
+              setCameraMode(null);
+              setTimeout(() => runAttachAction(action), 250);
             }}
           />
         )}
@@ -4774,7 +4831,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           editing={!!editingId}
           onTyping={emitTyping}
           onSend={sendText}
-          onAttach={() => setShowAttachMenu(true)}
+          // Straight to the camera. A photo of what is in front of you is by
+          // far the commonest attachment, and it used to cost two taps and a
+          // sheet before the camera even began warming up. The other four ways
+          // to attach something now live around the shutter.
+          onAttach={() => {
+            // Not a member yet: the composer already says so, and opening a
+            // camera for somebody who cannot send the photo is a small
+            // cruelty. The old sheet still opens, so nothing is unreachable.
+            if (!opensCamera({ canPost: !notMember })) { setShowAttachMenu(true); return; }
+            checkClipboard();
+            setCameraMode(OPENS_IN);
+          }}
           onRecord={() => startRecordingUI()}
           onOneTime={() => setShowOneTimeMenu(true)}
           onLocation={() => setShowLocationMenu(true)}
