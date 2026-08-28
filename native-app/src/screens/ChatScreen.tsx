@@ -67,6 +67,7 @@ import * as offline from '../offlineStore';
 import ImageEditor from '../components/ImageEditor';
 import SelectedRow, { SelectionCount } from '../components/SelectedRow';
 import SelectableText, { clearSelectionOf } from '../components/SelectableText';
+import LinkCard from '../components/LinkCard';
 import * as selection from '../selection';
 import { searchLocal, mergeResults } from '../localSearch';
 import * as win from '../messageWindow';
@@ -1813,7 +1814,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // closing can't be retried later — the source file is already gone.
   async function persistLocal(uri: string, name: string): Promise<string> {
     try {
-      if (uri.startsWith(FileSystem.documentDirectory || ' ')) return uri; // already durable
+      if (uri.startsWith(FileSystem.documentDirectory || '')) return uri; // already durable
       const safe = name.replace(/[^\w.\-]/g, '_') || `file-${Date.now()}`;
       const dest = `${FileSystem.documentDirectory}outbox-${Date.now()}-${safe}`;
       await FileSystem.copyAsync({ from: uri, to: dest });
@@ -3310,6 +3311,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               style={s.msgText}
               selectable={canTakeContent(msg)}
             >{renderTextWithLinks(msg.content || '')}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}{msg.one_time_seconds ? <Text style={s.oneTimeTag}> 🔥{msg.one_time_seconds}s</Text> : null}</SelectableText>
+          )}
+          {/* The cover and title of the first link in the message. Draws
+              nothing at all until there is something to draw, so a bubble
+              never grows a grey box under it. */}
+          {msg.type === 'text' && !!msg.content && (
+            <LinkCard content={msg.content} onPress={run => tokenPress(run)} />
           )}
           {msg.type === 'call' && (() => {
             let c: any = {};

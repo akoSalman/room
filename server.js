@@ -297,6 +297,60 @@ app.get('/tiles/:z/:x/:y.png', async (req, res) => {
   }
 });
 
+// ── Link previews ────────────────────────────────────────────────────────────
+// Asked for as: a cover and a title for links sent in chats and rooms.
+//
+// Fetched here rather than on the phone for the same two reasons as the tiles
+// above — most foreign hosts are unreachable or throttled for these users, and
+// nobody's device should have to announce itself to whatever site a stranger
+// sent them a link to. The fence that keeps this from being an open proxy is
+// in linkMeta.js, and it is the whole of that file's first comment.
+//
+// Rooms may be end-to-end encrypted, so the server cannot find the links
+// itself: the client that can read the message asks about the one link it
+// found. Which is also why this is authenticated — an anonymous fetch-anything
+// endpoint is worth more to a passer-by than to a user.
+const linkMeta = require('./linkMeta');
+
+// Two requests for the same link arrive together constantly: a room of thirty
+// people all open the same message. One fetch serves them all.
+const linkInFlight = new Map();
+const LINK_MAX_INFLIGHT = 8;
+
+app.get('/link-preview', authMiddleware, async (req, res) => {
+  const url = String(req.query.url || '');
+  if (url.length > 2048 || !linkMeta.safeUrl(url)) return res.status(204).end();
+  try {
+    let job = linkInFlight.get(url);
+    if (!job) {
+      // A burst of distinct links must not turn into a burst of outbound
+      // connections from this host; the client redraws without a card.
+      if (linkInFlight.size >= LINK_MAX_INFLIGHT) return res.status(503).end();
+      job = linkMeta.preview(url).finally(() => linkInFlight.delete(url));
+      linkInFlight.set(url, job);
+    }
+    const meta = await job;
+    if (!meta.ok) return res.status(204).end();
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.json(meta);
+  } catch {
+    res.status(204).end();
+  }
+});
+
+app.get('/link-image/:key', (req, res) => {
+  // Not authenticated on purpose: an <img> tag cannot carry the token, and the
+  // key is a hash of a URL somebody already has. The bytes are ours — fetched,
+  // size-capped and type-checked before they were written.
+  const found = linkMeta.imagePath(req.params.key);
+  if (!found) return res.status(404).end();
+  res.setHeader('Content-Type', found.type);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+  res.setHeader('Cache-Control', 'public, max-age=604800');
+  fs.createReadStream(found.file).pipe(res);
+});
+
 // ── Thumbnails ───────────────────────────────────────────────────────────────
 // The media gallery rendered its grid from the ORIGINAL uploads: opening a
 // chat's photos meant downloading every full-size image just to draw 100px
@@ -1869,6 +1923,11 @@ function reapPartials() {
 }
 reapPartials();
 setInterval(reapPartials, 60 * 60 * 1000).unref?.();
+
+// Same reasoning for link previews: every link anybody sends leaves a cover on
+// disk, and only the ones still being looked at are worth keeping.
+linkMeta.sweep();
+setInterval(() => linkMeta.sweep(), 6 * 60 * 60 * 1000).unref?.();
 
 // Shareable room links: /join/<roomId> opens the web app on that room
 app.get('/join/:roomId', (req, res) => {

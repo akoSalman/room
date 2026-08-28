@@ -2603,6 +2603,85 @@ function appendLinkifiedText(container, content) {
   return hasCopyable;
 }
 
+// ─── Link previews ────────────────────────────────────────────────────────────
+// The cover and title of the first link in a message, fetched through the
+// server (see /link-preview) because most of these hosts are unreachable from
+// where this is read, and because a card whose image came straight from the
+// site would tell that site who is reading the message.
+//
+// Answers are kept for the life of the page: the message list is rebuilt from
+// scratch on every room switch, and re-asking for the same twenty links each
+// time is a request storm nobody sees.
+const linkPreviewCache = new Map();   // url → meta, or null for "nothing to show"
+
+function firstUrlInMessage(content) {
+  const tokens = [];
+  const re = new RegExp(TOKEN_RE.source, 'g');
+  const src = String(content ?? '');
+  let m;
+  while ((m = re.exec(src))) {
+    const tok = m[0].replace(/[\s.,\-()]+$/, '');
+    if (tok && URLISH_RE.test(tok)) tokens.push({ text: tok, kind: 'url' });
+  }
+  return LinkPreview.pickUrl(tokens);
+}
+
+async function attachLinkCard(bubble, content) {
+  const url = firstUrlInMessage(content);
+  if (!url) return;
+  let meta = linkPreviewCache.get(url);
+  if (meta === undefined) {
+    try {
+      const res = await api('/link-preview?url=' + encodeURIComponent(url));
+      meta = res && !res.error && LinkPreview.worthShowing(res) ? res : null;
+    } catch { meta = null; }
+    linkPreviewCache.set(url, meta);
+  }
+  // The bubble may have been thrown away while we were asking — a room switch,
+  // or the message being deleted.
+  if (!meta || !bubble.isConnected) return;
+
+  const card = document.createElement('a');
+  card.className = 'link-card';
+  card.href = /^https?:\/\//.test(url) ? url : 'https://' + url;
+  card.target = '_blank';
+  card.rel = 'noopener noreferrer';
+  card.onclick = (e) => { e.stopPropagation(); };   // not the message menu
+  if (meta.image) {
+    const img = document.createElement('img');
+    img.className = 'link-card-cover';
+    img.src = meta.image;
+    img.loading = 'lazy';
+    img.alt = '';
+    // A cover that 404s (swept off the server's disk) leaves a broken-image
+    // icon in the bubble, which looks like the message is damaged.
+    img.onerror = () => img.remove();
+    card.appendChild(img);
+  }
+  const body = document.createElement('div');
+  body.className = 'link-card-body';
+  const host = LinkPreview.displayHost({ ...meta, url });
+  if (host) {
+    const h = document.createElement('div');
+    h.className = 'link-card-host'; h.textContent = host;
+    body.appendChild(h);
+  }
+  const title = LinkPreview.trimTitle(meta.title);
+  if (title) {
+    const t = document.createElement('div');
+    t.className = 'link-card-title'; t.textContent = title;
+    body.appendChild(t);
+  }
+  const desc = LinkPreview.trimDescription(meta.description);
+  if (desc) {
+    const d = document.createElement('div');
+    d.className = 'link-card-desc'; d.textContent = desc;
+    body.appendChild(d);
+  }
+  card.appendChild(body);
+  bubble.appendChild(card);
+}
+
 // Open a public room found by search or reached by link. This only OPENS it —
 // joining is a deliberate act, done with the Join bar inside the room once the
 // visitor has read it. (Following a link used to silently make you a member.)
@@ -2949,6 +3028,9 @@ function buildMessageElement(msg) {
     bubble.appendChild(textSpan);
     if (msg.edited) { const tag = document.createElement('span'); tag.className = 'edited-tag'; tag.textContent = '(edited)'; bubble.appendChild(tag); }
     if (msg.one_time_seconds) { const ot = document.createElement('span'); ot.className = 'one-time-tag'; ot.textContent = ` 🔥${msg.one_time_seconds}s`; bubble.appendChild(ot); }
+    // Added later, and only if there is something to draw: the bubble must
+    // never grow an empty grey box while it waits.
+    attachLinkCard(bubble, msg.content || '');
   } else if (msg.type === 'call') {
     let c = {};
     try { c = JSON.parse(msg.content || '{}'); } catch {}
