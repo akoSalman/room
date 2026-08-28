@@ -3398,6 +3398,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           {!hiddenOneTime && msg.type === 'audio' && !msg._uploading && (
             <VoicePlayer url={`${BASE_URL}${msg.file_path}`} peaks={msg.file_name || ''} mine={mine} msgId={msg.id} roomId={room.id} roomMeta={room} cache={canTakeContent(msg)} label={`🎙 ${msg.username} · voice message`}
               played={!!msg.played}
+              // The whole row plays; the menu stays where every other message
+              // keeps it, on the long press and on the space beside the bubble.
+              onLongPress={() => onMessageLongPress(msg)}
+              selectMode={selectMode}
+              onSelect={() => toggleSelected(msg)}
               onPlayStart={() => {
                 if (mine) return;
                 if (msg.one_time_seconds) startOneTimeClock(msg);

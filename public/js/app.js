@@ -3568,12 +3568,24 @@ function buildVoicePlayer(msg) {
     }
   };
 
-  // Seek on waveform click
+  // A tap anywhere on the row plays or pauses; the waveform seeks only while
+  // there is something on the timeline to seek in. Which region a click landed
+  // in is the only thing decided here — VoiceTap says what it means, so the
+  // app and the web cannot disagree about it.
   waveWrap.onclick = e => {
-    if (!audio.duration) return;
+    const action = VoiceTap.tapAction({ region: 'waveform', isCurrent: playing || audio.currentTime > 0 });
+    if (action !== 'seek' || !audio.duration) { playBtn.onclick(); return; }
     const rect = waveWrap.getBoundingClientRect();
-    audio.currentTime = ((e.clientX - rect.left) / rect.width) * audio.duration;
+    audio.currentTime = VoiceTap.seekFraction(e.clientX - rect.left, rect.width) * audio.duration;
     updateBars();
+  };
+  // The rest of the row: the duration, the padding, the gaps. All of it was a
+  // dead zone before, so playing a voice message meant hitting the small round
+  // button and missing it felt like the app had ignored you.
+  player.onclick = e => {
+    if (e.target.closest('.voice-play-btn, .voice-waveform, .voice-speed-btn')) return;
+    e.stopPropagation();   // not the message menu
+    playBtn.onclick();
   };
 
   // Speed control

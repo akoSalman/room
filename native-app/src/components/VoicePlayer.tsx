@@ -1,7 +1,8 @@
 import React, { useEffect, useReducer, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, PanResponder } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, PanResponder, Pressable } from 'react-native';
 import { C } from '../theme';
 import { audioManager } from '../audioManager';
+import { tapAction, seekFraction } from '../voiceTap';
 
 const SPEEDS = [1, 1.5, 2];
 
@@ -20,13 +21,18 @@ function parsePeaks(raw: string, count = 40): number[] {
   });
 }
 
-export default function VoicePlayer({ url, peaks: rawPeaks, mine, msgId, roomId, label, roomMeta, onPlayStart, played, cache }: {
+export default function VoicePlayer({ url, peaks: rawPeaks, mine, msgId, roomId, label, roomMeta, onPlayStart, played, cache, onLongPress, selectMode, onSelect }: {
   url: string; peaks: string; mine: boolean;
   msgId: number | string; roomId: number; label: string; roomMeta?: any;
   onPlayStart?: () => void;
   played?: boolean;
   /** False for a voice message that must not be kept on the device. */
   cache?: boolean;
+  /** The message menu, which must stay reachable from every part of the row. */
+  onLongPress?: () => void;
+  /** While the chat is picking messages, a tap picks rather than plays. */
+  selectMode?: boolean;
+  onSelect?: () => void;
 }) {
   const [, forceUpdate] = useReducer(x => x + 1, 0);
   const peaks = parsePeaks(rawPeaks);
@@ -44,16 +50,38 @@ export default function VoicePlayer({ url, peaks: rawPeaks, mine, msgId, roomId,
   const waveWidth = useRef(0);
   const seekAtX = (x: number) => {
     if (!isCurrent || !waveWidth.current) return;
-    audioManager.seek(x / waveWidth.current);
+    audioManager.seek(seekFraction(x, waveWidth.current));
   };
+  // The waveform claims the touch only when it is a TIMELINE — that is, while
+  // this is the message the player has loaded. Before that it is a picture,
+  // and the tap belongs to the bubble, which starts playing.
   const pan = useRef(PanResponder.create({
-    onStartShouldSetPanResponder: () => isCurrentRef.current,
-    onMoveShouldSetPanResponder: () => isCurrentRef.current,
+    onStartShouldSetPanResponder: () => wantsSeek(),
+    onMoveShouldSetPanResponder: () => wantsSeek(),
     onPanResponderGrant: (e) => seekAtX(e.nativeEvent.locationX),
     onPanResponderMove: (e) => seekAtX(e.nativeEvent.locationX),
   })).current;
+  function wantsSeek() {
+    return tapAction({
+      region: 'waveform', isCurrent: isCurrentRef.current, selectMode: selectModeRef.current,
+    }) === 'seek';
+  }
+  const selectModeRef = useRef(false);
+  selectModeRef.current = !!selectMode;
   const isCurrentRef = useRef(false);
   isCurrentRef.current = isCurrent;
+
+  /**
+   * A tap anywhere on the message.
+   *
+   * The rule decides what it means, so the container, the button and the
+   * waveform cannot disagree about it.
+   */
+  function onTap(region: 'button' | 'elsewhere') {
+    const action = tapAction({ region, isCurrent, selectMode });
+    if (action === 'select') { onSelect?.(); return; }
+    toggle();
+  }
 
   function toggle() {
     if (isCurrent) audioManager.toggle();
@@ -71,8 +99,16 @@ export default function VoicePlayer({ url, peaks: rawPeaks, mine, msgId, roomId,
   const barUnplayed = mine ? 'rgba(59,125,216,0.3)' : 'rgba(31,41,55,0.25)';
 
   return (
-    <View style={s.container}>
-      <TouchableOpacity style={s.playBtn} onPress={toggle} disabled={loading}>
+    // The whole row is the play/pause target. The long press is passed
+    // straight through, because a voice message you can play but cannot reply
+    // to, forward or delete is worse than one you have to aim at.
+    <Pressable
+      style={s.container}
+      onPress={() => onTap('elsewhere')}
+      onLongPress={onLongPress}
+      delayLongPress={350}
+    >
+      <TouchableOpacity style={s.playBtn} onPress={() => onTap('button')} disabled={loading}>
         {loading ? <ActivityIndicator size="small" color="#fff" /> : <Text style={s.playIcon}>{playing ? '⏸' : '▶'}</Text>}
       </TouchableOpacity>
 
@@ -89,7 +125,7 @@ export default function VoicePlayer({ url, peaks: rawPeaks, mine, msgId, roomId,
         ))}
       </View>
 
-      <View style={s.meta}>
+      <View style={s.meta} pointerEvents="box-none">
         {/* Opened indicator: bright dot until the other side has played it */}
         <View style={[s.playedDot, played ? s.playedDotDone : null]} />
         <Text style={s.duration}>{fmtTime(duration * progress || 0)}</Text>
@@ -97,7 +133,7 @@ export default function VoicePlayer({ url, peaks: rawPeaks, mine, msgId, roomId,
           <Text style={s.speedText}>{SPEEDS[speedIdx]}×</Text>
         </TouchableOpacity>
       </View>
-    </View>
+    </Pressable>
   );
 }
 
