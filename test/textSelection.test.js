@@ -610,25 +610,28 @@ const chat = fs.readFileSync(
   path.join(__dirname, '..', 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
 
 test('THE BUG: a tap spent on a token does not also open the menu', () => {
-  assert.ok(/const spentByToken = useRef\(false\)/.test(chat),
-    'nothing records that the touch was answered by something inside the message');
+  // The flag this used to check is gone: it only worked when the child's
+  // onPress and the parent's onTouchEnd arrived in the order the code assumed,
+  // and the report came back when they did not. See test/tokenTap.test.js.
   const release = chat.slice(chat.indexOf('function noteTextRelease('),
     chat.indexOf('function dismissTextSelection('));
   assert.ok(release.length > 0, 'noteTextRelease is gone — this check would be vacuous');
-  assert.ok(/if \(spentByToken\.current\) \{ spentByToken\.current = false; return; \}/.test(release),
+  assert.ok(release.includes('if (menuSpentByToken()) return;'),
     'the release still schedules a tap after a token has answered it');
 });
 
 test('and the order of the two handlers cannot matter', () => {
   // Whether the child's onPress or the parent's onTouchEnd runs first is not
-  // guaranteed. The flag covers the case where the tap has not been scheduled
-  // yet; clearing the timer covers the case where it already has. Only doing
-  // one of the two fixes the bug on some devices and not others.
+  // guaranteed, and the press can arrive after the menu has already opened.
+  // So: the time is recorded, the scheduled tap is cancelled, and a menu that
+  // this same touch opened is taken back.
   const fn = chat.slice(chat.indexOf('function tokenPress('),
-    chat.indexOf('function tokenPress(') + 400);
-  assert.ok(fn.includes('spentByToken.current = true'), 'the flag is never set');
+    chat.indexOf('function tokenPress(') + 900);
+  assert.ok(fn.includes('tokenPressedAt.current = now'), 'the press is never recorded');
   assert.ok(fn.includes('clearTimeout(tapTimer.current)'),
     'a tap already scheduled is left to fire, so the menu still appears');
+  assert.ok(fn.includes('menuWasStrayTap({'),
+    'a menu that had already opened when the press landed stays on screen');
 });
 
 test('EVERY tappable thing in a message goes through it', () => {
@@ -672,11 +675,17 @@ test('the reply quote in particular still jumps', () => {
 
 test('a fresh touch forgets what the last one was spent on', () => {
   // Otherwise one tap on a number silences the menu for the NEXT ordinary tap
-  // as well, which is the same bug wearing the opposite coat.
+  // as well, which is the same bug wearing the opposite coat. It is forgotten
+  // on the next touch — unless a press from the previous one is still in
+  // flight, which is the case the timestamp exists for.
   const touch = chat.slice(chat.indexOf('function noteTextTouch('),
     chat.indexOf('/** When the finger that landed on a text bubble went down'));
-  assert.ok(/spentByToken\.current = false;/.test(touch),
-    'the spent flag survives into the next touch');
+  assert.ok(/if \(!menuSpentByToken\(\)\) tokenPressedAt\.current = null;/.test(touch),
+    'the spent mark survives into the next touch');
+  // And it expires by itself, so nothing depends on a later touch arriving.
+  const tokenTap = fs.readFileSync(
+    path.join(__dirname, '..', 'native-app', 'src', 'tokenTap.ts'), 'utf8');
+  assert.ok(/age >= 0 && age <= grace/.test(tokenTap), 'the mark never expires on its own');
 });
 
 let passed = 0, failed = 0;

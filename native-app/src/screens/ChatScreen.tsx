@@ -68,6 +68,7 @@ import ImageEditor from '../components/ImageEditor';
 import SelectedRow, { SelectionCount } from '../components/SelectedRow';
 import SelectableText, { clearSelectionOf } from '../components/SelectableText';
 import LinkCard from '../components/LinkCard';
+import { spentByToken, menuWasStrayTap } from '../tokenTap';
 import * as selection from '../selection';
 import { searchLocal, mergeResults } from '../localSearch';
 import * as win from '../messageWindow';
@@ -2422,8 +2423,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   function noteTextTouch(id: MsgId, e?: any) {
     clearTimeout(holdTimer.current);
     clearTimeout(tapTimer.current);
-    // A fresh touch: whatever the last one was spent on is over.
-    spentByToken.current = false;
+    // A fresh touch: whatever the last one was spent on is over. Not cleared
+    // outright — a press still on its way from the PREVIOUS touch would then
+    // find nothing to explain the menu it is about to see.
+    if (!menuSpentByToken()) tokenPressedAt.current = null;
     // A finger landing on a list that is still gliding is spent stopping it:
     // Android never delivers that touch as a tap and starts no selection from
     // it. Told to the reducer so it is not counted as half of a double-tap.
@@ -2461,18 +2464,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
    * Was the touch spent on something INSIDE the message?
    *
    * Reported as: tapping a number copies it and then the message menu pops up
-   * on top of the confirmation.
-   *
-   * A number, a link and an @name are each a <Text onPress> inside the
-   * bubble's selectable text. Pressing one runs its own action — and the
-   * bubble, which cannot see that, went on treating the same touch as an
-   * ordinary tap and opened the menu 300ms later. One finger, two answers.
-   *
-   * Which of the two handlers runs first is not guaranteed, so this does not
-   * depend on the order: the flag stops a tap that has not been scheduled yet,
-   * and the timer is cleared for one that already has.
+   * on top of the confirmation — and reported AGAIN, for links and numbers,
+   * after a first fix that depended on the two handlers running in a
+   * particular order. They do not. See src/tokenTap.ts: the question is now
+   * about time, and it is asked at every point that could open a menu — plus
+   * one that can close a menu the same touch already opened.
    */
-  const spentByToken = useRef(false);
 
   /**
    * Run a token's action, and mark the touch as spent.
@@ -2483,9 +2480,26 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
    * ship.
    */
   function tokenPress(action: () => void) {
-    spentByToken.current = true;
+    const now = Date.now();
+    tokenPressedAt.current = now;
     clearTimeout(tapTimer.current);
+    // The press may be arriving AFTER the menu it was never meant to open —
+    // Android dispatches a Text press separately from the touch that carried
+    // it, and on a busy list that can be later than the 300 ms the menu waits
+    // out. Nothing but this touch can have opened a menu that appeared a
+    // moment ago, so take it back.
+    if (menuWasStrayTap({ menuOpenedAt: menuOpenedAt.current, now })) {
+      menuOpenedAt.current = null;
+      setActionsMsg(null);
+    }
     action();
+  }
+  /** When a token was last pressed, and when a menu last opened. */
+  const tokenPressedAt = useRef<number | null>(null);
+  const menuOpenedAt = useRef<number | null>(null);
+  /** Would opening the menu right now be overriding what the user just tapped? */
+  function menuSpentByToken() {
+    return spentByToken({ pressedAt: tokenPressedAt.current, now: Date.now() });
   }
   /** Is the list still gliding after a flick? */
   const listSettling = useRef(false);
@@ -2514,7 +2528,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // It landed on a number, a link or an @name, which has already answered
     // it. Opening the menu as well would put a sheet over the confirmation of
     // what the user just did.
-    if (spentByToken.current) { spentByToken.current = false; return; }
+    if (menuSpentByToken()) return;
     // The finger travelled: this was a scroll or a swipe that happened to
     // start on some text. Treating it as a tap opened the message menu at the
     // end of every flick — and THAT is why double-tap "did not work after
@@ -2536,6 +2550,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // timer, so a second tap simply prevents the menu.
     clearTimeout(tapTimer.current);
     tapTimer.current = setTimeout(() => {
+      // Asked again HERE rather than only above: the press that answers this
+      // touch may have landed in the 300 ms since.
+      if (menuSpentByToken()) return;
       const action = selectionEvent({ type: 'tap' });
       if (action === 'dismiss') return;
       if (selectMode) { toggleSelected(msg); return; }
@@ -2610,6 +2627,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   function openMenuFor(msg: Message, e?: any) {
+    menuOpenedAt.current = Date.now();
     setActionsMsg({ msg, x: e?.nativeEvent?.pageX ?? 0, y: e?.nativeEvent?.pageY ?? 0 });
   }
 
@@ -2667,6 +2685,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // wait to find out whether a second one is coming. The menu opens at once.
   function onMessageTap(msg: Message, e: any, _fromText: boolean) {
     clearTimeout(holdTimer.current);
+    // The catcher sits behind the whole row, so a token press that Android
+    // routed past the bubble lands here instead. It never asked this before.
+    if (menuSpentByToken()) return;
     // selectionEvent does the clearing itself now, from the id the reducer
     // returns.
     const action = selectionEvent({ type: 'tap' });
