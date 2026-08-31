@@ -4,6 +4,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { Audio } from 'expo-av';
 import { C } from '../theme';
 import { audioManager } from '../audioManager';
+import * as recorder from '../voiceRecorder';
+import { phaseFor, showsLiveUi, canStop, elapsedSeconds } from '../recordStart';
 
 function fmtTime(s: number) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
@@ -13,7 +15,11 @@ export default function VoiceRecorder({ onCancel, onSend }: {
   onCancel: () => void;
   onSend: (uri: string, peaks: number[]) => void;
 }) {
-  const [phase, setPhase] = useState<'recording' | 'preview'>('recording');
+  // What the recorder REPORTS, never what was asked of it — the reported bug
+  // was a bar that said "recording" while the microphone was still opening.
+  const [started, setStarted] = useState(false);
+  const [live, setLive] = useState(false);
+  const [stopped, setStopped] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const [paused, setPaused] = useState(false);
   const [previewPlaying, setPreviewPlaying] = useState(false);
@@ -41,11 +47,7 @@ export default function VoiceRecorder({ onCancel, onSend }: {
       previewSoundRef.current?.unloadAsync().catch(() => {});
       // Cancelling unmounts us mid-recording; hand the audio session back here
       // too, or the session stays in record mode after a discarded recording.
-      Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: false,
-      }).catch(() => {});
+      recorder.releaseSession();
     };
   }, []);
 
@@ -58,8 +60,7 @@ export default function VoiceRecorder({ onCancel, onSend }: {
     try {
       // Use the cached permission if we already have it — asking again adds a
       // round-trip that delayed the actual capture (first words were lost).
-      let status = (await Audio.getPermissionsAsync()).status;
-      if (status !== 'granted') status = (await Audio.requestPermissionsAsync()).status;
+      let status = (await recorder.hasPermission()) ? 'granted' : (await Audio.requestPermissionsAsync()).status;
       if (status !== 'granted') {
         Alert.alert(
           'Microphone Permission Required',
@@ -70,23 +71,21 @@ export default function VoiceRecorder({ onCancel, onSend }: {
         );
         return;
       }
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: false,
-      });
-      // Prepare then start explicitly, and only begin the timer AFTER the
-      // recorder reports it is actually running — so the elapsed time matches
-      // the captured audio and the opening words aren't clipped.
-      const recording = new Audio.Recording();
-      await recording.prepareToRecordAsync({ ...Audio.RecordingOptionsPresets.HIGH_QUALITY, isMeteringEnabled: true });
-      await recording.startAsync();
+      // Collects the recorder the mic button warmed up on press-in, or opens
+      // one now. Resolves only once it has actually started.
+      const { recording } = await recorder.begin();
       recordingRef.current = recording;
-      timerRef.current = setInterval(() => setSeconds(s => s + 1), 1000);
+      setStarted(true);
+      // The timer and the waveform are driven by the recorder's OWN duration:
+      // an interval counting seconds starts from whenever JavaScript got round
+      // to it, not from the first captured sample, and drifts from there.
       peakTimerRef.current = setInterval(async () => {
         try {
           const st = await recording.getStatusAsync();
+          // The one fact the bar is allowed to draw a pulsing dot from.
+          setLive(!!st.isRecording);
           if (st.isRecording) {
+            setSeconds(elapsedSeconds(st.durationMillis));
             const level = st.metering !== undefined ? Math.max(0, (st.metering + 60) / 60) : Math.random() * 0.5 + 0.1;
             peaksRef.current.push(Math.min(1, level));
           }
@@ -100,32 +99,26 @@ export default function VoiceRecorder({ onCancel, onSend }: {
 
   async function togglePause() {
     if (!recordingRef.current) return;
-    if (paused) {
-      await recordingRef.current.startAsync();
-      timerRef.current = setInterval(() => setSeconds(s => s + 1), 1000);
-    } else {
-      await recordingRef.current.pauseAsync();
-      clearInterval(timerRef.current);
-    }
+    if (paused) await recordingRef.current.startAsync();
+    else await recordingRef.current.pauseAsync();
     setPaused(p => !p);
   }
 
   async function stopForPreview() {
+    // Nothing to stop while the microphone is still opening: stopping there
+    // produces a file with no audio in it, which is the reported bug wearing
+    // its shortest coat.
+    if (!canStop(phase) || !recordingRef.current) return;
     stopTimers();
-    if (!recordingRef.current) return;
     await recordingRef.current.stopAndUnloadAsync();
     // Hand the audio session back. audioManager used to reset the mode on
     // every play(), which quietly covered for this; the media-session player
     // does not touch expo-av's mode at all, so leaving the session in
     // record mode would linger.
-    await Audio.setAudioModeAsync({
-      allowsRecordingIOS: false,
-      playsInSilentModeIOS: true,
-      staysActiveInBackground: false,
-    }).catch(() => {});
+    await recorder.releaseSession();
     const recordedUri = recordingRef.current.getURI() || '';
     setUri(recordedUri);
-    setPhase('preview');
+    setStopped(true);
   }
 
   async function togglePreview() {
@@ -170,24 +163,43 @@ export default function VoiceRecorder({ onCancel, onSend }: {
       })
     : Array(barCount).fill(0.3);
 
-  if (phase === 'recording') return (
+  const phase = phaseFor({ started, isRecording: live, paused, stopped });
+  const readyToSpeak = showsLiveUi(phase);
+
+  if (phase !== 'preview') return (
     <View style={s.bar}>
       <TouchableOpacity onPress={onCancel} style={s.trashBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
         <Ionicons name="trash-outline" size={20} color={C.danger} />
       </TouchableOpacity>
       <View style={s.pill}>
-        <Animated.View style={[s.recDot, { opacity: paused ? 0.4 : pulse }]} />
-        <Text style={s.timer}>{fmtTime(seconds)}</Text>
-        <View style={s.waveform}>
-          {displayPeaks.map((h, i) => (
-            <View key={i} style={[s.waveBar, { height: Math.max(3, h * 26), opacity: paused ? 0.4 : 0.9 }]} />
-          ))}
-        </View>
-        <TouchableOpacity onPress={togglePause} hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}>
-          <Ionicons name={paused ? 'play' : 'pause'} size={20} color={C.accent} />
-        </TouchableOpacity>
+        {/* Nothing here claims to be recording until the recorder says it is.
+            Somebody who starts talking at a bar that says "Starting…" is
+            reacting to what we drew, and we drew it too early. */}
+        <Animated.View style={[s.recDot,
+          { opacity: !readyToSpeak ? 0.25 : paused ? 0.4 : pulse },
+          !readyToSpeak && s.recDotWaiting]} />
+        {readyToSpeak ? (
+          <>
+            <Text style={s.timer}>{fmtTime(seconds)}</Text>
+            <View style={s.waveform}>
+              {displayPeaks.map((h, i) => (
+                <View key={i} style={[s.waveBar, { height: Math.max(3, h * 26), opacity: paused ? 0.4 : 0.9 }]} />
+              ))}
+            </View>
+            <TouchableOpacity onPress={togglePause} hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}>
+              <Ionicons name={paused ? 'play' : 'pause'} size={20} color={C.accent} />
+            </TouchableOpacity>
+          </>
+        ) : (
+          <Text style={s.starting}>Starting…</Text>
+        )}
       </View>
-      <TouchableOpacity style={s.sendBtn} onPress={stopForPreview} accessibilityLabel="Stop and preview">
+      <TouchableOpacity
+        style={[s.sendBtn, !readyToSpeak && s.sendBtnWaiting]}
+        onPress={stopForPreview}
+        disabled={!readyToSpeak}
+        accessibilityLabel="Stop and preview"
+      >
         <Ionicons name="checkmark" size={22} color="#fff" />
       </TouchableOpacity>
     </View>
@@ -228,6 +240,9 @@ const s = StyleSheet.create({
     borderWidth: 1, borderColor: C.border,
   },
   recDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: C.danger },
+  recDotWaiting: { backgroundColor: C.muted },
+  starting: { color: C.muted, fontSize: 13, fontWeight: '600' },
+  sendBtnWaiting: { opacity: 0.4 },
   playBtn: { width: 30, height: 30, borderRadius: 15, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
   waveform: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 2, height: 30, overflow: 'hidden' },
   waveBar: { flex: 1, minWidth: 2, maxWidth: 3, borderRadius: 2, backgroundColor: C.danger },

@@ -32,6 +32,15 @@ type Props = {
   onSend: (text: string) => void;   // parent handles media/edit/reply/dispatch
   onAttach: () => void;
   onRecord: () => void;
+  /**
+   * The finger LANDED on the microphone.
+   *
+   * Reported as: the first second or two of a voice message is missing.
+   * Opening the microphone takes up to a second or two on these phones, and it
+   * was only started once the recording bar was already on screen. This lets
+   * that work begin while the finger is still down.
+   */
+  onRecordPressIn?: () => void;
   onOneTime: () => void;
   onLocation: () => void;
   /** Seconds after which everything in this chat disappears; 0 = off. */
@@ -52,7 +61,7 @@ type Props = {
 function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
   const {
     pendingMedia, oneTimeSecs, quickEmoji, editing,
-    onTyping, onSend, onAttach, onRecord, onOneTime, onLocation, liveLocation,
+    onTyping, onSend, onAttach, onRecord, onRecordPressIn, onOneTime, onLocation, liveLocation,
     sendQuality, onQuality, disappearing,
     onToggleQuickEmoji, onRemoveMedia, onPreviewMedia, mentionables,
   } = props;
@@ -282,7 +291,12 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
           multiline
         />
         {text.trim().length === 0 && pendingMedia.length === 0 ? (
-          <TouchableOpacity style={s.micBtn} onPress={onRecord} accessibilityLabel="Record voice message">
+          <TouchableOpacity
+            style={s.micBtn}
+            onPressIn={onRecordPressIn}
+            onPress={onRecord}
+            accessibilityLabel="Record voice message"
+          >
             <Ionicons name="mic" size={22} color="#fff" />
           </TouchableOpacity>
         ) : (

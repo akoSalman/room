@@ -69,6 +69,8 @@ import SelectedRow, { SelectionCount } from '../components/SelectedRow';
 import SelectableText, { clearSelectionOf } from '../components/SelectableText';
 import LinkCard from '../components/LinkCard';
 import { spentByToken, menuWasStrayTap } from '../tokenTap';
+import * as voiceRecorder from '../voiceRecorder';
+import { shouldWarm, WARM_TTL_MS } from '../recordStart';
 import * as selection from '../selection';
 import { searchLocal, mergeResults } from '../localSearch';
 import * as win from '../messageWindow';
@@ -2149,13 +2151,40 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     setMessages(prev => prev.filter(m => m.id !== clientId));
   }
 
+  /**
+   * The finger landed on the microphone.
+   *
+   * Reported as: the first second or two of a voice message is empty. Opening
+   * the microphone — the permission read, the audio-session switch, building
+   * the encoder — takes up to a second or two on these phones, and none of it
+   * depends on the user having decided to speak yet. Starting it here means
+   * the recorder is usually already open by the time the bar appears.
+   */
+  function warmMic() {
+    if (!shouldWarm({ target: 'mic', alreadyWarm: voiceRecorder.isWarm(), recording })) return;
+    audioManager.stop();   // the mic cannot be opened over playing audio
+    voiceRecorder.warmUp().catch(() => {});
+    // A microphone opened for a tap that never came must be given back: it
+    // shows as the recording indicator and locks other apps out.
+    clearTimeout(warmTimer.current);
+    warmTimer.current = setTimeout(() => {
+      if (!recordingRef.current) voiceRecorder.cool().catch(() => {});
+    }, WARM_TTL_MS);
+  }
+  const warmTimer = useRef<any>(null);
+  /** True while the recorder bar is up, so the warm-up is not taken back under it. */
+  const recordingRef = useRef(false);
+
   function startRecordingUI() {
     audioManager.stop(); // don't record over playing audio
+    clearTimeout(warmTimer.current);
+    recordingRef.current = true;
     setRecording(true);
     socketRef.current?.emit('recording_start', { roomId: room.id });
   }
 
   function stopRecordingUI() {
+    recordingRef.current = false;
     setRecording(false);
     socketRef.current?.emit('recording_stop', { roomId: room.id });
   }
@@ -4877,6 +4906,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             setCameraMode(OPENS_IN);
           }}
           onRecord={() => startRecordingUI()}
+          onRecordPressIn={warmMic}
           onOneTime={() => setShowOneTimeMenu(true)}
           onLocation={() => setShowLocationMenu(true)}
           liveLocation={!!liveShare}
