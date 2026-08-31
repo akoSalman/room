@@ -2201,6 +2201,18 @@ io.on('connection', (socket) => {
 
     // Push notification for everyone but the sender (reaches closed apps)
     const roomLabel = room && !room.is_dm ? ` · ${room.name}` : '';
+    // Everything the app needs to OPEN this chat, carried in the notification
+    // itself. Reported as: tapping a notification sometimes leaves the app on
+    // the chat list — one cause was that the push named only a room id, so the
+    // app had to fetch the room list before it could open anything, over a
+    // connection that has only just woken up. A push that names the chat opens
+    // it with no request at all. For a DM the name the recipient sees is the
+    // sender's, which is who `peer` is.
+    const openData = {
+      roomName: room && !room.is_dm ? String(room.name || '') : String(socket.user.username),
+      isDm: room && room.is_dm ? '1' : '0',
+      peer: room && room.is_dm ? String(socket.user.username) : '',
+    };
     // ── @mentions ───────────────────────────────────────────────────────────
     // Being named is different from a message arriving: it is addressed to
     // you. Mentioned people get told even when they are not looking at the
@@ -2231,7 +2243,7 @@ io.on('connection', (socket) => {
         [...mentioned].filter(id => !viewingUserIds.has(id)),
         (msg.avatar ? msg.avatar + ' ' : '') + msg.username + roomLabel,
         `mentioned you`,
-        { roomId: String(roomId), msgId: String(msg.id), mention: '1' },
+        { roomId: String(roomId), msgId: String(msg.id), mention: '1', ...openData },
         { fromUserId: socket.user.id },
       );
     }
@@ -2240,7 +2252,7 @@ io.on('connection', (socket) => {
       memberIds.filter(id => id !== socket.user.id && !viewingUserIds.has(id)),
       (msg.avatar ? msg.avatar + ' ' : '') + msg.username + roomLabel,
       messagePreview(msg),
-      { roomId: String(roomId), msgId: String(msg.id) },
+      { roomId: String(roomId), msgId: String(msg.id), ...openData },
       { fromUserId: socket.user.id },
     );
 
@@ -2513,7 +2525,10 @@ io.on('connection', (socket) => {
         [target.id],
         (socket.user.avatar ? socket.user.avatar + ' ' : '') + socket.user.username,
         `🔒 Invited you to "${room.name}"`,
-        { roomId: String(dm.id), msgId: String(msg.id) },
+        {
+          roomId: String(dm.id), msgId: String(msg.id),
+          roomName: String(socket.user.username), isDm: '1', peer: String(socket.user.username),
+        },
         { fromUserId: socket.user.id },
       );
     }
@@ -2834,7 +2849,12 @@ io.on('connection', (socket) => {
       dstMembers.filter(id => id !== socket.user.id),
       (msg.avatar ? msg.avatar + ' ' : '') + msg.username + (dstRoom.is_dm ? '' : ` · ${dstRoom.name}`),
       messagePreview(msg),
-      { roomId: String(dstRoom.id), msgId: String(msg.id) },
+      {
+        roomId: String(dstRoom.id), msgId: String(msg.id),
+        roomName: dstRoom.is_dm ? String(socket.user.username) : String(dstRoom.name || ''),
+        isDm: dstRoom.is_dm ? '1' : '0',
+        peer: dstRoom.is_dm ? String(socket.user.username) : '',
+      },
       { fromUserId: socket.user.id },
     );
     if (dstRoom.is_dm) io.emit('dm_activity', { room: dstRoom });

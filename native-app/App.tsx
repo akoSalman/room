@@ -13,6 +13,10 @@ import { registerCallPush } from './src/callPush';
 import { registerCallService, onEndFromShade, handleNotifeeEvent } from './src/ongoingCall';
 import * as mediaCache from './src/mediaCache';
 import * as offlineStore from './src/offlineStore';
+import {
+  roomIdFromPush, roomFromPush, resolveRoom, screenFor,
+  shouldKeepTrying, retryDelay, intentStillWanted, RoomRef, PushData,
+} from './src/openIntent';
 import AuthScreen from './src/screens/AuthScreen';
 import RoomsScreen from './src/screens/RoomsScreen';
 import CallOverlay from './src/components/CallOverlay';
@@ -20,7 +24,7 @@ import ConnectionStatus from './src/components/ConnectionStatus';
 import { callManager } from './src/callManager';
 import ChatScreen from './src/screens/ChatScreen';
 import MiniPlayer from './src/components/MiniPlayer';
-import Toast from './src/components/Toast';
+import Toast, { toast } from './src/components/Toast';
 import { disconnectSocket, getSocket, getUsername, apiFetch, ensureSocketAlive, setSessionExpiredHandler, resetSessionExpiry } from './src/api';
 import { audioManager } from './src/audioManager';
 import * as outbox from './src/outbox';
@@ -219,7 +223,10 @@ export default function App() {
 
   useEffect(() => {
     AsyncStorage.getItem('token').then(t => {
-      if (t) setScreen('rooms');
+      // Never with a bare setScreen('rooms'): a notification tapped on a cold
+      // start may already have opened its chat by the time this resolves, and
+      // putting the list back over it is exactly the reported bug.
+      setScreen(prev => screenFor({ hasToken: !!t, current: prev }));
     });
     // App-wide ack listener: clears pending-send copies even when the chat
     // that created them is closed.
@@ -253,29 +260,80 @@ export default function App() {
         }
         return;
       }
-      if (data.roomId) openRoomById(parseInt(String(data.roomId), 10));
+      openChatFromPush(data);
     });
     // Cold start from a tapped notification
     Notifications.getLastNotificationResponseAsync().then(resp => {
-      const data: any = resp?.notification?.request?.content?.data || {};
-      if (data.roomId && data.type !== 'call') openRoomById(parseInt(String(data.roomId), 10));
+      openChatFromPush(resp?.notification?.request?.content?.data);
     }).catch(() => {});
     return () => { sub.remove(); respSub.remove(); };
   }, []);
 
-  // Find a room/DM by id and open its chat screen.
-  async function openRoomById(roomId: number) {
+  /**
+   * Open the chat a tapped notification was about.
+   *
+   * Reported as: sometimes the app opens and stays on the chat list. It did,
+   * for four different reasons, all of which ended in the same silence — see
+   * src/openIntent.ts. The intent is now something that survives until it is
+   * satisfied rather than one attempt that gives up without a word.
+   */
+  const openIntent = React.useRef<{ roomId: number; at: number; from: RoomRef | null } | null>(null);
+  const resolving = React.useRef(false);
+
+  function openChatFromPush(data: PushData | null | undefined) {
+    const roomId = roomIdFromPush(data);
     if (!roomId) return;
-    try {
-      const [rooms, dms] = await Promise.all([apiFetch('/rooms'), apiFetch('/dm-rooms')]);
-      const all = [...(Array.isArray(dms) ? dms : []), ...(Array.isArray(rooms) ? rooms : [])];
-      const r = all.find((x: any) => x.id === roomId);
-      if (r) {
-        setRoom({ id: r.id, name: r.name, is_dm: r.is_dm, other_username: r.other_username });
-        setScreen('chat');
-      }
-    } catch {}
+    openIntent.current = { roomId, at: Date.now(), from: roomFromPush(data) };
+    resolveOpenIntent();
   }
+
+  async function resolveOpenIntent() {
+    if (resolving.current) return;
+    const intent = openIntent.current;
+    if (!intent) return;
+    if (!(await AsyncStorage.getItem('token'))) return;  // the intent waits for the sign-in
+    resolving.current = true;
+    try {
+      // 1. What the notification itself said. Newer servers name the room, and
+      //    then this costs nothing and cannot fail.
+      let r: RoomRef | null = intent.from;
+      // 2. What the phone already knows. A push lands exactly when the
+      //    connection is least dependable, and the room list is on disk.
+      if (!r) {
+        const cached = await offlineStore.loadRooms();
+        r = resolveRoom(cached ? { rooms: cached.rooms, dms: cached.dms } : null, intent.roomId);
+      }
+      // 3. The server — and if it does not answer, again, rather than
+      //    abandoning the chat the user asked for.
+      for (let attempt = 0; !r && shouldKeepTrying(attempt); attempt++) {
+        const [rooms, dms] = await Promise.all([apiFetch('/rooms'), apiFetch('/dm-rooms')]);
+        r = resolveRoom({ rooms, dms }, intent.roomId);
+        if (r || !shouldKeepTrying(attempt + 1)) break;
+        await new Promise(res => setTimeout(res, retryDelay(attempt)));
+        // The user got tired of waiting and went somewhere themselves.
+        if (openIntent.current !== intent) return;
+      }
+      if (!intentStillWanted({ at: intent.at, now: Date.now() })) return;
+      if (openIntent.current !== intent) return;
+      openIntent.current = null;
+      if (!r) {
+        // Never silently: this is the difference between "the app ignored me"
+        // and "it could not reach the server just now".
+        toast('Could not open that chat — no connection');
+        return;
+      }
+      setRoom({ id: r.id, name: r.name, is_dm: r.is_dm, other_username: r.other_username });
+      setScreen('chat');
+    } finally {
+      resolving.current = false;
+    }
+  }
+
+  // A tap that arrived while signed out, or while the network was down, is
+  // picked up again when either changes.
+  useEffect(() => {
+    if (screen !== 'auth' && openIntent.current) resolveOpenIntent();
+  }, [screen]);
 
   // Invitation links (https://<host>/join/<roomId>, or chatroom://join/<roomId>).
   // Tapping one joins the room — for a private room this only succeeds if the
