@@ -20,16 +20,9 @@
 (function () {
   'use strict';
 
-  var CHUNK = 512 * 1024;
-  /**
-   * How long a chunk may go without a single byte moving before it is
-   * abandoned and retried.
-   *
-   * Generous, because a slow connection is not a broken one and re-sending
-   * half a megabyte for nothing is worse than waiting. But bounded: a request
-   * that hangs forever leaves an upload at zero with no way out but cancel.
-   */
-  var STALL_MS = 45000;
+  // How big a chunk is, and how long one may go silent, both come from
+  // UploadTuning — see native-app/src/uploadSession.ts for why they are not
+  // constants any more.
   var MAX_BYTES = 80 * 1024 * 1024;
   var MAX_ATTEMPTS = 5;
 
@@ -71,6 +64,14 @@
     var lastByteAt = 0;
     var stallTimer = null;
     var stalled = false;
+    // Reported from an iPhone: the bar does not advance unless you pause and
+    // resume. Progress is only KNOWN when a chunk lands — the server discards
+    // an incomplete one — so at half a megabyte and the 13 KB/s that phone had,
+    // the bar sat still for forty seconds at a time. The chunk now follows the
+    // connection: the first one is small because it is the measurement.
+    var chunk = UploadTuning.FIRST_CHUNK_BYTES;
+    var rate = 0;            // bytes per second, from the chunks that landed
+    var chunkStartedAt = 0;
 
     function headers(extra) {
       var h = { Authorization: 'Bearer ' + window.token };
@@ -146,12 +147,19 @@
         xhr.send(file.slice(start, end));
 
         // Restarted for each chunk, and only fires when nothing at all has
-        // moved for STALL_MS.
+        // moved for long enough that this cannot be a chunk still on its way.
+        //
+        // It has to outlast the chunk itself, because a browser that reports
+        // nothing until the chunk lands — Safari on iOS, for uploads — makes a
+        // healthy chunk look identical to a dead connection. Aborting there is
+        // worse than useless: the server discards the partial, so the retry
+        // sends the same bytes again and the upload never advances.
+        var patience = UploadTuning.stallTimeoutMs(end - start, rate);
         stalled = false;
         lastByteAt = Date.now();
         clearInterval(stallTimer);
         stallTimer = setInterval(function () {
-          if (Date.now() - lastByteAt < STALL_MS) return;
+          if (Date.now() - lastByteAt < patience) return;
           clearInterval(stallTimer);
           stalled = true;
           try { xhr.abort(); } catch (err) {}
@@ -189,13 +197,24 @@
 
     async function pump() {
       while (!stopped && !paused && offset < total) {
-        var end = Math.min(offset + CHUNK, total);
+        var end = Math.min(offset + chunk, total);
+        chunkStartedAt = Date.now();
+        var sending = end - offset;
         var res = await sendChunk(offset, end);
         inFlight = null;
         clearInterval(stallTimer);
 
         if (res.ok) {
           attempt = 0;
+          // What that chunk actually managed, which decides the next one.
+          var elapsed = Date.now() - chunkStartedAt;
+          if (elapsed > 0) {
+            var observed = (sending / elapsed) * 1000;
+            // Smoothed: one quick chunk on a flaky connection is not a
+            // promise about the next one.
+            rate = rate ? (rate * 0.6 + observed * 0.4) : observed;
+            chunk = UploadTuning.nextChunkBytes(rate, chunk);
+          }
           offset = res.offset;
           cb.onProgress(offset, total);
           continue;

@@ -30,6 +30,95 @@
  */
 export const CHUNK_BYTES = 512 * 1024;
 
+// ── How big a chunk should actually be ───────────────────────────────────────
+//
+// Reported from an iPhone: the progress bar does not move on its own; you have
+// to pause and resume to make it advance.
+//
+// The bar was telling the truth. Progress is only known when a chunk lands —
+// the server counts what it has, and `express.raw` discards a chunk that
+// arrives incomplete, so a chunk in flight is worth exactly nothing until the
+// last byte of it is in. At half a megabyte and the 13 KB/s in the screenshot,
+// that is FORTY SECONDS of a bar that does not move, and then a jump. Pausing
+// and resuming asks the server for its offset and repaints, which is why it
+// felt like the thing that made progress happen.
+//
+// Both clients do ask for progress WITHIN a chunk — `xhr.upload.onprogress`,
+// which React Native's XHR delivers reliably — but it is not something to lean
+// on in a browser: Safari on iOS is erratic about upload progress events, and
+// the phone in the report was showing none. Half a megabyte of silence is a
+// bad design wherever it happens, because the stall watchdog cannot tell that
+// silence from a dead connection either.
+//
+// So the chunk size follows the connection: about six seconds of it, whatever
+// that happens to be worth. On a slow link that is a small chunk and a bar
+// that moves every few seconds; on a fast one it settles back at the old half
+// megabyte and nothing changes.
+//
+// These rules are used by the WEB uploader, which is where the report came
+// from. The app keeps its fixed 512 KB for now: its progress events do arrive,
+// so the bar there moves within a chunk, and changing the size of the pieces a
+// phone sends is not something to do on the strength of a browser bug.
+
+/** Never smaller than this: per-chunk overhead would start to dominate. */
+export const CHUNK_MIN = 64 * 1024;
+/**
+ * Never bigger than the size that has always been used.
+ *
+ * Deliberately not an increase for fast connections: this change exists to fix
+ * a bar that does not move, and making chunks larger than they have ever been
+ * would be a different change with its own risks — a longer re-send after a
+ * failure, and a pause that takes longer to take effect.
+ */
+export const CHUNK_MAX = CHUNK_BYTES;
+/** How long one chunk should ideally take. Roughly a bar step per few seconds. */
+export const TARGET_CHUNK_MS = 6000;
+/**
+ * The first chunk, sent before anything is known about the connection.
+ *
+ * Small on purpose: it is the measurement, and on a bad link it is also the
+ * difference between a bar that moves within seconds and one that sits at zero
+ * for a minute before anyone can tell whether the upload is working at all.
+ */
+export const FIRST_CHUNK_BYTES = 128 * 1024;
+
+/**
+ * The size for the next chunk, given how fast the last ones actually went.
+ *
+ * Rounded to 32 KB so the size settles instead of jittering with every sample,
+ * and never more than doubled at a time: one fast chunk on a flaky connection
+ * is not evidence that the next half megabyte will get through.
+ */
+export function nextChunkBytes(bytesPerSecond: number, current = FIRST_CHUNK_BYTES): number {
+  const cur = Math.min(CHUNK_MAX, Math.max(CHUNK_MIN, Math.round(current) || FIRST_CHUNK_BYTES));
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return cur;
+  const ideal = bytesPerSecond * (TARGET_CHUNK_MS / 1000);
+  const step = 32 * 1024;
+  const rounded = Math.round(ideal / step) * step;
+  const capped = Math.min(rounded, cur * 2);
+  return Math.min(CHUNK_MAX, Math.max(CHUNK_MIN, capped));
+}
+
+/**
+ * How long a chunk may go without a byte before it is abandoned.
+ *
+ * It has to outlast the chunk itself by a wide margin, because on a client
+ * that reports nothing until the chunk lands — which is every client, on some
+ * browsers — "no bytes for 45 seconds" is what a perfectly healthy 512 KB
+ * chunk looks like on a slow connection. Aborting there is worse than useless:
+ * the server discards the partial, so the retry starts the same chunk again
+ * and the upload never advances at all.
+ */
+export const STALL_FLOOR_MS = 45000;
+
+export function stallTimeoutMs(
+  chunkBytes: number, bytesPerSecond: number, floor = STALL_FLOOR_MS,
+): number {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return floor;
+  const expected = (chunkBytes / bytesPerSecond) * 1000;
+  return Math.max(floor, Math.round(expected * 3));
+}
+
 /** Matches the server's own limit; checked here so the failure is immediate. */
 export const MAX_UPLOAD_BYTES = 80 * 1024 * 1024;
 
