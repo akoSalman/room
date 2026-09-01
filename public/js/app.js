@@ -2417,7 +2417,16 @@ async function sendGallery(images, caption, oneTimeSeconds, roomId, replyToId) {
 
 async function startRecording() {
   if (!currentRoomId) return;
-  if (!navigator.mediaDevices?.getUserMedia) return alert('Audio recording not supported.');
+  // Reported from an iPhone: tapping Voice said "Audio recording not
+  // supported." It is supported — the page was not allowed to ask. Without a
+  // secure context (plain http, or a certificate the browser rejects) there is
+  // no navigator.mediaDevices at all, and the old message sent people looking
+  // for a browser problem that does not exist. The diagnosis is the calls'
+  // one, which already knew all of this.
+  const explain = (err) => alert(CallMedia.mediaErrorMessage(err, {
+    what: 'recording', secure: CallMedia.isSecure(), isApple: CallMedia.isApple(),
+  }));
+  if (!navigator.mediaDevices?.getUserMedia) return explain(new Error('no-media-devices'));
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     recordedMime = getSupportedMimeType() || 'audio/webm';
@@ -2449,7 +2458,12 @@ async function startRecording() {
     show('recording-bar'); hide('input-bar');
     buildRecWaveformBars();
     animateRecWaveform();
-  } catch { alert('Microphone access denied.'); }
+  } catch (err) {
+    // "Microphone access denied" was wrong for most of the ways this fails —
+    // and on Safari a refusal sticks until it is undone in Website Settings,
+    // which is the one thing worth saying.
+    explain(err);
+  }
 }
 
 function buildRecWaveformBars() {

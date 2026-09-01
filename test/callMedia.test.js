@@ -69,6 +69,30 @@ test('a microphone another app is holding says to close that app', () => {
   assert.ok(/in use|another app/i.test(msg), msg);
 });
 
+test('THE VOICE RECORDER: an insecure page is told the truth, not "not supported"', () => {
+  // Reported from an iPhone: tapping Voice said "Audio recording not
+  // supported." Recording is supported; the page was not allowed to ask,
+  // because without https there is no navigator.mediaDevices at all. The old
+  // message sent people looking for a browser problem that does not exist.
+  const msg = M.mediaErrorMessage(new Error('no-media-devices'), { secure: false, what: 'recording' });
+  assert.ok(/voice messages/i.test(msg), `does not say what failed: ${msg}`);
+  assert.ok(/https/i.test(msg), msg);
+  assert.ok(/certificate/i.test(msg), 'does not mention the other way https can fail');
+  assert.ok(!/not supported/i.test(msg), 'still claims the browser cannot record');
+});
+
+test('and the same failure in a call still talks about calls', () => {
+  const msg = M.mediaErrorMessage(new Error('no-media-devices'), { secure: false });
+  assert.ok(/^Calls/.test(msg), msg);
+  assert.ok(!/voice message/i.test(msg), msg);
+});
+
+test('a recorder refusal on Safari gets Safari\'s directions too', () => {
+  const msg = M.mediaErrorMessage({ name: 'NotAllowedError' },
+    { secure: true, isApple: true, what: 'recording' });
+  assert.ok(/Website Settings/i.test(msg), msg);
+});
+
 test('an unrecognised failure still says something true', () => {
   const msg = M.mediaErrorMessage(err('WeirdNewError'), on());
   assert.ok(msg.length > 20, msg);
@@ -156,6 +180,27 @@ test('no call path reports failure without saying what to do', () => {
   assert.ok(!/access is required/.test(CALLS),
     'calls.js still shows the old message that tells nobody anything');
   assert.ok(/mediaFailed\(/.test(CALLS), 'calls.js no longer routes failures through mediaFailed');
+});
+
+// ── The wiring ──────────────────────────────────────────────────────────────
+
+test('the voice recorder uses this diagnosis rather than its own two lines', () => {
+  const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'app.js'), 'utf8');
+  const fn = app.slice(app.indexOf('async function startRecording()'),
+    app.indexOf('function buildRecWaveformBars'));
+  assert.ok(fn.length > 0, 'startRecording is gone — this check would be vacuous');
+  assert.ok(/CallMedia\.mediaErrorMessage\(err, \{/.test(fn), 'the recorder writes its own message again');
+  assert.ok(/what: 'recording'/.test(fn), 'it would tell somebody recording about calls');
+  assert.ok(fn.includes('CallMedia.isSecure()'), 'nothing checks whether the page is on https');
+  // The literals, not the words: both are quoted in comments now, explaining
+  // what they used to say and why they were wrong.
+  assert.ok(!/alert\('Audio recording not supported/.test(app), 'the untrue message is still shown');
+  assert.ok(!/alert\('Microphone access denied/.test(app), 'the catch-all refusal message is still shown');
+  // Both failure paths, not just the one that was screenshotted.
+  assert.ok(/if \(!navigator\.mediaDevices\?\.getUserMedia\) return explain\(/.test(fn),
+    'a missing mediaDevices is still reported as "not supported"');
+  assert.ok(/\} catch \(err\) \{[\s\S]*explain\(err\);/.test(fn),
+    'a refused microphone is still reported with a guess');
 });
 
 let passed = 0, failed = 0;

@@ -39,13 +39,21 @@
   }
 
   /**
-   * What to tell somebody whose call did not start.
+   * What to tell somebody whose call — or voice message — did not start.
    *
    * Each case has a different remedy, and "Microphone/camera access is
    * required" — the message this replaces — is the remedy for none of them.
+   *
+   * `opts.what` names the thing that failed, because the voice recorder used
+   * to have its own two messages ("Audio recording not supported." and
+   * "Microphone access denied."), and the first of those is a flat untruth on
+   * the commonest cause: a page served over plain http, or with a certificate
+   * the browser will not accept, has no navigator.mediaDevices at all. The
+   * browser supports recording perfectly well; the PAGE is not allowed to ask.
    */
   function mediaErrorMessage(err, opts) {
     opts = opts || {};
+    var what = opts.what === 'recording' ? 'Voice messages' : 'Calls';
     // Name AND message, checked separately. `err.name || err.message` looks
     // equivalent and is not: a plain `new Error('no-media-devices')` has the
     // name "Error", so the message never gets looked at and the case below is
@@ -57,8 +65,10 @@
     // Not a secure context. getUserMedia does not exist at all over plain
     // HTTP or with a broken certificate, so there is nothing to permit.
     if (name === 'no-media-devices' || message === 'no-media-devices' || !opts.secure) {
-      return 'Calls need a secure connection (https). This page is not on one, '
-        + 'so the browser will not give access to the microphone.';
+      return what + ' need a secure connection (https). This page is not on one, '
+        + 'so the browser will not give access to the microphone. '
+        + 'Check that the address starts with https:// and that the site\'s '
+        + 'certificate is valid.';
     }
 
     // Refused — possibly long ago, and on Safari that decision sticks.
