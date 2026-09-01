@@ -106,6 +106,19 @@ db.exec(`
     platform TEXT
   );
 `);
+// Browsers — including an iPhone running this as a home-screen app, which is
+// the only way an iPhone can have this app at all. One row per browser, keyed
+// by the endpoint the push service gave it.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS web_push_subs (
+    user_id INTEGER NOT NULL,
+    endpoint TEXT NOT NULL UNIQUE,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+`);
+
 // ── Blocking, muting, and clearing history ───────────────────────────────────
 //
 // All three are decisions ONE person makes about another, so all three are

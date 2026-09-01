@@ -1336,3 +1336,22 @@ body.disappearing-on .msg-caption, body.disappearing-on .msg-time { color: #8fa3
 .version-arrow { color: var(--muted); font-size: 1.1rem; }
 .update-error { font-size: 0.78rem; color: var(--danger); margin: 8px 0 0; }
 .update-error.hidden { display: none; }
+
+/* ── "Add to Home Screen", for iOS ───────────────────────────────────────── */
+/* Above the composer, out of the way of the messages, and pointing at the
+   share button which on iOS Safari is at the BOTTOM of the screen. */
+.install-hint {
+  display: flex; align-items: center; gap: 10px;
+  margin: 8px 10px 0; padding: 10px 12px;
+  border-radius: 12px; background: var(--input-bg);
+  border: 1px solid var(--border);
+}
+.install-hint.hidden { display: none; }
+.install-hint-icon { font-size: 1.4rem; flex-shrink: 0; }
+.install-hint-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.install-hint-text b { font-size: 0.85rem; }
+.install-hint-text small { font-size: 0.75rem; color: var(--muted); margin-top: 2px; }
+.install-hint-close {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  font-size: 0.9rem; padding: 6px; flex-shrink: 0;
+}

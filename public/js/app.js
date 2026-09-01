@@ -184,10 +184,103 @@ if ('serviceWorker' in navigator) {
 }
 
 function requestNotifPermission() {
-  if ('Notification' in window && Notification.permission === 'default') {
-    Notification.requestPermission();
+  if (!('Notification' in window)) return;
+  if (Notification.permission === 'default') {
+    Notification.requestPermission().then(() => subscribeWebPush());
+    return;
   }
+  subscribeWebPush();
 }
+
+// ── "Add to Home Screen", for the one platform that never offers ─────────────
+//
+// Android and desktop Chrome fire an install prompt of their own. Safari on
+// iOS has none: adding to the home screen is two taps inside the share sheet,
+// and almost nobody knows they are there — so the app that iPhone users CAN
+// have (there being no signed native one) goes uninstalled.
+function maybeOfferInstall() {
+  const el = document.getElementById('install-hint');
+  if (!el) return;
+  let dismissedAt = 0;
+  try { dismissedAt = parseInt(localStorage.getItem(InstallHint.KEY) || '0', 10) || 0; } catch (e) {}
+  const offer = InstallHint.shouldOffer({
+    signedIn: !!token,
+    ios: InstallHint.isIOS(navigator.userAgent, navigator.maxTouchPoints),
+    safari: InstallHint.isSafari(navigator.userAgent),
+    standalone: InstallHint.isStandalone(navigator, window.matchMedia.bind(window)),
+    dismissedAt,
+    now: Date.now(),
+  });
+  if (!offer) { el.classList.add('hidden'); return; }
+  document.getElementById('install-hint-steps').textContent =
+    InstallHint.steps().join(' → ');
+  el.classList.remove('hidden');
+}
+
+function dismissInstallHint() {
+  try { localStorage.setItem(InstallHint.KEY, String(Date.now())); } catch (e) {}
+  document.getElementById('install-hint')?.classList.add('hidden');
+}
+
+// ── Push notifications for browsers ──────────────────────────────────────────
+//
+// And the only way an iPhone can be notified by this app at all: iOS installs
+// nothing Apple has not signed, so there is no native app to push to — but a
+// PWA added to the home screen receives Web Push from iOS 16.4 onwards.
+//
+// Everything here is best-effort. A browser without push, a server without
+// VAPID keys, a user who said no — all of them end the same way, quietly, with
+// the in-page notifications still working as they always did.
+async function subscribeWebPush() {
+  try {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    if (Notification.permission !== 'granted' || !token) return;
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      const res = await fetch('/push/public-key');
+      if (!res.ok) return;                       // server has no keys
+      const { key } = await res.json();
+      if (!key) return;
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(key),
+      });
+    }
+    // Sent on every start, not only on the first: the row is keyed by endpoint,
+    // so this is how a subscription made before signing in gets attached to
+    // the right account, and how one made on another account is moved.
+    await api('/web-push', 'POST', { subscription: sub.toJSON() });
+  } catch (e) { /* push is a bonus, never a failure */ }
+}
+
+async function unsubscribeWebPush() {
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    const sub = await reg?.pushManager.getSubscription();
+    if (!sub) return;
+    // Told to the server FIRST: once the browser has forgotten the endpoint we
+    // can no longer name the row to delete, and it would go on being pushed
+    // to until the push service called it gone.
+    await api('/web-push', 'DELETE', { endpoint: sub.endpoint }).catch(() => {});
+    await sub.unsubscribe();
+  } catch (e) {}
+}
+
+/** The VAPID key travels as base64url text and has to be given as bytes. */
+function urlBase64ToUint8Array(base64) {
+  const padded = String(base64).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(padded + '='.repeat((4 - padded.length % 4) % 4));
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+// A notification tapped while the app is already open: the service worker
+// hands the room over rather than reloading the page.
+navigator.serviceWorker?.addEventListener('message', (e) => {
+  if (e.data?.type === 'open-room' && e.data.roomId) openRoomById(e.data.roomId);
+});
 function showNotif(msg) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   // Notifications are only for when the user is away from the app; while it's
@@ -391,6 +484,9 @@ function saveSession(t, u, avatar) {
 function showAuthError(msg) { document.getElementById('auth-error').textContent = msg; }
 
 function logout() {
+  // Before the token goes: the server has to be told which endpoint to drop,
+  // and that request needs the session it is dropping it for.
+  unsubscribeWebPush();
   localStorage.clear(); token = null; username = null; currentRoomId = null; socketReady = false;
   if (socket) { socket.disconnect(); socket = null; }
   closeProfile();
@@ -451,6 +547,7 @@ async function enterApp() {
   setAvatarInitials(username);
   document.getElementById('current-user-display').textContent = username;
   requestNotifPermission();
+  maybeOfferInstall();
   showComposer(false);   // nothing is open yet
   await connectSocket();
   const roomList = await loadRooms();

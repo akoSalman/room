@@ -748,12 +748,17 @@ async function getFcmAccessToken() {
  * shows it, and the unread count still counts it.
  */
 async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
-  if (!fcmCreds || !userIds.length) return;
-  // The rule lives in notify.js so it can be tested: everything from here on
-  // is behind the FCM credential check above, which a test environment has no
-  // way to satisfy.
+  if (!userIds.length) return;
+  // The rule lives in notify.js so it can be tested: the rest of this function
+  // is behind credential checks a test environment has no way to satisfy.
   userIds = recipientsFor(userIds, android.fromUserId, hasMuted);
   if (!userIds.length) return;
+  // Browsers first, and independently of Firebase: an iPhone can only have
+  // this app as a home-screen PWA, and that PWA is pushed through Web Push,
+  // which needs no Google credentials at all. A server with no FCM key must
+  // still be able to notify them.
+  sendWebPushToUsers(userIds, title, body, data);
+  if (!fcmCreds) return;
   try {
     const placeholders = userIds.map(() => '?').join(',');
     const tokens = db.prepare(`SELECT token FROM push_tokens WHERE user_id IN (${placeholders})`)
@@ -805,6 +810,76 @@ async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
   } catch (err) {
     console.error('[FCM] sendPushToUsers error:', err.message);
   }
+}
+
+// ── Web push ─────────────────────────────────────────────────────────────────
+// How a browser is notified — and the only way an iPhone can be, since iOS
+// installs nothing that Apple has not signed and a home-screen PWA is
+// therefore the whole of the iOS story here. See webPush.js.
+const webPush = require('./webPush');
+
+// Generated once and kept, because a VAPID public key is an identity: every
+// subscription ever made is bound to it, so a new pair on restart would
+// silently orphan every device that had subscribed.
+const vapidKeys = webPush.ensureKeys(process.env, {
+  get: (k) => (db.prepare('SELECT value FROM meta WHERE key = ?').get(k) || {}).value || '',
+  set: (k, v) => db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(k, v),
+});
+const VAPID_SUBJECT = process.env.VAPID_SUBJECT || `https://${process.env.PUBLIC_HOST || 'localhost'}`;
+if (!webPush.available(vapidKeys)) {
+  console.warn('[web-push] disabled — no keys (is the web-push package installed?)');
+}
+
+/** The key a browser needs before it can subscribe. Public by definition. */
+app.get('/push/public-key', (req, res) => {
+  if (!webPush.available(vapidKeys)) return res.status(503).json({ error: 'Web push is not configured' });
+  res.json({ key: vapidKeys.publicKey });
+});
+
+app.post('/web-push', authMiddleware, (req, res) => {
+  const sub = req.body && req.body.subscription;
+  if (!webPush.validSubscription(sub)) return res.status(400).json({ error: 'Bad subscription' });
+  db.prepare(`INSERT INTO web_push_subs (user_id, endpoint, p256dh, auth, created_at)
+              VALUES (?, ?, ?, ?, ?)
+              ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id`)
+    .run(req.user.id, String(sub.endpoint), String(sub.keys.p256dh), String(sub.keys.auth), Date.now());
+  res.json({ ok: true });
+});
+
+app.delete('/web-push', authMiddleware, (req, res) => {
+  const endpoint = req.body && req.body.endpoint;
+  if (endpoint) db.prepare('DELETE FROM web_push_subs WHERE endpoint = ? AND user_id = ?')
+    .run(String(endpoint), req.user.id);
+  res.json({ ok: true });
+});
+
+/**
+ * Notify every browser these people have subscribed from.
+ *
+ * The recipients are already filtered for mutes by the caller. Failures are
+ * per-subscription and never thrown: one dead endpoint must not stop the rest,
+ * and one that the push service says is GONE is deleted rather than retried
+ * forever.
+ */
+async function sendWebPushToUsers(userIds, title, body, data = {}) {
+  if (!webPush.available(vapidKeys) || !userIds.length) return;
+  let subs;
+  try {
+    const places = userIds.map(() => '?').join(',');
+    subs = db.prepare(`SELECT endpoint, p256dh, auth FROM web_push_subs WHERE user_id IN (${places})`)
+      .all(...userIds);
+  } catch (err) {
+    console.error('[web-push] could not read subscriptions:', err.message);
+    return;
+  }
+  if (!subs.length) return;
+  const payload = webPush.payloadFor(title, body, data);
+  await Promise.all(subs.map(async (s) => {
+    const r = await webPush.sendOne(s, payload, vapidKeys, VAPID_SUBJECT);
+    if (r.gone) {
+      try { db.prepare('DELETE FROM web_push_subs WHERE endpoint = ?').run(s.endpoint); } catch {}
+    }
+  }));
 }
 
 // Permanently remove a message (used by user deletes and one-time expiry).
