@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback, useReducer } from 'react';
 import {
   View, Text, TextInput, FlatList, TouchableOpacity,
   StyleSheet, KeyboardAvoidingView, Platform, Alert, Dimensions,
@@ -69,6 +69,10 @@ import SelectedRow, { SelectionCount } from '../components/SelectedRow';
 import SelectableText, { clearSelectionOf } from '../components/SelectableText';
 import LinkCard from '../components/LinkCard';
 import { spentByToken, menuWasStrayTap } from '../tokenTap';
+import * as attachments from '../videoDownloads';
+import {
+  kindOf, tapAction as fileTapAction, cardMeta, showsDownloadButton, installHelp, openHelp, isApk,
+} from '../fileOpen';
 import * as voiceRecorder from '../voiceRecorder';
 import { shouldWarm, WARM_TTL_MS } from '../recordStart';
 import * as selection from '../selection';
@@ -94,6 +98,7 @@ import MusicPlayer from '../components/MusicPlayer';
 import FullMusicPlayer from '../components/FullMusicPlayer';
 import type { Track } from '../audioManager';
 import { guessMime, messageTypeFor, fileIcon, extOf } from '../mime';
+import { progressPercent } from '../download';
 import { compressForSend } from '../compressImage';
 import VideoSendSheet, { VideoChoice } from '../components/VideoSendSheet';
 import { compressVideo } from '../compressVideo';
@@ -1977,29 +1982,70 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // Open a document in whatever app the device uses for that type. Android
   // refuses to open a remote https URL in most viewers, so download to a local
   // cache file first and hand over a content:// URI it will accept.
+  /**
+   * Tapping a file card: download it, then open or install it.
+   *
+   * Reported as: an APK arrived with no download on the message, and tapping
+   * it said "error opening file". Three faults, all in here — see
+   * src/fileOpen.ts. The download is now a visible step of its own rather than
+   * something that happened invisibly inside "open", and an APK is handed to
+   * the package INSTALLER, which is what installing an app has always
+   * required and what this app already does for its own updates.
+   */
+  // ── Files already on the device ────────────────────────────────────────────
+  // The download store only knows what it did THIS run; a file downloaded
+  // yesterday is still there. Asked once per file, and the store emits when it
+  // finds one, so the card redraws itself.
+  const fileChecked = useRef<Set<string>>(new Set()).current;
+  function noteFileOnDisk(url: string) {
+    if (fileChecked.has(url)) return;
+    fileChecked.add(url);
+    attachments.localUri(url).catch(() => {});
+  }
+  // Redraw the file cards as their downloads move.
+  const [, bumpDownloads] = useReducer((x: number) => x + 1, 0);
+  useEffect(() => attachments.subscribe(bumpDownloads), []);
+
   async function openFile(msg: Message) {
     if (!msg.file_path) return;
     if (msg.one_time_seconds) { Alert.alert('Not allowed', 'One-time files cannot be opened externally.'); return; }
     const url = `${BASE_URL}${msg.file_path}`;
     const name = msg.file_name || msg.file_path.split('/').pop() || `file-${Date.now()}`;
+    const kind = kindOf(name, null);
+    const st = attachments.get(url);
+    const action = fileTapAction({
+      kind,
+      downloaded: st?.status === 'done' || !!(await attachments.localUri(url)),
+      downloading: st?.status === 'downloading',
+    });
+    if (action === 'wait') return;
+    if (action === 'download') { attachments.start(url).catch(() => {}); return; }
+
+    const uri = await attachments.localUri(url);
+    if (!uri) { attachments.start(url).catch(() => {}); return; }
+
+    if (Platform.OS !== 'android') { await Share.share({ url: uri }).catch(() => {}); return; }
+    const contentUri = await FileSystem.getContentUriAsync(uri);
     try {
-      const local = FileSystem.cacheDirectory + name.replace(/[^\w.\-]/g, '_');
-      const info = await FileSystem.getInfoAsync(local);
-      const uri = info.exists ? local : (await FileSystem.downloadAsync(url, local)).uri;
-      if (Platform.OS === 'android') {
-        const contentUri = await FileSystem.getContentUriAsync(uri);
-        await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+      await IntentLauncher.startActivityAsync(
+        action === 'install'
+          // Not VIEW. Nothing answers a VIEW of an APK in a way that leads
+          // anywhere: the installer appears and fails, which is the reported
+          // "error opening file".
+          ? 'android.intent.action.INSTALL_PACKAGE'
+          : 'android.intent.action.VIEW',
+        {
           data: contentUri,
           flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
-          type: guessMime(name, null),
-        });
-      } else {
-        await Share.share({ url: uri });
-      }
+          ...(action === 'install' ? {} : { type: guessMime(name, null) }),
+        },
+      );
     } catch {
-      // No installed app can handle this type — offer the browser as a fallback.
-      Alert.alert('Cannot open', 'No app on this device can open this file type.', [
-        { text: 'Cancel', style: 'cancel' },
+      // An APK almost always fails for one reason, and it is one the person
+      // can fix in ten seconds if they are told which switch to look for.
+      const help = action === 'install' ? installHelp() : openHelp(extOf(name));
+      Alert.alert(help.title, help.message, [
+        { text: 'OK', style: 'cancel' },
         { text: 'Open in browser', onPress: () => Linking.openURL(url).catch(() => {}) },
       ]);
     }
@@ -3538,9 +3584,28 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           {!hiddenOneTime && (msg.type === 'file' || (msg.type === 'music' && msg._uploading)) && (() => {
             const fname = msg.file_name || 'File';
             const icon = fileIcon(fname, null);
-            const kind = (extOf(fname) || 'file').toUpperCase();
+            const fileKind = kindOf(fname, null);
             // A real card per file type — the icon distinguishes PDFs, docs,
-            // sheets and archives, and tapping opens it in the device's viewer.
+            // sheets and archives. The line under the name says what the next
+            // tap will do, and the download is a step of its own: it used to
+            // happen invisibly inside "open", so a 40 MB file on a slow
+            // connection was a card that looked inert for minutes.
+            const url = msg.file_path ? `${BASE_URL}${msg.file_path}` : '';
+            const dl = url ? attachments.get(url) : null;
+            const downloading = dl?.status === 'downloading';
+            // A file downloaded before this app was last opened is still on
+            // the device; asking the store makes it say so (and redraw).
+            if (url && !dl) noteFileOnDisk(url);
+            const downloaded = dl?.status === 'done';
+            const meta = cardMeta({
+              kind: fileKind,
+              ext: extOf(fname),
+              downloaded,
+              downloading,
+              percent: dl ? progressPercent(dl.written, dl.total) : 0,
+              failed: dl?.status === 'failed',
+              uploading: !!msg._uploading,
+            });
             return (
               <TouchableOpacity
                 style={s.fileCard}
@@ -3549,8 +3614,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 <Text style={s.fileCardIcon}>{icon}</Text>
                 <View style={{ flex: 1 }}>
                   <Text style={s.fileCardName} numberOfLines={2}>{fname}</Text>
-                  <Text style={s.fileCardMeta}>{msg._uploading ? 'Uploading…' : `${kind} · tap to open`}</Text>
+                  <Text style={s.fileCardMeta}>{meta}</Text>
                 </View>
+                {downloading && (
+                  <ActivityIndicator size="small" color={C.accent} />
+                )}
+                {showsDownloadButton({ downloaded, downloading, uploading: !!msg._uploading }) && (
+                  <Ionicons name="download-outline" size={22} color={C.accent} />
+                )}
               </TouchableOpacity>
             );
           })()}
