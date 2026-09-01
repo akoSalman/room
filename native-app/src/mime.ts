@@ -19,6 +19,9 @@ const BY_EXT: Record<string, string> = {
   svg: 'image/svg+xml', tiff: 'image/tiff', tif: 'image/tiff',
   // documents
   pdf: 'application/pdf',
+  odt: 'application/vnd.oasis.opendocument.text',
+  ods: 'application/vnd.oasis.opendocument.spreadsheet',
+  odp: 'application/vnd.oasis.opendocument.presentation',
   doc: 'application/msword',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   xls: 'application/vnd.ms-excel',
@@ -29,11 +32,30 @@ const BY_EXT: Record<string, string> = {
   md: 'text/markdown', json: 'application/json', xml: 'application/xml',
   html: 'text/html', htm: 'text/html',
   epub: 'application/epub+zip',
+  log: 'text/plain', ini: 'text/plain', yml: 'text/plain', yaml: 'text/plain',
+  // Things people actually send each other in a chat and that the phone knows
+  // what to do with: a contact card opens in Contacts, an invitation in the
+  // calendar, subtitles alongside a film.
+  vcf: 'text/vcard', ics: 'text/calendar', srt: 'application/x-subrip', vtt: 'text/vtt',
   // archives
   zip: 'application/zip', rar: 'application/vnd.rar', '7z': 'application/x-7z-compressed',
-  tar: 'application/x-tar', gz: 'application/gzip',
+  tar: 'application/x-tar', gz: 'application/gzip', tgz: 'application/gzip',
+  bz2: 'application/x-bzip2', xz: 'application/x-xz', iso: 'application/x-iso9660-image',
+  // apps
   apk: 'application/vnd.android.package-archive',
+  // A split APK bundle is NOT something Android's installer can take, so it is
+  // deliberately not given the installable type: it is an archive that needs a
+  // tool of its own, and offering "tap to install" would fail every time.
+  xapk: 'application/zip', apks: 'application/zip', aab: 'application/octet-stream',
 };
+
+// Types whose bubble must be a FILE even though their mime says otherwise.
+//
+// React Native's <Image> on Android cannot draw either of these, so routing
+// them to an image bubble produces a permanently broken picture with no way to
+// download the thing behind it. As files they get an icon, a size and a
+// download button, and open in whatever app the device does have.
+const NOT_DISPLAYABLE = ['image/svg+xml', 'image/tiff'];
 
 export function extOf(nameOrUri: string): string {
   // Strip any query/fragment, then take the trailing extension.
@@ -55,6 +77,7 @@ export function guessMime(nameOrUri: string, supplied?: string | null): string {
 // The message type the server/UI uses for a given file.
 export function messageTypeFor(mime: string, nameOrUri = ''): 'image' | 'video' | 'music' | 'file' {
   const m = guessMime(nameOrUri, mime);
+  if (NOT_DISPLAYABLE.includes(m)) return 'file';
   if (m.startsWith('image/')) return 'image';
   if (m.startsWith('video/')) return 'video';
   if (m.startsWith('audio/')) return 'music';
@@ -76,8 +99,12 @@ export function fileIcon(nameOrUri: string, mime?: string | null): string {
   if (/spreadsheet|excel|csv/.test(m) || e === 'xls' || e === 'xlsx' || e === 'csv') return '📗';
   if (/presentation|powerpoint/.test(m) || e === 'ppt' || e === 'pptx') return '📙';
   if (/msword|wordprocessing/.test(m) || e === 'doc' || e === 'docx') return '📘';
-  if (/zip|rar|7z|tar|gzip|compressed/.test(m)) return '🗜';
+  // Before the archive test: a split-APK bundle IS a zip by mime, and showing
+  // it as an anonymous archive hides what it actually is.
+  if (e === 'apk' || e === 'xapk' || e === 'apks') return '📦';
+  if (/zip|rar|7z|tar|gzip|bzip|xz|compressed|iso9660/.test(m)) return '🗜';
+  if (m === 'text/vcard') return '👤';
+  if (m === 'text/calendar') return '📅';
   if (m.startsWith('text/') || /json|xml/.test(m)) return '📝';
-  if (e === 'apk') return '📦';
   return '📄';
 }

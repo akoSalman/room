@@ -25,6 +25,39 @@
 }
 
 /* ── Base ─────────────────────────────────────────── */
+
+/* iOS Safari, and the reason the send button ends up half off the screen.
+ *
+ * Reported as: on the iPhone web version there is a little horizontal scroll,
+ * and tapping send sometimes does nothing because the button is just past the
+ * edge; pinching out fixes it.
+ *
+ * Nothing is actually too wide. Safari on iOS ZOOMS THE WHOLE PAGE IN when a
+ * text field with a font smaller than 16px is focused — and it does not zoom
+ * back out afterwards. The layout viewport is then wider than the screen, so
+ * the page can be panned sideways and whatever sits at the right-hand end of a
+ * row (the send button) is off it. That is why it happens after typing, why it
+ * looks like "a little horizontal scroll", and why pinching to unzoom is the
+ * cure people find.
+ *
+ * The fix is one number: every field somebody can focus is at least 16px.
+ *
+ * This rule is only the FLOOR, for fields added later. It cannot rescue a
+ * field that sets its own size — `#msg-input { font-size: 0.95rem }` further
+ * down this file has a higher specificity and would win — so each such rule
+ * carries the 16px itself, and test/webViewport.test.js reads them all back
+ * out of this file and fails on any that does not.
+ */
+input:not([type=checkbox]):not([type=radio]):not([type=file]),
+textarea,
+select {
+  font-size: 16px;
+}
+
+/* Nothing in a column may make the page wider than the phone. A row that
+ * cannot fit scrolls inside itself; the page itself never does. */
+html, body { width: 100%; max-width: 100%; overflow-x: hidden; }
+
 html, body {
   height: 100%;
   overflow: hidden;
@@ -88,7 +121,7 @@ html {
 
 .field { margin-bottom: 14px; }
 .field label { display: block; font-size: 0.78rem; color: var(--muted); margin-bottom: 5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
-.field input { width: 100%; padding: 11px 14px; background: var(--input-bg); border: 1px solid var(--border); border-radius: 10px; color: var(--text); font-size: 0.95rem; transition: border-color .15s; -webkit-appearance: none; }
+.field input { width: 100%; padding: 11px 14px; background: var(--input-bg); border: 1px solid var(--border); border-radius: 10px; color: var(--text); font-size: 16px; transition: border-color .15s; -webkit-appearance: none; }
 .field input:focus { outline: none; border-color: var(--accent); }
 
 .btn-primary { width: 100%; padding: 13px; border: none; border-radius: 10px; font-size: 0.97rem; font-weight: 600; cursor: pointer; background: var(--accent); color: #fff; transition: background .15s; margin-top: 6px; -webkit-appearance: none; letter-spacing: .01em; }
@@ -141,7 +174,7 @@ html {
 .avatar { width: 34px; height: 34px; border-radius: 50%; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 0.85rem; font-weight: 700; flex-shrink: 0; text-transform: uppercase; }
 
 .room-create { display: flex; gap: 6px; padding: 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-.room-create input { flex: 1; min-width: 0; background: var(--input-bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 7px 10px; font-size: 0.88rem; -webkit-appearance: none; }
+.room-create input { flex: 1; min-width: 0; background: var(--input-bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 7px 10px; font-size: 16px; -webkit-appearance: none; }
 .room-create input:focus { outline: none; border-color: var(--accent); }
 .room-create button { background: var(--accent); border: none; color: #fff; border-radius: 8px; padding: 7px 13px; cursor: pointer; font-size: 1.1rem; flex-shrink: 0; }
 
@@ -340,7 +373,7 @@ html {
   border-top: 1px solid var(--border);
   flex-shrink: 0;
 }
-#msg-input { flex: 1; min-width: 0; background: var(--input-bg); border: 1px solid var(--border); border-radius: 20px; padding: 10px 16px; color: var(--text); font-size: 0.95rem; outline: none; -webkit-appearance: none; }
+#msg-input { flex: 1; min-width: 0; background: var(--input-bg); border: 1px solid var(--border); border-radius: 20px; padding: 10px 16px; color: var(--text); font-size: 16px; outline: none; -webkit-appearance: none; }
 #msg-input:focus { border-color: var(--accent); }
 
 .send-btn { background: var(--accent); border: none; color: #fff; border-radius: 50%; width: 42px; height: 42px; cursor: pointer; font-size: 1rem; display: flex; align-items: center; justify-content: center; flex-shrink: 0; -webkit-appearance: none; }
@@ -481,7 +514,15 @@ html {
 #composer-strip {
   display: flex; gap: 8px; padding: 6px 12px; flex-shrink: 0;
   border-top: 1px solid rgba(128,128,128,0.2);
+  /* Four pills, and on a narrow phone with a large system font they do not
+     fit. Scrolling inside the strip keeps the last one reachable; without
+     this it was simply cut off at the edge of the screen. */
+  overflow-x: auto;
+  scrollbar-width: none;
+  max-width: 100%;
 }
+#composer-strip::-webkit-scrollbar { display: none; }
+#composer-strip button { flex-shrink: 0; }
 #composer-strip button {
   background: rgba(59,125,216,0.10); border: none; color: var(--accent);
   cursor: pointer; font-size: 0.82rem; font-weight: 600;
@@ -979,7 +1020,7 @@ html {
 .room-members-list li { padding: 8px 4px; font-size: 0.9rem; border-bottom: 1px solid var(--border); }
 .room-members-list li:last-child { border-bottom: none; }
 .room-invite-row { display: flex; gap: 8px; }
-.room-invite-row input { flex: 1; min-width: 0; padding: 10px 12px; background: var(--input-bg); border: 1px solid var(--border); border-radius: 10px; color: var(--text); font-size: 0.9rem; }
+.room-invite-row input { flex: 1; min-width: 0; padding: 10px 12px; background: var(--input-bg); border: 1px solid var(--border); border-radius: 10px; color: var(--text); font-size: 16px; }
 .room-invite-row .invite-send-btn { width: auto; margin-top: 0; padding: 10px 18px; }
 
 /* ── Shared content (photos / files / music / links of a chat) ─────────────── */
@@ -1114,7 +1155,9 @@ body.disappearing-on .msg-caption, body.disappearing-on .msg-time { color: #8fa3
   border-bottom: 1px solid var(--border, #e0e4e9);
 }
 .chat-search input {
-  flex: 1; min-width: 0; font: inherit; font-size: 14px;
+  /* 16px, like every other field: anything smaller makes iOS zoom the page
+     in on focus and never zoom back out. */
+  flex: 1; min-width: 0; font: inherit; font-size: 16px;
   padding: 7px 10px; border-radius: 8px;
   border: 1px solid var(--border, #e0e4e9); background: var(--input-bg, #f0f2f5);
   color: inherit;
