@@ -350,6 +350,29 @@
   </div>
 </div>
 
+<!-- 🔥 One-time and ⏳ disappearing, the two ways a message can be made to go.
+     Both live in one sheet because they are asked about together and are
+     constantly confused for each other — the sheet says which is which. -->
+<div id="fire-modal" class="modal-overlay hidden" onclick="closeFireSheet()">
+  <div class="modal-card" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h2>Vanishing messages</h2>
+      <button class="icon-btn" onclick="closeFireSheet()">✕</button>
+    </div>
+    <div class="modal-section">
+      <h3>🔥 One-time message</h3>
+      <p class="fire-hint">Just the next message you send, gone after it is opened.</p>
+      <div id="one-time-chips" class="chip-row"></div>
+    </div>
+    <div class="modal-section">
+      <h3>⏳ Disappearing messages</h3>
+      <p class="fire-hint">Every new message from both of you, deleted after it is seen.</p>
+      <div id="disappearing-chips" class="chip-row"></div>
+      <p id="disappearing-error" class="fire-error hidden"></p>
+    </div>
+  </div>
+</div>
+
 <div id="room-info-modal" class="modal-overlay hidden" onclick="closeRoomInfo()">
   <div class="modal-card" onclick="event.stopPropagation()">
     <div class="modal-header">
@@ -501,6 +524,7 @@
 <script src="/js/voiceTap.js"></script>
 <script src="/js/voicePlayback.js"></script>
 <script src="/js/chatResume.js"></script>
+<script src="/js/disappearing.js"></script>
 <script src="/js/mediaEmbed.js"></script>
 <script src="/js/linkPreview.js"></script>
 <script src="/js/pasteDrop.js"></script>

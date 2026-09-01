@@ -43,6 +43,30 @@ export function disappearingLabel(seconds: number): string {
 }
 
 /**
+ * The same durations, short enough to fit on a chip.
+ *
+ * Lives here rather than being spelled out at each button, because the web has
+ * the same row of chips and two hand-written ladders had already drifted into
+ * three copies of this list.
+ */
+export function chipLabel(seconds: number): string {
+  switch (seconds) {
+    case 0: return 'Off';
+    case 30: return '30s';
+    case 300: return '5m';
+    case 3600: return '1h';
+    case 86400: return '24h';
+    case 604800: return '1w';
+    default: {
+      if (seconds < 60) return `${seconds}s`;
+      if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+      if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
+      return `${Math.round(seconds / 86400)}d`;
+    }
+  }
+}
+
+/**
  * What someone DID, without their name.
  *
  * The chat already renders the name as its own styled element, so the notice

@@ -623,7 +623,12 @@ function connectSocket() {
         } else if (!seconds && existing) existing.remove();
       }
       if (roomId != null && String(roomId) !== String(currentRoomId)) return;
-      applyDisappearingSkin(seconds || 0);
+      disappearingSeconds = seconds || 0;
+      applyDisappearingSkin(disappearingSeconds);
+      // The sheet may be open in front of it — somebody else just changed the
+      // setting this user is looking at.
+      const sheet = document.getElementById('fire-modal');
+      if (sheet && !sheet.classList.contains('hidden')) renderFireSheet();
     });
     // A live share moved: swap the card in place, keeping everything else in
     // the bubble (reply quote, timestamp, reactions) untouched.
@@ -1436,9 +1441,14 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   refreshJoinBar(roomId, isDM);
   // Whether THIS chat destroys its messages — the skin must follow the room,
   // not linger from the last one.
+  disappearingSeconds = 0;
   applyDisappearingSkin(0);
   api(`/room-settings/${roomId}`)
-    .then(r => { if (r && !r.error && String(currentRoomId) === String(roomId)) applyDisappearingSkin(r.disappearingSeconds || 0); })
+    .then(r => {
+      if (!r || r.error || String(currentRoomId) !== String(roomId)) return;
+      disappearingSeconds = r.disappearingSeconds || 0;
+      applyDisappearingSkin(disappearingSeconds);
+    })
     .catch(() => {});
   hasNewerMsgs = false;
   document.getElementById('scroll-fab').classList.add('hidden');
@@ -1811,17 +1821,96 @@ function composerAttach() {
 function composerRecord() {
   startRecording();
 }
-function composerOneTime() {
-  toggleOneTime();
+// ── The 🔥 sheet ─────────────────────────────────────────────────────────────
+// Reported as: disappearing messages cannot be turned on or off on the web.
+// They could not — the server has always accepted `set_disappearing` and the
+// web has always DRAWN the result (the banner, the sidebar marker, the system
+// notice), but nothing on the page could ever send it. The app puts the switch
+// in its 🔥 sheet next to one-time messages, so the web now has the same sheet
+// rather than a second place to look.
+let disappearingSeconds = 0;
+
+function composerOneTime() { openFireSheet(); }
+
+function openFireSheet() {
+  if (!currentRoomId) return;
+  renderFireSheet();
+  show('fire-modal');
+}
+
+function closeFireSheet() { hide('fire-modal'); }
+
+function renderFireSheet() {
+  const err = document.getElementById('disappearing-error');
+  if (err) { err.textContent = ''; err.classList.add('hidden'); }
+
+  // One-time: the three the app offers, plus the custom value the web has
+  // always allowed — dropping that would take away something people use.
+  const ot = document.getElementById('one-time-chips');
+  ot.innerHTML = '';
+  const otChip = (label, on, fn) => {
+    const b = document.createElement('button');
+    b.className = 'chip' + (on ? ' on' : '');
+    b.textContent = label;
+    b.onclick = fn;
+    ot.appendChild(b);
+  };
+  [5, 30, 60].forEach(secs => otChip(secs + 's', pendingOneTimeSeconds === secs,
+    () => { armOneTime(pendingOneTimeSeconds === secs ? null : secs); renderFireSheet(); }));
+  otChip('Custom…', !!pendingOneTimeSeconds && ![5, 30, 60].includes(pendingOneTimeSeconds),
+    () => { askOneTimeSeconds(); renderFireSheet(); });
+  otChip('Off', !pendingOneTimeSeconds, () => { armOneTime(null); renderFireSheet(); });
+
+  // Disappearing: the fixed list the server accepts. A client cannot invent
+  // its own duration, so there is no "custom" here.
+  const dz = document.getElementById('disappearing-chips');
+  dz.innerHTML = '';
+  const options = Disappearing.DISAPPEARING_OPTIONS.filter(v => v > 0).concat([0]);
+  options.forEach(secs => {
+    const b = document.createElement('button');
+    b.className = 'chip' + (disappearingSeconds === secs ? ' on' : '');
+    b.textContent = Disappearing.chipLabel(secs);
+    b.onclick = () => setDisappearing(disappearingSeconds === secs && secs ? 0 : secs);
+    dz.appendChild(b);
+  });
+}
+
+/**
+ * Turn the chat-wide timer on or off.
+ *
+ * The screen is only updated when the SERVER says it changed: this affects
+ * everybody in the chat, and a switch that looks flipped locally while the
+ * server refused it is a promise about other people's messages that nobody
+ * kept.
+ */
+function setDisappearing(seconds) {
+  if (!currentRoomId || !socket) return;
+  const err = document.getElementById('disappearing-error');
+  socket.emit('set_disappearing', { roomId: currentRoomId, seconds }, (res) => {
+    if (!res || res.error) {
+      if (err) {
+        err.textContent = (res && res.error) || 'Could not change the setting';
+        err.classList.remove('hidden');
+      }
+      return;
+    }
+    disappearingSeconds = res.seconds || 0;
+    applyDisappearingSkin(disappearingSeconds);
+    renderFireSheet();
+  });
 }
 
 // ── One-time (self-destructing) messages ──────────────────────────────────────
-function toggleOneTime() {
-  if (pendingOneTimeSeconds) return clearOneTime();
+function askOneTimeSeconds() {
   const raw = prompt('One-time message: seconds visible after being opened (1–3600)?', '10');
   if (raw === null) return;
   const secs = parseInt(raw, 10);
   if (!Number.isInteger(secs) || secs < 1 || secs > 3600) return alert('Enter a number of seconds between 1 and 3600.');
+  armOneTime(secs);
+}
+
+function armOneTime(secs) {
+  if (!secs) return clearOneTime();
   pendingOneTimeSeconds = secs;
   const otBtn = document.getElementById('composer-one-time');
   otBtn.textContent = `🔥 One-time: ${secs}s (turn off)`;
@@ -2973,10 +3062,7 @@ function applyDisappearingSkin(seconds) {
     const msgs = document.getElementById('messages');
     if (msgs && msgs.parentNode) msgs.parentNode.insertBefore(bar, msgs);
   }
-  const label = seconds === 30 ? '30 seconds' : seconds === 300 ? '5 minutes'
-    : seconds === 3600 ? '1 hour' : seconds === 86400 ? '24 hours'
-    : seconds === 604800 ? '1 week' : `${seconds} seconds`;
-  bar.textContent = `\u23F3  Disappearing messages on \u00B7 ${label} after reading`;
+  bar.textContent = Disappearing.bannerText(seconds);
 }
 
 function buildLocationCard(msg) {
@@ -3178,15 +3264,9 @@ function buildMessageElement(msg) {
     nameEl.textContent = (d.avatar ? d.avatar + ' ' : '') + (isMe ? 'You' : who);
     el.appendChild(nameEl);
     const rest = document.createElement('span');
-    // Mirrors disappearingLabel() in the app — the same six choices.
-    const durLabel = (secs) => secs === 30 ? '30 seconds' : secs === 300 ? '5 minutes'
-      : secs === 3600 ? '1 hour' : secs === 86400 ? '24 hours' : secs === 604800 ? '1 week'
-      : secs < 60 ? `${secs} seconds` : secs < 3600 ? `${Math.round(secs / 60)} minutes`
-      : secs < 86400 ? `${Math.round(secs / 3600)} hours` : `${Math.round(secs / 86400)} days`;
-    rest.textContent = d.kind === 'disappearing_on'
-      ? ` turned on disappearing messages — new messages vanish ${durLabel(d.seconds || 0)} after they are read`
-      : d.kind === 'disappearing_off'
-      ? ' turned off disappearing messages'
+    rest.textContent = d.kind === 'disappearing_on' || d.kind === 'disappearing_off'
+      ? ' ' + Disappearing.disappearingPredicate(
+          d.kind === 'disappearing_on' ? (d.seconds || 0) : 0)
       : d.kind === 'removed'
       ? ` ${isMe ? 'were' : 'was'} removed from the room${d.byUsername ? ' by ' + d.byUsername : ''}`
       : d.kind === 'left'

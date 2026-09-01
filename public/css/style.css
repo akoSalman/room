@@ -1206,3 +1206,13 @@ body.disappearing-on .msg-caption, body.disappearing-on .msg-time { color: #8fa3
   border: 1px solid var(--border, #e0e4e9); background: var(--sidebar, #fff); color: inherit;
 }
 .pending-quality.on { background: var(--accent, #3b7dd8); border-color: transparent; color: #fff; }
+
+/* The 🔥 sheet: one-time and disappearing, as rows of chips. */
+.chip-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.chip {
+  border: 1px solid var(--border); background: var(--input-bg); color: var(--text);
+  border-radius: 16px; padding: 6px 14px; font-size: 0.85rem; cursor: pointer;
+}
+.chip.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.fire-hint { font-size: 0.78rem; color: var(--muted); margin: 2px 0 0; }
+.fire-error { font-size: 0.78rem; color: var(--danger); margin: 8px 0 0; }

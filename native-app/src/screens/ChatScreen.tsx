@@ -100,7 +100,7 @@ import { compressVideo } from '../compressVideo';
 import { VideoQuality } from '../videoQuality';
 import { Quality } from '../imageQuality';
 import { tokenize, telHref, toAsciiDigits } from '../textTokens';
-import { DISAPPEARING_OPTIONS, disappearingLabel, disappearingPredicate } from '../disappearing';
+import { DISAPPEARING_OPTIONS, disappearingLabel, disappearingPredicate, chipLabel } from '../disappearing';
 import { toast } from '../components/Toast';
 import * as outbox from '../outbox';
 import EmojiBurst from '../components/EmojiBurst';
@@ -4432,8 +4432,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                   onPress={() => chooseDisappearing(disappearing === secs ? 0 : secs)}
                 >
                   <Text style={[s.chipText, disappearing === secs && s.chipTextOn]}>
-                    {disappearingLabel(secs).replace(' seconds', 's').replace(' minutes', 'm')
-                      .replace('1 hour', '1h').replace('24 hours', '24h').replace('1 week', '1w')}
+                    {chipLabel(secs)}
                   </Text>
                 </TouchableOpacity>
               ))}

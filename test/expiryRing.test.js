@@ -305,10 +305,17 @@ test('the promise made to the user matches when the clock starts', () => {
   // sentence is what changed.
   const dis = fs.readFileSync(
     path.join(__dirname, '..', 'native-app', 'src', 'disappearing.ts'), 'utf8');
+  // The web's copy of the wording moved into its own file when the web gained
+  // the switch itself — the three hand-written ladders in app.js went with it.
+  const webDis = fs.readFileSync(
+    path.join(__dirname, '..', 'public', 'js', 'disappearing.js'), 'utf8');
   assert.ok(/after they are read/.test(dis), 'the notice still promises a clock that is not running');
-  assert.ok(/after they are read/.test(web), 'the web notice still promises it');
-  assert.ok(/after reading/.test(screen) && /after reading/.test(web),
+  assert.ok(/after they are read/.test(webDis), 'the web notice still promises it');
+  assert.ok(/after reading/.test(screen) && /after reading/.test(webDis),
     'the banner does not say when the countdown starts');
+  // And the web still draws them from there, rather than having grown its own.
+  assert.ok(/Disappearing\.bannerText\(/.test(web) && /Disappearing\.disappearingPredicate\(/.test(web),
+    'app.js writes its own disappearing wording again');
 });
 
 let passed = 0, failed = 0;
