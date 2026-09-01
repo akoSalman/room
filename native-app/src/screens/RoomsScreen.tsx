@@ -13,6 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { C, isRTL } from '../theme';
 import { ClearScope, clearScopes, clearLabel, clearHint, clearConfirm } from '../peerActions';
 import { apiFetch, getUsername, getUserId, getSocket, setAuth, getAvatar, RELEASE_TAG, RELEASE_FILE, BASE_URL } from '../api';
+import { changesLeftText, renameWorthDoing, renamedText } from '../profileEdit';
 import * as upd from '../updateSource';
 import { BUILD_VERSION } from '../version';
 import * as connection from '../connection';
@@ -398,7 +399,9 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
     const name = newUsername.trim();
     setProfileError('');
     setProfileSuccess('');
-    if (!name || name === me) { setEditingUsername(false); return; }
+    // The same name back is not a change, and spending one of two on a no-op
+    // would be the worst thing this dialog could do.
+    if (!renameWorthDoing(me, name)) { setEditingUsername(false); return; }
     setSavingProfile(true);
     const res = await apiFetch('/profile', 'PUT', { newUsername: name });
     setSavingProfile(false);
@@ -407,7 +410,7 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
     setMe(res.username);
     setChangesLeft(res.usernameChangesLeft ?? null);
     setEditingUsername(false);
-    setProfileSuccess('Username updated');
+    setProfileSuccess(renamedText(res.usernameChangesLeft ?? null));
   }
 
   return (
@@ -839,13 +842,7 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setEditingUsername(false)} />
           <View style={s.renameCard}>
             <Text style={s.renameTitle}>Change username</Text>
-            <Text style={s.usernameWarn}>
-              {changesLeft === null
-                ? 'Checking how many changes you have left…'
-                : changesLeft === 0
-                  ? 'You have used all your username changes. This name can no longer be changed.'
-                  : `Your username can only be changed ${changesLeft} more ${changesLeft === 1 ? 'time' : 'times'}. People who know your old @name will no longer find you by it.`}
-            </Text>
+            <Text style={s.usernameWarn}>{changesLeftText(changesLeft)}</Text>
             <TextInput
               style={s.renameInput} value={newUsername} onChangeText={setNewUsername}
               placeholderTextColor={C.muted} autoCapitalize="none" autoCorrect={false}

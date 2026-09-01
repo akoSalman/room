@@ -228,40 +228,85 @@
       <button class="icon-btn" onclick="closeProfile()">✕</button>
     </div>
     <div class="profile-avatar-big" id="profile-avatar-big"></div>
+    <!-- Name, with the pencil the app has. Renaming needs no password — the
+         server never asked for one — and it says how many of the two allowed
+         changes are left BEFORE one is spent. -->
     <p class="profile-name" id="profile-name-display"></p>
+    <div class="profile-name-row">
+      <button class="pencil-btn" id="prof-rename-btn" onclick="openUsernameEditor()" title="Change username">✏️</button>
+    </div>
+    <div id="username-editor" class="username-editor hidden">
+      <p class="username-warn" id="username-warn"></p>
+      <input id="prof-username" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" />
+      <div class="username-editor-row">
+        <button class="btn-ghost" onclick="closeUsernameEditor()">Cancel</button>
+        <button class="btn-primary" id="prof-username-save" onclick="saveUsername()">Change</button>
+      </div>
+    </div>
+    <p id="profile-error" class="error"></p>
+    <p id="profile-success" class="success"></p>
+
     <div class="modal-section">
       <div class="my-rooms-header">Profile Picture</div>
+      <!-- Six and a "more", like the app: the whole grid in the sheet made the
+           rest of the profile a scroll away. -->
       <div id="avatar-emoji-grid"></div>
       <button id="remove-avatar-btn" class="remove-avatar hidden" onclick="setAvatarEmoji(null)">Remove profile picture</button>
     </div>
+
     <div class="modal-section">
+      <div class="my-rooms-header">Password</div>
       <div class="field">
-        <label>New username</label>
-        <input id="prof-username" type="text" placeholder="Leave blank to keep current" />
+        <label>Current password</label>
+        <input id="prof-cur-pass" type="password" placeholder="Your current password" autocomplete="current-password" />
       </div>
       <div class="field">
-        <label>Current password <span class="req">(required to save changes)</span></label>
-        <input id="prof-cur-pass" type="password" placeholder="Your current password" />
+        <label>New password</label>
+        <input id="prof-new-pass" type="password" placeholder="At least 8 characters" autocomplete="new-password" />
       </div>
-      <div class="field">
-        <label>New password <span class="req">(optional)</span></label>
-        <input id="prof-new-pass" type="password" placeholder="Leave blank to keep current" />
-      </div>
-      <p id="profile-error" class="error"></p>
-      <p id="profile-success" class="success"></p>
-      <button class="btn-primary" onclick="saveProfile()">Save changes</button>
+      <p id="password-error" class="error"></p>
+      <p id="password-success" class="success"></p>
+      <button class="btn-primary" onclick="savePassword()">Change password</button>
     </div>
     <div class="modal-section">
       <div class="my-rooms-header">My Rooms</div>
       <ul id="my-rooms-list"></ul>
     </div>
     <div class="modal-section">
-      <div class="my-rooms-header">App Update</div>
-      <p class="update-hint" id="update-hint">Get the latest Android app build (mobile only).</p>
-      <a class="btn-primary update-btn" id="update-download-btn" href="https://github.com/akoSalman/room-releases/releases/download/latest-apk/ChatRoom-latest.apk" target="_blank" rel="noopener">⬇ Download latest APK</a>
+      <div class="my-rooms-header">Android App</div>
+      <!-- The app's version boxes. The download comes from THIS server, not
+           from GitHub, which is unreachable for most of the people using
+           this — the old link went straight there. -->
+      <div class="version-row">
+        <div class="version-box">
+          <div class="version-label">THIS PAGE</div>
+          <div class="version-value" id="web-version">…</div>
+        </div>
+        <span class="version-arrow">→</span>
+        <div class="version-box">
+          <div class="version-label">ANDROID APP</div>
+          <div class="version-value" id="apk-version">…</div>
+        </div>
+      </div>
+      <p class="update-hint" id="update-hint">The Android app can do more than this page: calls in the background, notifications, and files kept on the phone.</p>
+      <a class="btn-primary update-btn" id="update-download-btn" href="/app/download">⬇ Download the app (APK)</a>
+      <p id="update-error" class="update-error hidden">Could not reach this server to check for a build.</p>
     </div>
     <div class="modal-section">
       <button class="btn-danger" onclick="logout()">Sign out</button>
+    </div>
+  </div>
+</div>
+
+<!-- Every avatar emoji, opened from the "⋯" in the profile. -->
+<div id="avatar-all-modal" class="modal-overlay hidden" onclick="closeAllAvatars()">
+  <div class="modal-card" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h2>Choose a profile picture</h2>
+      <button class="icon-btn" onclick="closeAllAvatars()">✕</button>
+    </div>
+    <div class="modal-section">
+      <div id="avatar-all-grid"></div>
     </div>
   </div>
 </div>
@@ -526,6 +571,7 @@
 <script src="/js/voicePlayback.js"></script>
 <script src="/js/chatResume.js"></script>
 <script src="/js/longText.js"></script>
+<script src="/js/profileEdit.js"></script>
 <script src="/js/disappearing.js"></script>
 <script src="/js/mediaEmbed.js"></script>
 <script src="/js/linkPreview.js"></script>

@@ -479,28 +479,43 @@ function setAvatarInitials(name) {
 
 const AVATAR_EMOJIS = ['🦄','🐉','🧙‍♂️','🧚‍♀️','🧛‍♂️','🧞‍♂️','🦊','🐺','🦁','🐯','🐼','🐸','🦉','🐙','🦋','🤖','👽','🐲','🦅','🐬','🔥','⚡','🌙','⭐'];
 
+/** One row of six and a "⋯", exactly as the app's profile sheet does it. */
 function buildAvatarPicker() {
   const grid = document.getElementById('avatar-emoji-grid');
-  if (!grid || grid.childElementCount) return;
+  if (!grid) return;
   const current = localStorage.getItem('avatar');
-  const FIRST_ROW = 7;
-  AVATAR_EMOJIS.forEach((e, i) => {
-    const cell = document.createElement('button');
-    cell.className = 'avatar-emoji-cell' + (current === e ? ' active' : '') + (i >= FIRST_ROW ? ' extra hidden' : '');
-    cell.textContent = e;
-    cell.onclick = () => setAvatarEmoji(e);
-    grid.appendChild(cell);
-  });
+  grid.innerHTML = '';
+  AVATAR_EMOJIS.slice(0, 6).forEach(e => grid.appendChild(avatarCell(e, current)));
   const more = document.createElement('button');
   more.className = 'avatar-emoji-cell more-toggle';
   more.textContent = '⋯';
-  more.onclick = () => {
-    const expanded = more.classList.toggle('expanded');
-    grid.querySelectorAll('.avatar-emoji-cell.extra').forEach(c => c.classList.toggle('hidden', !expanded));
-    more.textContent = expanded ? '×' : '⋯';
-  };
+  more.title = 'More';
+  more.onclick = openAllAvatars;
   grid.appendChild(more);
 }
+
+function avatarCell(e, current) {
+  const cell = document.createElement('button');
+  cell.className = 'avatar-emoji-cell' + (current === e ? ' active' : '');
+  cell.textContent = e;
+  cell.onclick = () => setAvatarEmoji(e);
+  return cell;
+}
+
+function openAllAvatars() {
+  const grid = document.getElementById('avatar-all-grid');
+  const current = localStorage.getItem('avatar');
+  grid.innerHTML = '';
+  AVATAR_EMOJIS.forEach(e => {
+    const cell = avatarCell(e, current);
+    const pick = cell.onclick;
+    cell.onclick = () => { pick(); closeAllAvatars(); };
+    grid.appendChild(cell);
+  });
+  show('avatar-all-modal');
+}
+
+function closeAllAvatars() { hide('avatar-all-modal'); }
 
 async function setAvatarEmoji(emoji) {
   const res = await api('/profile', 'PUT', { avatar: emoji });
@@ -797,11 +812,11 @@ function isMobile() { return window.innerWidth <= 640; }
 // ─── Profile ──────────────────────────────────────────────────────────────────
 function openProfile() {
   if (document.getElementById('sidebar').classList.contains('collapsed')) return;
-  document.getElementById('prof-username').value = '';
+  closeUsernameEditor();
   document.getElementById('prof-cur-pass').value = '';
   document.getElementById('prof-new-pass').value = '';
-  document.getElementById('profile-error').textContent = '';
-  document.getElementById('profile-success').textContent = '';
+  ['profile-error', 'profile-success', 'password-error', 'password-success']
+    .forEach(id => { document.getElementById(id).textContent = ''; });
   setAvatarInitials(username);
   buildAvatarPicker();
   document.getElementById('remove-avatar-btn').classList.toggle('hidden', !localStorage.getItem('avatar'));
@@ -1182,11 +1197,30 @@ function scheduleExpirySweep() {
   expirySweepTimer = setTimeout(scheduleExpirySweep, Math.min(wait, 60000));
 }
 
+/**
+ * The two version boxes, the way the app's profile shows them.
+ *
+ * The download points at THIS server rather than at GitHub, which is
+ * unreachable for most of the people using this — the old profile linked
+ * straight there and only swapped the link if a fetch happened to succeed.
+ */
 async function loadLatestAppVersion() {
-  const hint = document.getElementById('update-hint');
+  const webBox = document.getElementById('web-version');
+  const apkBox = document.getElementById('apk-version');
+  const err = document.getElementById('update-error');
+  const btn = document.getElementById('update-download-btn');
+  if (err) err.classList.add('hidden');
+
+  if (webBox) webBox.textContent = loadedAppVersion ? `v${loadedAppVersion}` : 'live';
   const info = await latestAppBuild();
-  if (info.version && hint) {
-    hint.textContent = `Latest Android build: version ${info.version} (mobile only).`;
+  if (info && info.version) {
+    if (apkBox) apkBox.textContent = `v${info.version}`;
+    if (btn) btn.href = info.url;
+  } else {
+    // Never a number we do not have: a version box reading "v0" or "vNaN" is
+    // worse than one that says it does not know.
+    if (apkBox) apkBox.textContent = '—';
+    if (err) err.classList.remove('hidden');
   }
 }
 
@@ -1227,27 +1261,79 @@ async function loadMyRooms() {
 }
 function closeProfile() { hide('profile-modal'); }
 
-async function saveProfile() {
-  const newUsername = document.getElementById('prof-username').value.trim();
-  const currentPassword = document.getElementById('prof-cur-pass').value;
-  const newPassword = document.getElementById('prof-new-pass').value;
+// ─── Changing your own name ───────────────────────────────────────────────────
+// The app's flow, which the web predated: a pencil beside the name, no
+// password (the server never asked for one), and the number of changes left
+// said BEFORE one of the two is spent rather than after they run out.
+let usernameChangesLeft = null;
+
+async function openUsernameEditor() {
   document.getElementById('profile-error').textContent = '';
   document.getElementById('profile-success').textContent = '';
-  if (!newUsername && !newPassword)
-    return document.getElementById('profile-error').textContent = 'Nothing to update';
-  if (!currentPassword)
-    return document.getElementById('profile-error').textContent = 'Current password is required';
-  const res = await api('/profile', 'PUT', { newUsername: newUsername || undefined, currentPassword, newPassword: newPassword || undefined });
-  if (!res.error && newPassword) E2E.rewrap(newPassword, api).catch(() => {});
-  if (res.error) { document.getElementById('profile-error').textContent = res.error; return; }
+  const input = document.getElementById('prof-username');
+  input.value = username;
+  usernameChangesLeft = null;
+  paintUsernameEditor();
+  show('username-editor');
+  input.focus();
+  // Asked, not guessed: this is about to spend one of two irreversible changes.
+  const me = await api('/me');
+  usernameChangesLeft = typeof me?.usernameChangesLeft === 'number' ? me.usernameChangesLeft : null;
+  paintUsernameEditor();
+}
+
+function paintUsernameEditor() {
+  document.getElementById('username-warn').textContent =
+    ProfileEdit.changesLeftText(usernameChangesLeft);
+  const allowed = ProfileEdit.canRename(usernameChangesLeft);
+  document.getElementById('prof-username').disabled = !allowed;
+  document.getElementById('prof-username-save').disabled = !allowed;
+}
+
+function closeUsernameEditor() {
+  hide('username-editor');
+  const input = document.getElementById('prof-username');
+  if (input) input.value = '';
+}
+
+async function saveUsername() {
+  const next = document.getElementById('prof-username').value.trim();
+  const err = document.getElementById('profile-error');
+  err.textContent = '';
+  if (!ProfileEdit.renameWorthDoing(username, next)) { closeUsernameEditor(); return; }
+  if (!ProfileEdit.canRename(usernameChangesLeft)) return;
+  // No currentPassword: the server requires one only to set a new PASSWORD.
+  const res = await api('/profile', 'PUT', { newUsername: next });
+  if (res.error) { err.textContent = res.error; return; }
   saveSession(res.token, res.username);
   username = res.username;
+  usernameChangesLeft = typeof res.usernameChangesLeft === 'number' ? res.usernameChangesLeft : null;
   setAvatarInitials(res.username);
   document.getElementById('current-user-display').textContent = res.username;
+  document.getElementById('profile-name-display').textContent = res.username;
+  closeUsernameEditor();
+  document.getElementById('profile-success').textContent =
+    ProfileEdit.renamedText(usernameChangesLeft);
+}
+
+// ─── Changing your password ───────────────────────────────────────────────────
+async function savePassword() {
+  const currentPassword = document.getElementById('prof-cur-pass').value;
+  const newPassword = document.getElementById('prof-new-pass').value;
+  const err = document.getElementById('password-error');
+  const ok = document.getElementById('password-success');
+  err.textContent = ''; ok.textContent = '';
+  const problem = ProfileEdit.passwordProblem({ currentPassword, newPassword });
+  if (problem) { err.textContent = problem; return; }
+  const res = await api('/profile', 'PUT', { currentPassword, newPassword });
+  if (res.error) { err.textContent = res.error; return; }
+  // The private key is wrapped with the password, so it has to be re-wrapped
+  // with the new one or every encrypted chat becomes unreadable on next sign-in.
+  E2E.rewrap(newPassword, api).catch(() => {});
+  saveSession(res.token, res.username);
   document.getElementById('prof-cur-pass').value = '';
   document.getElementById('prof-new-pass').value = '';
-  document.getElementById('prof-username').value = '';
-  document.getElementById('profile-success').textContent = 'Profile updated successfully';
+  ok.textContent = 'Password changed';
 }
 
 // ─── Rooms ────────────────────────────────────────────────────────────────────
