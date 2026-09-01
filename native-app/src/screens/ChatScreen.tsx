@@ -69,6 +69,7 @@ import SelectedRow, { SelectionCount } from '../components/SelectedRow';
 import SelectableText, { clearSelectionOf } from '../components/SelectableText';
 import LinkCard from '../components/LinkCard';
 import { spentByToken, menuWasStrayTap } from '../tokenTap';
+import { shownText, showsToggle, toggleLabel } from '../longText';
 import * as attachments from '../videoDownloads';
 import {
   kindOf, tapAction as fileTapAction, cardMeta, showsDownloadButton, installHelp, openHelp, isApk,
@@ -283,6 +284,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       setDisappearing(res.seconds || 0);
     });
   }
+  // Which long messages the reader has opened out. Kept per chat screen: a
+  // message folds itself again when the chat is left, which is the behaviour
+  // that keeps a scrolled-back chat readable.
+  const [expandedIds, setExpandedIds] = useState<Set<number | string>>(new Set());
+  function toggleExpanded(id: number | string) {
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
   const [actionsMsg, setActionsMsg] = useState<{ msg: Message; x: number; y: number } | null>(null); // tap menu for a message
   // Long press puts the chat into multi-select: pick several messages and
   // forward or delete them in one go.
@@ -3406,7 +3419,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               msgId={msg.id}
               style={s.msgText}
               selectable={canTakeContent(msg)}
-            >{renderTextWithLinks(msg.content || '')}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}{msg.one_time_seconds ? <Text style={s.oneTimeTag}> 🔥{msg.one_time_seconds}s</Text> : null}</SelectableText>
+            >{renderTextWithLinks(shownText(msg.content || '', expandedIds.has(msg.id)))}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}{msg.one_time_seconds ? <Text style={s.oneTimeTag}> 🔥{msg.one_time_seconds}s</Text> : null}</SelectableText>
+          )}
+          {/* A pasted article or a forwarded poem fills the screen and pushes
+              every other message out of the chat. Past a certain size it is
+              folded — the whole text is still what gets copied, forwarded and
+              searched; this is only how it is drawn. */}
+          {!hiddenOneTime && msg.type === 'text' && showsToggle(msg.content || '') && (
+            <TouchableOpacity onPress={() => tokenPress(() => toggleExpanded(msg.id))}>
+              <Text style={s.foldToggle}>{toggleLabel(expandedIds.has(msg.id))}</Text>
+            </TouchableOpacity>
           )}
           {/* The cover and title of the first link in the message. Draws
               nothing at all until there is something to draw, so a bubble
@@ -5295,6 +5317,7 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(148,163,184,0.12)', borderRadius: 10, padding: 10,
     borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(148,163,184,0.3)',
   },
+  foldToggle: { color: C.accent, fontSize: 12.5, fontWeight: '700', marginTop: 4 },
   fileCardIcon: { fontSize: 26 },
   fileCardName: { color: C.text, fontSize: 14, fontWeight: '600' },
   fileCardMeta: { color: C.muted, fontSize: 11.5, marginTop: 2 },

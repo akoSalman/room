@@ -2765,6 +2765,35 @@ function appendLinkifiedText(container, content) {
   return hasCopyable;
 }
 
+/**
+ * Fold a long message, with a way to open it.
+ *
+ * The text is re-rendered rather than clipped with CSS: the links, phone
+ * numbers and @names inside it are real elements, and a clipped bubble would
+ * leave half of one hanging off the fold with no way to see the rest.
+ */
+function attachFold(bubble, textSpan, content) {
+  if (!LongText.showsToggle(content)) return;
+  let expanded = false;
+
+  const btn = document.createElement('button');
+  btn.className = 'fold-toggle';
+  btn.onclick = (e) => {
+    e.stopPropagation();          // not the message menu
+    expanded = !expanded;
+    draw();
+  };
+
+  function draw() {
+    textSpan.innerHTML = '';
+    appendLinkifiedText(textSpan, LongText.shownText(content, expanded));
+    btn.textContent = LongText.toggleLabel(expanded);
+  }
+  draw();
+  // After the text, before the timestamp row the bubble builds later.
+  textSpan.after(btn);
+}
+
 // ─── Link previews ────────────────────────────────────────────────────────────
 // The cover and title of the first link in a message, fetched through the
 // server (see /link-preview) because most of these hosts are unreachable from
@@ -3243,10 +3272,17 @@ function buildMessageElement(msg) {
     };
     bubble.appendChild(btn);
   } else if (msg.type === 'text') {
+    // dataset.text stays the WHOLE message however it is drawn: copy, edit,
+    // forward and search all read it, and folding is a way of drawing a
+    // message rather than a change to it.
     bubble.dataset.text = msg.content;
     const textSpan = document.createElement('span');
     if (appendLinkifiedText(textSpan, msg.content || '')) bubble.classList.add('has-copyable');
     bubble.appendChild(textSpan);
+    // A pasted article or a forwarded poem fills the screen and pushes every
+    // other message out of the chat. Past a certain size it is folded, with a
+    // way to open it and to put it away again.
+    attachFold(bubble, textSpan, msg.content || '');
     if (msg.edited) { const tag = document.createElement('span'); tag.className = 'edited-tag'; tag.textContent = '(edited)'; bubble.appendChild(tag); }
     if (msg.one_time_seconds) { const ot = document.createElement('span'); ot.className = 'one-time-tag'; ot.textContent = ` 🔥${msg.one_time_seconds}s`; bubble.appendChild(ot); }
     // Added later, and only if there is something to draw: the bubble must

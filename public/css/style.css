@@ -20,6 +20,9 @@
   --radius: 12px;
   --sidebar-w: 260px;
   /* safe area insets (0 on desktop, non-zero on notch devices) */
+  /* How wide a picture in a message is, and therefore how wide its caption
+     wraps: the two must match or the bubble looks broken. */
+  --media-w: 250px;
   --sat: env(safe-area-inset-top, 0px);
   --sab: env(safe-area-inset-bottom, 0px);
 }
@@ -627,7 +630,7 @@ html {
   background: rgba(59,125,216,0.12); border: 1px dashed var(--accent);
   color: var(--accent); font-size: 1.3rem; cursor: pointer;
 }
-.msg-caption { margin-top: 6px; font-size: 0.9rem; }
+.msg-caption { margin-top: 6px; font-size: 0.9rem; max-width: var(--media-w); }
 /* ── Calls ─────────────────────────────────────────── */
 #incoming-call {
   position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 200;
@@ -722,7 +725,7 @@ html {
 #lightbox-prev { left: 14px; }
 #lightbox-next { right: 14px; }
 #lightbox-counter {
-  position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
+  position: absolute; bottom: max(18px, calc(var(--sab) + 10px)); left: 50%; transform: translateX(-50%);
   color: #fff; font-size: 0.85rem; background: rgba(0,0,0,0.5);
   padding: 4px 12px; border-radius: 12px;
 }
@@ -788,7 +791,25 @@ html {
 .msg-bubble { position: relative; padding: 8px 12px; border-radius: var(--radius); font-size: 0.92rem; line-height: 1.45; word-break: break-word; overflow-wrap: break-word; max-width: 100%; }
 .mine .msg-bubble { background: var(--mine-bg); border-bottom-right-radius: 4px; }
 .theirs .msg-bubble { background: var(--msg-bg); border-bottom-left-radius: 4px; }
-.msg-bubble img { max-width: 200px; max-height: 180px; border-radius: 8px; display: block; cursor: pointer; }
+/* A picture with a caption under it.
+ *
+ * Reported with a screenshot: the bubble looked wrong. A tall screenshot was
+ * capped by HEIGHT (180px), which made it about 85px wide, while the caption
+ * beside it was free to run to the bubble's full 80% — so the message was a
+ * wide box with a stamp-sized picture in the corner. The picture now sets the
+ * width, the caption wraps to the same width, and a very tall image is cropped
+ * to a sensible shape rather than shrunk to nothing. Tapping still opens the
+ * whole thing.
+ *
+ * Direct children only: gallery grids, link-preview covers and map tiles are
+ * images inside a bubble that size themselves. */
+.msg-bubble > img {
+  width: var(--media-w); max-width: 100%;
+  height: auto; max-height: 340px;
+  object-fit: cover; object-position: center top;
+  border-radius: 8px; display: block; cursor: pointer;
+  background: rgba(128,128,128,0.12);
+}
 .msg-bubble audio { display: block; max-width: 220px; width: 100%; }
 .msg-video { display: block; max-width: 260px; max-height: 220px; border-radius: 8px; background: #000; }
 .music-player { display: flex; flex-direction: column; gap: 6px; min-width: 220px; max-width: 100%; }
@@ -853,7 +874,11 @@ html {
   transition: transform .05s linear; touch-action: none;
 }
 .lightbox-close, .lightbox-download {
-  position: fixed; top: 16px; right: 16px;
+  /* Reported from an iPhone: only part of these buttons is visible, under the
+     top of the screen. The page is laid out with viewport-fit=cover, so a
+     fixed element at top:16px sits under the status bar and the notch — the
+     safe-area inset is the distance that has to be cleared. */
+  position: fixed; top: max(16px, calc(var(--sat) + 10px)); right: 16px;
   background: rgba(255,255,255,.15); border: none; color: #fff;
   font-size: 18px; border-radius: 50%; width: 38px; height: 38px;
   cursor: pointer; display: flex; align-items: center; justify-content: center;
@@ -906,7 +931,7 @@ html {
   .room-actions:not(.not-owner) { display: flex !important; }
 
   .msg-wrapper { max-width: 88%; }
-  .msg-bubble img { max-width: 160px; }
+  .msg-bubble > img { width: min(var(--media-w), 62vw); }
   .msg-bubble audio { max-width: 100%; }
   #emoji-picker { width: 210px; }
 
@@ -1259,3 +1284,11 @@ body.disappearing-on .msg-caption, body.disappearing-on .msg-time { color: #8fa3
 .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 .fire-hint { font-size: 0.78rem; color: var(--muted); margin: 2px 0 0; }
 .fire-error { font-size: 0.78rem; color: var(--danger); margin: 8px 0 0; }
+
+/* Show more / Show less on a long message. */
+.fold-toggle {
+  display: block; margin-top: 6px; padding: 0;
+  background: none; border: none; cursor: pointer;
+  color: var(--accent); font-size: 0.82rem; font-weight: 600;
+}
+.msg-wrapper.mine .fold-toggle { color: #dbeafe; }

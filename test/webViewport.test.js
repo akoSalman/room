@@ -130,6 +130,38 @@ test('the viewport is declared the way a phone needs', () => {
   assert.ok(!/maximum-scale/.test(content), 'zooming is capped');
 });
 
+// ── Things that sit under the edges of the screen ──────────────────────────
+
+test('the lightbox buttons clear the notch and the status bar', () => {
+  // Reported from an iPhone: opening an image, only part of the close and menu
+  // buttons is visible. The page is laid out with viewport-fit=cover, so a
+  // fixed element at top:16px sits UNDER the status bar and the notch.
+  const btns = rules(css).find(r => /\.lightbox-close, \.lightbox-download/.test(r.selector));
+  assert.ok(btns, 'the lightbox buttons have no rule — this check would be vacuous');
+  assert.ok(/top:\s*max\(/.test(btns.body), 'the buttons are still pinned under the top of the screen');
+  assert.ok(/var\(--sat\)/.test(btns.body), 'the safe area is not taken into account');
+  // The counter at the bottom has the same problem with the home indicator.
+  const counter = rules(css).find(r => r.selector === '#lightbox-counter');
+  assert.ok(/var\(--sab\)/.test(counter.body), 'the counter sits under the home indicator');
+});
+
+test('a picture sets the width of its bubble, and the caption follows it', () => {
+  // Reported with a screenshot: a tall image was capped by HEIGHT, so it came
+  // out about 85px wide while its caption ran to the full width of the bubble
+  // — a wide box with a stamp in the corner.
+  const img = rules(css).find(r => r.selector === '.msg-bubble > img');
+  assert.ok(img, 'the single-image rule is gone — this check would be vacuous');
+  assert.ok(/width:\s*var\(--media-w\)/.test(img.body), 'the image no longer has a width of its own');
+  assert.ok(/object-fit:\s*cover/.test(img.body), 'a tall image is shrunk instead of cropped');
+  const cap = rules(css).find(r => r.selector === '.msg-caption');
+  assert.ok(/max-width:\s*var\(--media-w\)/.test(cap.body),
+    'the caption can still stretch the bubble past the picture');
+  // Only direct children: a gallery grid, a link-preview cover and the map
+  // tiles are images inside a bubble that size themselves.
+  assert.ok(!rules(css).some(r => r.selector === '.msg-bubble img'),
+    'the blanket rule is back, and it will resize gallery cells and link covers');
+});
+
 test('the emoji row scrolls inside itself too', () => {
   const list = rules(css).find(r => r.selector === '#quick-emoji-list');
   assert.ok(list && /overflow-x:\s*auto/.test(list.body),
