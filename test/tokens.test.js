@@ -51,8 +51,44 @@ test('recognises ASCII and formatted phone numbers', () => {
 });
 
 test('short numbers are numbers, not phones', () => {
-  assert.strictEqual(T.classify('42'), 'number');
+  // Four digits is where copyable numbers start (see below); the point of this
+  // one is that a number of that size is never mistaken for a phone.
   assert.strictEqual(T.classify('2024'), 'number');
+  assert.strictEqual(T.classify('12345'), 'number');
+});
+
+test('THE ASK: a number too short to be worth copying is just text', () => {
+  // Every digit run used to become a tappable chip, so "ساعت ۲ میریم" — "we
+  // are leaving at 2" — drew a copy chip around the 2. A number that short is
+  // being used as a word.
+  assert.strictEqual(T.MIN_COPY_DIGITS, 4);
+  for (const n of ['2', '42', '999', '۲', '۱۲', '۱۲۳']) {
+    assert.strictEqual(T.classify(n), 'text', `${n} is still offered as something to copy`);
+  }
+  for (const n of ['1234', '2024', '۱۲۳۴', '۱۲۵۰۰']) {
+    assert.strictEqual(T.classify(n), 'number', `${n} can no longer be copied`);
+  }
+});
+
+test('a short number inside a sentence is left alone, and a long one is not', () => {
+  const short = T.tokenize('ساعت ۲ میریم');
+  assert.deepStrictEqual(short.filter(t => t.kind !== 'text'), [],
+    'a lone digit in ordinary text is still a chip');
+  const long = T.tokenize('کد ۱۲۳۴۵ رو بزن');
+  assert.deepStrictEqual(long.filter(t => t.kind !== 'text').map(t => t.kind), ['number']);
+});
+
+test('the length rule does not reach phones, codes or amounts', () => {
+  // They are decided before it, and all of them are long anyway.
+  assert.strictEqual(T.classify('0770 123 4567'), 'phone');
+  assert.strictEqual(T.classify('IR12345678'), 'number');
+  assert.strictEqual(T.classify('1,234.56'), 'number');
+  // …but a small decimal is prose, not an amount worth a chip. "12.5" is the
+  // one that matters: four characters, three digits — it is DIGITS that are
+  // counted, not length, or a separator would be enough to make a chip.
+  assert.strictEqual(T.classify('3.5'), 'text');
+  assert.strictEqual(T.classify('12.5'), 'text');
+  assert.strictEqual(T.classify('1,234'), 'number');
 });
 
 test('a 16-digit card number is not treated as a phone', () => {
@@ -155,6 +191,18 @@ test('a mention still works at the start of a message and after punctuation', ()
 test('tokenising still round-trips with mentions present', () => {
   const src = 'hi @ako, call 09123456789 or see https://x.com — 250000';
   assert.strictEqual(T.tokenize(src).map(t => t.text).join(''), src);
+});
+
+test('the web copies the same threshold', () => {
+  // The web has its own tokenizer, inline in app.js, so this is the only thing
+  // holding the two together for numbers.
+  const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'app.js'), 'utf8');
+  const m = /const MIN_COPY_DIGITS = (\d+);/.exec(app);
+  assert.ok(m, 'the web has no threshold at all — every digit is a chip again');
+  assert.strictEqual(parseInt(m[1], 10), T.MIN_COPY_DIGITS,
+    'a number copyable in the app is plain text on the web, or the other way round');
+  assert.ok(/countDigits\(tok\) >= MIN_COPY_DIGITS/.test(app),
+    'the web declares the threshold and then does not use it');
 });
 
 let passed = 0, failed = 0;

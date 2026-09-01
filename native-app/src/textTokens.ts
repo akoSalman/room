@@ -55,6 +55,21 @@ export function countDigits(s: string): number {
   return (String(s).match(new RegExp(`[${D}]`, 'g')) || []).length;
 }
 
+/**
+ * How many digits a bare number needs before it is worth offering to copy.
+ *
+ * Asked for as: only numbers with four or more digits should be copyable.
+ *
+ * Every digit run used to become a tappable chip, so "ساعت ۲ میریم" — "we're
+ * leaving at 2" — drew a copy chip around the 2. A number that short is being
+ * used as a word, and turning it into a control both litters the sentence and
+ * puts a tap target in the middle of text somebody is trying to read.
+ *
+ * Four is where the useful ones start: a year, a room number, a verification
+ * code, an amount. Below that it is prose.
+ */
+export const MIN_COPY_DIGITS = 4;
+
 export function isUrl(t: string): boolean {
   return /^https?:\/\//i.test(t) || /^(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}/.test(t);
 }
@@ -75,7 +90,8 @@ export function classify(token: string): TokenKind {
   if (token[0] === '@') return 'mention';
   if (isUrl(token)) return 'url';
   if (isPhone(token)) return 'phone';
-  if (countDigits(token) > 0) return 'number';
+  // Long enough to be worth copying, rather than a number used as a word.
+  if (countDigits(token) >= MIN_COPY_DIGITS) return 'number';
   return 'text';
 }
 

@@ -2728,6 +2728,12 @@ function toAsciiDigits(str) {
 function countDigits(str) {
   return (String(str).match(new RegExp('[' + DIGITS + ']', 'g')) || []).length;
 }
+// Only numbers this long are offered as something to copy. Mirrors
+// MIN_COPY_DIGITS in native-app/src/textTokens.ts: every digit run used to
+// become a chip, so "ساعت ۲ میریم" drew one around the 2 — a number that short
+// is being used as a word, not as something anybody wants on their clipboard.
+const MIN_COPY_DIGITS = 4;
+
 function isPhoneToken(t) {
   if (URLISH_RE.test(t)) return false;
   const d = countDigits(t);
@@ -2833,7 +2839,7 @@ function appendLinkifiedText(container, content) {
       b.textContent = tok;
       b.onclick = (e) => { e.stopPropagation(); openTokenMenu('phone', tok); };
       container.appendChild(b);
-    } else if (countDigits(tok) > 0) {
+    } else if (countDigits(tok) >= MIN_COPY_DIGITS) {
       hasCopyable = true;
       const span = document.createElement('span');
       span.className = 'copyable-number';
