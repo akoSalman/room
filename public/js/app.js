@@ -398,6 +398,51 @@ function logout() {
   show('auth-screen'); hide('app-screen');
 }
 
+/**
+ * Show or hide everything that only makes sense inside a chat.
+ *
+ * The composer is part of the PAGE, not part of a chat, so with no room open
+ * it used to sit there offering a message box with nowhere to send anything —
+ * which is what made a forgotten reload look like a chat that would not
+ * accept typing.
+ */
+/** No chat is open any more: forget it, and take the composer away with it. */
+function forgetRoom() {
+  currentRoomId = null;
+  try { localStorage.removeItem(ChatResume.KEY); } catch (e) {}
+  showComposer(false);
+}
+
+function showComposer(on) {
+  ['composer-strip', 'input-bar'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('hidden', !on);
+  });
+}
+
+/**
+ * Reopen the chat this browser was last in.
+ *
+ * Only if it is still in the list the server just sent: rooms get left,
+ * deleted and revoked, and reopening one you are no longer in would show an
+ * empty screen with a name at the top of it.
+ */
+function resumeLastRoom(rooms, dms) {
+  let target = null;
+  try {
+    target = ChatResume.resumeTarget({
+      saved: localStorage.getItem(ChatResume.KEY),
+      rooms, dms,
+      joinParam: new URLSearchParams(location.search).get('join'),
+    });
+  } catch (e) { return; }
+  if (!target) return;
+  const li = document.querySelector(`[data-room-id="${target.id}"]`);
+  if (!li) return;
+  joinRoom(target.id, target.name, li, target.isDm);
+  if (isMobile()) closeSidebar(); else collapseSidebar();
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 async function enterApp() {
   show('app-screen'); hide('auth-screen');
@@ -406,9 +451,10 @@ async function enterApp() {
   setAvatarInitials(username);
   document.getElementById('current-user-display').textContent = username;
   requestNotifPermission();
+  showComposer(false);   // nothing is open yet
   await connectSocket();
-  await loadRooms();
-  await loadDMRooms();
+  const roomList = await loadRooms();
+  const dmList = await loadDMRooms();
   // Restore unread badges from the server-side read positions
   const counts = await api('/unread-counts');
   if (counts && !counts.error) {
@@ -417,6 +463,7 @@ async function enterApp() {
       updateUnreadBadge(roomId);
     });
   }
+  resumeLastRoom(roomList, dmList);
 }
 
 function setAvatarInitials(name) {
@@ -600,7 +647,7 @@ function connectSocket() {
       const li = document.querySelector(`[data-room-id="${roomId}"]`);
       if (li) li.remove();
       if (String(currentRoomId) === String(roomId)) {
-        currentRoomId = null;
+        forgetRoom();
         document.getElementById('messages').innerHTML = '';
         document.getElementById('room-title').textContent = 'Select a room';
         document.getElementById('room-media-btn').classList.add('hidden');
@@ -997,7 +1044,7 @@ function leaveCurrentRoom() {
     closeRoomInfo();
     const li = document.querySelector(`[data-room-id="${roomId}"]`);
     if (li) li.remove();
-    currentRoomId = null;
+    forgetRoom();
     document.getElementById('messages').innerHTML = '';
     document.getElementById('room-title').textContent = 'Select a room';
     document.getElementById('room-media-btn').classList.add('hidden');
@@ -1201,13 +1248,17 @@ async function saveProfile() {
 // ─── Rooms ────────────────────────────────────────────────────────────────────
 async function loadRooms() {
   const rooms = await api('/rooms');
-  if (!Array.isArray(rooms)) return;
+  if (!Array.isArray(rooms)) return [];
   document.getElementById('room-list').innerHTML = '';
   dmDividerInserted = false;
   rooms.forEach(addRoomToList);
   // Land on the list of chats/rooms after login rather than auto-opening a
   // chat. On desktop the sidebar is always visible; on mobile, open it.
+  // (A RELOAD is different from a login: resumeLastRoom reopens what was
+  // already being read, because a reload is rarely something the reader
+  // chose — iOS does it to a backgrounded tab by itself.)
   if (isMobile()) openSidebar();
+  return rooms;
 }
 
 // Both people see that a chat destroys its messages without having to open it:
@@ -1253,7 +1304,7 @@ function getUserId() {
 function removeRoomFromList(roomId) {
   document.querySelector(`[data-room-id="${roomId}"]`)?.remove();
   if (currentRoomId === roomId) {
-    currentRoomId = null;
+    forgetRoom();
     document.getElementById('room-title').textContent = 'Select a room';
     document.getElementById('room-media-btn').classList.add('hidden');
     document.getElementById('peer-btn').classList.add('hidden');
@@ -1301,8 +1352,9 @@ function confirmDeleteRoom(roomId, roomName) {
 // ─── DM rooms ────────────────────────────────────────────────────────────────
 async function loadDMRooms() {
   const rooms = await api('/dm-rooms');
-  if (!Array.isArray(rooms)) return;
+  if (!Array.isArray(rooms)) return [];
   rooms.forEach(r => addDMToSidebar(r, r.other_username));
+  return rooms;
 }
 
 function ensureDMDivider() {
@@ -1356,6 +1408,13 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   typingUsers.clear(); recordingUsers.clear(); renderTypingBar();
   currentRoomId = roomId;
   currentRoomIsDM = isDM;
+  // Written down so a reload comes back here. iOS reloads a backgrounded tab
+  // by itself, so this is not something people choose to do.
+  try {
+    const saved = ChatResume.serialise({ id: roomId, name: roomName, isDm: isDM, at: Date.now() });
+    if (saved) localStorage.setItem(ChatResume.KEY, saved);
+  } catch (e) {}
+  showComposer(true);
   clearUnread(roomId);
   document.querySelectorAll('#room-list li').forEach(el => el.classList.remove('active'));
   li.classList.add('active');
@@ -3572,9 +3631,17 @@ function buildVoicePlayer(msg) {
   player.appendChild(waveWrap);
   player.appendChild(meta);
 
-  // Audio element (hidden)
+  // Audio element (hidden). `preload` and `playsInline` are for iOS, which
+  // otherwise treats a bare Audio() as something it may decline to load and
+  // may take fullscreen.
   const audio = new Audio(msg.file_path);
-  let playing = false;
+  audio.preload = 'metadata';
+  audio.playsInline = true;
+  // What the button is doing, decided by VoicePlayback so the spinner can only
+  // ever be a report of the audio element's own state — never a guess that
+  // nothing can get out of.
+  let state = 'idle';
+  let spinTimer = null;
   let rafId = null;
 
   function updateBars() {
@@ -3586,19 +3653,44 @@ function buildVoicePlayer(msg) {
   }
 
   function startRAF() {
+    cancelAnimationFrame(rafId);
     function tick() { updateBars(); if (!audio.paused) rafId = requestAnimationFrame(tick); }
     rafId = requestAnimationFrame(tick);
   }
 
   audio.onloadedmetadata = () => { durEl.textContent = fmtTime(audio.duration); };
+
+  // Every state change goes through here, so the button, the spinner and the
+  // timeout cannot disagree with each other.
+  function apply(event) {
+    const next = VoicePlayback.reduce(state, event);
+    if (next === state && event !== 'click') return;
+    state = next;
+    playBtn.innerHTML = VoicePlayback.buttonFace(state);
+    playBtn.classList.toggle('loading', VoicePlayback.spins(state));
+    clearTimeout(spinTimer);
+    if (VoicePlayback.armsTimeout(state)) {
+      // The spinner now always ends. Before this there was no timeout, no
+      // error handler, and no way back to a play button but a page reload.
+      spinTimer = setTimeout(() => apply('timeout'), VoicePlayback.SPIN_TIMEOUT_MS);
+    }
+    if (state === 'playing') startRAF(); else cancelAnimationFrame(rafId);
+  }
+
   function stopThis() {
-    audio.pause(); playing = false; playBtn.innerHTML = '▶';
+    audio.pause();
+    apply('pause');
     cancelAnimationFrame(rafId);
   }
 
+  // Reported by the element itself — the only honest source for the spinner.
+  audio.addEventListener('playing', () => apply('playing'));
+  audio.addEventListener('waiting', () => apply('waiting'));
+  audio.addEventListener('pause', () => apply('pause'));
+  audio.addEventListener('error', () => apply('error'));
+
   audio.onended = () => {
-    playing = false; playBtn.innerHTML = '▶';
-    cancelAnimationFrame(rafId);
+    apply('ended');
     audio.currentTime = 0;
     updateBars();
     durEl.textContent = fmtTime(audio.duration);
@@ -3608,25 +3700,25 @@ function buildVoicePlayer(msg) {
   };
 
   let playedSent = false;
-  function reallyPlay() {
+
+  playBtn.onclick = () => {
+    if (!VoicePlayback.playsNow(state)) { stopThis(); return; }
     if (!playedSent && msg.username !== username) {
       playedSent = true;
       socket?.emit('voice_played', { messageId: msg.id });
     }
     claimPlayback(audio, stopThis); // pause whatever else is playing
     if (audio.ended || audio.currentTime >= audio.duration) audio.currentTime = 0;
-    audio.play(); playBtn.innerHTML = '⏸'; playBtn.classList.remove('loading'); playing = true; startRAF();
-  }
-
-  playBtn.onclick = () => {
-    if (playing) { stopThis(); return; }
-    if (audio.readyState < 3) {
-      // Still downloading — show a loading state and start as soon as enough is buffered.
-      playBtn.innerHTML = ''; playBtn.classList.add('loading');
-      const onReady = () => { audio.removeEventListener('canplay', onReady); if (!playing) reallyPlay(); };
-      audio.addEventListener('canplay', onReady);
-    } else {
-      reallyPlay();
+    apply('click');
+    // Synchronously, inside the click. iOS grants permission to make a sound
+    // to THIS call and to nothing that happens later — the old code waited for
+    // a `canplay` that, for a file iOS had not been asked to load, never came.
+    const started = audio.play();
+    if (started && typeof started.catch === 'function') {
+      started.catch(() => {
+        apply('blocked');
+        showToast(VoicePlayback.failureMessage('blocked'));
+      });
     }
   };
 
@@ -3635,7 +3727,9 @@ function buildVoicePlayer(msg) {
   // in is the only thing decided here — VoiceTap says what it means, so the
   // app and the web cannot disagree about it.
   waveWrap.onclick = e => {
-    const action = VoiceTap.tapAction({ region: 'waveform', isCurrent: playing || audio.currentTime > 0 });
+    const action = VoiceTap.tapAction({
+      region: 'waveform', isCurrent: state === 'playing' || audio.currentTime > 0,
+    });
     if (action !== 'seek' || !audio.duration) { playBtn.onclick(); return; }
     const rect = waveWrap.getBoundingClientRect();
     audio.currentTime = VoiceTap.seekFraction(e.clientX - rect.left, rect.width) * audio.duration;
