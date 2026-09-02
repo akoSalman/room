@@ -216,7 +216,13 @@ jobs:
           {
             echo 'org.gradle.parallel=true'
             echo 'org.gradle.caching=true'
-            echo "org.gradle.workers.max=$(nproc)"
+            # TWO, not one per core. Run 211's akosalman job died at 23
+            # minutes with its step never completing — the signature of a
+            # runner losing its shell, which on a 16 GB box building Skia is
+            # memory. Gradle's own workers plus the compilers each CMake
+            # forks oversubscribe a four-core runner quickly, and the C++
+            # build inside a module already uses every core it can get.
+            echo 'org.gradle.workers.max=2'
           } >> android/gradle.properties
           node -e "
             const fs = require('fs');
