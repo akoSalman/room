@@ -156,6 +156,10 @@ jobs:
             fs.writeFileSync('app.json', JSON.stringify(cfg, null, 2));
           "
 
+      # Deliberately NOT cached, though it costs a minute: GitHub gives a
+      # repository 10 GB of cache in total, and node_modules here is over a
+      # gigabyte per brand. Spending that would evict the Gradle cache, which
+      # is worth twenty minutes rather than one.
       - name: Install dependencies
         if: steps.want.outputs.build == 'yes'
         run: npm install
@@ -173,8 +177,25 @@ jobs:
       - name: Limit to real-device architectures
         if: steps.want.outputs.build == 'yes'
         run: |
+          # ARM64 ONLY, and this is the single biggest thing in the build.
+          #
+          # Every module with C++ in it — Skia, Reanimated, gesture-handler,
+          # screens, the camera, the web view — is compiled once PER ABI. Two
+          # ABIs is therefore two of everything, on a four-core runner, from
+          # cold. Dropping the 32-bit one halves the native compile and halves
+          # the size of the APK (WebRTC alone ships about 20 MB of .so per
+          # architecture).
+          #
+          # What it costs: a phone with a 32-bit-only ARM chip can no longer
+          # install. In practice that is nothing here — minSdkVersion is
+          # already 26, so the app requires Android 8 (2017), and Google has
+          # required 64-bit support of every device since 2019. A 32-bit-only
+          # phone running Android 8 barely exists.
+          #
+          # To put it back: add armeabi-v7a to both lines below, and expect the
+          # build to take roughly twice as long.
           sed -i '/^reactNativeArchitectures=/d' android/gradle.properties
-          echo 'reactNativeArchitectures=armeabi-v7a,arm64-v8a' >> android/gradle.properties
+          echo 'reactNativeArchitectures=arm64-v8a' >> android/gradle.properties
           # Heap, because the build got bigger.
           #
           # Expo's default is 2 GB, which was enough until Skia and the video
@@ -184,6 +205,19 @@ jobs:
           # is not one. The runner has 16 GB; 4 is not greedy.
           sed -i '/^org.gradle.jvmargs=/d' android/gradle.properties
           echo 'org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8' >> android/gradle.properties
+          # Parallel and cached, neither of which was on.
+          #
+          # `parallel` lets independent modules build at the same time — there
+          # are forty-odd of them here and they were being done one after
+          # another. `caching` is the build cache, which only became worth
+          # anything once ~/.gradle survived a failed run: with it, a module
+          # whose inputs have not changed is not rebuilt at all.
+          sed -i '/^org.gradle.parallel=/d;/^org.gradle.caching=/d;/^org.gradle.workers.max=/d' android/gradle.properties
+          {
+            echo 'org.gradle.parallel=true'
+            echo 'org.gradle.caching=true'
+            echo "org.gradle.workers.max=$(nproc)"
+          } >> android/gradle.properties
           node -e "
             const fs = require('fs');
             const p = 'android/app/build.gradle';
@@ -192,7 +226,7 @@ jobs:
             const marker = 'defaultConfig {';
             const i = g.indexOf(marker);
             if (i < 0) { console.error('defaultConfig not found in build.gradle'); process.exit(1); }
-            const inject = marker + '\n        ndk { abiFilters \'armeabi-v7a\', \'arm64-v8a\' }';
+            const inject = marker + '\n        ndk { abiFilters \'arm64-v8a\' }';
             g = g.slice(0, i) + inject + g.slice(i + marker.length);
             fs.writeFileSync(p, g);
             console.log('injected ndk.abiFilters');
