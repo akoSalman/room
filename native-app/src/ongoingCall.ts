@@ -23,6 +23,7 @@ import notifee, {
   AndroidCategory, AndroidForegroundServiceType, AndroidImportance,
   AndroidVisibility, EventType,
 } from '@notifee/react-native';
+import { Platform, PermissionsAndroid } from 'react-native';
 import { ongoingText, showsChronometer, CallPhase } from './callWindow';
 
 export const ONGOING_CHANNEL = 'call-ongoing';
@@ -62,6 +63,70 @@ async function ensureChannel(): Promise<void> {
  * deliberately never resolved: it resolves when the service should stop, and
  * that is what stopOngoing() is for.
  */
+/**
+ * Which foreground-service types this app may legally ask for, right now.
+ *
+ * Reported as: tapping call and, at the first ring, the app crashes.
+ *
+ * From Android 14 a foreground service must declare what it is for, and the
+ * system CHECKS that the app holds the permission behind each type at the
+ * moment the service starts. It does not fail softly: it throws
+ * SecurityException on the main thread, which is a process death, not an
+ * exception this file could catch — the try/catch around displayNotification
+ * cannot help, because the service is started natively after it returns.
+ *
+ * Two of the three types were being asked for without their permission:
+ *
+ *   • PHONE_CALL requires MANAGE_OWN_CALLS, which was not in app.json at all.
+ *     That is every Android 14 device, every call, first ring.
+ *   • MICROPHONE requires RECORD_AUDIO to be GRANTED — not merely declared.
+ *     An outgoing call reaches this before the microphone has been asked for
+ *     the first time, and a ringing incoming call reaches it before the user
+ *     has answered, so on a fresh install it is not granted yet.
+ *
+ * So the types are chosen from what is actually held. A call with no type at
+ * all still runs: the notification is then an ordinary one, the process is not
+ * protected from being frozen in the background, and that is a far smaller
+ * failure than the app disappearing mid-ring.
+ */
+async function allowedTypes(kind: 'voice' | 'video'): Promise<AndroidForegroundServiceType[]> {
+  if (Platform.OS !== 'android') return [];
+  const types: AndroidForegroundServiceType[] = [];
+  const has = async (p: any) => {
+    try { return await PermissionsAndroid.check(p); } catch { return false; }
+  };
+  // MANAGE_OWN_CALLS is a normal permission: declaring it in the manifest is
+  // holding it, and there is nothing to ask the user. It cannot be checked
+  // with PermissionsAndroid.check (which only knows dangerous permissions),
+  // so this asks Android whether the app was granted it at install time.
+  if (await hasManageOwnCalls()) {
+    types.push(AndroidForegroundServiceType.FOREGROUND_SERVICE_TYPE_PHONE_CALL);
+  }
+  if (await has(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO)) {
+    types.push(AndroidForegroundServiceType.FOREGROUND_SERVICE_TYPE_MICROPHONE);
+  }
+  if (kind === 'video' && await has(PermissionsAndroid.PERMISSIONS.CAMERA)) {
+    types.push(AndroidForegroundServiceType.FOREGROUND_SERVICE_TYPE_CAMERA);
+  }
+  return types;
+}
+
+/**
+ * Is MANAGE_OWN_CALLS actually granted?
+ *
+ * Normal permissions are granted at install time from the manifest, so this is
+ * really asking "was it declared in the build that is installed" — which is
+ * exactly the question, because a build made before it was added to app.json
+ * will answer no and must not ask for the PHONE_CALL type.
+ */
+async function hasManageOwnCalls(): Promise<boolean> {
+  try {
+    return await PermissionsAndroid.check('android.permission.MANAGE_OWN_CALLS' as any);
+  } catch {
+    return false;
+  }
+}
+
 export function registerCallService(): void {
   try {
     notifee.registerForegroundService(() => new Promise(() => {}));
@@ -87,23 +152,24 @@ export type OngoingInfo = {
 export async function startOngoing(info: OngoingInfo): Promise<void> {
   try {
     await ensureChannel();
+    const types = await allowedTypes(info.kind);
     await notifee.displayNotification({
       id: ONGOING_ID,
       title: info.title,
       body: ongoingText({ phase: info.phase, kind: info.kind, connected: info.connected }),
       android: {
         channelId: ONGOING_CHANNEL,
-        // The declaration that keeps the process alive.
-        asForegroundService: true,
-        // PHONE_CALL is what this is; MICROPHONE is what it uses. From
-        // Android 14 a service must declare the types it actually needs or the
-        // system refuses to start it — and a video call needs the camera too.
-        foregroundServiceTypes: [
-          AndroidForegroundServiceType.FOREGROUND_SERVICE_TYPE_PHONE_CALL,
-          AndroidForegroundServiceType.FOREGROUND_SERVICE_TYPE_MICROPHONE,
-          ...(info.kind === 'video'
-            ? [AndroidForegroundServiceType.FOREGROUND_SERVICE_TYPE_CAMERA] : []),
-        ],
+        // The declaration that keeps the process alive — but ONLY when a type
+        // can be backed up. A foreground service with no valid type is
+        // refused by Android 14 just as firmly as one with the wrong type, so
+        // with nothing to declare this stays an ordinary notification and the
+        // call simply loses its protection from being frozen.
+        asForegroundService: types.length > 0,
+        // Only the types whose permission this app actually holds — see
+        // allowedTypes(). Asking for one it does not hold is not a warning,
+        // it is a SecurityException on the main thread: the crash at the first
+        // ring.
+        foregroundServiceTypes: types,
         category: AndroidCategory.CALL,
         importance: AndroidImportance.LOW,
         // Not dismissable: swiping away a live call would leave it running

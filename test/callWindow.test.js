@@ -278,7 +278,13 @@ test('the minimized state is cleared when the call is', () => {
 });
 
 test('THE OTHER HALF: a live call runs a foreground service', () => {
-  assert.ok(ongoing.includes('asForegroundService: true'),
+  // `types.length > 0`, not `true`: a service may only claim a type whose
+  // permission the app actually holds, and claiming one it does not is a
+  // SecurityException on the main thread — the crash reported as "tapping
+  // call and at the first ring the app crashes". With nothing claimable this
+  // stays an ordinary notification, which loses the protection from being
+  // frozen but keeps the app alive. See test/mapCall.test.js.
+  assert.ok(/asForegroundService: types\.length > 0/.test(ongoing),
     'the ongoing notification does not keep the process alive, so leaving the app freezes the call');
   assert.ok(/FOREGROUND_SERVICE_TYPE_PHONE_CALL/.test(ongoing)
     && /FOREGROUND_SERVICE_TYPE_MICROPHONE/.test(ongoing),

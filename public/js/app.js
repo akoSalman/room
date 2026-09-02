@@ -3297,6 +3297,176 @@ function applyDisappearingSkin(seconds) {
   bar.textContent = Disappearing.bannerText(seconds);
 }
 
+/**
+ * A location, full screen, that can be dragged and pinched.
+ *
+ * Built on the same proxied tiles as everything else — foreign map services
+ * are unreachable for these users, which is why there is no map library here
+ * and why "open in OpenStreetMap" is an offer at the bottom rather than the
+ * only way to see anything.
+ *
+ * touch-action: none on the surface is what makes a pinch OURS on iOS.
+ * preventDefault alone does not stop Safari zooming the page instead: it
+ * decides before the listener runs, from the CSS.
+ */
+function openMapViewer(lat, lng, live) {
+  const TILE = 256;
+  let zoom = 15;
+  let center = { lat, lng };
+
+  const back = document.createElement('div');
+  back.className = 'map-viewer';
+  const surface = document.createElement('div');
+  surface.className = 'map-surface';
+  const pin = document.createElement('div');
+  pin.className = 'map-pin';
+  pin.textContent = live ? '🟢' : '📍';
+
+  const bar = document.createElement('div');
+  bar.className = 'map-bar';
+  const close = document.createElement('button');
+  close.className = 'map-btn'; close.textContent = '✕';
+  close.onclick = () => back.remove();
+  const zin = document.createElement('button');
+  zin.className = 'map-btn'; zin.textContent = '＋';
+  zin.onclick = () => { zoom = GeoZoom.clampZoom(zoom + 1); draw(); };
+  const zout = document.createElement('button');
+  zout.className = 'map-btn'; zout.textContent = '－';
+  zout.onclick = () => { zoom = GeoZoom.clampZoom(zoom - 1); draw(); };
+  bar.appendChild(close); bar.appendChild(zin); bar.appendChild(zout);
+
+  const foot = document.createElement('a');
+  foot.className = 'map-foot';
+  foot.target = '_blank'; foot.rel = 'noopener';
+
+  function rect() { return surface.getBoundingClientRect(); }
+
+  function draw() {
+    const r = rect();
+    const n = Math.pow(2, zoom);
+    const cx = ((center.lng + 180) / 360) * n;
+    const latRad = (center.lat * Math.PI) / 180;
+    const cy = ((1 - Math.asinh(Math.tan(latRad)) / Math.PI) / 2) * n;
+    surface.innerHTML = '';
+    // Enough tiles to cover the screen at this size, plus one all round so a
+    // drag does not reveal an empty edge before the next redraw.
+    const across = Math.ceil(r.width / TILE) + 2;
+    const down = Math.ceil(r.height / TILE) + 2;
+    for (let dy = -Math.ceil(down / 2); dy <= Math.ceil(down / 2); dy++) {
+      for (let dx = -Math.ceil(across / 2); dx <= Math.ceil(across / 2); dx++) {
+        const tx = Math.floor(cx) + dx, ty = Math.floor(cy) + dy;
+        if (tx < 0 || ty < 0 || tx >= n || ty >= n) continue;
+        const img = document.createElement('img');
+        img.className = 'map-tile';
+        img.loading = 'lazy';
+        img.src = `/tiles/${zoom}/${tx}/${ty}.png`;
+        img.style.left = `${(tx - cx) * TILE + r.width / 2}px`;
+        img.style.top = `${(ty - cy) * TILE + r.height / 2}px`;
+        surface.appendChild(img);
+      }
+    }
+    surface.appendChild(pin);
+    foot.href = `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=${zoom}/${center.lat}/${center.lng}`;
+    foot.textContent = `${center.lat.toFixed(5)}, ${center.lng.toFixed(5)} · open in OpenStreetMap`;
+  }
+
+  // ── Dragging and pinching ────────────────────────────────────────────────
+  let drag = null;
+  const pairOf = (e) => {
+    const r = rect();
+    const a = e.touches[0], b = e.touches[1];
+    return {
+      dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY),
+      fx: (a.clientX + b.clientX) / 2 - r.left,
+      fy: (a.clientY + b.clientY) / 2 - r.top,
+    };
+  };
+
+  surface.addEventListener('touchstart', (e) => {
+    if (e.cancelable) e.preventDefault();
+    if (e.touches.length >= 2) {
+      const p = pairOf(e);
+      drag = { kind: 'pinch', dist: p.dist, fx: p.fx, fy: p.fy, base: zoom };
+    } else {
+      const t = e.touches[0];
+      drag = { kind: 'pan', x: t.clientX, y: t.clientY, lat: center.lat, lng: center.lng };
+    }
+  }, { passive: false });
+
+  surface.addEventListener('touchmove', (e) => {
+    if (!drag) return;
+    if (e.cancelable) e.preventDefault();
+    const r = rect();
+    if (e.touches.length >= 2) {
+      const p = pairOf(e);
+      if (drag.kind !== 'pinch') { drag = { kind: 'pinch', dist: p.dist, fx: p.fx, fy: p.fy, base: zoom }; return; }
+      const want = GeoZoom.clampZoom(drag.base + GeoZoom.pinchZoomDelta(p.dist / drag.dist));
+      if (want !== zoom) {
+        // About the fingers, so whatever is between them stays between them.
+        center = GeoZoom.zoomAbout(center, zoom, want, { x: p.fx, y: p.fy }, r.width, r.height);
+        zoom = want;
+        draw();
+      }
+      return;
+    }
+    if (drag.kind !== 'pan') return;
+    const t = e.touches[0];
+    const n = Math.pow(2, zoom);
+    const cx = ((drag.lng + 180) / 360) * n - (t.clientX - drag.x) / TILE;
+    const latRad = (drag.lat * Math.PI) / 180;
+    const cy = ((1 - Math.asinh(Math.tan(latRad)) / Math.PI) / 2) * n - (t.clientY - drag.y) / TILE;
+    center = {
+      lng: (cx / n) * 360 - 180,
+      lat: (Math.atan(Math.sinh(Math.PI * (1 - (2 * cy) / n))) * 180) / Math.PI,
+    };
+    draw();
+  }, { passive: false });
+
+  const endTouch = (e) => {
+    // A finger lifting out of a pinch must not become a pan from wherever it
+    // happens to be — that flings the map across the country.
+    if (e.touches && e.touches.length === 1 && drag && drag.kind === 'pinch') {
+      drag = { kind: 'pan', x: e.touches[0].clientX, y: e.touches[0].clientY, lat: center.lat, lng: center.lng };
+      return;
+    }
+    drag = null;
+  };
+  surface.addEventListener('touchend', endTouch, { passive: false });
+  surface.addEventListener('touchcancel', endTouch, { passive: false });
+
+  surface.addEventListener('mousedown', (e) => {
+    drag = { kind: 'pan', x: e.clientX, y: e.clientY, lat: center.lat, lng: center.lng };
+  });
+  surface.addEventListener('mousemove', (e) => {
+    if (!drag || drag.kind !== 'pan') return;
+    const n = Math.pow(2, zoom);
+    const cx = ((drag.lng + 180) / 360) * n - (e.clientX - drag.x) / TILE;
+    const latRad = (drag.lat * Math.PI) / 180;
+    const cy = ((1 - Math.asinh(Math.tan(latRad)) / Math.PI) / 2) * n - (e.clientY - drag.y) / TILE;
+    center = {
+      lng: (cx / n) * 360 - 180,
+      lat: (Math.atan(Math.sinh(Math.PI * (1 - (2 * cy) / n))) * 180) / Math.PI,
+    };
+    draw();
+  });
+  ['mouseup', 'mouseleave'].forEach(ev => surface.addEventListener(ev, () => { drag = null; }));
+  surface.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const r = rect();
+    const want = GeoZoom.clampZoom(zoom + (e.deltaY < 0 ? 1 : -1));
+    if (want === zoom) return;
+    center = GeoZoom.zoomAbout(center, zoom, want, { x: e.clientX - r.left, y: e.clientY - r.top }, r.width, r.height);
+    zoom = want;
+    draw();
+  }, { passive: false });
+
+  back.appendChild(surface);
+  back.appendChild(bar);
+  back.appendChild(foot);
+  document.body.appendChild(back);
+  draw();
+}
+
 function buildLocationCard(msg) {
   const wrap = document.createElement('div');
   wrap.className = 'loc-card';
@@ -3324,9 +3494,15 @@ function buildLocationCard(msg) {
   const cy = ((1 - Math.asinh(Math.tan(latRad)) / Math.PI) / 2) * n;
   const x0 = Math.floor(cx), y0 = Math.floor(cy);
 
-  const map = document.createElement('a');
+  // Tapping it opens a map you can actually move.
+  //
+  // Reported as: pinch to zoom does not work and the map cannot be moved. It
+  // could not: this card is nine fixed tiles in a 150px box, and it linked to
+  // openstreetmap.org — a site most of the people using this cannot reach.
+  // There was nothing to pinch and nowhere useful to go.
+  const map = document.createElement('div');
   map.className = 'loc-map';
-  map.href = url; map.target = '_blank'; map.rel = 'noopener';
+  map.onclick = (e) => { e.stopPropagation(); openMapViewer(p.lat, p.lng, live); };
   for (let dy = -1; dy <= 1; dy++) {
     for (let dx = -1; dx <= 1; dx++) {
       const tx = x0 + dx, ty = y0 + dy;

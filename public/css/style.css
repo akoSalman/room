@@ -1355,3 +1355,36 @@ body.disappearing-on .msg-caption, body.disappearing-on .msg-time { color: #8fa3
   background: none; border: none; color: var(--muted); cursor: pointer;
   font-size: 0.9rem; padding: 6px; flex-shrink: 0;
 }
+
+/* ── A location, full screen and movable ─────────────────────────────────── */
+/* touch-action: none is what makes the pinch OURS on iOS: Safari decides
+   whether a gesture is a page zoom from the CSS, before any listener runs, so
+   preventDefault() alone leaves the page zooming and the map still. */
+.map-viewer { position: fixed; inset: 0; z-index: 2100; background: #0b0f14; }
+.map-surface {
+  position: absolute; inset: 0; overflow: hidden;
+  touch-action: none; overscroll-behavior: none; cursor: grab; user-select: none;
+}
+.map-surface:active { cursor: grabbing; }
+.map-tile { position: absolute; width: 256px; height: 256px; max-width: none; pointer-events: none; }
+.map-pin {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -100%);
+  font-size: 30px; pointer-events: none; filter: drop-shadow(0 2px 3px rgba(0,0,0,.6));
+}
+/* Clear of the notch, like the lightbox's buttons. */
+.map-bar {
+  position: absolute; top: max(14px, calc(var(--sat) + 10px)); right: 14px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.map-btn {
+  width: 42px; height: 42px; border-radius: 50%; border: none; cursor: pointer;
+  background: rgba(255,255,255,.9); color: #111; font-size: 1.1rem; font-weight: 700;
+}
+.map-foot {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  bottom: max(14px, calc(var(--sab) + 10px));
+  background: rgba(0,0,0,.65); color: #fff; text-decoration: none;
+  padding: 8px 14px; border-radius: 14px; font-size: 0.78rem; max-width: 90%;
+}
+/* The card in the bubble opens it, so it is a button, not a link. */
+.loc-map { cursor: pointer; }
