@@ -242,7 +242,14 @@ jobs:
           mkdir -p android/build
           GRADLE_LOG=$(pwd)/android/build/gradle-build.log
           cd android
-          for attempt in 1 2 3; do
+          # TWO attempts, each bounded, and the arithmetic matters: the job is
+          # capped at 50 minutes, and three unbounded attempts could not fit
+          # inside it. When they did not, the JOB was killed rather than the
+          # step — and a killed job runs none of its remaining steps, so the
+          # "Why the build failed" summary below never ran and GitHub served
+          # no log for the cancelled job either. Run 209 failed exactly that
+          # way: fifty minutes, two jobs, and nothing at all to look at.
+          for attempt in 1 2; do
             echo "── gradle attempt $attempt ─────────────────────────────"
             # Tee'd to a file as well as the console: when the run log cannot
             # be downloaded, the summary step below is the only way anyone
@@ -253,7 +260,15 @@ jobs:
             # that stalls on a download waits FOREVER by default. A stalled
             # fetch is the most likely way a build reaches six hours without
             # printing anything new.
-            if ./gradlew assembleRelease --no-daemon --console=plain \
+            #
+            # `timeout --signal=QUIT` is the diagnosis. SIGQUIT to a JVM makes
+            # it print a stack trace for EVERY thread and carry on; sent to a
+            # hung Gradle it says which task, and which thread inside it, is
+            # stuck — which is the one thing none of the six-hour builds ever
+            # told us. KILL follows a minute later for a JVM too wedged to
+            # answer.
+            if timeout --signal=QUIT --kill-after=60s 18m \
+                ./gradlew assembleRelease --no-daemon --console=plain --stacktrace \
                 -Dorg.gradle.internal.http.connectionTimeout=60000 \
                 -Dorg.gradle.internal.http.socketTimeout=120000 \
                 -x lint -x lintVitalRelease -x lintReportRelease -x lintVitalAnalyzeRelease \
@@ -263,12 +278,18 @@ jobs:
                 -Pandroid.injected.signing.key.password=chatroom123 2>&1 | tee -a "$GRADLE_LOG"; then
               exit 0
             fi
-            if [ "$attempt" -lt 3 ]; then
-              echo "Gradle failed; waiting $((attempt * 45))s before retrying."
-              sleep $((attempt * 45))
+            status=$?
+            # 124 is `timeout` saying it ran out — a hang, not a build error.
+            # Worth naming, because the two want completely different fixes.
+            if [ "$status" = "124" ] || [ "$status" = "137" ]; then
+              echo "::warning::Attempt $attempt HUNG (no exit within 18 minutes) — thread dump above."
+            fi
+            if [ "$attempt" -lt 2 ]; then
+              echo "Gradle failed (status $status); waiting 45s before retrying."
+              sleep 45
             fi
           done
-          echo "::error::Gradle failed three times."
+          echo "::error::Gradle failed twice."
           exit 1
 
       # always(), not failure(): a job killed by the timeout is CANCELLED, and
@@ -280,6 +301,18 @@ jobs:
       # seconds after starting, having never begun a job — an invalid workflow
       # file, not a failed build. Expressions in `if` are the one part of this
       # file that cannot be tested before pushing it, so they stay boring.
+      # The log as a FILE, not only as a summary: a step summary is truncated
+      # at 1 MB and a Gradle log is bigger than that, and the interesting part
+      # of a hang — the thread dump — is in the middle rather than the end.
+      - name: Keep the Gradle log
+        if: always() && steps.want.outputs.build == 'yes'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-log-${{ matrix.brand }}
+          path: native-app/android/build/gradle-build.log
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Why the build failed
         if: always() && steps.want.outputs.build == 'yes'
         run: |
