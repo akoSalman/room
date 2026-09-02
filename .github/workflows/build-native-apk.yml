@@ -86,6 +86,9 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      # Installed AFTER the cleanup below would be wrong — this is where the
+      # SDK arrives, and the cleanup only removes the bundled NDK that Gradle
+      # re-fetches at the version this project actually pins.
       - name: Setup Android SDK
         if: steps.want.outputs.build == 'yes'
         uses: android-actions/setup-android@v3
@@ -160,6 +163,32 @@ jobs:
       # repository 10 GB of cache in total, and node_modules here is over a
       # gigabyte per brand. Spending that would evict the Gradle cache, which
       # is worth twenty minutes rather than one.
+      # ── Make room ────────────────────────────────────────────────────────
+      #
+      # THIS is what has been killing these builds. Run 212 died with
+      #   :expo-media-library:mergeReleaseResources
+      #   > .../merger.xml: Error: No space left on device
+      # and the runner could not even write its own diagnostic log or save the
+      # cache afterwards. It explains everything that looked mysterious: jobs
+      # ending at random points with their step never completing, logs that
+      # 404 because the log file could not be written, and one job lasting 23
+      # minutes while its twin ran to the cap.
+      #
+      # A runner has about 14 GB free. The pre-installed toolchains that this
+      # build never touches — .NET, GHC, CodeQL, the bundled Android images —
+      # are worth roughly 25 GB between them, and deleting them takes under a
+      # minute. Everything below is present on every ubuntu-latest image and
+      # `|| true` throughout, so a change in the image cannot fail the build.
+      - name: Free disk space
+        if: steps.want.outputs.build == 'yes'
+        run: |
+          echo "before:"; df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk/ndk \
+                      /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL \
+                      /usr/local/share/powershell /usr/share/swift || true
+          sudo docker image prune -af 2>/dev/null || true
+          echo "after:"; df -h / | tail -1
+
       - name: Install dependencies
         if: steps.want.outputs.build == 'yes'
         run: npm install
@@ -259,15 +288,21 @@ jobs:
       # 210, which is what an empty cache looks like. A build that runs out of
       # time now leaves its downloads and its compiled objects behind, so the
       # next one starts further along instead of repeating the same hour.
-      - name: Restore Gradle cache
+      # Only the downloaded dependencies — NOT ~/.gradle/caches wholesale.
+      #
+      # The wholesale cache is several gigabytes of build outputs, and
+      # unpacking it onto a disk that is already the binding constraint is
+      # what turned a tight build into a failing one. `modules-2` is the
+      # dependency download cache: a few hundred megabytes, and the part that
+      # actually saves time on a runner with no network problems.
+      - name: Restore Gradle downloads
         id: gradle-cache
         if: steps.want.outputs.build == 'yes'
         uses: actions/cache/restore@v4
         with:
           path: |
-            ~/.gradle/caches
+            ~/.gradle/caches/modules-2
             ~/.gradle/wrapper
-            native-app/android/.gradle
           key: gradle-${{ matrix.brand }}-${{ hashFiles('native-app/android/**/*.gradle*') }}
           restore-keys: |
             gradle-${{ matrix.brand }}-
@@ -310,7 +345,7 @@ jobs:
             while :; do
               sleep 120
               [ -f "$GRADLE_LOG" ] || continue
-              echo "── heartbeat $(date -u +%H:%M:%S) ── last line:"
+              echo "── heartbeat $(date -u +%H:%M:%S) ── disk: $(df -h / | awk 'NR==2 {print $4" free"}') ── last line:"
               tail -n 1 "$GRADLE_LOG"
               if [ $(( $(date +%s) % 600 )) -lt 130 ]; then
                 pid=$(pgrep -f 'GradleWrapperMain|GradleDaemon' | head -1)
@@ -384,14 +419,13 @@ jobs:
       # split above. `always()`, and a key that carries the run number so a
       # partial cache from a failed attempt is never mistaken for a complete
       # one from a successful build.
-      - name: Save Gradle cache
+      - name: Save Gradle downloads
         if: always() && steps.want.outputs.build == 'yes'
         uses: actions/cache/save@v4
         with:
           path: |
-            ~/.gradle/caches
+            ~/.gradle/caches/modules-2
             ~/.gradle/wrapper
-            native-app/android/.gradle
           key: gradle-${{ matrix.brand }}-${{ hashFiles('native-app/android/**/*.gradle*') }}-${{ github.run_number }}
 
       - name: Keep the Gradle log
