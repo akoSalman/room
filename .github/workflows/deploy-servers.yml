@@ -73,7 +73,14 @@ jobs:
           # the script the server runs. The three values it needs are passed as
           # environment assignments instead. (With an unquoted heredoc, every
           # server-side $var and $(...) would have been substituted here first.)
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "root@$HOST" \
+          # ServerAliveInterval, because a deploy died of silence rather than of
+          # error: the sharp repair below can spend four minutes producing no
+          # output, and the connection was dropped underneath it —
+          # "client_loop: send disconnect: Broken pipe", exit 255, on a command
+          # that was working. Runs 115, 117, 119, 121 and 122 all failed that
+          # way, on bistbarg, at exactly that line.
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=15 "root@$HOST" \
             "APP_DIR='$APP_DIR' BRANCH='$BRANCH' SERVICE='$SERVICE' bash -s" <<'EOF'
           set -e
           cd "$APP_DIR"
@@ -121,18 +128,6 @@ jobs:
             echo "::error::better-sqlite3 still cannot open a database — not restarting onto a broken build."
             exit 1
           fi
-          # sharp only makes thumbnails, and server.js now loads it lazily, so
-          # the app runs fine without it. Try to repair it, but NEVER fail the
-          # deploy over it, and never --build-from-source: better-sqlite3 needs
-          # C++20 and the g++ on at least one of these servers is too old for
-          # that, so a source build turns a cosmetic problem into a failed
-          # deploy.
-          if ! node -e "require('sharp')" 2>/dev/null; then
-            echo "sharp has no usable binary for this platform — trying to reinstall it."
-            npm install --omit=dev --os=linux --cpu=x64 sharp || true
-            node -e "require('sharp')" 2>/dev/null \
-              || echo "::warning::sharp is unavailable, so thumbnails are disabled and full-size images are served instead. The app is otherwise fine. Node must be >=20.9.0 for sharp 0.35's prebuilt binary."
-          fi
           # ── Health report, printed EVERY time, not only on failure ────────
           # There is no other way to see inside these boxes. They are not
           # reachable from the environment this repo is worked on from, so
@@ -160,6 +155,17 @@ jobs:
           done
           ss -ltnp 2>/dev/null | grep -E ':(80|443|3000)\b' || echo "nothing listening on 80/443/3000"
           echo "── certificate ──"
+          # What is actually served on 443, which is the only thing a browser
+          # judges. Reported as: Safari shows the site as "Not Secure", which
+          # is also why the microphone and web push do not work there — both
+          # need a secure context. The file search below misses certificates a
+          # hosting panel manages elsewhere, so ask the port itself.
+          for h in "$(hostname -f 2>/dev/null)" localhost; do
+            [ -n "$h" ] || continue
+            out=$(echo | timeout 10 openssl s_client -connect 127.0.0.1:443 -servername "$h" 2>/dev/null \
+              | openssl x509 -noout -subject -issuer -enddate 2>/dev/null)
+            [ -n "$out" ] && { echo "served for $h:"; echo "$out"; break; }
+          done
           found=0
           for c in /etc/letsencrypt/live/*/fullchain.pem /etc/ssl/certs/*chat*.crt /usr/local/lsws/conf/cert/*.crt /etc/pki/tls/certs/*.crt; do
             [ -f "$c" ] || continue
@@ -184,6 +190,25 @@ jobs:
             exit 1
           fi
           systemctl is-active "$SERVICE"
+
+          # ── sharp, AFTER the restart and never before it ──────────────────
+          # sharp only makes thumbnails, and server.js loads it lazily, so the
+          # app runs perfectly without it. It used to be repaired up above,
+          # between the new code and the restart — and since that repair can
+          # spend minutes silent enough for the connection to be dropped, a
+          # cosmetic problem was killing the deploy at the one point where the
+          # files were new and the running process was still old. bistbarg
+          # spent five deploys in that state.
+          #
+          # Now it happens last, is bounded, and cannot cost anything: the
+          # service is already running the new code before this line.
+          if ! node -e "require('sharp')" 2>/dev/null; then
+            echo "sharp has no usable binary — trying to repair it (thumbnails only)."
+            timeout 240 npm install --omit=dev --os=linux --cpu=x64 sharp || true
+            node -e "require('sharp')" 2>/dev/null \
+              && systemctl restart "$SERVICE" \
+              || echo "::warning::sharp is unavailable, so thumbnails are disabled and full-size images are served instead. The app is otherwise fine. Node must be >=20.9.0 for sharp 0.35's prebuilt binary."
+          fi
           # "active" only means the process exists. Ask it for something over
           # HTTP too: a server that is up but not answering is exactly what a
           # user reports as "not reachable", and systemd calls that healthy.
