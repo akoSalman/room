@@ -38,7 +38,7 @@ jobs:
     # to produce nothing and say nothing. A build that cannot finish in fifty
     # minutes is stuck, and finding that out at 00:50 rather than 06:00 is the
     # difference between a diagnosis and a lost night.
-    timeout-minutes: 50
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -212,15 +212,26 @@ jobs:
         if: steps.want.outputs.build == 'yes'
         run: cp signing/chatroom.keystore android/app/chatroom.keystore
 
-      - name: Cache Gradle
+      # RESTORE and SAVE, split — because actions/cache only writes its cache
+      # when the job SUCCEEDS, and no build here has succeeded since Skia
+      # joined the native compile. Every attempt therefore started from
+      # nothing: the "Cache Gradle" step took zero seconds in runs 209 and
+      # 210, which is what an empty cache looks like. A build that runs out of
+      # time now leaves its downloads and its compiled objects behind, so the
+      # next one starts further along instead of repeating the same hour.
+      - name: Restore Gradle cache
+        id: gradle-cache
         if: steps.want.outputs.build == 'yes'
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-${{ hashFiles('native-app/android/**/*.gradle*') }}
-          restore-keys: gradle-
+            native-app/android/.gradle
+          key: gradle-${{ matrix.brand }}-${{ hashFiles('native-app/android/**/*.gradle*') }}
+          restore-keys: |
+            gradle-${{ matrix.brand }}-
+            gradle-
 
       # Retried, because the thing that fails here is usually not the build.
       #
@@ -249,7 +260,28 @@ jobs:
           # "Why the build failed" summary below never ran and GitHub served
           # no log for the cancelled job either. Run 209 failed exactly that
           # way: fifty minutes, two jobs, and nothing at all to look at.
-          for attempt in 1 2; do
+          # A HEARTBEAT, because the question "is it hung or is it slow?" has
+          # never once been answerable from these logs. Every two minutes it
+          # prints how long Gradle has been going and the last line it wrote;
+          # every ten, a stack dump of the build JVM. A build that is working
+          # shows a moving task name, and one that is stuck shows the same
+          # line and the same stack twice.
+          (
+            while :; do
+              sleep 120
+              [ -f "$GRADLE_LOG" ] || continue
+              echo "── heartbeat $(date -u +%H:%M:%S) ── last line:"
+              tail -n 1 "$GRADLE_LOG"
+              if [ $(( $(date +%s) % 600 )) -lt 130 ]; then
+                pid=$(pgrep -f 'GradleWrapperMain|GradleDaemon' | head -1)
+                [ -n "$pid" ] && jstack "$pid" 2>/dev/null | head -40
+              fi
+            done
+          ) &
+          HEARTBEAT=$!
+          trap 'kill $HEARTBEAT 2>/dev/null' EXIT
+
+          for attempt in 1; do
             echo "── gradle attempt $attempt ─────────────────────────────"
             # Tee'd to a file as well as the console: when the run log cannot
             # be downloaded, the summary step below is the only way anyone
@@ -267,7 +299,15 @@ jobs:
             # stuck — which is the one thing none of the six-hour builds ever
             # told us. KILL follows a minute later for a JVM too wedged to
             # answer.
-            if timeout --signal=QUIT --kill-after=60s 18m \
+            # 55 minutes, and one attempt rather than two.
+            #
+            # Run 209 spent FIFTY-THREE minutes in a single Gradle invocation
+            # without finishing, and run 210 was cut off at eighteen. Neither
+            # proves a hang: this is a cold build of React Native, WebRTC and
+            # Skia's C++ for two ABIs on a four-core runner, with no cache to
+            # start from, and that is genuinely an hour's work. Give it the
+            # hour once; with the cache saved above, the next one is quick.
+            if timeout --signal=QUIT --kill-after=60s 55m \
                 ./gradlew assembleRelease --no-daemon --console=plain --stacktrace \
                 -Dorg.gradle.internal.http.connectionTimeout=60000 \
                 -Dorg.gradle.internal.http.socketTimeout=120000 \
@@ -284,12 +324,8 @@ jobs:
             if [ "$status" = "124" ] || [ "$status" = "137" ]; then
               echo "::warning::Attempt $attempt HUNG (no exit within 18 minutes) — thread dump above."
             fi
-            if [ "$attempt" -lt 2 ]; then
-              echo "Gradle failed (status $status); waiting 45s before retrying."
-              sleep 45
-            fi
           done
-          echo "::error::Gradle failed twice."
+          echo "::error::Gradle did not produce an APK."
           exit 1
 
       # always(), not failure(): a job killed by the timeout is CANCELLED, and
@@ -304,6 +340,20 @@ jobs:
       # The log as a FILE, not only as a summary: a step summary is truncated
       # at 1 MB and a Gradle log is bigger than that, and the interesting part
       # of a hang — the thread dump — is in the middle rather than the end.
+      # Saved even when the build failed — that is the entire point of the
+      # split above. `always()`, and a key that carries the run number so a
+      # partial cache from a failed attempt is never mistaken for a complete
+      # one from a successful build.
+      - name: Save Gradle cache
+        if: always() && steps.want.outputs.build == 'yes'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            native-app/android/.gradle
+          key: gradle-${{ matrix.brand }}-${{ hashFiles('native-app/android/**/*.gradle*') }}-${{ github.run_number }}
+
       - name: Keep the Gradle log
         if: always() && steps.want.outputs.build == 'yes'
         uses: actions/upload-artifact@v4
