@@ -1438,3 +1438,50 @@ body.disappearing-on .msg-caption, body.disappearing-on .msg-time { color: #8fa3
 }
 /* The card in the bubble opens it, so it is a button, not a link. */
 .loc-map { cursor: pointer; }
+
+
+/* ── Comments ───────────────────────────────────────────────────────────────
+   A message's comments as their own screen, over the conversation. It stops
+   ABOVE the composer rather than covering it, because the composer is what
+   writes the comments — there is no second one. */
+/* In the flow, not over it: the panel takes the space the message list had
+   and the composer stays exactly where it is, because the composer is what
+   writes the comments. An overlay would have covered the one control the
+   screen depends on. */
+#comments-panel {
+  flex: 1; min-height: 0;
+  background: var(--chat-bg, #0f172a);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+/* The conversation is still mounted, keeping its scroll position, its loaded
+   history and its pending uploads — closing the thread puts it back exactly as
+   it was rather than reloading the room. */
+body.commenting #messages,
+body.commenting #typing-bar,
+body.commenting #scroll-fab { display: none; }
+.comments-head {
+  display: flex; align-items: center; gap: 8px; padding: 10px 8px;
+  border-bottom: 1px solid var(--border, #334155); font-weight: 600; flex-shrink: 0;
+}
+.comments-parent {
+  padding: 8px 4px; border-bottom: 1px solid var(--border, #334155);
+  background: rgba(128, 128, 128, 0.06); flex-shrink: 0;
+  max-height: 40%; overflow-y: auto;
+}
+.comments-list { flex: 1; overflow-y: auto; padding: 8px 4px; }
+
+/* The badge, at the bottom-left of a message and only when it has comments. */
+.comment-badge {
+  /* First in the footer, whichever way the row is laid out. */
+  order: -1; margin-inline-end: auto;
+  background: none; border: 0; cursor: pointer; padding: 0 4px;
+  color: var(--accent, #60a5fa); font-size: 0.72rem; line-height: 1;
+}
+.comment-badge:hover { text-decoration: underline; }
+
+#comment-bar {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  background: rgba(96, 165, 250, 0.12); border-top: 1px solid var(--border, #334155);
+  font-size: 0.8rem; color: var(--muted, #94a3b8);
+}
+#comment-bar span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

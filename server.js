@@ -1326,11 +1326,26 @@ function hasMuted(userId, otherId) {
  *
  * Both numbers come from our own database as integers, never from the client.
  */
-function visibleMessagesSql(userId, roomId, alias = 'm') {
+function visibleMessagesSql(userId, roomId, alias = 'm', opts = {}) {
   const floor = Number(clearedUpto(userId, roomId)) || 0;
   const me = Number(userId) || 0;
-  return `AND ${alias}.id > ${floor} AND (${alias}.blocked_delivery = 0 OR ${alias}.user_id = ${me})`;
+  // Comments are messages, and every list of messages in this file goes
+  // through here — so this ONE line is what keeps them out of the chat, the
+  // search results, the media tabs and the unread counts. Doing it per query
+  // would mean remembering it in nine places and forgetting it in one.
+  const own = opts.includeComments ? '' : ` AND ${alias}.parent_id IS NULL`;
+  return `AND ${alias}.id > ${floor} AND (${alias}.blocked_delivery = 0 OR ${alias}.user_id = ${me})${own}`;
 }
+
+/**
+ * How many comments a message has, as a column.
+ *
+ * A correlated subquery rather than a join: a join would multiply the message
+ * rows and every list here would need a GROUP BY it does not currently have.
+ * `idx_messages_parent` makes it a lookup.
+ */
+const COMMENT_COUNT_SQL =
+  '(SELECT COUNT(*) FROM messages c WHERE c.parent_id = m.id) AS comment_count';
 
 function clearedUpto(userId, roomId) {
   const row = db.prepare('SELECT cleared_upto_id FROM room_clears WHERE user_id = ? AND room_id = ?')
@@ -1673,6 +1688,46 @@ app.get('/encrypted-messages/:roomId', authMiddleware, (req, res) => {
   res.json({ messages: rows, total });
 });
 
+/**
+ * One message's comments, and the message itself.
+ *
+ * The parent comes back with them because the screen is headed by it: a
+ * comments view that opened on a bare list, with no sight of what was being
+ * commented on, would be unreadable — and fetching it separately would be a
+ * second round trip for a screen that is already one tap deep.
+ *
+ * `includeComments` is the opt-out from the rule that keeps comments out of
+ * every other list. This is the one place they ARE the list.
+ */
+app.get('/comments/:roomId/:msgId', authMiddleware, (req, res) => {
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
+  if (!canAccessRoom(req.user.id, room)) return res.status(403).json({ error: 'No access' });
+
+  const vis = visibleMessagesSql(req.user.id, room.id, 'm', { includeComments: true });
+  const parent = db.prepare(`
+    SELECT m.*, u.username, u.avatar, ${COMMENT_COUNT_SQL}
+    FROM messages m JOIN users u ON m.user_id = u.id
+    WHERE m.id = ? AND m.room_id = ? ${vis}
+  `).get(req.params.msgId, room.id);
+  // Gone, or cleared away by this user: the thread goes with it rather than
+  // being shown headless.
+  if (!parent) return res.status(404).json({ error: 'That message is no longer here' });
+
+  const comments = db.prepare(`
+    SELECT m.*, u.username, u.avatar,
+      rm.content AS reply_content, rm.type AS reply_type, rm.file_name AS reply_file_name,
+      ru.username AS reply_username
+    FROM messages m
+    JOIN users u ON m.user_id = u.id
+    LEFT JOIN messages rm ON m.reply_to_id = rm.id
+    LEFT JOIN users ru ON rm.user_id = ru.id
+    WHERE m.parent_id = ? ${vis}
+    ORDER BY m.id ASC
+  `).all(req.params.msgId);
+
+  res.json({ parent: signMessage(parent), comments: comments.map(signMessage) });
+});
+
 // Messages AROUND one particular message.
 //
 // "Show in chat" used to work by paging backwards from the newest message
@@ -1755,7 +1810,7 @@ app.get('/messages/:roomId', authMiddleware, (req, res) => {
   // and a page boundary in the middle of that pair loses one of them.
   if (after) {
     const rows = db.prepare(`
-      SELECT m.*, u.username, u.avatar,
+      SELECT m.*, u.username, u.avatar, ${COMMENT_COUNT_SQL},
         rm.content AS reply_content, rm.type AS reply_type, rm.file_name AS reply_file_name,
         ru.username AS reply_username
       FROM messages m
@@ -1770,7 +1825,7 @@ app.get('/messages/:roomId', authMiddleware, (req, res) => {
 
   const messages = before
     ? db.prepare(`
-        SELECT m.*, u.username, u.avatar,
+        SELECT m.*, u.username, u.avatar, ${COMMENT_COUNT_SQL},
           rm.content AS reply_content, rm.type AS reply_type, rm.file_name AS reply_file_name,
           ru.username AS reply_username
         FROM messages m
@@ -1781,7 +1836,7 @@ app.get('/messages/:roomId', authMiddleware, (req, res) => {
         ORDER BY m.id DESC LIMIT ?
       `).all(req.params.roomId, before, MESSAGES_PAGE_SIZE)
     : db.prepare(`
-        SELECT m.*, u.username, u.avatar,
+        SELECT m.*, u.username, u.avatar, ${COMMENT_COUNT_SQL},
           rm.content AS reply_content, rm.type AS reply_type, rm.file_name AS reply_file_name,
           ru.username AS reply_username
         FROM messages m
@@ -2177,7 +2232,7 @@ io.on('connection', (socket) => {
   const CLIENT_MSG_TYPES = new Set(['text', 'image', 'gallery', 'video', 'audio', 'music', 'file', 'location']);
 
   socket.on('send_message', (data, ack) => {
-    const { roomId, type, content, filePath, fileName, replyToId, clientId, oneTimeSeconds } = data;
+    const { roomId, type, content, filePath, fileName, replyToId, clientId, oneTimeSeconds, parentId } = data;
     const reply = (r) => { if (typeof ack === 'function') ack(r); };
 
     // Authorization: you may only post to a room you are a MEMBER of. Without
@@ -2219,6 +2274,28 @@ io.on('connection', (socket) => {
     // THEY blocked me: the case above stays silent. Telling the sender would
     // turn one person's quiet decision into a confrontation with them.
     const blockedDelivery = peer && hasBlocked(peer, socket.user.id) ? 1 : 0;
+    // ── Commenting on a message ──
+    //
+    // A comment is an ordinary message with a parent, so everything below —
+    // the type check, one-time, disappearing, blocking, the signing, the
+    // delivery — applies to it unchanged. Only two things are decided here.
+    let parent = null;
+    if (parentId != null) {
+      parent = db.prepare('SELECT id, room_id, parent_id FROM messages WHERE id = ?').get(parentId);
+      // The parent must exist and be in THIS room: without the room check a
+      // member of one room could hang a comment off a message in another,
+      // where it would be read by people who cannot see its parent.
+      if (!parent || String(parent.room_id) !== String(room.id)) {
+        return reply({ error: 'That message is no longer here' });
+      }
+      // One level, enforced at the only place a comment can be created. A
+      // client that offers the button on a comment is wrong, and this is what
+      // makes it harmless rather than the start of a tree.
+      if (parent.parent_id != null) {
+        return reply({ error: 'A comment cannot have comments' });
+      }
+    }
+
     const msgType = CLIENT_MSG_TYPES.has(type) ? type : 'text';
     const oneTime = Number.isInteger(oneTimeSeconds) && oneTimeSeconds >= 1 && oneTimeSeconds <= 3600
       ? oneTimeSeconds : null;
@@ -2229,12 +2306,12 @@ io.on('connection', (socket) => {
     const disappearing = room && room.disappearing_seconds > 0 ? room.disappearing_seconds : 0;
 
     const result = db.prepare(`
-      INSERT INTO messages (room_id, user_id, type, content, file_path, file_name, reply_to_id, one_time_seconds, disappear_seconds, blocked_delivery)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(roomId, socket.user.id, msgType, content || null, stripSig(filePath), fileName || null, replyToId || null, oneTime, disappearing || null, blockedDelivery);
+      INSERT INTO messages (room_id, user_id, type, content, file_path, file_name, reply_to_id, one_time_seconds, disappear_seconds, blocked_delivery, parent_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(roomId, socket.user.id, msgType, content || null, stripSig(filePath), fileName || null, replyToId || null, oneTime, disappearing || null, blockedDelivery, parent ? parent.id : null);
 
     const msg = db.prepare(`
-      SELECT m.*, u.username, u.avatar,
+      SELECT m.*, u.username, u.avatar, ${COMMENT_COUNT_SQL},
         rm.content AS reply_content, rm.type AS reply_type, rm.file_name AS reply_file_name,
         ru.username AS reply_username
       FROM messages m
@@ -2262,8 +2339,23 @@ io.on('connection', (socket) => {
     // server-side, but the web build raises its own browser notification from
     // this event, which no server-side check could reach — so a laptop kept
     // buzzing for messages the user was reading on their phone.
-    const deliver = (id) => io.to('user:' + id).emit('message_received',
-      viewingUserIds.has(id) ? { ...outMsg, seenElsewhere: true } : outMsg);
+    // A comment goes to the same people, under its own name.
+    //
+    // It must NOT arrive as `message_received`: every client appends that to
+    // the open chat, and a comment appearing in the room it was written about
+    // is the one thing this feature must not do. `comment_added` carries the
+    // comment for anyone with that thread open, and the parent's new count for
+    // everyone else's badge — so the badge moves without a reload, which is
+    // the only way anybody discovers there is a thread at all.
+    const commentCount = parent
+      ? db.prepare('SELECT COUNT(*) c FROM messages WHERE parent_id = ?').get(parent.id).c
+      : 0;
+    const deliver = parent
+      ? (id) => io.to('user:' + id).emit('comment_added', {
+        parentId: parent.id, roomId: room.id, count: commentCount, comment: outMsg,
+      })
+      : (id) => io.to('user:' + id).emit('message_received',
+        viewingUserIds.has(id) ? { ...outMsg, seenElsewhere: true } : outMsg);
     // Undelivered by design: it goes back to its author and nowhere else.
     if (blockedDelivery) {
       deliver(socket.user.id);
@@ -2909,7 +3001,7 @@ io.on('connection', (socket) => {
     `).run(dstRoom.id, socket.user.id, src.type, src.content, src.file_path, src.file_name,
            src.forwarded_from || (origSender ? origSender.username : null));
     const msg = db.prepare(`
-      SELECT m.*, u.username, u.avatar,
+      SELECT m.*, u.username, u.avatar, ${COMMENT_COUNT_SQL},
         rm.content AS reply_content, rm.type AS reply_type, rm.file_name AS reply_file_name,
         ru.username AS reply_username
       FROM messages m

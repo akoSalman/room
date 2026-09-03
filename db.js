@@ -72,6 +72,20 @@ try { db.exec('ALTER TABLE rooms ADD COLUMN disappearing_seconds INTEGER'); } ca
 // How many times this account has changed its username. A username is how
 // people find and address each other, so it is deliberately hard to churn.
 try { db.exec('ALTER TABLE users ADD COLUMN username_changes INTEGER DEFAULT 0'); } catch {}
+// ── Comments ────────────────────────────────────────────────────────────────
+//
+// A comment is an ordinary message with a parent. Everything a message can be
+// — text, a photo, a voice note, a reply, a reaction on it — a comment can be
+// too, because it IS one; nothing here is a second kind of row with a second
+// set of rules to keep in step.
+//
+// Exactly one level deep, and that is enforced where comments are created: a
+// message whose parent_id is set can never itself be a parent. A thread that
+// can branch needs a tree to read it, and this is a chat.
+try { db.exec('ALTER TABLE messages ADD COLUMN parent_id INTEGER'); } catch {}
+// Every message list asks "how many comments does this have", and the comments
+// screen asks "which are this message's" — both are this index.
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(parent_id)'); } catch {}
 // One-time backfill: voices sent before the played-status feature existed
 // can never receive a voice_played event, so treat them as already played.
 db.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)');

@@ -691,6 +691,16 @@ function connectSocket() {
     window.addEventListener('offline', () => setConnStatus('offline'));
     window.addEventListener('online', () => { if (!socketReady) setConnStatus('reconnecting'); });
 
+    // A comment never arrives as a message: it would appear in the chat it was
+    // written ABOUT. This carries the parent's new count for the badge, and
+    // the comment itself for anyone with that thread open.
+    socket.on('comment_added', (ev) => {
+      bumpCommentBadge(ev.parentId, ev.count);
+      if (commentParent && String(commentParent.id) === String(ev.parentId)) {
+        appendCommentBubble(ev.comment);
+      }
+    });
+
     socket.on('message_received', (msg) => {
       if (msg.client_id && pendingUploads[msg.client_id]) {
         const pending = pendingUploads[msg.client_id];
@@ -2035,11 +2045,11 @@ function sendText() {
   input.value = '';
   updateComposerButtons();
   cancelReply();
-  dispatchText(plain, roomId, replyToId, oneTimeSeconds);
+  dispatchText(plain, roomId, replyToId, oneTimeSeconds, sendingParentId());
 }
 
 // Appears in the chat instantly; a failed/timed-out send shows tap-to-retry.
-function dispatchText(plain, roomId, replyToId, oneTimeSeconds) {
+function dispatchText(plain, roomId, replyToId, oneTimeSeconds, parentId) {
   const clientId = 'tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2);
   const tempMsg = {
     id: clientId, username, avatar: localStorage.getItem('avatar') || '',
@@ -2049,9 +2059,12 @@ function dispatchText(plain, roomId, replyToId, oneTimeSeconds) {
     one_time_seconds: oneTimeSeconds || null,
   };
   const wrapper = buildMessageElement(tempMsg);
-  if (String(roomId) === String(currentRoomId)) {
-    document.getElementById('messages').appendChild(wrapper);
-    scrollBottom();
+  // Into the thread when one is open, and never into the room behind it.
+  const into = parentId ? document.getElementById('comments-list') : document.getElementById('messages');
+  if (parentId || String(roomId) === String(currentRoomId)) {
+    if (parentId) into.querySelector('.media-empty')?.remove();
+    into.appendChild(wrapper);
+    if (parentId) into.scrollTop = into.scrollHeight; else scrollBottom();
   }
   pendingUploads[clientId] = { wrapper, previewUrl: null };
   { const em = burstEmojiOf(plain); if (em) triggerEmojiBurst(em); }
@@ -2064,9 +2077,10 @@ function dispatchText(plain, roomId, replyToId, oneTimeSeconds) {
     }
     socket.timeout(8000).emit('send_message', {
       roomId, type: 'text', content: wire, replyToId, clientId, oneTimeSeconds,
+      parentId,
     }, (err, res) => {
       if ((err || !res?.ok) && pendingUploads[clientId]) {
-        markUploadFailed(wrapper, clientId, () => dispatchText(plain, roomId, replyToId, oneTimeSeconds));
+        markUploadFailed(wrapper, clientId, () => dispatchText(plain, roomId, replyToId, oneTimeSeconds, parentId));
       }
     });
   }, 0);
@@ -2380,6 +2394,7 @@ async function uploadAndSendMedia(file, type, uploadFilename, messageFileName, r
     socket.emit('send_message', {
       roomId, type, content: caption, filePath: res.url,
       fileName: messageFileName, replyToId, clientId, oneTimeSeconds,
+      parentId: sendingParentId(),
     });
   } catch (err) {
     if (pendingUploads[clientId]) {
@@ -2796,6 +2811,7 @@ async function sendGallery(images, caption, oneTimeSeconds, roomId, replyToId) {
     socket.emit('send_message', {
       roomId, type: 'gallery', content: caption, filePath: JSON.stringify(urls),
       fileName: null, replyToId, clientId, oneTimeSeconds,
+      parentId: sendingParentId(),
     });
   } catch {
     if (pendingUploads[clientId]) {
@@ -4064,6 +4080,24 @@ function buildMessageElement(msg) {
     footer.appendChild(ot);
   }
 
+  // ── The comments badge ──
+  //
+  // Bottom-left of the message, and ONLY when there is something to open:
+  // asked for that way, and a "0" on every message in the room would be noise
+  // on the one thing people are trying to read. It carries its message id so
+  // a comment arriving live can find it and change the number without the
+  // chat being redrawn.
+  if (!msg._uploading && Comments.canComment(msg)) {
+    const badge = document.createElement('button');
+    badge.className = 'comment-badge';
+    badge.dataset.msgId = msg.id;
+    badge.title = 'Comments';
+    badge.textContent = '💬 ' + Comments.badgeLabel(msg.comment_count);
+    badge.classList.toggle('hidden', !Comments.showsBadge(msg.comment_count));
+    badge.onclick = (e) => { e.stopPropagation(); openComments(msg.id); };
+    footer.appendChild(badge);
+  }
+
   // A message the server accepted and deliberately never delivered, because
   // the other person has blocked me. Drawn faded and dashed, with NO tick — a
   // ✓ claiming delivery would be the one outright lie in the design. Nothing
@@ -4149,6 +4183,131 @@ function ctxReply() {
   const t = ctxTarget;
   closeCtxMenu();
   setReply({ id: t.messageId, username: t.username, content: t.content, type: t.type });
+}
+
+// ─── Comments ─────────────────────────────────────────────────────────────────
+//
+// A comment is an ordinary message with a parent, and this view is the room's
+// message list with the parent at the top of it.
+//
+// It deliberately does NOT get a composer of its own. The chat's composer
+// stays exactly where it is and everything sent goes to the open thread
+// instead of the room — which is what makes "comments have all the features"
+// true rather than a promise: media, voice, one-time, location, emoji, paste
+// and the upload progress all work in a thread because they are the same code
+// that works in the room. A second composer would have been a second,
+// poorer one.
+
+/** The message being commented on, or null when reading the room itself. */
+let commentParent = null;
+
+/**
+ * The parent every send should be hung off, if any.
+ *
+ * Read at the moment of sending rather than captured earlier: an upload that
+ * takes twenty seconds must land wherever the composer was pointing when the
+ * user pressed send, and closing the thread mid-upload must not silently
+ * redirect the photo into the room.
+ */
+function sendingParentId() {
+  return commentParent ? commentParent.id : null;
+}
+
+async function openComments(msgId) {
+  if (!currentRoomId) return;
+  const roomId = currentRoomId;
+  const panel = document.getElementById('comments-panel');
+  document.getElementById('comments-list').innerHTML = '<div class="media-empty">Loading…</div>';
+  panel.classList.remove('hidden');
+  document.body.classList.add('commenting');
+  let res;
+  try { res = await api(`/comments/${roomId}/${msgId}`); } catch { res = null; }
+  // The chat may have been switched, or the panel closed, while that was out.
+  if (!res || res.error || String(roomId) !== String(currentRoomId)) {
+    if (res && res.error) showToast(res.error);
+    closeComments();
+    return;
+  }
+  commentParent = res.parent;
+  renderComments(res);
+  syncCommentBar();
+}
+
+function closeComments() {
+  commentParent = null;
+  document.getElementById('comments-panel').classList.add('hidden');
+  document.body.classList.remove('commenting');
+  syncCommentBar();
+}
+
+/** The strip above the composer saying where what you type is going. */
+function syncCommentBar() {
+  const bar = document.getElementById('comment-bar');
+  if (!bar) return;
+  bar.classList.toggle('hidden', !commentParent);
+  if (!commentParent) return;
+  const who = commentParent.username || '';
+  const what = (commentParent.content || '').slice(0, 60) || messageKindLabel(commentParent.type);
+  document.getElementById('comment-bar-text').textContent = `Commenting on ${who}: ${what}`;
+}
+
+function messageKindLabel(type) {
+  return type === 'audio' ? '🎙 Voice message' : type === 'image' ? '🖼 Image'
+    : type === 'gallery' ? '🖼 Photos' : type === 'video' ? '🎥 Video'
+    : type === 'location' ? '📍 Location' : type === 'music' ? '🎵 Audio file' : '📄 File';
+}
+
+function renderComments(res) {
+  document.getElementById('comments-title').textContent =
+    Comments.commentsTitle(res.comments.length);
+  const head = document.getElementById('comments-parent');
+  head.innerHTML = '';
+  head.appendChild(buildMessageElement(res.parent));
+  const list = document.getElementById('comments-list');
+  list.innerHTML = '';
+  if (!res.comments.length) {
+    const empty = document.createElement('div');
+    empty.className = 'media-empty';
+    empty.textContent = Comments.EMPTY_HINT;
+    list.appendChild(empty);
+    return;
+  }
+  res.comments.forEach(c => list.appendChild(buildMessageElement(c)));
+  list.scrollTop = list.scrollHeight;
+}
+
+/** One comment arriving while its thread is open. */
+function appendCommentBubble(msg) {
+  const list = document.getElementById('comments-list');
+  const empty = list.querySelector('.media-empty');
+  if (empty) empty.remove();
+  list.appendChild(buildMessageElement(msg));
+  list.scrollTop = list.scrollHeight;
+  document.getElementById('comments-title').textContent =
+    Comments.commentsTitle(list.querySelectorAll('.msg-wrapper').length);
+}
+
+/**
+ * Move a message's badge without redrawing the chat.
+ *
+ * The badge exists on every commentable message and is merely hidden while the
+ * count is zero, so the first comment on a message can reveal it in place —
+ * without this, nobody would learn a thread had started until they reopened
+ * the room.
+ */
+function bumpCommentBadge(parentId, count) {
+  const badge = document.querySelector(`.comment-badge[data-msg-id="${parentId}"]`);
+  if (!badge) return;
+  badge.textContent = '💬 ' + Comments.badgeLabel(count);
+  badge.classList.toggle('hidden', !Comments.showsBadge(count));
+}
+
+/** Open the comments on the message the menu belongs to. */
+function ctxComments() {
+  if (!ctxTarget) return;
+  const id = ctxTarget.messageId;
+  closeCtxMenu();
+  openComments(id);
 }
 
 function ctxDownload() {

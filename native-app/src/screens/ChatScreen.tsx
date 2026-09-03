@@ -29,6 +29,9 @@ import GalleryGrid from '../components/GalleryGrid';
 import MediaBrowser, { MediaAction, MediaItem, MediaTab } from '../components/MediaBrowser';
 import * as rm from '../roomMedia';
 import { linksFrom, mergeLinks } from '../mediaLinks';
+import {
+  canComment, showsBadge, badgeLabel, normaliseCount, commentsTitle, EMPTY_HINT,
+} from '../comments';
 import * as up from '../uploadProgress';
 import UploadOverlay from '../components/UploadOverlay';
 import SaveOverlay from '../components/SaveOverlay';
@@ -390,6 +393,63 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // What the gallery knows about this room. Held in a module cache too
   // (src/roomMedia.ts), so closing and reopening it does not refetch the room.
   const [mediaState, setMediaState] = useState<rm.MediaState | null>(null);
+
+  // ── Comments ──
+  //
+  // A comment is an ordinary message with a parent, so this screen is the
+  // message list again with the parent at the top of it — and, deliberately,
+  // with the SAME composer underneath. A composer of its own would have been a
+  // second, poorer one, and "comments have all the features" would have been a
+  // promise rather than a fact: media, voice, one-time, location and the
+  // upload progress work in a thread because they are the code that works in
+  // the room.
+  const [commentParent, setCommentParent] = useState<Message | null>(null);
+  const [comments, setComments] = useState<Message[]>([]);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  /** Counts that have moved since the messages were fetched, by parent id. */
+  const [commentCounts, setCommentCounts] = useState<Record<string, number>>({});
+  const commentParentRef = useRef<Message | null>(null); commentParentRef.current = commentParent;
+
+  /**
+   * The parent a send should be hung off, read AT THE MOMENT of sending.
+   *
+   * Not captured when the upload starts: a photo that takes twenty seconds
+   * must land where the composer was pointing when Send was pressed, and
+   * leaving the thread mid-upload must not silently redirect it into the room.
+   */
+  function sendingParentId(): number | null {
+    const p = commentParentRef.current;
+    return p ? (p.id as number) : null;
+  }
+
+  /** How many comments a message has now, live count first. */
+  function commentCountOf(m: Message): number {
+    const live = commentCounts[String(m.id)];
+    return normaliseCount(live !== undefined ? live : (m as any).comment_count);
+  }
+
+  async function openComments(m: Message) {
+    setCommentParent(m);
+    setComments([]);
+    setCommentsLoading(true);
+    const res = await apiFetch(`/comments/${room.id}/${m.id}`).catch(() => null);
+    setCommentsLoading(false);
+    // The thread may have been closed, or another opened, while that was out.
+    if (!commentParentRef.current || String(commentParentRef.current.id) !== String(m.id)) return;
+    if (!res || res.error) {
+      toast(res?.error || 'Could not load the comments');
+      setCommentParent(null);
+      return;
+    }
+    setCommentParent(res.parent);
+    setComments(res.comments || []);
+    setCommentCounts(c => ({ ...c, [String(m.id)]: (res.comments || []).length }));
+  }
+
+  function closeComments() {
+    setCommentParent(null);
+    setComments([]);
+  }
   const [mediaLoadingMore, setMediaLoadingMore] = useState(false);
   const mediaLoadingRef = useRef(false);
   // Counts opens of the gallery. The grid restores its position once per open
@@ -1171,6 +1231,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       };
       sock.on('connect', reconnectHandlerRef.current);
 
+      // A comment never arrives as a message: it would appear in the chat it
+      // was written about. This carries the parent's new count for the badge,
+      // and the comment itself for anyone with that thread open.
+      sock.on('comment_added', (ev: any) => {
+        if (String(ev.roomId) !== String(room.id)) return;
+        setCommentCounts(c => ({ ...c, [String(ev.parentId)]: normaliseCount(ev.count) }));
+        if (commentParentRef.current && String(commentParentRef.current.id) === String(ev.parentId)) {
+          setComments(prev => (prev.some(c => String(c.id) === String(ev.comment.id))
+            ? prev : [...prev, ev.comment]));
+        }
+      });
+
       sock.on('message_received', (msg: Message) => {
         // The gallery's memory of this room is now one message out of date.
         // Marked, not dropped: the next open still draws instantly from what
@@ -1526,7 +1598,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       const wire = (room.is_dm && dmPeerPk.current) ? (e2eEncrypt(plain, dmPeerPk.current) || plain) : plain;
       (sock as any).timeout(8000).emit('send_message', {
         roomId: room.id, type: 'text', content: wire, replyToId,
-        clientId, oneTimeSeconds: oneTime ?? undefined,
+        clientId, oneTimeSeconds: oneTime ?? undefined, parentId: sendingParentId(),
       }, (err: any, res: any) => {
         if (err || !res?.ok) { markUploadFailed(clientId); return; }
         // The server has it. Clear the crash-safety copy here rather than
@@ -1962,6 +2034,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       pendingUploadPaths.current[clientId] = res.url;
       socketRef.current?.emit('send_message', {
         roomId: room.id, type, content: caption, filePath: res.url, fileName: name, replyToId, clientId, oneTimeSeconds: oneTime,
+        parentId: sendingParentId(),
       });
     } catch (err) {
       settleUpload(clientId, err);
@@ -2006,7 +2079,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       pendingUploadPaths.current[clientId] = filePath;
       socketRef.current?.emit('send_message', {
         roomId: room.id, type: 'gallery', content: caption, filePath, fileName: null,
-        replyToId, clientId, oneTimeSeconds: oneTime,
+        replyToId, clientId, oneTimeSeconds: oneTime, parentId: sendingParentId(),
       });
     } catch (err) {
       settleUpload(clientId, err);
@@ -2033,6 +2106,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       pendingUploadPaths.current[clientId] = res.url;
       socketRef.current?.emit('send_message', {
         roomId: room.id, type: 'audio', content: caption, filePath: res.url, fileName: peakStr, replyToId, clientId, oneTimeSeconds: oneTime,
+        parentId: sendingParentId(),
       });
     } catch (err) {
       settleUpload(clientId, err);
@@ -3735,6 +3809,19 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         )}
 
         <View style={s.footer}>
+          {/* The comments badge, first in the footer and so at the message's
+              bottom-left — and drawn ONLY when there is a thread to open.
+              A "0" on every message in the room would be noise over the thing
+              people are trying to read. */}
+          {!msg._uploading && canComment(msg) && showsBadge(commentCountOf(msg)) && (
+            <TouchableOpacity
+              onPress={() => openComments(msg)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityLabel={commentsTitle(commentCountOf(msg))}
+            >
+              <Text style={s.commentBadge}>💬 {badgeLabel(commentCountOf(msg))}</Text>
+            </TouchableOpacity>
+          )}
           <Text style={s.time}>{fmtTime(msg.created_at)}</Text>
           {/* How much life this message has left. Absent until someone has
               actually seen it — an unread message is not counting down. */}
@@ -4134,8 +4221,45 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         onSelect={(it) => setVideoItem(it)}
       />
 
+      {/* ── A message's comments ──
+          In the place the conversation had, with the SAME composer below it —
+          not a Modal over the top, because a Modal would cover the composer,
+          and the composer is what writes the comments. The conversation stays
+          mounted behind this, keeping its scroll position, its loaded history
+          and any upload in flight, so closing the thread puts it back exactly
+          as it was instead of reloading the room. */}
+      {commentParent && (
+        <View style={{ flex: 1 }}>
+          <View style={s.commentsHead}>
+            <TouchableOpacity onPress={closeComments} hitSlop={hit}
+              accessibilityLabel="Back to the conversation">
+              <Ionicons name="arrow-back" size={22} color={C.text} />
+            </TouchableOpacity>
+            <Text style={s.commentsTitle} numberOfLines={1}>
+              {commentsTitle(commentCountOf(commentParent))}
+            </Text>
+          </View>
+          {/* Headed by the message being commented on: a list with no sight of
+              what it is about would be unreadable. Drawn by the same row the
+              chat uses, so it plays, expands and opens exactly as it does
+              there. */}
+          <ScrollView style={s.commentsParent}>{renderMessage({ item: commentParent })}</ScrollView>
+          {commentsLoading ? (
+            <View style={s.loadingContainer}><ActivityIndicator color={C.accent} /></View>
+          ) : (
+            <FlatList
+              data={comments}
+              keyExtractor={keyExtractor}
+              renderItem={renderMessage}
+              ListEmptyComponent={<Text style={s.commentsEmpty}>{EMPTY_HINT}</Text>}
+              keyboardShouldPersistTaps="handled"
+            />
+          )}
+        </View>
+      )}
+
       {/* Messages */}
-      {loading ? (
+      {commentParent ? null : loading ? (
         <View style={s.loadingContainer}>
           <ActivityIndicator color={C.accent} size="large" />
         </View>
@@ -4466,6 +4590,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                   setReplyTo({ id: m.id, username: m.username, content: m.content, type: m.type });
                   composerRef.current?.focus();
                 }} />
+                {/* Comments. A message's own thread — the one place where a
+                    reply is kept WITH what it replies to, rather than
+                    scrolling away from it. Not offered on a comment: one
+                    level, and the server refuses a second one anyway. */}
+                {canComment(m) && (
+                  <Row icon="chatbubble-ellipses-outline"
+                    label={commentsTitle(commentCountOf(m))}
+                    onPress={() => { close(); openComments(m); }} />
+                )}
                 {/* Inline selection is unreliable on any message containing a
                     link, a phone number or even a price: those render as
                     pressable spans and swallow the long-press. This always
@@ -5389,6 +5522,18 @@ const s = StyleSheet.create({
   ticks: { color: C.muted, fontSize: 12, letterSpacing: -2, marginRight: -2 },
   ticksSeen: { color: '#4fc3f7' },
   footerBtn: { fontSize: 14, opacity: 0.6 },
+  commentBadge: { fontSize: 11, color: C.accent, fontWeight: '600' },
+  commentsHead: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingHorizontal: 10, paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border,
+  },
+  commentsTitle: { color: C.text, fontWeight: '700', fontSize: 15, flex: 1 },
+  commentsParent: {
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border,
+    backgroundColor: 'rgba(128,128,128,0.06)', paddingVertical: 4, maxHeight: 220,
+  },
+  commentsEmpty: { color: C.muted, textAlign: 'center', paddingVertical: 28, paddingHorizontal: 24 },
   footerBtnTouch: { paddingVertical: 2, paddingHorizontal: 4 },
   replyFooterBtn: { fontSize: 12, color: C.accent, fontWeight: '600' },
   reactRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 4 },
