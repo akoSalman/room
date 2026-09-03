@@ -4075,31 +4075,31 @@ function buildMessageElement(msg) {
   bubbleRow.className = 'bubble-row';
   bubbleRow.appendChild(bubble);
 
-  // ── The comments badge ──
+  // ── The comments bar ──
   //
-  // On the message's bottom-left CORNER, half on and half off it, like a
-  // launcher's notification badge. It was a line of text in the footer, which
-  // read as one more piece of metadata beside the clock; a badge is meant to
-  // be seen before it is read, and that only works if it breaks the outline of
-  // the thing it belongs to.
+  // A full-width strip along the bottom of the message, inside its outline and
+  // separated by a hairline — Telegram's shape, and the right one. It replaced
+  // a green circle straddling the corner: that is how a LAUNCHER badges an app
+  // icon, which shouts because it competes with a screenful of other icons.
+  // Sitting on somebody's words it just fought the text, in a colour this app
+  // uses nowhere else.
   //
-  // Only when there is something to open — asked for that way, and a "0" on
-  // every message in the room would be noise over what people came to read.
-  // It is present but hidden while the count is zero, so the first comment can
-  // reveal it in place without the chat being redrawn.
+  // Drawn only when there is a thread to open. Present but hidden at zero, so
+  // the first comment can reveal it in place without redrawing the chat.
   if (!msg._uploading && Comments.canComment(msg)) {
-    const badge = document.createElement('button');
-    badge.className = 'comment-badge';
-    badge.dataset.msgId = msg.id;
-    badge.type = 'button';
-    badge.title = 'Comments';
-    badge.textContent = Comments.badgeLabel(msg.comment_count);
-    badge.style.minWidth = CommentsView.badgeWidth(badge.textContent) + 'px';
-    badge.classList.toggle('hidden', !Comments.showsBadge(msg.comment_count));
-    badge.onclick = (e) => { e.stopPropagation(); openComments(msg.id); };
-    // Inside the bubble, so "the corner of the message" is the corner of the
-    // bubble and not of the row it shares with the ⋮ button.
-    bubble.appendChild(badge);
+    const bar = document.createElement('button');
+    bar.className = 'comment-bar-btn';
+    bar.dataset.msgId = msg.id;
+    bar.type = 'button';
+    bar.innerHTML = '<span class="comment-bar-icon">💬</span>'
+      + '<span class="comment-bar-label"></span><span class="comment-bar-chev">›</span>';
+    bar.querySelector('.comment-bar-label').textContent =
+      CommentsView.commentsBarLabel(Comments.normaliseCount(msg.comment_count));
+    bar.classList.toggle('hidden', !Comments.showsBadge(msg.comment_count));
+    bar.onclick = (e) => { e.stopPropagation(); openComments(msg.id); };
+    // Inside the bubble: the strip belongs to the message, and the bubble's
+    // rounded corners clip it into shape.
+    bubble.appendChild(bar);
   }
 
   if (!msg._uploading) {
@@ -4427,11 +4427,11 @@ function appendCommentBubble(msg) {
  * the room.
  */
 function bumpCommentBadge(parentId, count) {
-  const badge = document.querySelector(`.comment-badge[data-msg-id="${parentId}"]`);
-  if (!badge) return;
-  badge.textContent = Comments.badgeLabel(count);
-  badge.style.minWidth = CommentsView.badgeWidth(badge.textContent) + 'px';
-  badge.classList.toggle('hidden', !Comments.showsBadge(count));
+  const bar = document.querySelector(`.comment-bar-btn[data-msg-id="${parentId}"]`);
+  if (!bar) return;
+  bar.querySelector('.comment-bar-label').textContent =
+    CommentsView.commentsBarLabel(Comments.normaliseCount(count));
+  bar.classList.toggle('hidden', !Comments.showsBadge(count));
 }
 
 /** Open the comments on the message the menu belongs to. */

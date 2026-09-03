@@ -223,18 +223,18 @@ const app = fs.readFileSync(path.join(ROOT, 'public', 'js', 'app.js'), 'utf8');
 const html = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
 const css = fs.readFileSync(path.join(ROOT, 'public', 'css', 'style.css'), 'utf8');
 
-test('THE BADGE IS DRAWN, and only when it has something to open', () => {
-  // Where it is drawn is asserted in test/commentsView.test.js — it moved out
-  // of the footer onto the bubble's corner, as a circle. What matters here is
-  // that it exists only when there is a thread, and that a comment arriving
-  // live can find it.
-  const fn = app.slice(app.indexOf('  // ── The comments badge ──'), app.indexOf('  if (!msg._uploading) {'));
-  assert.ok(fn.length > 0, 'no badge is built — this check would be vacuous');
-  assert.ok(/Comments\.badgeLabel\(msg\.comment_count\)/.test(fn), 'the badge writes its own number');
+test('THE BAR IS DRAWN, and only when there is a thread to open', () => {
+  // Its design is asserted in test/commentsView.test.js — a green corner badge
+  // first, then Telegram's full-width strip after that was rejected. What
+  // matters here is that it exists only when there is something to open, and
+  // that a comment arriving live can find it.
+  const fn = app.slice(app.indexOf('  // ── The comments bar ──'), app.indexOf('  if (!msg._uploading) {'));
+  assert.ok(fn.length > 0, 'no bar is built — this check would be vacuous');
+  assert.ok(/CommentsView\.commentsBarLabel\(/.test(fn), 'the bar writes its own label');
   assert.ok(/classList\.toggle\('hidden', !Comments\.showsBadge\(msg\.comment_count\)\)/.test(fn),
-    'every message in the room carries a "0"');
+    'every message in the room carries one');
   assert.ok(/dataset\.msgId = msg\.id/.test(fn),
-    'a comment arriving live cannot find its badge, so the number only moves on reload');
+    'a comment arriving live cannot find it, so the count only moves on reload');
   assert.ok(/Comments\.canComment\(msg\)/.test(fn), 'comments are offered on comments');
 });
 
@@ -294,11 +294,11 @@ test('a comment arriving live moves the badge and fills an open thread', () => {
 
 const chat = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
 
-test('the app draws the badge only when earned', () => {
-  // Its placement is asserted in test/commentsView.test.js.
+test('the app draws it only when earned', () => {
+  // Its design is asserted in test/commentsView.test.js.
   assert.ok(/canComment\(msg\) && showsBadge\(commentCountOf\(msg\)\)/.test(chat),
-    'every message in the room carries a badge, or comments are offered on comments');
-  assert.ok(/badgeLabel\(commentCountOf\(msg\)\)/.test(chat), 'the badge writes its own number');
+    'every message in the room carries one, or comments are offered on comments');
+  assert.ok(/commentsBarLabel\(commentCountOf\(msg\)\)/.test(chat), 'the bar writes its own label');
 });
 
 test('the app menu offers comments, named for what is there', () => {

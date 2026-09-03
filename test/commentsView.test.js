@@ -16,9 +16,17 @@
 // and no scroll logic at all; the chat's jump button is bound to #messages and
 // the chat's keyboard handler looked only at #messages.
 //
-// A badge is meant to be seen before it is read, and that only works if it
-// breaks the outline of the thing it belongs to — hence a circle straddling
-// the corner rather than a number tucked inside.
+// THE DESIGN WAS THEN REJECTED, and rightly. The first version was a green
+// circle straddling the message's corner — that is how a LAUNCHER badges an
+// app icon, and it shouts because it is competing with a screenful of other
+// icons. Sitting on somebody's words, in a colour this app uses nowhere else,
+// it just fought the text.
+//
+// Telegram's shape is quieter and says more: a full-width strip along the
+// bottom of the message, inside its outline, separated by a hairline, in the
+// app's own accent — "3 Comments ›". It reads as part of the message, it names
+// what it opens instead of leaving a number to be decoded, and the whole strip
+// is the tap target rather than a 20-pixel dot.
 const assert = require('assert');
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -46,24 +54,21 @@ if (fs.existsSync(TSC)) {
 const tests = [];
 const test = (n, f) => tests.push({ n, f });
 
-// ── The badge ───────────────────────────────────────────────────────────────
+// ── The comments bar ───────────────────────────────────────────────────────
 
-test('THE BADGE straddles the corner rather than sitting inside it', () => {
-  // Half on, half off: that is what makes it look attached to the message
-  // instead of printed on it.
-  assert.strictEqual(W.badgeOffset(20), 10);
-  assert.strictEqual(W.badgeOffset(), W.BADGE_SIZE / 2);
+test('THE BAR names what it opens rather than leaving a number to decode', () => {
+  assert.strictEqual(W.commentsBarLabel(1), '1 Comment', 'reads as "1 Comments"');
+  assert.strictEqual(W.commentsBarLabel(5), '5 Comments');
+  assert.strictEqual(W.commentsBarLabel(0), '0 Comments');
+  assert.strictEqual(W.commentsBarLabel(null), '0 Comments');
 });
 
-test('one or two digits are a circle; "99+" is a pill of the same height', () => {
-  // Forcing a circle around three characters either clips them or leaves a
-  // disc the size of a thumbnail — and a changing height would break the
-  // rhythm of a column of messages.
-  assert.strictEqual(W.badgeWidth('1'), W.BADGE_SIZE);
-  assert.strictEqual(W.badgeWidth('12'), W.BADGE_SIZE);
-  assert.ok(W.badgeWidth('99+') > W.BADGE_SIZE, 'a three-character badge is squeezed into a circle');
-  assert.strictEqual(W.badgeWidth(''), W.BADGE_SIZE);
-  assert.strictEqual(W.badgeWidth(null), W.BADGE_SIZE);
+test('the launcher-badge geometry is gone, not left behind as dead code', () => {
+  // It was the wrong reference for this and nothing should be able to reach
+  // for it again by accident.
+  assert.strictEqual(W.badgeWidth, undefined, 'the old badge sizing is still exported');
+  assert.strictEqual(W.badgeOffset, undefined);
+  assert.strictEqual(W.BADGE_SIZE, undefined);
 });
 
 // ── Following the thread ────────────────────────────────────────────────────
@@ -140,8 +145,8 @@ test('and with nothing pushed there is nothing to undo', () => {
 test('the app and the web behave identically', () => {
   if (!A) return;
   let checked = 0;
-  for (const label of ['1', '9', '12', '99', '99+', '', null]) {
-    assert.strictEqual(W.badgeWidth(label), A.badgeWidth(label), `badgeWidth ${label}`);
+  for (const n of [0, 1, 2, 99, 100, null]) {
+    assert.strictEqual(W.commentsBarLabel(n), A.commentsBarLabel(n), `commentsBarLabel ${n}`);
     checked++;
   }
   const boxes = [
@@ -174,11 +179,9 @@ test('the app and the web behave identically', () => {
       checked++;
     }
   }
-  assert.strictEqual(checked, 30, 'the drift check did not actually run');
-  assert.strictEqual(W.BADGE_SIZE, A.BADGE_SIZE);
+  assert.strictEqual(checked, 29, 'the drift check did not actually run');
   assert.strictEqual(W.NEAR_BOTTOM_PX, A.NEAR_BOTTOM_PX);
   assert.strictEqual(W.SWIPE_CLOSE_PX, A.SWIPE_CLOSE_PX);
-  assert.strictEqual(W.badgeOffset(), A.badgeOffset());
 });
 
 // ── The web ─────────────────────────────────────────────────────────────────
@@ -187,28 +190,31 @@ const app = fs.readFileSync(path.join(ROOT, 'public', 'js', 'app.js'), 'utf8');
 const css = fs.readFileSync(path.join(ROOT, 'public', 'css', 'style.css'), 'utf8');
 const html = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
 
-test('THE BADGE IS A GREEN CIRCLE ON THE BUBBLE, not text in the footer', () => {
-  const rule = /\.comment-badge \{([^}]*)\}/.exec(css);
-  assert.ok(rule, '.comment-badge has no rule — this check would be vacuous');
-  assert.ok(/position:\s*absolute/.test(rule[1]), 'the badge is still in the footer flow');
-  assert.ok(/left:\s*-10px/.test(rule[1]) && /bottom:\s*-10px/.test(rule[1]),
-    'the badge does not straddle the bottom-left corner');
-  assert.ok(/background:\s*#22c55e/.test(rule[1]), 'the badge is not green');
-  assert.ok(/border-radius:\s*10px/.test(rule[1]), 'the badge is not round');
-  assert.ok(/border:\s*2px solid/.test(rule[1]),
-    'no ring in the page background, so the circle reads as part of the bubble');
-  // The old footer placement is gone.
-  assert.ok(!/order:\s*-1/.test(rule[1]), 'the badge is still ordered into the footer');
+test('THE BAR is a full-width accent strip inside the message', () => {
+  const rule = /\.comment-bar-btn \{([^}]*)\}/.exec(css);
+  assert.ok(rule, '.comment-bar-btn has no rule — this check would be vacuous');
+  assert.ok(/width:\s*100%/.test(rule[1]), 'the strip does not run the width of the message');
+  assert.ok(/border-top:\s*1px solid/.test(rule[1]), 'nothing separates it from the words above');
+  assert.ok(/margin:\s*8px -12px -8px/.test(rule[1]),
+    'the bubble\'s padding is not undone, so the strip floats inside a margin');
+  assert.ok(/color:\s*var\(--accent/.test(rule[1]), 'the strip is not in the app\'s accent colour');
+  // The rejected design, gone: no green, no circle, no corner.
+  assert.ok(!/#22c55e/.test(css.slice(css.indexOf('.comment-bar-btn'), css.indexOf('#comment-bar {'))),
+    'the green badge colour is still in the comments styles');
+  assert.ok(!/\.comment-badge/.test(css), 'the old corner badge rule is still there');
 });
 
-test('and it hangs off the bubble, which is what it is positioned against', () => {
-  const fn = app.slice(app.indexOf('  // ── The comments badge ──'), app.indexOf('  if (!msg._uploading) {'));
-  assert.ok(fn.length > 0, 'the badge is not built — this check would be vacuous');
-  assert.ok(/bubble\.appendChild\(badge\)/.test(fn),
-    'the badge is appended to the row, so its corner is the row\'s, not the message\'s');
-  assert.ok(/CommentsView\.badgeWidth\(badge\.textContent\)/.test(fn), 'a "99+" badge is squeezed');
-  assert.ok(!/💬/.test(fn), 'the badge still carries the old speech-bubble glyph');
-  assert.ok(html.includes('/js/commentsView.js'), 'the rules are never loaded by the page');
+test('and it is built inside the bubble, saying what it opens', () => {
+  const fn = app.slice(app.indexOf('  // ── The comments bar ──'), app.indexOf('  if (!msg._uploading) {'));
+  assert.ok(fn.length > 0, 'the bar is not built — this check would be vacuous');
+  assert.ok(/bubble\.appendChild\(bar\)/.test(fn),
+    'the bar is not inside the message, so the bubble cannot clip it into shape');
+  assert.ok(/CommentsView\.commentsBarLabel\(/.test(fn), 'the label is written by hand');
+  assert.ok(/comment-bar-chev/.test(fn), 'there is nothing to say it leads somewhere');
+  assert.ok(/classList\.toggle\('hidden', !Comments\.showsBadge\(msg\.comment_count\)\)/.test(fn),
+    'every message in the room carries a "0 Comments" strip');
+  assert.ok(/dataset\.msgId = msg\.id/.test(fn),
+    'a comment arriving live cannot find its bar, so the count only moves on reload');
 });
 
 test('THE MARGINS: the thread gets the same room the conversation does', () => {
@@ -284,17 +290,24 @@ test('THE SWIPE closes the thread, and only a real one does', () => {
 
 const chat = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
 
-test('the app badge is the same circle, OUTSIDE the bubble', () => {
-  // The bubble is `overflow: hidden`, so a child hanging over its edge would
-  // simply be cut off — the badge has to be its sibling.
-  const style = chat.slice(chat.indexOf('  commentBadge: {'), chat.indexOf('  commentBadgeText:'));
-  assert.ok(/position: 'absolute'/.test(style), 'the badge is still in the footer flow');
-  assert.ok(/left: -BADGE_OFFSET, bottom: -BADGE_OFFSET/.test(style), 'it does not straddle the corner');
-  assert.ok(/backgroundColor: '#22c55e'/.test(style), 'the badge is not green');
-  assert.ok(/borderRadius: BADGE_SIZE \/ 2/.test(style), 'the badge is not round');
-  assert.ok(/borderWidth: 2/.test(style), 'no ring, so it reads as part of the bubble');
-  assert.ok(chat.indexOf('</Bubble>') < chat.indexOf('style={[s.commentBadge'),
-    'the badge is inside the bubble, which clips it');
+test('the app draws the same strip, inside the bubble', () => {
+  const style = chat.slice(chat.indexOf('  commentBar: {'), chat.indexOf('  commentBarIcon:'));
+  assert.ok(style.length > 0, 'the app has no comments strip');
+  assert.ok(/flexDirection: 'row'/.test(style), 'the strip is not a row');
+  assert.ok(/borderTopWidth: StyleSheet\.hairlineWidth/.test(style), 'nothing separates it from the words');
+  assert.ok(/marginHorizontal: -10, marginBottom: -10/.test(style),
+    'the bubble padding is not undone, so the strip floats inside a margin');
+  assert.ok(/color: C\.accent/.test(chat.slice(chat.indexOf('  commentBarLabel:'), chat.indexOf('  commentBarLabel:') + 200)),
+    'the strip is not in the app\'s accent colour');
+  // Inside the Bubble now — the strip is part of the message, and the rounded
+  // corners clip it.
+  assert.ok(chat.indexOf('style={s.commentBar}') < chat.indexOf('</Bubble>'),
+    'the strip is outside the bubble it belongs to');
+  assert.ok(!/commentBadgeText/.test(chat), 'the old corner badge style is still there');
+  // Scoped to the comment styles: '#22c55e' is also the live-location
+  // indicator's green, which has nothing to do with this and must survive.
+  const block = chat.slice(chat.indexOf('  commentBar: {'), chat.indexOf('  commentsHead: {'));
+  assert.ok(!/#22c55e/.test(block), 'the rejected green is still in the comment styles');
 });
 
 test('the app thread scrolls, jumps and swipes like the web', () => {

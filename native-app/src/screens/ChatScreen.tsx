@@ -34,7 +34,7 @@ import {
   canComment, showsBadge, badgeLabel, normaliseCount, commentsTitle, EMPTY_HINT,
 } from '../comments';
 import {
-  BADGE_SIZE, badgeOffset, badgeWidth, isNearBottom, shouldStickToBottom,
+  commentsBarLabel, isNearBottom, shouldStickToBottom,
   showsJumpButton, closesOnSwipe,
 } from '../commentsView';
 import * as up from '../uploadProgress';
@@ -3916,27 +3916,26 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               </TouchableOpacity>
             </View>
           )}
+        {/* Telegram's comments strip: full width along the bottom of the
+            message, inside its outline and separated by a hairline, in the
+            app's own accent. It replaced a green circle on the corner — that
+            is how a LAUNCHER badges an app icon, and it shouts because it
+            competes with a screenful of icons; sitting on somebody's words it
+            just fought the text. This says what it is rather than leaving a
+            number to be decoded, and the whole strip is the tap target. */}
+        {!msg._uploading && canComment(msg) && showsBadge(commentCountOf(msg)) && (
+          <TouchableOpacity style={s.commentBar} onPress={() => openComments(msg)}
+            accessibilityLabel={commentsTitle(commentCountOf(msg))}>
+            <Text style={s.commentBarIcon}>💬</Text>
+            <Text style={s.commentBarLabel} numberOfLines={1}>
+              {commentsBarLabel(commentCountOf(msg))}
+            </Text>
+            <Ionicons name="chevron-forward" size={14} color={C.accent} />
+          </TouchableOpacity>
+        )}
         </Bubble>
         );
         })()}
-        {/* The comments badge, on the message's bottom-left CORNER — half on
-            the bubble and half off it, the way a launcher badges an app icon.
-            It used to be a line of text in the footer, which read as one more
-            piece of metadata beside the clock; a badge is meant to be seen
-            before it is read, and that only works if it breaks the outline of
-            the thing it belongs to.
-            OUTSIDE the Bubble deliberately: the bubble is `overflow: hidden`,
-            so a child hanging over its edge would simply be cut off. */}
-        {!msg._uploading && canComment(msg) && showsBadge(commentCountOf(msg)) && (
-          <TouchableOpacity
-            style={[s.commentBadge, { minWidth: badgeWidth(badgeLabel(commentCountOf(msg))) }]}
-            onPress={() => openComments(msg)}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            accessibilityLabel={commentsTitle(commentCountOf(msg))}
-          >
-            <Text style={s.commentBadgeText}>{badgeLabel(commentCountOf(msg))}</Text>
-          </TouchableOpacity>
-        )}
         </SwipeableMessage>
 
         </View>
@@ -5377,8 +5376,6 @@ const BUBBLE_PAD = 10;
  */
 const hit = { top: 10, bottom: 10, left: 10, right: 10 };
 
-/** Half the badge hangs outside the bubble — see commentsView. */
-const BADGE_OFFSET = badgeOffset();
 
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: C.bg },
@@ -5688,26 +5685,29 @@ const s = StyleSheet.create({
   ticks: { color: C.muted, fontSize: 12, letterSpacing: -2, marginRight: -2 },
   ticksSeen: { color: '#4fc3f7' },
   footerBtn: { fontSize: 14, opacity: 0.6 },
-  commentBadge: {
-    position: 'absolute', left: -BADGE_OFFSET, bottom: -BADGE_OFFSET, zIndex: 2,
-    height: BADGE_SIZE, borderRadius: BADGE_SIZE / 2,
-    paddingHorizontal: 5,
-    backgroundColor: '#22c55e',
-    // A ring in the chat's own background, so the circle reads as sitting ON
-    // the bubble rather than being part of it.
-    borderWidth: 2, borderColor: C.bg,
-    alignItems: 'center', justifyContent: 'center',
+  commentBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    // Negative margins undo the bubble's padding so the strip runs edge to
+    // edge; the bubble's rounded corners clip it into shape.
+    marginTop: 8, marginHorizontal: -10, marginBottom: -10,
+    paddingHorizontal: 10, paddingVertical: 7,
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(128,128,128,0.35)',
   },
-  commentBadgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
-  commentsHead: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    paddingHorizontal: 10, paddingVertical: 10,
+  commentBarIcon: { fontSize: 12 },
+  commentBarLabel: { flex: 1, color: C.accent, fontSize: 12.5, fontWeight: '600' },
+    commentsHead: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 12, paddingVertical: 11,
+    backgroundColor: C.header,
     borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border,
   },
   commentsTitle: { color: C.text, fontWeight: '700', fontSize: 15, flex: 1 },
+  // The post being discussed, held at the top the way Telegram pins it — set
+  // apart by its own ground rather than by a heavy border.
   commentsParent: {
     borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border,
-    backgroundColor: 'rgba(128,128,128,0.06)', paddingVertical: 4, maxHeight: 220,
+    backgroundColor: 'rgba(128,128,128,0.05)',
+    paddingVertical: 6, paddingHorizontal: 4, maxHeight: 220,
   },
   commentsListContent: { paddingHorizontal: 12, paddingTop: 10, paddingBottom: 8 },
   commentsFab: {

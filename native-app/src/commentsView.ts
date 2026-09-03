@@ -14,33 +14,29 @@
 // public/js/commentsView.js. 1 is presentation and lives in the styles, but
 // the geometry is here so the two clients cannot drift apart on it.
 
-// ── The badge ────────────────────────────────────────────────────────────────
+// ── The comments bar ─────────────────────────────────────────────────────────
+//
+// Asked for as: I do not like the design and colour of the badge or the
+// comments section — make it more like Telegram.
+//
+// The first version was a green circle straddling the message's corner, which
+// is how a LAUNCHER badges an app icon. That was what I was asked for and it
+// was the wrong reference: a launcher badge says "unread things exist" about a
+// whole app, and shouts, because it is competing with a screen full of other
+// icons. Here it sat on somebody's words, in a colour the app uses nowhere
+// else, and every message with a thread had a green dot fighting the text.
+//
+// Telegram does something quieter and more useful: a full-width strip along
+// the bottom of the message, inside its outline, separated by a hairline, in
+// the app's own accent colour — "3 Comments ›". It reads as part of the
+// message rather than an alarm on top of it, it says what it is instead of
+// leaving a number to be decoded, and the whole strip is the tap target
+// rather than a 20-pixel dot.
 
-/**
- * The badge sits on the CORNER of the message, not inside it.
- *
- * A notification badge is read as "there is something here" before it is read
- * as a number, and that only works if it breaks the outline of the thing it
- * belongs to. Half on and half off is what makes it look attached rather than
- * printed.
- */
-export const BADGE_SIZE = 20;
-
-/** How far it hangs outside the bubble — half of it, so it straddles the edge. */
-export function badgeOffset(size = BADGE_SIZE): number {
-  return Math.round(size / 2);
-}
-
-/**
- * A circle for one or two digits; a rounded pill for "99+".
- *
- * Forcing a circle around three characters either clips them or leaves a
- * disc the size of a thumbnail. The height never changes, so a row of
- * messages keeps its rhythm either way.
- */
-export function badgeWidth(label: string, size = BADGE_SIZE): number {
-  const n = String(label || '').length;
-  return n <= 2 ? size : size + (n - 2) * 7;
+/** How the strip names what it opens. */
+export function commentsBarLabel(count: number): string {
+  const n = Number(count) || 0;
+  return n === 1 ? '1 Comment' : `${n} Comments`;
 }
 
 // ── Following the conversation ───────────────────────────────────────────────

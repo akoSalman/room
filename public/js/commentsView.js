@@ -5,18 +5,12 @@
 (function (global) {
   'use strict';
 
-  var BADGE_SIZE = 20;
   var NEAR_BOTTOM_PX = 220;
   var SWIPE_CLOSE_PX = 70;
 
-  function badgeOffset(size) {
-    return Math.round((size === undefined ? BADGE_SIZE : size) / 2);
-  }
-
-  function badgeWidth(label, size) {
-    var s = size === undefined ? BADGE_SIZE : size;
-    var n = String(label || '').length;
-    return n <= 2 ? s : s + (n - 2) * 7;
+  function commentsBarLabel(count) {
+    var n = Number(count) || 0;
+    return n === 1 ? '1 Comment' : n + ' Comments';
   }
 
   function isNearBottom(o) {
@@ -49,11 +43,9 @@
   }
 
   global.CommentsView = {
-    BADGE_SIZE: BADGE_SIZE,
     NEAR_BOTTOM_PX: NEAR_BOTTOM_PX,
     SWIPE_CLOSE_PX: SWIPE_CLOSE_PX,
-    badgeOffset: badgeOffset,
-    badgeWidth: badgeWidth,
+    commentsBarLabel: commentsBarLabel,
     isNearBottom: isNearBottom,
     shouldStickToBottom: shouldStickToBottom,
     showsJumpButton: showsJumpButton,
