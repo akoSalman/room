@@ -343,6 +343,14 @@ async function preview(rawUrl, opts = {}) {
     // The URL AS ASKED, so the client can match the answer to the message it
     // asked about; the redirect chain is our business, not the bubble's.
     url: rawUrl,
+    // Where the link ACTUALLY led, when that is somewhere else.
+    //
+    // A share link — on.soundcloud.com/xXxXx, youtu.be/…, snd.sc/… — says
+    // nothing about what it points at, and this fetch has just followed it to
+    // find out. Throwing that away meant the client had to guess whether a
+    // short link was playable, and for SoundCloud's own share button it
+    // guessed wrong: no player, on the platform this was asked for.
+    canonical: got.url && got.url !== url ? got.url : '',
     title: meta.title || '',
     description: meta.description || '',
     siteName: meta.siteName || '',

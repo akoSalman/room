@@ -10,6 +10,9 @@
   };
   var YT_ID = /^[\w-]{11}$/;
 
+  // The hosts SoundCloud's own share sheet produces — see mediaEmbed.ts.
+  var SC_SHORT = ['on.soundcloud.com', 'snd.sc', 'soundcloud.app.goo.gl'];
+
   function localToIran(p) { return p === 'aparat'; }
   function host(u) { return u.hostname.toLowerCase().replace(/^(?:www|m|mobile)\./, ''); }
 
@@ -48,7 +51,18 @@
       return made('youtube', 'video', 'https://www.youtube-nocookie.com/embed/' + id + '?' + q);
     }
 
-    if (h === 'soundcloud.com' || h === 'snd.sc') {
+    // Its own share button hands out on.soundcloud.com/xXxXx, which was not
+    // recognised at all — so every shared track arrived as a plain link with
+    // no player. The widget resolves these itself.
+    if (SC_SHORT.indexOf(h) !== -1) {
+      if (!u.pathname.split('/').filter(Boolean).length) return null;
+      var qsh = new URLSearchParams({
+        url: u.toString(), auto_play: 'true', show_comments: 'false', visual: 'true',
+      });
+      return made('soundcloud', 'audio', 'https://w.soundcloud.com/player/?' + qsh);
+    }
+
+    if (h === 'soundcloud.com') {
       var parts = u.pathname.split('/').filter(Boolean);
       if (parts.length < 2) return null;
       if (parts[0] === 'you' || parts[0] === 'search' || parts[0] === 'discover') return null;

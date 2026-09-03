@@ -3091,7 +3091,7 @@ function firstUrlInMessage(content) {
 async function attachLinkCard(bubble, content) {
   const url = firstUrlInMessage(content);
   if (!url) return;
-  const media = MediaEmbed.detect(url);
+  let media = MediaEmbed.detect(url);
   let meta = linkPreviewCache.get(url);
   if (meta === undefined) {
     try {
@@ -3103,6 +3103,11 @@ async function attachLinkCard(bubble, content) {
   // The bubble may have been thrown away while we were asking — a room switch,
   // or the message being deleted.
   if (!bubble.isConnected) return;
+  // A share link says nothing about what it points at; the server followed it
+  // to fetch the preview and now says where it led. Believing that beats
+  // guessing from the short URL — it is how a link shortened by any future
+  // scheme still plays.
+  if (meta && meta.canonical) media = MediaEmbed.detect(meta.canonical) || media;
   // A playable link always gets a card, even when the preview could not be
   // fetched: where these platforms are blocked the server cannot read their
   // pages either, and the play button must not disappear with the cover.

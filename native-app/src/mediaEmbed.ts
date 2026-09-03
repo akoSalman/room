@@ -56,6 +56,14 @@ export const PLATFORM_NAMES: Record<Platform, string> = {
  * — plenty of people have a way through, and refusing to try on their behalf
  * would be worse than a failed load.
  */
+/**
+ * The hosts SoundCloud's own share sheet produces.
+ *
+ * None of these carry the track's name — only the platform can say what they
+ * point at, which is why the widget is handed the short link untouched.
+ */
+const SC_SHORT = new Set(['on.soundcloud.com', 'snd.sc', 'soundcloud.app.goo.gl']);
+
 export function localToIran(p: Platform): boolean {
   return p === 'aparat';
 }
@@ -112,7 +120,24 @@ export function detect(raw: string | null | undefined): Media | null {
   }
 
   // ── SoundCloud ────────────────────────────────────────────────────────────
-  if (h === 'soundcloud.com' || h === 'snd.sc') {
+  //
+  // Its OWN share button hands out on.soundcloud.com/xXxXx, which is what
+  // people actually paste — and which was not recognised here at all, so every
+  // shared track arrived as a plain link with no player. snd.sc was listed
+  // below but could never match either: short links have ONE path segment and
+  // the rule underneath demands two.
+  //
+  // The widget resolves these itself, so the short URL is handed over as it
+  // stands rather than guessed at.
+  if (SC_SHORT.has(h)) {
+    if (!u.pathname.split('/').filter(Boolean).length) return null;
+    const q = new URLSearchParams({
+      url: u.toString(), auto_play: 'true', show_comments: 'false', visual: 'true',
+    });
+    return made('soundcloud', 'audio', `https://w.soundcloud.com/player/?${q}`);
+  }
+
+  if (h === 'soundcloud.com') {
     // The widget takes the track URL itself and resolves it — there is no id
     // in a SoundCloud link to extract.
     const parts = u.pathname.split('/').filter(Boolean);

@@ -53,6 +53,40 @@ test('THE POINT: a SoundCloud track plays in the app', () => {
   assert.ok(m.embed.includes(encodeURIComponent('https://soundcloud.com/artist-name/some-track')), m.embed);
 });
 
+test('THE BUG: the link SoundCloud\'s OWN share button makes is playable', () => {
+  // Asked as "why are SoundCloud links not playable in chat?" — and this is
+  // why. Sharing a track from SoundCloud gives on.soundcloud.com/xXxXx, which
+  // was not recognised at all, so it arrived as a plain link with no player.
+  // The one link people are most likely to send was the one shape not handled.
+  for (const u of ['https://on.soundcloud.com/aBcDeF', 'https://on.soundcloud.com/aBcDeF/']) {
+    const m = W.detect(u);
+    assert.ok(m, `${u} is still just a link`);
+    assert.strictEqual(m.platform, 'soundcloud');
+    assert.strictEqual(m.kind, 'audio');
+    // Handed over as it stands: nothing in a short link says what it points
+    // at, and the widget resolves it.
+    assert.ok(m.embed.includes(encodeURIComponent('https://on.soundcloud.com/aBcDeF')), m.embed);
+  }
+});
+
+test('…and so are the older short links, which never worked either', () => {
+  // snd.sc was listed as a SoundCloud host all along, but the rule underneath
+  // demanded two path segments and a short link has one — so the branch could
+  // never fire. It read as supported and was dead.
+  for (const u of ['https://snd.sc/abc123', 'https://soundcloud.app.goo.gl/xYz1']) {
+    const m = W.detect(u);
+    assert.ok(m, `${u} is still just a link`);
+    assert.strictEqual(m.platform, 'soundcloud');
+  }
+});
+
+test('a bare short-link host is not offered a player', () => {
+  // https://on.soundcloud.com/ points at nothing; a play button that opens an
+  // empty widget is worse than no play button.
+  assert.strictEqual(W.detect('https://on.soundcloud.com/'), null);
+  assert.strictEqual(W.detect('https://snd.sc'), null);
+});
+
 test('a YouTube link plays, in every shape people send them', () => {
   const ids = [
     'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
@@ -186,6 +220,10 @@ test('the app and the web agree, link by link', () => {
   if (!A) return;
   const links = [
     'https://soundcloud.com/artist/track', 'https://soundcloud.com/artist',
+    // The short hosts too — without these the drift check said the two files
+    // agreed while never once looking at the code that was just added.
+    'https://on.soundcloud.com/aBcDeF', 'https://snd.sc/abc123',
+    'https://soundcloud.app.goo.gl/xYz1', 'https://on.soundcloud.com/',
     'https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'https://youtu.be/dQw4w9WgXcQ?t=1m30s',
     'https://www.youtube.com/shorts/dQw4w9WgXcQ', 'https://www.youtube.com/@user',
     'https://vimeo.com/123456789', 'https://www.aparat.com/v/aB3xY',
@@ -251,6 +289,39 @@ test('the web plays it in a dialog, from the same rules', () => {
   assert.ok(fn.includes('MediaEmbed.playerHeight('), 'the web sizes the player its own way');
   const html = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
   assert.ok(html.includes('/js/mediaEmbed.js'), 'the rules are never loaded by the page');
+});
+
+// ── Where a share link actually led ─────────────────────────────────────────
+//
+// Recognising the short hosts above fixes the ones we know. This fixes the
+// rest: the server already follows the link to fetch its preview, so it can
+// simply say where it landed instead of leaving the client to guess.
+
+test('THE OTHER HALF: the server reports where a redirect led', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'linkMeta.js'), 'utf8');
+  const block = src.slice(src.indexOf('const data = {'), src.indexOf('cacheWrite(url, { at: Date.now(), ok: true'));
+  assert.ok(block.length > 0, 'the preview payload is gone — this check would be vacuous');
+  assert.ok(/canonical: got\.url && got\.url !== url \? got\.url : ''/.test(block),
+    'the resolved URL is thrown away, so a short link can only ever be guessed at');
+  assert.ok(/url: rawUrl,/.test(block),
+    'the URL as asked is gone, so the client cannot match the answer to its question');
+});
+
+test('and both clients believe it over the short link', () => {
+  const fn = app.slice(app.indexOf('async function attachLinkCard('), app.indexOf('async function attachLinkCard(') + 2000);
+  assert.ok(fn.length > 0, 'attachLinkCard is gone — this check would be vacuous');
+  assert.ok(/if \(meta && meta\.canonical\) media = MediaEmbed\.detect\(meta\.canonical\) \|\| media;/.test(fn),
+    'the web ignores where the link led');
+  // …and it must not throw away a player it already had: the preview fetch
+  // fails wherever these platforms are blocked, which is most of the time
+  // here, and losing the play button with it is the whole point of the `||`.
+  assert.ok(/\|\| media;/.test(fn), 'a failed resolve now costs the play button too');
+
+  const card = fs.readFileSync(path.join(NAT, 'src', 'components', 'LinkCard.tsx'), 'utf8');
+  assert.ok(/meta\?\.canonical \? detect\(meta\.canonical\) : null\) \|\| detect\(url\)/.test(card),
+    'the app ignores where the link led');
+  assert.ok(/\[url, meta\?\.canonical\]/.test(card),
+    'the player is not recomputed when the preview arrives, so it stays a plain link');
 });
 
 test('the web view dependency is declared, or none of this exists', () => {

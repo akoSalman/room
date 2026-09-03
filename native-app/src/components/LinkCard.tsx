@@ -61,7 +61,13 @@ export default function LinkCard({ content, onPress }: {
   const [meta, setMeta] = useState<LinkMeta | null>(() => (url ? cache.get(url) ?? null : null));
   // A SoundCloud track or a YouTube video plays here rather than throwing the
   // user out into a browser; anything else is still just a link.
-  const media = React.useMemo(() => detect(url), [url]);
+  // The preview fetch followed the link to read it, and reports where it led:
+  // a share link — on.soundcloud.com/xXxXx and the like — says nothing about
+  // what it points at, so where it LANDED is the better thing to ask.
+  const media = React.useMemo(
+    () => (meta?.canonical ? detect(meta.canonical) : null) || detect(url),
+    [url, meta?.canonical],
+  );
   const [playing, setPlaying] = useState(false);
 
   useEffect(() => {

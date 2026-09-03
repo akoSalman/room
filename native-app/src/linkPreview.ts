@@ -30,6 +30,13 @@
 
 export type LinkMeta = {
   url?: string | null;
+  /**
+   * Where the link actually led, when a redirect took it somewhere else.
+   *
+   * The server follows share links to read them, so it can say what
+   * on.soundcloud.com/xXxXx really points at — which the link itself cannot.
+   */
+  canonical?: string | null;
   title?: string | null;
   description?: string | null;
   /** Already a path on our own server — never a foreign URL. */
