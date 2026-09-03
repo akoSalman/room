@@ -3,6 +3,7 @@ import {
   View, Text, TextInput, FlatList, TouchableOpacity,
   StyleSheet, KeyboardAvoidingView, Platform, Alert, Dimensions,
   ActivityIndicator, Modal, ScrollView, Image, Linking, Share, Pressable, AppState, BackHandler,
+  PanResponder,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as DocumentPicker from 'expo-document-picker';
@@ -32,6 +33,10 @@ import { linksFrom, mergeLinks } from '../mediaLinks';
 import {
   canComment, showsBadge, badgeLabel, normaliseCount, commentsTitle, EMPTY_HINT,
 } from '../comments';
+import {
+  BADGE_SIZE, badgeOffset, badgeWidth, isNearBottom, shouldStickToBottom,
+  showsJumpButton, closesOnSwipe,
+} from '../commentsView';
 import * as up from '../uploadProgress';
 import UploadOverlay from '../components/UploadOverlay';
 import SaveOverlay from '../components/SaveOverlay';
@@ -435,8 +440,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
    * sent to even if the user has since gone back to the room.
    */
   function addOutgoing(msg: Message, parentId: number | null) {
-    if (parentId) setComments(prev => [...prev, msg]);
-    else setMessages(prev => [...prev, msg]);
+    if (parentId) {
+      setComments(prev => [...prev, msg]);
+      // Always, whatever the reader was looking at: being left staring at
+      // older comments after sending one is the bug.
+      if (shouldStickToBottom({ reason: 'mine', nearBottom: commentsAtBottom.current })) {
+        setTimeout(() => scrollCommentsToEnd(true), 50);
+      }
+    } else setMessages(prev => [...prev, msg]);
   }
 
   /**
@@ -480,13 +491,54 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     }
     setCommentParent(res.parent);
     setComments(res.comments || []);
+    // Opening a thread shows its newest comment, like opening a chat.
+    commentsAtBottom.current = true;
+    setTimeout(() => scrollCommentsToEnd(false), 50);
     setCommentCounts(c => ({ ...c, [String(m.id)]: (res.comments || []).length }));
   }
 
   function closeComments() {
     setCommentParent(null);
     setComments([]);
+    setCommentsJump(false);
+    commentsAtBottom.current = true;
   }
+
+  const commentsListRef = useRef<FlatList<Message> | null>(null);
+  /** Was the reader at the end of the thread when the last comment arrived? */
+  const commentsAtBottom = useRef(true);
+  const [commentsJump, setCommentsJump] = useState(false);
+
+  function scrollCommentsToEnd(animated: boolean) {
+    commentsAtBottom.current = true;
+    setCommentsJump(false);
+    try { commentsListRef.current?.scrollToEnd({ animated }); } catch {}
+  }
+
+  function onCommentsScroll(e: any) {
+    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+    const box = {
+      scrollHeight: contentSize.height,
+      scrollTop: contentOffset.y,
+      clientHeight: layoutMeasurement.height,
+    };
+    commentsAtBottom.current = isNearBottom(box);
+    setCommentsJump(showsJumpButton(box));
+  }
+
+  /**
+   * A rightward drag leaves the thread.
+   *
+   * Deliberately not limited to drags that begin at the screen edge: that is
+   * the system's own back gesture on both platforms, and asking for it
+   * competes with the OS rather than serving the user.
+   */
+  const commentsSwipe = useRef(PanResponder.create({
+    // Claimed only once the drag is clearly a rightward one, so scrolling the
+    // thread is untouched.
+    onMoveShouldSetPanResponder: (_e, g) => closesOnSwipe({ dx: g.dx, dy: g.dy }),
+    onPanResponderRelease: (_e, g) => { if (closesOnSwipe({ dx: g.dx, dy: g.dy })) closeComments(); },
+  })).current;
   const [mediaLoadingMore, setMediaLoadingMore] = useState(false);
   const mediaLoadingRef = useRef(false);
   // Counts opens of the gallery. The grid restores its position once per open
@@ -3853,6 +3905,24 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         </Bubble>
         );
         })()}
+        {/* The comments badge, on the message's bottom-left CORNER — half on
+            the bubble and half off it, the way a launcher badges an app icon.
+            It used to be a line of text in the footer, which read as one more
+            piece of metadata beside the clock; a badge is meant to be seen
+            before it is read, and that only works if it breaks the outline of
+            the thing it belongs to.
+            OUTSIDE the Bubble deliberately: the bubble is `overflow: hidden`,
+            so a child hanging over its edge would simply be cut off. */}
+        {!msg._uploading && canComment(msg) && showsBadge(commentCountOf(msg)) && (
+          <TouchableOpacity
+            style={[s.commentBadge, { minWidth: badgeWidth(badgeLabel(commentCountOf(msg))) }]}
+            onPress={() => openComments(msg)}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            accessibilityLabel={commentsTitle(commentCountOf(msg))}
+          >
+            <Text style={s.commentBadgeText}>{badgeLabel(commentCountOf(msg))}</Text>
+          </TouchableOpacity>
+        )}
         </SwipeableMessage>
 
         </View>
@@ -3870,19 +3940,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         )}
 
         <View style={s.footer}>
-          {/* The comments badge, first in the footer and so at the message's
-              bottom-left — and drawn ONLY when there is a thread to open.
-              A "0" on every message in the room would be noise over the thing
-              people are trying to read. */}
-          {!msg._uploading && canComment(msg) && showsBadge(commentCountOf(msg)) && (
-            <TouchableOpacity
-              onPress={() => openComments(msg)}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              accessibilityLabel={commentsTitle(commentCountOf(msg))}
-            >
-              <Text style={s.commentBadge}>💬 {badgeLabel(commentCountOf(msg))}</Text>
-            </TouchableOpacity>
-          )}
           <Text style={s.time}>{fmtTime(msg.created_at)}</Text>
           {/* How much life this message has left. Absent until someone has
               actually seen it — an unread message is not counting down. */}
@@ -4290,7 +4347,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           and any upload in flight, so closing the thread puts it back exactly
           as it was instead of reloading the room. */}
       {commentParent && (
-        <View style={{ flex: 1 }}>
+        <View style={{ flex: 1 }} {...commentsSwipe.panHandlers}>
           <View style={s.commentsHead}>
             <TouchableOpacity onPress={closeComments} hitSlop={hit}
               accessibilityLabel="Back to the conversation">
@@ -4308,13 +4365,33 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           {commentsLoading ? (
             <View style={s.loadingContainer}><ActivityIndicator color={C.accent} /></View>
           ) : (
-            <FlatList
-              data={comments}
-              keyExtractor={keyExtractor}
-              renderItem={renderMessage}
-              ListEmptyComponent={<Text style={s.commentsEmpty}>{EMPTY_HINT}</Text>}
-              keyboardShouldPersistTaps="handled"
-            />
+            <View style={{ flex: 1 }}>
+              <FlatList
+                ref={commentsListRef}
+                data={comments}
+                keyExtractor={keyExtractor}
+                renderItem={renderMessage}
+                // The same room the conversation gets. It had none, so every
+                // comment sat hard against the edge of the screen and the
+                // thread read as a cramped copy of the chat.
+                contentContainerStyle={s.commentsListContent}
+                ListEmptyComponent={<Text style={s.commentsEmpty}>{EMPTY_HINT}</Text>}
+                keyboardShouldPersistTaps="handled"
+                onScroll={onCommentsScroll}
+                scrollEventThrottle={100}
+                // Follows the newest comment, and follows the keyboard opening
+                // — but only for somebody already at the end. Dragging a
+                // reader out of the middle of a thread is worse than making
+                // them tap the button below.
+                onContentSizeChange={() => { if (commentsAtBottom.current) scrollCommentsToEnd(false); }}
+              />
+              {commentsJump && (
+                <TouchableOpacity style={s.commentsFab} onPress={() => scrollCommentsToEnd(true)}
+                  accessibilityLabel="Go to the newest comment">
+                  <Ionicons name="arrow-down" size={20} color="#fff" />
+                </TouchableOpacity>
+              )}
+            </View>
           )}
         </View>
       )}
@@ -5286,6 +5363,9 @@ const BUBBLE_PAD = 10;
  */
 const hit = { top: 10, bottom: 10, left: 10, right: 10 };
 
+/** Half the badge hangs outside the bubble — see commentsView. */
+const BADGE_OFFSET = badgeOffset();
+
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: C.bg },
   header: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.header, padding: 12, paddingTop: 14, borderBottomWidth: 1, borderBottomColor: C.border, gap: 8 },
@@ -5594,7 +5674,17 @@ const s = StyleSheet.create({
   ticks: { color: C.muted, fontSize: 12, letterSpacing: -2, marginRight: -2 },
   ticksSeen: { color: '#4fc3f7' },
   footerBtn: { fontSize: 14, opacity: 0.6 },
-  commentBadge: { fontSize: 11, color: C.accent, fontWeight: '600' },
+  commentBadge: {
+    position: 'absolute', left: -BADGE_OFFSET, bottom: -BADGE_OFFSET, zIndex: 2,
+    height: BADGE_SIZE, borderRadius: BADGE_SIZE / 2,
+    paddingHorizontal: 5,
+    backgroundColor: '#22c55e',
+    // A ring in the chat's own background, so the circle reads as sitting ON
+    // the bubble rather than being part of it.
+    borderWidth: 2, borderColor: C.bg,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  commentBadgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
   commentsHead: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     paddingHorizontal: 10, paddingVertical: 10,
@@ -5604,6 +5694,12 @@ const s = StyleSheet.create({
   commentsParent: {
     borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border,
     backgroundColor: 'rgba(128,128,128,0.06)', paddingVertical: 4, maxHeight: 220,
+  },
+  commentsListContent: { paddingHorizontal: 12, paddingTop: 10, paddingBottom: 8 },
+  commentsFab: {
+    position: 'absolute', right: 14, bottom: 14,
+    width: 38, height: 38, borderRadius: 19, backgroundColor: C.accent,
+    alignItems: 'center', justifyContent: 'center', elevation: 4,
   },
   commentsEmpty: { color: C.muted, textAlign: 'center', paddingVertical: 28, paddingHorizontal: 24 },
   footerBtnTouch: { paddingVertical: 2, paddingHorizontal: 4 },

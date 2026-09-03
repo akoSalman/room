@@ -223,18 +223,19 @@ const app = fs.readFileSync(path.join(ROOT, 'public', 'js', 'app.js'), 'utf8');
 const html = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
 const css = fs.readFileSync(path.join(ROOT, 'public', 'css', 'style.css'), 'utf8');
 
-test('THE BADGE IS DRAWN, bottom-left, and only when it has something to open', () => {
-  const fn = app.slice(app.indexOf('if (!msg._uploading && Comments.canComment(msg)) {'), app.indexOf('// A message the server accepted and deliberately never delivered'));
+test('THE BADGE IS DRAWN, and only when it has something to open', () => {
+  // Where it is drawn is asserted in test/commentsView.test.js — it moved out
+  // of the footer onto the bubble's corner, as a circle. What matters here is
+  // that it exists only when there is a thread, and that a comment arriving
+  // live can find it.
+  const fn = app.slice(app.indexOf('  // ── The comments badge ──'), app.indexOf('  if (!msg._uploading) {'));
   assert.ok(fn.length > 0, 'no badge is built — this check would be vacuous');
   assert.ok(/Comments\.badgeLabel\(msg\.comment_count\)/.test(fn), 'the badge writes its own number');
   assert.ok(/classList\.toggle\('hidden', !Comments\.showsBadge\(msg\.comment_count\)\)/.test(fn),
     'every message in the room carries a "0"');
   assert.ok(/dataset\.msgId = msg\.id/.test(fn),
     'a comment arriving live cannot find its badge, so the number only moves on reload');
-  const rule = /\.comment-badge \{([^}]*)\}/.exec(css);
-  assert.ok(rule, '.comment-badge has no rule — this check would be vacuous');
-  assert.ok(/order:\s*-1/.test(rule[1]) && /margin-inline-end:\s*auto/.test(rule[1]),
-    'the badge is not at the start of the footer');
+  assert.ok(/Comments\.canComment\(msg\)/.test(fn), 'comments are offered on comments');
 });
 
 test('the menu offers it', () => {
@@ -293,16 +294,11 @@ test('a comment arriving live moves the badge and fills an open thread', () => {
 
 const chat = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
 
-test('the app draws the badge at the bottom-left, and only when earned', () => {
-  const foot = chat.slice(chat.indexOf('<View style={s.footer}>'), chat.indexOf('<Text style={s.time}>'));
-  assert.ok(foot.length > 0, 'the footer is gone — this check would be vacuous');
-  assert.ok(/canComment\(msg\) && showsBadge\(commentCountOf\(msg\)\)/.test(foot),
+test('the app draws the badge only when earned', () => {
+  // Its placement is asserted in test/commentsView.test.js.
+  assert.ok(/canComment\(msg\) && showsBadge\(commentCountOf\(msg\)\)/.test(chat),
     'every message in the room carries a badge, or comments are offered on comments');
-  assert.ok(/badgeLabel\(commentCountOf\(msg\)\)/.test(foot), 'the badge writes its own number');
-  // FIRST in the footer, so it sits at the message's bottom-left — the time,
-  // the ticks and the react button all come after it.
-  assert.ok(chat.indexOf('commentBadge') < chat.indexOf('<Text style={s.time}>{fmtTime'),
-    'the badge is drawn after the timestamp, so it is not at the bottom-left');
+  assert.ok(/badgeLabel\(commentCountOf\(msg\)\)/.test(chat), 'the badge writes its own number');
 });
 
 test('the app menu offers comments, named for what is there', () => {
@@ -364,9 +360,9 @@ test('a comment arriving live moves the app badge too', () => {
 test('THE GAP: an outgoing comment goes into the thread, not the room', () => {
   const fn = chat.slice(chat.indexOf('function addOutgoing('), chat.indexOf('function replaceOutgoing('));
   assert.ok(fn.length > 0, 'the app has no idea where an outgoing bubble belongs');
-  assert.ok(/if \(parentId\) setComments\(prev => \[\.\.\.prev, msg\]\);/.test(fn),
+  assert.ok(/if \(parentId\) \{\s*\n\s*setComments\(prev => \[\.\.\.prev, msg\]\);/.test(fn),
     'a comment being sent is added to the conversation behind it');
-  assert.ok(/else setMessages\(prev => \[\.\.\.prev, msg\]\);/.test(fn),
+  assert.ok(/\} else setMessages\(prev => \[\.\.\.prev, msg\]\);/.test(fn),
     'an ordinary message no longer reaches the room');
   // Both optimistic paths — text, and every upload — go through it.
   const uses = chat.match(/addOutgoing\(optimistic, parentId\)/g) || [];

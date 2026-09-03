@@ -310,6 +310,7 @@ window.addEventListener('DOMContentLoaded', () => {
   buildEmojiPicker();
   initQuickEmoji();
   setupPasteAndDrop();
+  setupCommentsGestures();
 
   // Keep the layout inside the visual viewport so the composer isn't hidden
   // behind the on-screen keyboard. See ViewportFit for why iOS needs this and
@@ -346,7 +347,11 @@ window.addEventListener('DOMContentLoaded', () => {
 
   /** Hold the newest message in view while the keyboard resizes everything. */
   function keepBottomInView() {
-    const el = document.getElementById('messages');
+    // Whichever list is actually on screen. This looked only at #messages, so
+    // opening the keyboard in a thread left the newest comment behind the
+    // keyboard — the conversation followed and the thread did not.
+    const el = document.getElementById(
+      commentParent ? 'comments-list' : 'messages');
     if (!el) return;
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 220;
     if (nearBottom) el.scrollTop = el.scrollHeight;
@@ -2084,7 +2089,7 @@ function dispatchText(plain, roomId, replyToId, oneTimeSeconds, parentId) {
   if (parentId || String(roomId) === String(currentRoomId)) {
     if (parentId) into.querySelector('.media-empty')?.remove();
     into.appendChild(wrapper);
-    if (parentId) into.scrollTop = into.scrollHeight; else scrollBottom();
+    if (parentId) stickComments('mine'); else scrollBottom();
   }
   pendingUploads[clientId] = { wrapper, previewUrl: null };
   { const em = burstEmojiOf(plain); if (em) triggerEmojiBurst(em); }
@@ -4069,6 +4074,34 @@ function buildMessageElement(msg) {
   const bubbleRow = document.createElement('div');
   bubbleRow.className = 'bubble-row';
   bubbleRow.appendChild(bubble);
+
+  // ── The comments badge ──
+  //
+  // On the message's bottom-left CORNER, half on and half off it, like a
+  // launcher's notification badge. It was a line of text in the footer, which
+  // read as one more piece of metadata beside the clock; a badge is meant to
+  // be seen before it is read, and that only works if it breaks the outline of
+  // the thing it belongs to.
+  //
+  // Only when there is something to open — asked for that way, and a "0" on
+  // every message in the room would be noise over what people came to read.
+  // It is present but hidden while the count is zero, so the first comment can
+  // reveal it in place without the chat being redrawn.
+  if (!msg._uploading && Comments.canComment(msg)) {
+    const badge = document.createElement('button');
+    badge.className = 'comment-badge';
+    badge.dataset.msgId = msg.id;
+    badge.type = 'button';
+    badge.title = 'Comments';
+    badge.textContent = Comments.badgeLabel(msg.comment_count);
+    badge.style.minWidth = CommentsView.badgeWidth(badge.textContent) + 'px';
+    badge.classList.toggle('hidden', !Comments.showsBadge(msg.comment_count));
+    badge.onclick = (e) => { e.stopPropagation(); openComments(msg.id); };
+    // Inside the bubble, so "the corner of the message" is the corner of the
+    // bubble and not of the row it shares with the ⋮ button.
+    bubble.appendChild(badge);
+  }
+
   if (!msg._uploading) {
     const menuBtn = document.createElement('button');
     menuBtn.className = 'msg-menu-btn'; menuBtn.textContent = '⋮'; menuBtn.title = 'Message actions';
@@ -4098,24 +4131,6 @@ function buildMessageElement(msg) {
     if (exp) { ot.dataset.expire = exp; ot.textContent = ` 🔥${Math.max(0, Math.ceil((exp - Date.now()) / 1000))}s`; }
     else ot.textContent = ` 🔥${msg.one_time_seconds}s`;
     footer.appendChild(ot);
-  }
-
-  // ── The comments badge ──
-  //
-  // Bottom-left of the message, and ONLY when there is something to open:
-  // asked for that way, and a "0" on every message in the room would be noise
-  // on the one thing people are trying to read. It carries its message id so
-  // a comment arriving live can find it and change the number without the
-  // chat being redrawn.
-  if (!msg._uploading && Comments.canComment(msg)) {
-    const badge = document.createElement('button');
-    badge.className = 'comment-badge';
-    badge.dataset.msgId = msg.id;
-    badge.title = 'Comments';
-    badge.textContent = '💬 ' + Comments.badgeLabel(msg.comment_count);
-    badge.classList.toggle('hidden', !Comments.showsBadge(msg.comment_count));
-    badge.onclick = (e) => { e.stopPropagation(); openComments(msg.id); };
-    footer.appendChild(badge);
   }
 
   // A message the server accepted and deliberately never delivered, because
@@ -4222,6 +4237,33 @@ function ctxReply() {
 let commentParent = null;
 
 /**
+ * Swipe right to leave the thread, and the jump button's visibility.
+ *
+ * Installed once. A rightward drag is "go back" on both platforms; it is
+ * deliberately not limited to drags starting at the screen edge, because that
+ * is the system's own gesture and competing with it loses.
+ */
+function setupCommentsGestures() {
+  const panel = document.getElementById('comments-panel');
+  const list = document.getElementById('comments-list');
+  if (!panel || !list) return;
+  list.addEventListener('scroll', syncCommentsFab, { passive: true });
+  let from = null;
+  panel.addEventListener('touchstart', (e) => {
+    const t = e.touches[0];
+    from = t ? { x: t.clientX, y: t.clientY } : null;
+  }, { passive: true });
+  panel.addEventListener('touchend', (e) => {
+    if (!from || !commentParent) return;
+    const t = e.changedTouches[0];
+    if (!t) return;
+    const closed = CommentsView.closesOnSwipe({ dx: t.clientX - from.x, dy: t.clientY - from.y });
+    from = null;
+    if (closed) closeComments();
+  }, { passive: true });
+}
+
+/**
  * The parent every send should be hung off, if any.
  *
  * Read at the moment of sending rather than captured earlier: an upload that
@@ -4255,6 +4297,7 @@ async function openComments(msgId) {
 
 function closeComments() {
   commentParent = null;
+  document.getElementById('comments-fab')?.classList.add('hidden');
   document.getElementById('comments-panel').classList.add('hidden');
   document.body.classList.remove('commenting');
   syncCommentBar();
@@ -4293,7 +4336,42 @@ function renderComments(res) {
     return;
   }
   res.comments.forEach(c => list.appendChild(buildMessageElement(c)));
+  commentsToBottom();
+}
+
+/** Put the newest comment in front of the reader, and hide the jump button. */
+function commentsToBottom() {
+  const list = document.getElementById('comments-list');
+  if (!list) return;
   list.scrollTop = list.scrollHeight;
+  syncCommentsFab();
+}
+
+/**
+ * Follow the thread, or deliberately not.
+ *
+ * `reason` decides: something I sent is always shown to me, and everything
+ * else only when I was already at the bottom — dragging somebody out of the
+ * middle of a thread they are reading is worse than making them tap the
+ * button.
+ */
+function stickComments(reason) {
+  const list = document.getElementById('comments-list');
+  if (!list) return;
+  const nearBottom = CommentsView.isNearBottom({
+    scrollHeight: list.scrollHeight, scrollTop: list.scrollTop, clientHeight: list.clientHeight,
+  });
+  if (CommentsView.shouldStickToBottom({ reason, nearBottom })) commentsToBottom();
+  else syncCommentsFab();
+}
+
+function syncCommentsFab() {
+  const list = document.getElementById('comments-list');
+  const fab = document.getElementById('comments-fab');
+  if (!list || !fab) return;
+  fab.classList.toggle('hidden', !commentParent || !CommentsView.showsJumpButton({
+    scrollHeight: list.scrollHeight, scrollTop: list.scrollTop, clientHeight: list.clientHeight,
+  }));
 }
 
 /** One comment arriving while its thread is open. */
@@ -4309,13 +4387,16 @@ function appendCommentBubble(msg) {
     if (pending.previewUrl) URL.revokeObjectURL(pending.previewUrl);
     pending.wrapper.replaceWith(buildMessageElement(msg));
     delete pendingUploads[msg.client_id];
-    list.scrollTop = list.scrollHeight;
+    commentsToBottom();
     document.getElementById('comments-title').textContent =
       Comments.commentsTitle(list.querySelectorAll('.msg-wrapper').length);
     return;
   }
   list.appendChild(buildMessageElement(msg));
-  list.scrollTop = list.scrollHeight;
+  // Somebody else's comment only pulls the view down if the reader was
+  // already at the bottom; the sender's own always does — see the reconcile
+  // above, which returns before reaching here.
+  stickComments('theirs');
   document.getElementById('comments-title').textContent =
     Comments.commentsTitle(list.querySelectorAll('.msg-wrapper').length);
 }
@@ -4331,7 +4412,8 @@ function appendCommentBubble(msg) {
 function bumpCommentBadge(parentId, count) {
   const badge = document.querySelector(`.comment-badge[data-msg-id="${parentId}"]`);
   if (!badge) return;
-  badge.textContent = '💬 ' + Comments.badgeLabel(count);
+  badge.textContent = Comments.badgeLabel(count);
+  badge.style.minWidth = CommentsView.badgeWidth(badge.textContent) + 'px';
   badge.classList.toggle('hidden', !Comments.showsBadge(count));
 }
 

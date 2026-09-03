@@ -632,7 +632,11 @@ test('every sign of movement refreshes it, and the exact ends clear it', () => {
     path.join(__dirname, '..', 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
   // onScroll is the one that cannot fail to arrive while the list moves — and
   // whose SILENCE is what ends the window.
-  const onScroll = src.slice(src.indexOf('onScroll={(e: any) => {'), src.indexOf('scrollEventThrottle'));
+  // Anchored FORWARD from the messages list's own handler: the comments list
+  // added a `scrollEventThrottle` earlier in the file, and slicing to the
+  // first one produced an empty window that could assert nothing.
+  const start = src.indexOf('onScroll={(e: any) => {');
+  const onScroll = src.slice(start, src.indexOf('scrollEventThrottle', start));
   assert.ok(onScroll.includes('lastScrollAt.current = Date.now();'),
     'ordinary scrolling does not refresh the window, so only flings are noticed');
   assert.ok(onScroll.includes('onMessagesScroll(e)'), 'the scroll handler it replaced is no longer called');
