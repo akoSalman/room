@@ -32,7 +32,7 @@ import * as up from '../uploadProgress';
 import UploadOverlay from '../components/UploadOverlay';
 import SaveOverlay from '../components/SaveOverlay';
 import * as save from '../saveProgress';
-import { parseDataUri, pastedName, fileUriFromText, extensionFor } from '../pasteDrop';
+import { parseDataUri, pastedName, fileUriFromText, extensionFor, shouldReadText, clipboardOffer } from '../pasteDrop';
 import * as pending from '../pendingMedia';
 import * as Contacts from 'expo-contacts';
 import {
@@ -1646,11 +1646,26 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
   async function checkClipboard() {
     try {
-      if (await Clipboard.hasImageAsync()) { setClipboardHas('image'); return; }
-      const text = await Clipboard.getStringAsync();
-      setClipboardHas(fileUriFromText(text) ? 'file' : null);
+      const hasImage = await Clipboard.hasImageAsync();
+      // The text is only READ when there is no image and there is some text.
+      // Reading it raises a system "pasted from" notice on newer Androids, and
+      // this now runs whenever the chat is opened rather than once per attach
+      // menu — a check that accused the app of snooping every few minutes
+      // would be a worse bug than the one being fixed.
+      const hasString = hasImage ? false : await Clipboard.hasStringAsync();
+      const text = shouldReadText({ hasImage, hasString }) ? await Clipboard.getStringAsync() : '';
+      setClipboardHas(clipboardOffer({ hasImage, text }));
     } catch { setClipboardHas(null); }
   }
+
+  // Checked on arrival, and again every time the app comes back to the front:
+  // coming back from a gallery or a file manager is precisely when somebody
+  // has just copied the thing they want to send.
+  useEffect(() => {
+    checkClipboard();
+    const sub = AppState.addEventListener('change', st => { if (st === 'active') checkClipboard(); });
+    return () => sub.remove();
+  }, []);
 
   async function pasteFromClipboard() {
     setShowAttachMenu(false);
@@ -4985,6 +5000,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           editing={!!editingId}
           onTyping={emitTyping}
           onSend={sendText}
+          clipboard={clipboardHas}
+          onPaste={pasteFromClipboard}
           // Straight to the camera. A photo of what is in front of you is by
           // far the commonest attachment, and it used to cost two taps and a
           // sheet before the camera even began warming up. The other four ways

@@ -388,6 +388,62 @@ test('the paste handler cannot swallow an ordinary text paste', () => {
     'preventDefault runs before the paste is known to carry files');
 });
 
+// ── The same button, on the app ─────────────────────────────────────────────
+
+test('THE ASK: the app offers paste for what a text field cannot take', () => {
+  // A screenshot, or a file copied in a file manager. Not plain text: the
+  // message box already pastes that by long-press, and a button that lit up
+  // for every copied word would bury the one case it exists for.
+  assert.strictEqual(N.clipboardOffer({ hasImage: true }), 'image');
+  assert.strictEqual(N.clipboardOffer({ hasImage: false, text: 'content://x/y/1' }), 'file');
+  assert.strictEqual(N.clipboardOffer({ hasImage: false, text: 'file:///a/b.pdf' }), 'file');
+  assert.strictEqual(N.clipboardOffer({ hasImage: false, text: 'hello there' }), null);
+  assert.strictEqual(N.clipboardOffer({ hasImage: false, text: '' }), null);
+  assert.strictEqual(N.clipboardOffer({ hasImage: false }), null);
+  // An image outranks whatever text came with it.
+  assert.strictEqual(N.clipboardOffer({ hasImage: true, text: 'a caption' }), 'image');
+});
+
+test('the clipboard TEXT is not read unless it has to be', () => {
+  // Reading it raises a system "pasted from" notice on newer Androids, and
+  // this now runs whenever the chat opens rather than once per attach menu.
+  assert.strictEqual(N.shouldReadText({ hasImage: false, hasString: true }), true);
+  assert.strictEqual(N.shouldReadText({ hasImage: true, hasString: true }), false,
+    'the text is read even though the image already settled it');
+  assert.strictEqual(N.shouldReadText({ hasImage: false, hasString: false }), false,
+    'an empty clipboard is read anyway, accusing the app of snooping for nothing');
+});
+
+test('the button names what would actually happen', () => {
+  assert.strictEqual(N.pasteLabel('image'), 'Paste image');
+  assert.strictEqual(N.pasteLabel('file'), 'Paste file');
+  assert.strictEqual(N.pasteLabel(null), 'Paste');
+});
+
+test('the app has the button on the composer, not only in the attach menu', () => {
+  const comp = fs.readFileSync(path.join(NAT, 'src', 'components', 'Composer.tsx'), 'utf8');
+  const src = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  assert.ok(/\{!!clipboard && \(/.test(comp),
+    'the paste button is shown even when the clipboard holds nothing to paste');
+  assert.ok(/onPress=\{onPaste\}/.test(comp), 'the button does nothing');
+  assert.ok(/clipboard=\{clipboardHas\}/.test(src) && /onPaste=\{pasteFromClipboard\}/.test(src),
+    'the composer is never told what is on the clipboard');
+});
+
+test('the clipboard is re-checked on coming back from another app', () => {
+  // Which is exactly when somebody has just copied the thing they want to
+  // send. Checking only when the attach menu opened made the strip button
+  // impossible.
+  const src = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  const fn = src.slice(src.indexOf('async function checkClipboard()'), src.indexOf('async function pasteFromClipboard()'));
+  assert.ok(fn.length > 0, 'checkClipboard is gone — this check would be vacuous');
+  assert.ok(/AppState\.addEventListener\('change', st => \{ if \(st === 'active'\) checkClipboard\(\)/.test(fn),
+    'the clipboard is never re-checked, so the button reflects a stale answer');
+  assert.ok(/sub\.remove\(\)/.test(fn), 'the listener outlives the screen');
+  assert.ok(fn.includes('shouldReadText({'), 'the clipboard text is read on every glance at the chat');
+  assert.ok(fn.includes('clipboardOffer({'), 'the screen decides for itself what counts as pasteable');
+});
+
 test('the app offers paste only when there is something to paste', () => {
   const src = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
   assert.ok(src.includes('Clipboard.hasImageAsync'), 'the app never checks the clipboard');

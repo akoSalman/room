@@ -195,3 +195,48 @@ export function fileUriFromText(text: string): string | null {
   if (/\s/.test(t)) return null;
   return t;
 }
+
+// ── Offering paste on the composer, not only inside the attach menu ──────────
+//
+// The app has been able to paste since this file was written, but only from
+// the attach sheet: ＋ → Paste. Asked for again as "add on apk", which is the
+// same thing the web was just asked for — a paste that can be SEEN. It now
+// sits on the options strip, next to the paperclip.
+//
+// Which means the clipboard is consulted far more often than it used to be, so
+// what is read, and when, matters.
+
+export type ClipboardOffer = 'image' | 'file' | null;
+
+/**
+ * Is the clipboard's TEXT worth reading?
+ *
+ * Reading it is not free: on iOS, and on Android 12 and up, reading clipboard
+ * text raises a system notice that the app has pasted — so a check that ran on
+ * every glance at the chat would accuse this app of snooping several times an
+ * hour. Asking WHETHER there is text raises nothing.
+ *
+ * An image is settled without reading anything at all, so the text is only
+ * ever read when there is no image and there is some text.
+ */
+export function shouldReadText(o: { hasImage: boolean; hasString: boolean }): boolean {
+  return !o.hasImage && o.hasString;
+}
+
+/**
+ * What, if anything, the paste button should offer.
+ *
+ * Plain text is deliberately NOT an offer: the message box already pastes text
+ * by long-press, and a button that lit up for every copied word would be noise
+ * next to the one case it exists for — a screenshot, or a file copied in a
+ * file manager, neither of which a text field can see.
+ */
+export function clipboardOffer(o: { hasImage: boolean; text?: string | null }): ClipboardOffer {
+  if (o.hasImage) return 'image';
+  return fileUriFromText(o.text || '') ? 'file' : null;
+}
+
+/** What the button says, so that it names what would actually happen. */
+export function pasteLabel(offer: ClipboardOffer): string {
+  return offer === 'image' ? 'Paste image' : offer === 'file' ? 'Paste file' : 'Paste';
+}

@@ -13,6 +13,7 @@ import { C, isRTL } from '../theme';
 import { useFavEmojis } from '../favEmojis';
 import EmojiEditor from './EmojiEditor';
 import { mentionQuery, applyMention, filterUsernames } from '../mentions';
+import { pasteLabel } from '../pasteDrop';
 
 export type ComposerHandle = {
   setText: (v: string) => void;
@@ -52,6 +53,14 @@ type Props = {
   liveLocation?: boolean;
   /** Everyone in this chat who can be @mentioned. */
   mentionables?: string[];
+  /**
+   * What is on the clipboard, if it is something a text field cannot take.
+   *
+   * Null hides the paste button entirely: a control that does nothing is worse
+   * than no control, and this one would do nothing most of the time.
+   */
+  clipboard?: 'image' | 'file' | null;
+  onPaste?: () => void;
   onToggleQuickEmoji: (open: boolean) => void;
   onRemoveMedia: (index: number) => void;
   /** Opens the staged item for a look — and for editing. */
@@ -63,6 +72,7 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
     pendingMedia, oneTimeSecs, quickEmoji, editing,
     onTyping, onSend, onAttach, onRecord, onRecordPressIn, onOneTime, onLocation, liveLocation,
     sendQuality, onQuality, disappearing,
+    clipboard, onPaste,
     onToggleQuickEmoji, onRemoveMedia, onPreviewMedia, mentionables,
   } = props;
 
@@ -187,6 +197,16 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
             color={liveLocation ? '#22c55e' : C.text}
           />
         </TouchableOpacity>
+        {/* Only when the clipboard holds something the message box cannot
+            take — a screenshot, or a file copied in a file manager. Text
+            already pastes by long-press, so lighting up for every copied word
+            would bury the one case this exists for. */}
+        {!!clipboard && (
+          <TouchableOpacity style={s.stripBtn} onPress={onPaste}
+            accessibilityLabel={pasteLabel(clipboard)}>
+            <Text style={s.stripBtnText}>📋</Text>
+          </TouchableOpacity>
+        )}
         {!quickEmoji && (
           <TouchableOpacity style={s.stripBtn}
             onPress={() => { onToggleQuickEmoji(true); AsyncStorage.removeItem('quickEmojiClosed'); }}>
