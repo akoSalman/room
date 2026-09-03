@@ -47,11 +47,16 @@ test('THE BUG: a granted microphone is never blamed for the failure', () => {
   const kind = R.classifyStartFailure({
     granted: true, message: 'Only one Recording object can be prepared at a given time',
   });
-  assert.strictEqual(kind, 'busy');
+  // 'self', not 'busy'. This is expo-av's OWN slot, taken by this app — the
+  // second wrong message shipped for this failure told people a call or
+  // another app was using the microphone, which was just as untrue as the
+  // permission screen and just as impossible to act on.
+  assert.strictEqual(kind, 'self');
   const text = R.startFailureText(kind);
-  assert.ok(/busy/i.test(text), text);
   assert.ok(!/permission/i.test(text), 'it still sends them to the permission screen');
   assert.ok(!/settings/i.test(text), 'it still sends them to Settings');
+  assert.ok(!/another app|a call/i.test(text), 'it still blames something the user cannot see');
+  assert.ok(/try again/i.test(text), text);
 });
 
 test('…and a missing one still is', () => {
@@ -61,16 +66,27 @@ test('…and a missing one still is', () => {
   assert.ok(/settings/i.test(R.startFailureText(kind)), 'it does not say where to fix it');
 });
 
-test('the other ways a microphone is unavailable read as busy too', () => {
+test('this app fighting itself is told apart from the phone being busy', () => {
+  // The two need different words because they need different actions: one is
+  // fixed by tapping again, the other by ending whatever else is recording.
   for (const m of [
     'Only one Recording object can be prepared at a given time',
     'Recorder is already prepared',
     'Failed to prepare recorder',
+  ]) {
+    assert.strictEqual(R.classifyStartFailure({ granted: true, message: m }), 'self', m);
+  }
+  for (const m of [
     'AudioRecord: microphone in use',
     'Resource temporarily unavailable',
+    'Microphone is busy',
   ]) {
     assert.strictEqual(R.classifyStartFailure({ granted: true, message: m }), 'busy', m);
   }
+  // `prepare` on its own must NOT mean "busy": it matched expo-av's own
+  // message, and that is exactly how the app came to blame the phone for its
+  // own bug.
+  assert.notStrictEqual(R.classifyStartFailure({ granted: true, message: 'prepare' }), 'busy');
 });
 
 test('an unrecognised failure says something true rather than guessing', () => {
@@ -112,10 +128,44 @@ test('THE FIX: nothing is ever created without being remembered', () => {
   }
 });
 
-test('a start that throws does not keep the slot', () => {
+test('THE PERSISTENCE: every failure gives the slot back, not just a failed start', () => {
+  // Reported as "it is always there, with nothing else recording".
+  //
+  // prepareToRecordAsync used to throw from OUTSIDE the try, so a recorder
+  // that failed to prepare stayed held, expo-av went on believing one was
+  // prepared, and every later attempt failed identically until the app was
+  // killed. One unlucky moment broke recording for the rest of the session.
   const fn = rec.slice(rec.indexOf('export async function begin('), rec.indexOf('export async function finish('));
-  assert.ok(/await rec\.startAsync\(\);\s*\} catch \(e\) \{[\s\S]{0,300}?await releaseHeld\(\);[\s\S]{0,80}?throw e;/.test(fn),
-    'a prepared recorder whose start failed is left holding expo-av\'s only slot');
+  // Both must sit inside the SAME try as the catch that releases — so the
+  // check is that no new `try {` opens between either of them and that catch.
+  // (Written this way because asserting "a try appears before prepare" passed
+  // while prepare had been moved into a block of its own: the first `try` in
+  // the function is not necessarily the one that guards it.)
+  const guard = fn.indexOf('} catch (e) {');
+  assert.ok(guard > 0, 'the catch that releases the slot is gone — this check would be vacuous');
+  for (const step of ['await rec.prepareToRecordAsync(OPTIONS);', 'await rec.startAsync();']) {
+    const at = fn.indexOf(step);
+    assert.ok(at > 0 && at < guard, `${step} no longer runs before the catch`);
+    assert.ok(!fn.slice(at, guard).includes('try {'),
+      `${step} is in a try of its own, so its failure never releases the slot`);
+  }
+  assert.ok(/\} catch \(e\) \{[\s\S]{0,600}?await releaseHeld\(\);[\s\S]{0,400}?throw e;/.test(fn),
+    'a failure is not followed by releasing the recorder');
+  assert.ok(/setAudioModeAsync\(PLAYBACK_MODE\)/.test(fn),
+    'the audio session is left in record mode after a failure');
+});
+
+test('THE RACE: a start waits for a warm-up that is still running', () => {
+  // The warm-up is fired by the finger landing on the microphone and begin()
+  // runs when it lifts. If begin did not wait, it released the half-prepared
+  // recorder out from under the warm-up and prepared a SECOND one — and
+  // expo-av allows exactly one. On a slow phone the two are always close
+  // enough for that to happen every single time, which is the report.
+  const fn = rec.slice(rec.indexOf('export async function begin('), rec.indexOf('export async function finish('));
+  assert.ok(/if \(warming\) \{ try \{ await warming; \} catch \{\} \}/.test(fn),
+    'begin races the warm-up it is supposed to be collecting');
+  assert.ok(fn.indexOf('await warming') < fn.indexOf('await releaseHeld()'),
+    'the wait happens after the release, which is the race it was meant to fix');
 });
 
 test('and every start releases whatever a previous attempt left behind', () => {

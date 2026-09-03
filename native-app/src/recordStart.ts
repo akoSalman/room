@@ -94,7 +94,7 @@ export function elapsedSeconds(durationMillis: number | null | undefined): numbe
 
 // ── When it will not start ───────────────────────────────────────────────────
 
-export type StartFailure = 'permission' | 'busy' | 'unknown';
+export type StartFailure = 'permission' | 'busy' | 'self' | 'unknown';
 
 /**
  * Why did recording not start?
@@ -112,9 +112,17 @@ export function classifyStartFailure(o: {
 }): StartFailure {
   if (!o.granted) return 'permission';
   const m = String(o.message || '').toLowerCase();
-  // expo-av's own words when its single recording slot is already taken, and
-  // Android's when something else holds the microphone.
-  if (/only one recording|already prepared|prepare|in use|busy|unavailable/.test(m)) return 'busy';
+  // expo-av's own words when ITS single slot is taken. That is this app's own
+  // doing, never another app's — and the second time a wrong message has been
+  // shipped for this failure. The first sent people to a permission screen
+  // that was already correct; the replacement told them a call or another app
+  // was using the microphone, which was equally untrue and equally
+  // unactionable. It has its own kind now so it can say something true.
+  if (/only one recording|already prepared|failed to prepare/.test(m)) return 'self';
+  // Android's words when something really does hold the microphone. Note
+  // `prepare` alone is NOT here: it matched expo-av's own message above and is
+  // what made this app blame the phone for its own bug.
+  if (/in use|busy|unavailable|already in use/.test(m)) return 'busy';
   return 'unknown';
 }
 
@@ -126,6 +134,11 @@ export function startFailureText(kind: StartFailure): string {
     case 'busy':
       return 'The microphone is busy — a call, or another app, is still using it. '
         + 'Tap the microphone again in a moment.';
+    case 'self':
+      // No blame pointed anywhere the user can act on, because there is
+      // nothing for them to do about it: the recorder is released as this is
+      // shown, so trying again is genuinely the fix.
+      return 'The recorder was not ready. It has been reset — tap Try again.';
     default:
       return 'The recording could not be started. Tap the microphone to try again.';
   }

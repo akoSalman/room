@@ -129,30 +129,53 @@ export type Started = { recording: Audio.Recording };
  * resolves is exactly the reported bug.
  */
 export async function begin(): Promise<Started> {
+  // FIRST: let any warm-up in flight finish.
+  //
+  // Reported as "Could not start recording — the microphone is busy", every
+  // time, with nothing else using the microphone. The app was fighting itself.
+  //
+  // warmUp() is fired by the finger LANDING on the microphone button and takes
+  // a moment; begin() runs when the finger lifts. If the warm-up has not
+  // finished by then, `warm` is still null, so the branch below used to run —
+  // releasing the half-prepared recorder out from under the warm-up and
+  // preparing a SECOND one. expo-av allows exactly one prepared recorder at a
+  // time, so the second throws, and on a slow phone the two are always close
+  // enough together for that to happen on every attempt.
+  //
+  // Waiting costs nothing: the warm-up is the very work begin() would
+  // otherwise do, so this is the fast path, not a delay.
+  if (warming) { try { await warming; } catch {} }
+
   const now = Date.now();
   let rec: Audio.Recording | null = null;
-  if (warm && warmStillGood({ preparedAt: warmAt, now })) {
-    rec = warm;
-    warm = null;                        // no longer "warm", but still `held`
-    warmAt = null;
-  } else {
-    // A stale warm-up is thrown away rather than started: it has been holding
-    // the microphone for long enough that the session may have moved on. This
-    // also releases a recorder left behind by a previous FAILED attempt,
-    // which is what made the error stick until the app was restarted.
-    await releaseHeld();
-    await Audio.setAudioModeAsync(RECORD_MODE);
-    rec = new Audio.Recording();
-    held = rec;                         // remembered BEFORE it can throw
-    await rec.prepareToRecordAsync(OPTIONS);
-  }
   try {
+    if (warm && warmStillGood({ preparedAt: warmAt, now })) {
+      rec = warm;
+      warm = null;                      // no longer "warm", but still `held`
+      warmAt = null;
+    } else {
+      // A stale warm-up is thrown away rather than started: it has been holding
+      // the microphone for long enough that the session may have moved on. This
+      // also releases a recorder left behind by a previous FAILED attempt.
+      await releaseHeld();
+      await Audio.setAudioModeAsync(RECORD_MODE);
+      rec = new Audio.Recording();
+      held = rec;                       // remembered BEFORE it can throw
+      await rec.prepareToRecordAsync(OPTIONS);
+    }
     await rec.startAsync();
   } catch (e) {
-    // A recorder that was prepared and never started is the worst thing to
-    // leave behind: it holds the library's one slot and every later attempt
-    // fails with an error about permissions that were never the problem.
+    // EVERY failure gives the slot back, not just a failed start.
+    //
+    // prepareToRecordAsync used to throw from outside this try, so a recorder
+    // that failed to prepare stayed held, expo-av went on believing one was
+    // prepared, and every later attempt failed the same way until the app was
+    // killed. That is the "it is always there" in the report — one unlucky
+    // moment broke recording for the rest of the session.
     await releaseHeld();
+    // And hand the audio session back, so the next attempt starts from the
+    // same state a fresh launch would.
+    try { await Audio.setAudioModeAsync(PLAYBACK_MODE); } catch {}
     throw e;
   }
   // Not assumed: on a device that refused the microphone, startAsync can
