@@ -115,3 +115,29 @@ export function closesOnSwipe(o: { dx: number; dy: number }): boolean {
   // not having built it — and this was asked for because it was missing.
   return Math.abs(dx) > Math.abs(dy) * 1.2;
 }
+
+// ── The back button ──────────────────────────────────────────────────────────
+
+/**
+ * What closing the thread should do to the history entry it pushed.
+ *
+ * Asked for as: back should close the comments and return to the chat. On the
+ * app that is one BackHandler; on the web the thread is not a page, so opening
+ * one pushes a history entry and back pops it.
+ *
+ * The trap is the loop. Closing by hand must undo the entry it pushed —
+ * otherwise the next back press pops an entry belonging to a thread that is
+ * already gone, and the page goes wherever it went before. But a close that
+ * CAME from a back press must not call back again: the entry is already
+ * spent, and going back once more leaves the app entirely, which is the exact
+ * thing being fixed.
+ */
+export function backAction(o: {
+  /** Did this close come from a popstate rather than a tap or a swipe? */
+  fromHistory: boolean;
+  /** How many entries this screen believes it has pushed. */
+  pushed: number;
+}): 'back' | 'none' {
+  if (o.fromHistory) return 'none';
+  return o.pushed > 0 ? 'back' : 'none';
+}

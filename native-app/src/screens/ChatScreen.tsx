@@ -3058,6 +3058,20 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     return () => sub.remove();
   }, [openLocationId]);
 
+  // Hardware back leaves the THREAD before it leaves the chat.
+  //
+  // Without this, back went straight out to the room list from inside a
+  // comments screen — losing both the thread and the conversation in one
+  // press, when what was wanted was the step the ← in the header takes.
+  useEffect(() => {
+    if (!commentParent) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      closeComments();
+      return true;
+    });
+    return () => sub.remove();
+  }, [commentParent]);
+
   // Hardware back closes search before it leaves the chat.
   useEffect(() => {
     if (!searching) return;

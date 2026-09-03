@@ -42,6 +42,12 @@
     return Math.abs(dx) > Math.abs(dy) * 1.2;
   }
 
+
+  function backAction(o) {
+    if (o.fromHistory) return 'none';
+    return o.pushed > 0 ? 'back' : 'none';
+  }
+
   global.CommentsView = {
     BADGE_SIZE: BADGE_SIZE,
     NEAR_BOTTOM_PX: NEAR_BOTTOM_PX,
@@ -52,6 +58,7 @@
     shouldStickToBottom: shouldStickToBottom,
     showsJumpButton: showsJumpButton,
     closesOnSwipe: closesOnSwipe,
+    backAction: backAction,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
 

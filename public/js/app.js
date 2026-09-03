@@ -4235,6 +4235,8 @@ function ctxReply() {
 
 /** The message being commented on, or null when reading the room itself. */
 let commentParent = null;
+/** History entries this screen has pushed, so back can close the thread. */
+let commentsPushed = 0;
 
 /**
  * Swipe right to leave the thread, and the jump button's visibility.
@@ -4249,6 +4251,9 @@ function setupCommentsGestures() {
   if (!panel || !list) return;
   list.addEventListener('scroll', syncCommentsFab, { passive: true });
   let from = null;
+  // Back closes the thread before it leaves the chat — the same step the ← in
+  // the header takes.
+  window.addEventListener('popstate', () => { if (commentParent) closeComments(true); });
   panel.addEventListener('touchstart', (e) => {
     const t = e.touches[0];
     from = t ? { x: t.clientX, y: t.clientY } : null;
@@ -4291,13 +4296,25 @@ async function openComments(msgId) {
     return;
   }
   commentParent = res.parent;
+  // The thread is not a page, so back has nothing to pop unless one is put
+  // there. Without this, back leaves the site from inside a thread.
+  try { history.pushState({ comments: true }, ''); commentsPushed++; } catch {}
   renderComments(res);
   syncCommentBar();
 }
 
-function closeComments() {
+function closeComments(fromHistory) {
+  const wasOpen = !!commentParent;
   commentParent = null;
   document.getElementById('comments-fab')?.classList.add('hidden');
+  // Undo the entry this thread pushed — but never when the close CAME from a
+  // back press, or the second back would leave the site. See backAction.
+  if (wasOpen && CommentsView.backAction({ fromHistory: !!fromHistory, pushed: commentsPushed }) === 'back') {
+    commentsPushed--;
+    try { history.back(); } catch {}
+  } else if (fromHistory && commentsPushed > 0) {
+    commentsPushed--;
+  }
   document.getElementById('comments-panel').classList.add('hidden');
   document.body.classList.remove('commenting');
   syncCommentBar();

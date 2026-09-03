@@ -118,6 +118,25 @@ test('…and scrolling the comments does not throw the screen away', () => {
   assert.strictEqual(W.closesOnSwipe({ dx: 80, dy: 60 }), true, 'a clearly sideways drag was ignored');
 });
 
+// ── The back button ─────────────────────────────────────────────────────────
+
+test('THE BACK BUTTON: closing by hand undoes the entry it pushed', () => {
+  // Otherwise the next back press pops an entry belonging to a thread that is
+  // already gone, and the page goes wherever it went before.
+  assert.strictEqual(W.backAction({ fromHistory: false, pushed: 1 }), 'back');
+});
+
+test('…but a close that CAME from back does not go back again', () => {
+  // The entry is already spent. Going back once more leaves the site, which
+  // is the exact thing being fixed.
+  assert.strictEqual(W.backAction({ fromHistory: true, pushed: 1 }), 'none');
+});
+
+test('and with nothing pushed there is nothing to undo', () => {
+  assert.strictEqual(W.backAction({ fromHistory: false, pushed: 0 }), 'none',
+    'closing a thread stepped back through the page history');
+});
+
 test('the app and the web behave identically', () => {
   if (!A) return;
   let checked = 0;
@@ -148,7 +167,14 @@ test('the app and the web behave identically', () => {
       checked++;
     }
   }
-  assert.strictEqual(checked, 24, 'the drift check did not actually run');
+  for (const fh of [true, false]) {
+    for (const pu of [0, 1, 2]) {
+      assert.strictEqual(W.backAction({ fromHistory: fh, pushed: pu }),
+        A.backAction({ fromHistory: fh, pushed: pu }), `backAction ${fh}/${pu}`);
+      checked++;
+    }
+  }
+  assert.strictEqual(checked, 30, 'the drift check did not actually run');
   assert.strictEqual(W.BADGE_SIZE, A.BADGE_SIZE);
   assert.strictEqual(W.NEAR_BOTTOM_PX, A.NEAR_BOTTOM_PX);
   assert.strictEqual(W.SWIPE_CLOSE_PX, A.SWIPE_CLOSE_PX);
@@ -217,6 +243,30 @@ test('THE JUMP BUTTON exists here and is bound to this list', () => {
   assert.ok(/CommentsView\.showsJumpButton\(\{/.test(app), 'it is shown by hand rather than by the rule');
   assert.ok(/list\.addEventListener\('scroll', syncCommentsFab/.test(app),
     'scrolling the thread never updates the button');
+});
+
+test('BACK closes the thread rather than leaving the site', () => {
+  // A thread is not a page, so back has nothing to pop unless one is put
+  // there — without it, back leaves the site from inside a thread.
+  assert.ok(/history\.pushState\(\{ comments: true \}, ''\); commentsPushed\+\+;/.test(app),
+    'opening a thread pushes nothing for back to pop');
+  assert.ok(/window\.addEventListener\('popstate', \(\) => \{ if \(commentParent\) closeComments\(true\); \}\)/.test(app),
+    'back does not close the thread');
+  const fn = app.slice(app.indexOf('function closeComments(fromHistory)'), app.indexOf('function syncCommentBar()'));
+  assert.ok(fn.length > 0, 'closeComments is gone — this check would be vacuous');
+  assert.ok(/CommentsView\.backAction\(\{ fromHistory: !!fromHistory, pushed: commentsPushed \}\) === 'back'/.test(fn),
+    'the loop guard is decided by hand rather than by the rule');
+  assert.ok(/commentsPushed--;\s*\n\s*try \{ history\.back\(\); \} catch \{\}/.test(fn),
+    'the pushed entry is never undone, so the next back goes somewhere else');
+});
+
+test('and the app leaves the THREAD before it leaves the chat', () => {
+  const fn = chat.slice(chat.indexOf('// Hardware back leaves the THREAD'), chat.indexOf('// Hardware back closes search'));
+  assert.ok(fn.length > 0, 'hardware back is not handled for the thread');
+  assert.ok(/if \(!commentParent\) return;/.test(fn), 'the handler runs when no thread is open');
+  assert.ok(/closeComments\(\);\s*\n\s*return true;/.test(fn),
+    'back does not close the thread, or does not stop there');
+  assert.ok(/\}, \[commentParent\]\);/.test(fn), 'the handler never sees a thread being opened');
 });
 
 test('THE SWIPE closes the thread, and only a real one does', () => {
