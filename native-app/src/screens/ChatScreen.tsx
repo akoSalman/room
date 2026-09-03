@@ -28,6 +28,7 @@ import AwesomeGallery from 'react-native-awesome-gallery';
 import GalleryGrid from '../components/GalleryGrid';
 import MediaBrowser, { MediaAction, MediaItem, MediaTab } from '../components/MediaBrowser';
 import * as rm from '../roomMedia';
+import { linksFrom, mergeLinks } from '../mediaLinks';
 import * as up from '../uploadProgress';
 import UploadOverlay from '../components/UploadOverlay';
 import SaveOverlay from '../components/SaveOverlay';
@@ -1441,6 +1442,37 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     const next = cached ? rm.mergeRefresh(cached, first, Date.now()) : rm.fromFirstPage(first, Date.now());
     rm.putCached(room.id, next);
     setMediaState(next);
+    addEncryptedLinks(next);
+  }
+
+  /**
+   * Links from the messages the server cannot read.
+   *
+   * The Links tab is built by scanning message text, and an end-to-end
+   * encrypted message is ciphertext to the server — so in a DM the tab was
+   * permanently empty and said "No links yet" as though that were a fact about
+   * the conversation. The key is on this device, so the work happens here, the
+   * same way searching an encrypted chat already does. Nothing goes back.
+   *
+   * After the tab is on screen, deliberately: the ciphertext is a second
+   * request and a slow one on these connections.
+   */
+  async function addEncryptedLinks(base: rm.MediaState) {
+    // The key this chat already resolved when it opened — asking again would
+    // be a second round trip for something held a few lines away.
+    const peer = dmPeerPk.current;
+    if (!peer) return;
+    const enc = await apiFetch(`/encrypted-messages/${room.id}`).catch(() => null);
+    if (!enc || enc.error || !Array.isArray(enc.messages)) return;
+    const plain = enc.messages.map((m: any) => ({
+      id: m.id,
+      content: e2eIsEncrypted(m.content) ? (e2eDecrypt(m.content, peer) || '') : m.content,
+    }));
+    const found = linksFrom(plain);
+    if (!found.length) return;
+    const merged = { ...base, links: mergeLinks(base.links || [], found) };
+    rm.putCached(room.id, merged);
+    setMediaState(merged);
   }
 
   /** The next page of photos, asked for by the grid as it is scrolled. */

@@ -1039,6 +1039,36 @@ async function openMedia() {
   if (String(roomId) !== String(currentRoomId)) return;  // switched chats meanwhile
   mediaData = (res && !res.error) ? res : { images: [], files: [], music: [], links: [] };
   renderMedia();
+  // The server could only scan the messages it can READ. In an encrypted DM
+  // that is none of them, which is why this tab was permanently empty and said
+  // "No links yet" as though that were a fact about the conversation. The key
+  // is here, so the work happens here — exactly as it already does for search.
+  addEncryptedLinks(roomId);
+}
+
+/**
+ * Links from the messages the server cannot read.
+ *
+ * Runs after the tab is already on screen: the ciphertext is a separate
+ * request and a slow one on these connections, and the readable links should
+ * not wait behind it. Nothing leaves the browser.
+ */
+async function addEncryptedLinks(roomId) {
+  const key = window.currentDMPeerPk;
+  if (!key) return;
+  let enc;
+  try { enc = await api('/encrypted-messages/' + roomId); } catch { return; }
+  if (!enc || enc.error || !Array.isArray(enc.messages)) return;
+  // The browser may have moved on while that was in flight.
+  if (String(roomId) !== String(currentRoomId) || !mediaData) return;
+  const plain = enc.messages.map(m => ({
+    id: m.id,
+    content: E2E.isEncrypted(m.content) ? (E2E.decrypt(m.content, key) || '') : m.content,
+  }));
+  const found = MediaLinks.linksFrom(plain);
+  if (!found.length) return;
+  mediaData.links = MediaLinks.mergeLinks(mediaData.links || [], found);
+  if (mediaTab === 'links') renderMedia();
 }
 function closeMedia() { hide('media-modal'); }
 
@@ -1102,7 +1132,7 @@ function renderMedia() {
       const icon = document.createElement('span'); icon.textContent = '🌐';
       const text = document.createElement('span'); text.textContent = l;
       a.appendChild(icon); a.appendChild(text);
-      list.appendChild(a);
+      list.appendChild(withRowMenu(a, item, l));
     });
     body.appendChild(list);
     return;
@@ -1124,7 +1154,7 @@ function renderMedia() {
       wrap.style.cssText = 'flex:1;min-width:0';
       wrap.appendChild(name); wrap.appendChild(audio);
       row.appendChild(wrap);
-      list.appendChild(row);
+      list.appendChild(withRowMenu(row, f, f.name || 'Audio'));
     });
     body.appendChild(list);
     return;
@@ -1140,9 +1170,105 @@ function renderMedia() {
     const icon = document.createElement('span'); icon.textContent = '📄';
     const text = document.createElement('span'); text.textContent = f.name || 'File';
     a.appendChild(icon); a.appendChild(text);
-    list.appendChild(a);
+    list.appendChild(withRowMenu(a, f, f.name || 'File'));
   });
   body.appendChild(list);
+}
+
+/**
+ * A small menu of labelled actions, dismissed by tapping anywhere off it.
+ *
+ * Its own element rather than the message context menu: that one is positioned
+ * against a bubble and carries reply/edit/delete, none of which mean anything
+ * for a row in the gallery.
+ */
+function showSheet(title, rows) {
+  document.getElementById('row-sheet')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'row-sheet';
+  overlay.className = 'row-sheet-overlay';
+  const close = () => overlay.remove();
+  overlay.onclick = (e) => { if (e.target === overlay) close(); };
+  const sheet = document.createElement('div');
+  sheet.className = 'row-sheet';
+  const head = document.createElement('div');
+  head.className = 'row-sheet-title';
+  head.textContent = title || '';
+  sheet.appendChild(head);
+  rows.forEach(([label, run]) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'row-sheet-row';
+    b.textContent = label;
+    // Closed FIRST: "Show in chat" closes the gallery behind this sheet, and a
+    // sheet left floating over the conversation it just jumped to would have
+    // to be dismissed before the message could be read.
+    b.onclick = () => { close(); run(); };
+    sheet.appendChild(b);
+  });
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'row-sheet-cancel';
+  cancel.textContent = 'Close';
+  cancel.onclick = close;
+  sheet.appendChild(cancel);
+  overlay.appendChild(sheet);
+  document.body.appendChild(overlay);
+}
+
+/**
+ * Wrap a gallery row so it carries a ⋮ menu beside it.
+ *
+ * Asked for as: every file and link should have "Show in chat" in its menu.
+ * The rows were bare links — tapping one opened the file or the web page, and
+ * there was no way at all to get back to the message it came from. The app has
+ * had this since the browser was written; this is the web's.
+ *
+ * The row itself is left exactly as it was, so opening a file still works the
+ * way it always did.
+ */
+function withRowMenu(row, item, label) {
+  const wrap = document.createElement('div');
+  wrap.className = 'media-row-wrap';
+  wrap.appendChild(row);
+  const btn = document.createElement('button');
+  btn.className = 'media-row-menu';
+  btn.type = 'button';
+  btn.textContent = '⋮';
+  btn.title = 'More';
+  btn.setAttribute('aria-label', 'More options for ' + label);
+  btn.onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();   // not the row's own link
+    openMediaRowMenu(item, label);
+  };
+  wrap.appendChild(btn);
+  return wrap;
+}
+
+function openMediaRowMenu(item, label) {
+  const url = mediaUrl(item);
+  const rows = [];
+  // Only when the message is still known. A "Show in chat" that lands nowhere
+  // is worse than not offering it — the app says so out loud, and the web can
+  // simply leave it out.
+  if (item && item.msgId != null) {
+    rows.push(['💬 Show in chat', () => {
+      closeMedia();
+      jumpToMessage(Number(item.msgId));
+    }]);
+  }
+  rows.push(['↗ Open', () => {
+    window.open(/^https?:\/\//.test(url) ? url : 'https://' + url, '_blank', 'noopener');
+  }]);
+  rows.push(['🔗 Copy link', () => {
+    const abs = /^https?:\/\//.test(url) ? url : location.origin + url;
+    navigator.clipboard?.writeText(abs).then(
+      () => showToast('Link copied'),
+      () => showToast('Could not copy the link'),
+    );
+  }]);
+  showSheet(label, rows);
 }
 
 

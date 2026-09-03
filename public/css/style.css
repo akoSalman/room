@@ -1091,6 +1091,38 @@ body.kb-open #install-hint { display: none; }
 .media-row audio { width: 100%; height: 34px; }
 .media-empty { color: var(--muted, #94a3b8); font-size: 0.88rem; text-align: center; padding: 28px 0; }
 
+/* The row keeps all the width it had; the ⋮ sits beside it. */
+.media-row-wrap { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.media-row-wrap > .media-row { flex: 1; min-width: 0; }
+.media-row-menu {
+  flex-shrink: 0; background: none; border: 0; cursor: pointer;
+  color: var(--muted, #94a3b8); font-size: 1.1rem; line-height: 1;
+  /* A finger-sized target: this is the control the whole feature hangs on. */
+  min-width: 40px; height: 40px; border-radius: 8px;
+}
+.media-row-menu:hover { background: rgba(128, 128, 128, 0.14); color: var(--text, #e2e8f0); }
+
+/* ── A menu of actions for one row ─────────────────────────────────────────── */
+.row-sheet-overlay {
+  position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, .5);
+  display: flex; align-items: flex-end; justify-content: center;
+}
+.row-sheet {
+  width: min(420px, 100%); background: var(--panel-bg, #1e293b);
+  border-radius: 14px 14px 0 0; padding: 8px 8px calc(8px + var(--sab, 0px));
+  display: flex; flex-direction: column; gap: 2px;
+}
+.row-sheet-title {
+  color: var(--muted, #94a3b8); font-size: 0.8rem; padding: 8px 12px 6px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.row-sheet-row, .row-sheet-cancel {
+  background: none; border: 0; cursor: pointer; text-align: start;
+  color: var(--text, #e2e8f0); font-size: 0.95rem; padding: 13px 12px; border-radius: 8px;
+}
+.row-sheet-row:hover { background: rgba(128, 128, 128, 0.14); }
+.row-sheet-cancel { text-align: center; color: var(--muted, #94a3b8); margin-top: 4px; }
+
 /* ── Auth screen ───────────────────────────────────────────────────────────── */
 .auth-tabs {
   display: flex; gap: 4px; padding: 4px; margin-bottom: 16px;
