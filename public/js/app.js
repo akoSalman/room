@@ -312,16 +312,44 @@ window.addEventListener('DOMContentLoaded', () => {
   setupPasteAndDrop();
 
   // Keep the layout inside the visual viewport so the composer isn't hidden
-  // behind the on-screen keyboard (iOS Safari doesn't resize the layout
-  // viewport when the keyboard opens).
+  // behind the on-screen keyboard. See ViewportFit for why iOS needs this and
+  // why setting the height of <html> and <body> — which is what this used to
+  // do — could never work: #app-screen is position:fixed, so it is laid out
+  // against the LAYOUT viewport and has to be told its size directly.
   if (window.visualViewport) {
     const syncViewport = () => {
-      document.documentElement.style.height = window.visualViewport.height + 'px';
-      document.body.style.height = window.visualViewport.height + 'px';
+      const vv = window.visualViewport;
+      const box = ViewportFit.boxFor({
+        vvHeight: vv.height, vvOffsetTop: vv.offsetTop, innerHeight: window.innerHeight,
+      });
+      const root = document.documentElement;
+      root.style.setProperty('--vv-top', box.top + 'px');
+      root.style.setProperty('--vv-h', box.height + 'px');
+      document.body.classList.toggle('kb-open', ViewportFit.hidesExtras(box.keyboardOpen));
+      // iOS scrolls the page itself to bring the caret into view, which is
+      // what takes the chat header off the top. Undo it: the app is already
+      // sized to what can be seen.
       window.scrollTo(0, 0);
+      // The message you are replying to should still be the one in front of
+      // you after the keyboard has taken half the screen.
+      if (box.keyboardOpen) keepBottomInView();
     };
     window.visualViewport.addEventListener('resize', syncViewport);
     window.visualViewport.addEventListener('scroll', syncViewport);
+    // focusin as well: on iOS the keyboard animation and the resize event do
+    // not always arrive in that order, and a tap on the message box that
+    // scrolled the page would otherwise stay scrolled.
+    document.addEventListener('focusin', () => setTimeout(syncViewport, 50));
+    document.addEventListener('focusout', () => setTimeout(syncViewport, 50));
+    syncViewport();
+  }
+
+  /** Hold the newest message in view while the keyboard resizes everything. */
+  function keepBottomInView() {
+    const el = document.getElementById('messages');
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 220;
+    if (nearBottom) el.scrollTop = el.scrollHeight;
   }
 
   // The download links and the build number both come from this server when it

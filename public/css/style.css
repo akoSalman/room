@@ -142,11 +142,30 @@ html {
 
 /* ── App layout ───────────────────────────────────── */
 #app-screen {
+  /* Sized from the VISUAL viewport, not the layout one.
+   *
+   * Reported with a recording: opening the keyboard on an iPhone pushes the
+   * chat header off the top and leaves the composer under Safari's own
+   * toolbar. Chrome on Android shrinks the layout viewport when the keyboard
+   * opens; Safari does not — it shrinks only the part you can see, so a
+   * fixed, full-height app stays behind the keyboard and Safari scrolls the
+   * page to find the caret. The variables are set from window.visualViewport
+   * (see viewportFit.js) and fall back to the full height everywhere else. */
   position: fixed;
-  inset: 0;
+  left: 0; right: 0;
+  top: var(--vv-top, 0px);
+  height: var(--vv-h, 100%);
   flex-direction: row;
   overflow: hidden;
 }
+
+/* With the keyboard up, the two rows of extras fold away. They cost about a
+   third of what is left of the screen, and both are one tap from coming
+   back — the emoji bar from the 😊 in the composer, the attachments from the
+   ＋. What matters while typing is seeing the conversation. */
+body.kb-open #composer-strip,
+body.kb-open #quick-emoji-bar,
+body.kb-open #install-hint { display: none; }
 
 /* ── Sidebar overlay ──────────────────────────────── */
 #sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 10; }
