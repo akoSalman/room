@@ -47,6 +47,16 @@ jobs:
             service_secret: DEPLOY_SERVICE_BISTBARG
 
     steps:
+      # The deploy now ships the code FROM here, so this job needs the code.
+      # It never did before — the server pulled from GitHub itself — and adding
+      # `git archive` without adding this is what made the first run of the new
+      # deploy fail on both servers with "fatal: not a git repository".
+      #
+      # Shallow: only the one commit is ever archived, and a full history is a
+      # download for nothing.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       - name: Deploy to ${{ matrix.name }}
         env:
           SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}

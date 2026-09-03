@@ -174,6 +174,22 @@ test('THE REAL REASON COMMENTS WERE MISSING: the server no longer fetches', () =
   assert.ok(/tar -xf \/tmp\/app\.tar -C "\$APP_DIR"/.test(deploy), 'the server never unpacks it');
 });
 
+test('THE FIRST RUN FAILED FOR THIS: the deploy job checks the code out', () => {
+  // `git archive` runs on the runner, and the deploy job had never needed the
+  // repository before — the server pulled it. Adding the archive without
+  // adding a checkout failed both servers with "fatal: not a git repository",
+  // which is a whole class of mistake: a job that runs git must have git's
+  // directory.
+  const job = deploy.slice(deploy.indexOf('  deploy:'));
+  // Bounded by the deploy STEP, not by the words "git archive": the comment
+  // explaining this fix mentions them, and slicing there closed the window
+  // before the line being checked for.
+  const steps = job.slice(job.indexOf('    steps:'), job.indexOf('- name: Deploy to'));
+  assert.ok(steps.length > 0, 'the deploy job is gone — this check would be vacuous');
+  assert.ok(/- uses: actions\/checkout@v4/.test(steps),
+    'the job runs git archive without ever checking the repository out');
+});
+
 test('and the transfer is retried rather than lost', () => {
   assert.ok(/for attempt in 1 2 3 4; do/.test(deploy), 'one dropped transfer still fails the deploy');
   assert.ok(/sleep \$\(\(attempt \* 5\)\)/.test(deploy), 'it retries instantly, into the same congestion');
