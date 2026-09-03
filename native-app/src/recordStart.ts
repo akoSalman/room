@@ -92,6 +92,50 @@ export function elapsedSeconds(durationMillis: number | null | undefined): numbe
   return Math.floor(ms / 1000);
 }
 
+// ── When it will not start ───────────────────────────────────────────────────
+
+export type StartFailure = 'permission' | 'busy' | 'unknown';
+
+/**
+ * Why did recording not start?
+ *
+ * Reported as: "a lot of times, while microphone permission is granted, I
+ * still get the recording error, and I have to close and reopen the app."
+ *
+ * The dialog said "Please check microphone permissions in Settings" for EVERY
+ * failure, so somebody who had already granted the microphone was sent to look
+ * at a setting that was already correct — and the real cause, a recorder left
+ * prepared by a previous attempt, was never mentioned.
+ */
+export function classifyStartFailure(o: {
+  granted: boolean; message?: string | null;
+}): StartFailure {
+  if (!o.granted) return 'permission';
+  const m = String(o.message || '').toLowerCase();
+  // expo-av's own words when its single recording slot is already taken, and
+  // Android's when something else holds the microphone.
+  if (/only one recording|already prepared|prepare|in use|busy|unavailable/.test(m)) return 'busy';
+  return 'unknown';
+}
+
+export function startFailureText(kind: StartFailure): string {
+  switch (kind) {
+    case 'permission':
+      return 'ChatRoom needs permission to use the microphone. Open Settings → Apps → '
+        + 'ChatRoom → Permissions and allow Microphone.';
+    case 'busy':
+      return 'The microphone is busy — a call, or another app, is still using it. '
+        + 'Tap the microphone again in a moment.';
+    default:
+      return 'The recording could not be started. Tap the microphone to try again.';
+  }
+}
+
+/** Is trying again immediately worth offering? */
+export function offersRetry(kind: StartFailure): boolean {
+  return kind !== 'permission';
+}
+
 // ── Warming up ───────────────────────────────────────────────────────────────
 
 /**

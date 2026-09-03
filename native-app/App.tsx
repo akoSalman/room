@@ -239,6 +239,14 @@ export default function App() {
       if (st === 'active') {
         Notifications.dismissAllNotificationsAsync().catch(() => {});
         ensureSocketAlive(); // recover fast after SIM calls / network switches
+        return;
+      }
+      // Leaving the app with a voice message loaded but NOT playing leaves its
+      // media notification in the shade — reported with a photo of exactly
+      // that. Music keeps its session, because coming back to a paused album
+      // from the lock screen is the point of one.
+      if (st === 'background' && !audioManager.playing && !audioManager.queue?.length) {
+        audioManager.stop().catch(() => {});
       }
     });
     // Tapping a message notification opens its chat; tapping a call

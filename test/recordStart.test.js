@@ -176,7 +176,10 @@ test('the helper hands over a recorder that has actually started', () => {
   assert.ok(begin.includes('await rec.startAsync()'), 'begin() returns before starting');
   assert.ok(/warmStillGood\(\{ preparedAt: warmAt, now \}\)/.test(begin),
     'a stale warm-up is started anyway, having held the mic for who knows how long');
-  assert.ok(begin.includes('await cool()'), 'a stale recorder is left holding the microphone');
+  // `releaseHeld()`, which cool() now delegates to as well: it unloads
+  // whatever recorder exists — a stale warm-up, or one left behind by a failed
+  // attempt, which is the thing that used to poison every later recording.
+  assert.ok(begin.includes('await releaseHeld()'), 'a stale recorder is left holding the microphone');
   assert.ok(begin.includes('prepareToRecordAsync'), 'a cold start cannot record at all');
 });
 
@@ -190,8 +193,14 @@ test('warming up never asks for permission on a press-in', () => {
 });
 
 test('the audio session is handed back however the recording ends', () => {
-  const uses = rec.match(/recorder\.releaseSession\(\)/g) || [];
-  assert.ok(uses.length >= 2, 'only one of stop and cancel returns the session to playback');
+  // Through finish(), which releases expo-av's single recording slot AND the
+  // audio session: releasing only the session left a prepared recorder behind,
+  // and every later recording then failed until the app was restarted.
+  const uses = rec.match(/recorder\.finish\(\)/g) || [];
+  assert.ok(uses.length >= 2, 'only one of stop and cancel gives the recorder back');
+  const fin = helper.slice(helper.indexOf('export async function finish('), helper.length);
+  assert.ok(/releaseHeld\(\)/.test(fin) && /releaseSession\(\)/.test(fin),
+    'finish() does not release both the recorder and the session');
   assert.ok(helper.includes('allowsRecordingIOS: false'), 'the playback mode is gone');
 });
 

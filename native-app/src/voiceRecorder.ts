@@ -28,6 +28,34 @@ export const PLAYBACK_MODE = {
 let warm: Audio.Recording | null = null;
 let warmAt: number | null = null;
 let warming: Promise<void> | null = null;
+/**
+ * Whatever recorder exists right now, warmed up or running.
+ *
+ * Reported as: "a lot of times, while microphone permission is granted, I
+ * still get the recording error, and I have to close and reopen the app."
+ *
+ * That is expo-av's singleton talking. Only ONE Audio.Recording may be
+ * prepared at a time, and the flag saying one exists lives in the module — so
+ * a recorder that is prepared and then LOST (its start threw, the screen was
+ * left mid-preparation, a warm-up whose owner went away) leaves the library
+ * refusing every recording afterwards with an error that names no cause.
+ * Killing the app is what clears it, which is exactly what people were doing.
+ *
+ * So nothing is ever created without being remembered here, and every start
+ * begins by releasing whatever is held. A leak now costs one recording rather
+ * than every recording until the app is restarted.
+ */
+let held: Audio.Recording | null = null;
+
+/** Unload whatever recorder exists, whatever state it is in. */
+async function releaseHeld(): Promise<void> {
+  const rec = held;
+  held = null;
+  warm = null;
+  warmAt = null;
+  if (!rec) return;
+  try { await rec.stopAndUnloadAsync(); } catch {}
+}
 
 /** Do we already hold the microphone permission? Cached, because asking costs a round trip. */
 export async function hasPermission(): Promise<boolean> {
@@ -53,8 +81,13 @@ export async function warmUp(): Promise<void> {
   warming = (async () => {
     try {
       if (!(await hasPermission())) return;
+      // Anything left over from a previous attempt goes first: preparing a
+      // second recorder while one is held is the error people were restarting
+      // the app to clear.
+      await releaseHeld();
       await Audio.setAudioModeAsync(RECORD_MODE);
       const rec = new Audio.Recording();
+      held = rec;                       // remembered BEFORE it can throw
       await rec.prepareToRecordAsync(OPTIONS);
       warm = rec;
       warmAt = Date.now();
@@ -81,12 +114,9 @@ export function isWarm(now = Date.now()): boolean {
  * not followed through has to be released.
  */
 export async function cool(): Promise<void> {
-  const rec = warm;
-  warm = null;
-  warmAt = null;
-  if (!rec) return;
-  try { await rec.stopAndUnloadAsync(); } catch {}
-  try { await Audio.setAudioModeAsync(PLAYBACK_MODE); } catch {}
+  const had = !!warm;
+  await releaseHeld();
+  if (had) { try { await Audio.setAudioModeAsync(PLAYBACK_MODE); } catch {} }
 }
 
 export type Started = { recording: Audio.Recording };
@@ -103,22 +133,47 @@ export async function begin(): Promise<Started> {
   let rec: Audio.Recording | null = null;
   if (warm && warmStillGood({ preparedAt: warmAt, now })) {
     rec = warm;
-    warm = null;
+    warm = null;                        // no longer "warm", but still `held`
     warmAt = null;
   } else {
     // A stale warm-up is thrown away rather than started: it has been holding
-    // the microphone for long enough that the session may have moved on.
-    await cool();
+    // the microphone for long enough that the session may have moved on. This
+    // also releases a recorder left behind by a previous FAILED attempt,
+    // which is what made the error stick until the app was restarted.
+    await releaseHeld();
     await Audio.setAudioModeAsync(RECORD_MODE);
     rec = new Audio.Recording();
+    held = rec;                         // remembered BEFORE it can throw
     await rec.prepareToRecordAsync(OPTIONS);
   }
-  await rec.startAsync();
+  try {
+    await rec.startAsync();
+  } catch (e) {
+    // A recorder that was prepared and never started is the worst thing to
+    // leave behind: it holds the library's one slot and every later attempt
+    // fails with an error about permissions that were never the problem.
+    await releaseHeld();
+    throw e;
+  }
   // Not assumed: on a device that refused the microphone, startAsync can
   // resolve on a recorder that never begins. The caller keeps showing
   // "starting" until this says otherwise.
   return { recording: rec };
 }
+
+/**
+ * Done with this recording, however it ended.
+ *
+ * Called by the bar on stop AND on cancel, so the slot is given back on every
+ * path out — including the ones where the file is thrown away.
+ */
+export async function finish(): Promise<void> {
+  await releaseHeld();
+  await releaseSession();
+}
+
+/** Is a recorder currently held (prepared or running)? */
+export function isHeld(): boolean { return !!held; }
 
 /** Hand the audio session back to playback. */
 export async function releaseSession(): Promise<void> {

@@ -162,12 +162,33 @@ class AudioManager {
     this.emit();
   }
 
+  /** Clears a paused voice message out of the shade — see bindEvents(). */
+  private pausedSweep: any = null;
   private bound = false;
   private bindEvents() {
     if (this.bound) return;
     this.bound = true;
 
-    TrackPlayer.addEventListener(Event.PlaybackState, ({ state }) => this.applyState(state));
+    TrackPlayer.addEventListener(Event.PlaybackState, ({ state }) => {
+      this.applyState(state);
+      // A PAUSED voice message is not music: nobody comes back to it from the
+      // lock screen, and leaving it loaded keeps a media session — and its
+      // notification — in the shade with no way to get rid of it from inside
+      // the app. A playlist is different and keeps its session.
+      const paused = AudioManager.stateName(state) === 'paused';
+      if (paused && !this.queue.length && this.currentId != null) {
+        const tokenBefore = this.playToken;
+        clearTimeout(this.pausedSweep);
+        // A moment's grace: pause-then-resume is one tap, and stopping in
+        // between would throw the position away.
+        this.pausedSweep = setTimeout(() => {
+          if (this.playToken !== tokenBefore || this.playing) return;
+          this.stop().catch(() => {});
+        }, 20000);
+      } else {
+        clearTimeout(this.pausedSweep);
+      }
+    });
 
     TrackPlayer.addEventListener(Event.PlaybackProgressUpdated, ({ position, duration }) => {
       this.duration = duration || 0;
@@ -445,7 +466,15 @@ class AudioManager {
     // The reset below reports Stopped/None; stop() clears everything itself
     // just after, so the event handler must not race it.
     this.starting++;
-    try { if (this.ready) await TrackPlayer.reset(); } catch {}
+    // NOT gated on `this.ready`. Reported with a photo: the voice message's
+    // notification is still in the shade after the player has been closed.
+    // `ready` is set when setup SUCCEEDS, and a player that was set up by an
+    // earlier launch — or whose setup call failed after the service had
+    // already started — still owns a media session and its notification.
+    // Refusing to reset it because a flag in this process says "not ready" is
+    // how a notification outlives the thing it belongs to.
+    try { await TrackPlayer.stop(); } catch {}
+    try { await TrackPlayer.reset(); } catch {}
     this.starting = Math.max(0, this.starting - 1);
     this.currentId = null;
     this.roomId = null;

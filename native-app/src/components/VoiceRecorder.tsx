@@ -5,7 +5,10 @@ import { Audio } from 'expo-av';
 import { C } from '../theme';
 import { audioManager } from '../audioManager';
 import * as recorder from '../voiceRecorder';
-import { phaseFor, showsLiveUi, canStop, elapsedSeconds } from '../recordStart';
+import {
+  phaseFor, showsLiveUi, canStop, elapsedSeconds,
+  classifyStartFailure, startFailureText, offersRetry,
+} from '../recordStart';
 
 function fmtTime(s: number) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
@@ -43,11 +46,14 @@ export default function VoiceRecorder({ onCancel, onSend }: {
     return () => {
       loop.stop();
       stopTimers();
-      recordingRef.current?.stopAndUnloadAsync().catch(() => {});
       previewSoundRef.current?.unloadAsync().catch(() => {});
-      // Cancelling unmounts us mid-recording; hand the audio session back here
-      // too, or the session stays in record mode after a discarded recording.
-      recorder.releaseSession();
+      // finish(), not stopAndUnloadAsync on our own reference: cancelling
+      // unmounts this component mid-recording, and a recorder that is left
+      // prepared holds expo-av's single slot — every later recording then
+      // fails until the app is restarted, which is what people were doing.
+      // finish() releases whatever is held, ours or not, and hands the audio
+      // session back to playback.
+      recorder.finish();
     };
   }, []);
 
@@ -91,9 +97,22 @@ export default function VoiceRecorder({ onCancel, onSend }: {
           }
         } catch {}
       }, 100);
-    } catch (err) {
-      Alert.alert('Recording Error', 'Could not start recording. Please check microphone permissions in Settings.');
-      onCancel();
+    } catch (err: any) {
+      // Not "check your permissions" for every failure. The commonest cause,
+      // by a distance, is a recorder left prepared by an earlier attempt —
+      // which the caller has just released, so trying again now works. Saying
+      // "permissions" sent people to a setting that was already correct, and
+      // sent them to restart the app when it did not help.
+      const granted = await recorder.hasPermission();
+      const kind = classifyStartFailure({ granted, message: err?.message });
+      Alert.alert(
+        kind === 'permission' ? 'Microphone permission' : 'Could not start recording',
+        startFailureText(kind),
+        offersRetry(kind)
+          ? [{ text: 'Cancel', style: 'cancel', onPress: onCancel },
+             { text: 'Try again', onPress: () => { setStarted(false); startRecording(); } }]
+          : [{ text: 'OK', onPress: onCancel }],
+      );
     }
   }
 
@@ -110,13 +129,15 @@ export default function VoiceRecorder({ onCancel, onSend }: {
     // its shortest coat.
     if (!canStop(phase) || !recordingRef.current) return;
     stopTimers();
-    await recordingRef.current.stopAndUnloadAsync();
+    await recordingRef.current.stopAndUnloadAsync().catch(() => {});
     // Hand the audio session back. audioManager used to reset the mode on
     // every play(), which quietly covered for this; the media-session player
     // does not touch expo-av's mode at all, so leaving the session in
     // record mode would linger.
-    await recorder.releaseSession();
+    // The file is already written; this gives the slot and the audio session
+    // back so the NEXT recording can start.
     const recordedUri = recordingRef.current.getURI() || '';
+    await recorder.finish();
     setUri(recordedUri);
     setStopped(true);
   }
