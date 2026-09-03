@@ -422,6 +422,43 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     return p ? (p.id as number) : null;
   }
 
+  /**
+   * Put an outgoing bubble where it was actually sent.
+   *
+   * Every optimistic bubble used to go into the room's list. For a comment
+   * that is the one thing this feature must not do — your own comment would
+   * appear in the conversation it was written about, and never show up in the
+   * thread until the screen was reopened.
+   *
+   * `parentId` is the one captured when the send began, not the thread open
+   * now: a photo uploading for twenty seconds must land in the thread it was
+   * sent to even if the user has since gone back to the room.
+   */
+  function addOutgoing(msg: Message, parentId: number | null) {
+    if (parentId) setComments(prev => [...prev, msg]);
+    else setMessages(prev => [...prev, msg]);
+  }
+
+  /**
+   * Swap an optimistic bubble for the server's version, in whichever list it
+   * went into. Returns false when it was not found, so the caller can decide
+   * whether the message is new.
+   */
+  function replaceOutgoing(clientId: string, msg: Message): boolean {
+    let found = false;
+    const swap = (prev: Message[]) => {
+      const idx = prev.findIndex(m => String(m.id) === clientId);
+      if (idx === -1) return prev;
+      found = true;
+      const next = prev.slice();
+      next[idx] = msg;
+      return next;
+    };
+    setComments(swap);
+    setMessages(swap);
+    return found;
+  }
+
   /** How many comments a message has now, live count first. */
   function commentCountOf(m: Message): number {
     const live = commentCounts[String(m.id)];
@@ -1237,9 +1274,29 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       sock.on('comment_added', (ev: any) => {
         if (String(ev.roomId) !== String(room.id)) return;
         setCommentCounts(c => ({ ...c, [String(ev.parentId)]: normaliseCount(ev.count) }));
+        const msg: Message = ev.comment;
+        // Our own comment coming back. The same bookkeeping the room's echo
+        // does — without it a comment's upload bar spins forever, its voice
+        // player keeps the temporary id, and the crash-safety copy is left on
+        // disk to be resent next launch. None of that runs on this path
+        // otherwise, because a comment never arrives as `message_received`.
+        const pendingId = (msg.client_id && String(msg.client_id))
+          || (msg.file_path
+              && Object.keys(pendingUploadPaths.current).find(id => pendingUploadPaths.current[id] === msg.file_path))
+          || null;
+        if (pendingId) {
+          delete pendingUploadPaths.current[pendingId];
+          audioManager.retarget(pendingId, msg.id);
+          outbox.markDone(pendingId);
+          outbox.forget(room.id, pendingId);
+          removeFailedMsg(pendingId);
+          up.finish(pendingId);
+          if (replaceOutgoing(pendingId, msg)) return;
+        }
+        // Somebody else's, or ours with the optimistic bubble already gone.
         if (commentParentRef.current && String(commentParentRef.current.id) === String(ev.parentId)) {
-          setComments(prev => (prev.some(c => String(c.id) === String(ev.comment.id))
-            ? prev : [...prev, ev.comment]));
+          setComments(prev => (prev.some(c => String(c.id) === String(msg.id))
+            ? prev : [...prev, msg]));
         }
       });
 
@@ -1585,7 +1642,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       one_time_seconds: oneTime ?? null,
       _uploading: true,
     }) as Message;
-    setMessages(prev => [...prev, optimistic]);
+    // Captured HERE, once: the thread this was sent to, whatever the user does
+    // while it is in flight.
+    const parentId = sendingParentId();
+    addOutgoing(optimistic, parentId);
     // Persist right away (removed on server ack) so a kill/close mid-send on a
     // slow connection can't drop the message silently.
     saveFailedMsg(optimistic);
@@ -1598,7 +1658,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       const wire = (room.is_dm && dmPeerPk.current) ? (e2eEncrypt(plain, dmPeerPk.current) || plain) : plain;
       (sock as any).timeout(8000).emit('send_message', {
         roomId: room.id, type: 'text', content: wire, replyToId,
-        clientId, oneTimeSeconds: oneTime ?? undefined, parentId: sendingParentId(),
+        clientId, oneTimeSeconds: oneTime ?? undefined, parentId,
       }, (err: any, res: any) => {
         if (err || !res?.ok) { markUploadFailed(clientId); return; }
         // The server has it. Clear the crash-safety copy here rather than
@@ -1930,6 +1990,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   function addOptimisticMessage(clientId: string, type: string, localUri: string, fileName: string | null, replyToId: number | null, caption: string | null = null) {
+    const parentId = sendingParentId();
     const optimistic: Message = markMine({
       // See dispatchText: the ref is the one that is always current.
       id: clientId, room_id: room.id, user_id: 0, username: meRef.current || me, avatar: myAvatar,
@@ -1939,7 +2000,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       reply_content: replyTo?.content ?? null, reply_type: replyTo?.type ?? null,
       _uploading: true,
     }) as Message;
-    setMessages(prev => [...prev, optimistic]);
+    addOutgoing(optimistic, parentId);
     // Persist right away (removed again on server ack): if the app is killed
     // while the upload is still in flight — the common case on a bad network —
     // the message must survive the restart as a retryable failed send.

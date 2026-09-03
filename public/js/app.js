@@ -4281,6 +4281,19 @@ function appendCommentBubble(msg) {
   const list = document.getElementById('comments-list');
   const empty = list.querySelector('.media-empty');
   if (empty) empty.remove();
+  // Our own comment coming back: swap the optimistic bubble rather than
+  // adding a second one beside it. A comment never arrives as
+  // `message_received`, so the reconciliation that path does never runs here.
+  const pending = msg.client_id && pendingUploads[msg.client_id];
+  if (pending) {
+    if (pending.previewUrl) URL.revokeObjectURL(pending.previewUrl);
+    pending.wrapper.replaceWith(buildMessageElement(msg));
+    delete pendingUploads[msg.client_id];
+    list.scrollTop = list.scrollHeight;
+    document.getElementById('comments-title').textContent =
+      Comments.commentsTitle(list.querySelectorAll('.msg-wrapper').length);
+    return;
+  }
   list.appendChild(buildMessageElement(msg));
   list.scrollTop = list.scrollHeight;
   document.getElementById('comments-title').textContent =

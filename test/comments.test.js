@@ -327,7 +327,10 @@ test('THE SAME DESIGN: the thread is not a Modal, so it keeps the composer', () 
 });
 
 test('every one of the app\'s four send paths reaches the thread', () => {
-  const sends = chat.match(/parentId: sendingParentId\(\)/g) || [];
+  // Text captures its parent into a local first (so a retry from a timer
+  // cannot follow the screen instead of its thread); the three upload paths
+  // read it at the emit. Both spellings count.
+  const sends = chat.match(/parentId: sendingParentId\(\)|clientId, oneTimeSeconds: oneTime \?\? undefined, parentId,/g) || [];
   assert.strictEqual(sends.length, 4,
     `${sends.length} of 4 send paths carry the parent — text, media, gallery and voice must all work in a thread`);
 });
@@ -346,8 +349,65 @@ test('a comment arriving live moves the app badge too', () => {
   assert.ok(/setCommentCounts/.test(fn), 'the badge only moves on a reload');
   assert.ok(/commentParentRef\.current && String\(commentParentRef\.current\.id\) === String\(ev\.parentId\)/.test(fn),
     'a comment on one message is appended to whatever thread is open');
-  assert.ok(/prev\.some\(c => String\(c\.id\) === String\(ev\.comment\.id\)\)/.test(fn),
-    'your own comment is added twice — once optimistically and once on the echo');
+  assert.ok(/prev\.some\(c => String\(c\.id\) === String\(msg\.id\)\)/.test(fn),
+    'the same comment can be appended twice if the event arrives twice');
+});
+
+// ── Your own comment ────────────────────────────────────────────────────────
+//
+// The bug this section exists for: every optimistic bubble went into the
+// ROOM's list. For a comment that is the exact thing this feature must not do
+// — your own comment appears in the conversation it was written about, and
+// never shows up in the thread until the screen is reopened. It was true on
+// the app for all four send paths, and half-true on the web for uploads.
+
+test('THE GAP: an outgoing comment goes into the thread, not the room', () => {
+  const fn = chat.slice(chat.indexOf('function addOutgoing('), chat.indexOf('function replaceOutgoing('));
+  assert.ok(fn.length > 0, 'the app has no idea where an outgoing bubble belongs');
+  assert.ok(/if \(parentId\) setComments\(prev => \[\.\.\.prev, msg\]\);/.test(fn),
+    'a comment being sent is added to the conversation behind it');
+  assert.ok(/else setMessages\(prev => \[\.\.\.prev, msg\]\);/.test(fn),
+    'an ordinary message no longer reaches the room');
+  // Both optimistic paths — text, and every upload — go through it.
+  const uses = chat.match(/addOutgoing\(optimistic, parentId\)/g) || [];
+  assert.strictEqual(uses.length, 2, `${uses.length} of 2 optimistic paths route by thread`);
+  assert.ok(!/setMessages\(prev => \[\.\.\.prev, optimistic\]\)/.test(chat),
+    'an optimistic bubble still goes straight into the room');
+});
+
+test('the thread is captured when the send STARTS, not when it lands', () => {
+  // A photo uploading for twenty seconds must land in the thread it was sent
+  // to, even after the user has gone back to the room.
+  const dispatch = chat.slice(chat.indexOf('function dispatchText('), chat.indexOf('function dispatchText(') + 2200);
+  assert.ok(/const parentId = sendingParentId\(\);\n\s*addOutgoing\(optimistic, parentId\)/.test(dispatch),
+    'the parent is read again later, so a slow send follows the screen instead of its thread');
+  assert.ok(/clientId, oneTimeSeconds: oneTime \?\? undefined, parentId,/.test(dispatch),
+    'the emit re-reads the parent rather than using the captured one');
+  const upload = chat.slice(chat.indexOf('function addOptimisticMessage('), chat.indexOf('function addOptimisticMessage(') + 300);
+  assert.ok(/const parentId = sendingParentId\(\);/.test(upload), 'an upload never captures its thread');
+});
+
+test('a comment\'s own echo does the bookkeeping the room\'s echo does', () => {
+  // None of it runs otherwise: a comment never arrives as `message_received`,
+  // so an upload bar would spin forever, a voice player would keep the
+  // temporary id, and the crash-safety copy would be left to resend at the
+  // next launch.
+  const fn = chat.slice(chat.indexOf("sock.on('comment_added'"), chat.indexOf("sock.on('message_received'"));
+  for (const call of ['up.finish(pendingId)', 'outbox.markDone(pendingId)', 'removeFailedMsg(pendingId)',
+    'audioManager.retarget(pendingId, msg.id)', 'replaceOutgoing(pendingId, msg)']) {
+    assert.ok(fn.includes(call), `the comment echo never calls ${call}`);
+  }
+  assert.ok(/if \(replaceOutgoing\(pendingId, msg\)\) return;/.test(fn),
+    'the optimistic bubble is left in place and the real comment added beside it');
+});
+
+test('and the web reconciles its own comment too', () => {
+  const fn = app.slice(app.indexOf('function appendCommentBubble('), app.indexOf('function bumpCommentBadge('));
+  assert.ok(fn.length > 0, 'appendCommentBubble is gone — this check would be vacuous');
+  assert.ok(/const pending = msg\.client_id && pendingUploads\[msg\.client_id\]/.test(fn),
+    'a comment upload leaves its placeholder bubble beside the real one');
+  assert.ok(/pending\.wrapper\.replaceWith\(buildMessageElement\(msg\)\)/.test(fn), 'the placeholder is never swapped');
+  assert.ok(/URL\.revokeObjectURL\(pending\.previewUrl\)/.test(fn), 'the local preview is leaked');
 });
 
 let passed = 0, failed = 0;
