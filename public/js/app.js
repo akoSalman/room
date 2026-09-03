@@ -363,10 +363,30 @@ window.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('click', handleGlobalClick);
   document.addEventListener('contextmenu', e => e.preventDefault());
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
-  // Prevent document-level scroll from touch gestures on mobile
+  // Keep touch drags from moving the whole page, WITHOUT freezing the things
+  // that are supposed to scroll.
+  //
+  // This used to be a list of four container ids, and anything not on it was
+  // frozen — which is why the emoji bar could not be swiped: the CSS said
+  // `overflow-x: auto` and this said no. See TouchScroll: the element is asked
+  // whether it can really scroll the way the finger is going.
+  let touchFrom = null;
+  document.addEventListener('touchstart', e => {
+    const t = e.touches[0];
+    touchFrom = t ? { x: t.clientX, y: t.clientY } : null;
+  }, { passive: true });
   document.addEventListener('touchmove', e => {
-    if (e.target.closest('#messages, #room-list, .modal-overlay, #online-panel')) return;
-    e.preventDefault();
+    const t = e.touches[0];
+    const axis = (touchFrom && t)
+      ? TouchScroll.axisOf(t.clientX - touchFrom.x, t.clientY - touchFrom.y)
+      : null;
+    if (!TouchScroll.cancelsMove({
+      target: e.target,
+      axis,
+      styleOf: el => getComputedStyle(el),
+      root: document.body,
+    })) return;
+    if (e.cancelable) e.preventDefault();
   }, { passive: false });
   if (token && username) { enterApp(); requestNotifPermission(); }
 

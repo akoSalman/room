@@ -69,6 +69,22 @@ jobs:
             exit 1
           fi
           echo "Deploy key fingerprint: $(ssh-keygen -lf ~/.ssh/deploy_key.pub)"
+          # ── The code goes UP from here, rather than being pulled down there ──
+          #
+          # These servers are where the people using this app are, and from
+          # there GitHub is throttled at best. `git fetch` on the server hung
+          # for two and a half minutes and GitHub closed the connection —
+          # "fatal: Could not read from remote repository" — and the deploy
+          # failed. Runs 132 and 133 both died that way, which is why the
+          # comments feature never reached the web at all while I kept saying
+          # it would ship with the next deploy.
+          #
+          # The runner has GitHub (it is GitHub) and it already has the commit
+          # checked out. So the archive is built HERE and pushed over the SSH
+          # connection the deploy needs anyway. The server no longer has to
+          # reach any network but this one.
+          git archive --format=tar "$GITHUB_SHA" > /tmp/app.tar
+          echo "Shipping $(wc -c < /tmp/app.tar) bytes of $GITHUB_SHA"
           # Quoted heredoc: NOTHING expands on the runner, so the script below is
           # the script the server runs. The three values it needs are passed as
           # environment assignments instead. (With an unquoted heredoc, every
@@ -79,25 +95,38 @@ jobs:
           # "client_loop: send disconnect: Broken pipe", exit 255, on a command
           # that was working. Runs 115, 117, 119, 121 and 122 all failed that
           # way, on bistbarg, at exactly that line.
+          # Retried: this crosses the same long, lossy link the git fetch used
+          # to, and one dropped transfer should cost a few seconds rather than
+          # the whole deploy.
+          for attempt in 1 2 3 4; do
+            if scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+                 -o ServerAliveInterval=20 -o ServerAliveCountMax=15 \
+                 /tmp/app.tar "root@$HOST:/tmp/app.tar"; then
+              break
+            fi
+            if [ "$attempt" = 4 ]; then
+              echo "::error::could not send the code to $HOST after 4 attempts"
+              exit 1
+            fi
+            echo "transfer failed, retrying in $((attempt * 5))s"
+            sleep $((attempt * 5))
+          done
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
             -o ServerAliveInterval=20 -o ServerAliveCountMax=15 "root@$HOST" \
             "APP_DIR='$APP_DIR' BRANCH='$BRANCH' SERVICE='$SERVICE' bash -s" <<'EOF'
           set -e
           cd "$APP_DIR"
-          git fetch origin "$BRANCH"
-          git checkout "$BRANCH"
-          # Hard reset, NOT pull. "npm install" rewrites package-lock.json on
-          # the server, which left the checkout permanently dirty, and every
-          # later "git pull" then aborted with "your local changes would be
-          # overwritten". Both servers sat 13 commits behind because of it.
-          # A deploy target holds no local edits worth keeping, so the remote
-          # branch simply wins.
+          # The tarball was pushed here a moment ago (see above): the server
+          # does not talk to GitHub at all any more, because from where these
+          # servers are it frequently cannot.
           #
-          # Deliberately no "git clean": chat.db and uploads/ are untracked and
-          # live in this directory. Cleaning would delete the database and every
-          # uploaded file. reset --hard only touches TRACKED files, so user data
-          # is untouched.
-          git reset --hard "origin/$BRANCH"
+          # Tracked files are overwritten. Deliberately NOT a clean sweep of
+          # the directory: chat.db, uploads/ and .env live here and are
+          # untracked, and deleting them would destroy every message and every
+          # uploaded file anybody has ever sent.
+          test -s /tmp/app.tar
+          tar -xf /tmp/app.tar -C "$APP_DIR"
+          rm -f /tmp/app.tar
           # "install", NOT "ci". `npm ci` deletes node_modules and reinstalls
           # strictly from the lock — and that is what took bistbarg down.
           # sharp's actual binary is an OPTIONAL platform dependency
@@ -106,7 +135,9 @@ jobs:
           # on a server with older node the wipe removed a working sharp and
           # installed nothing in its place. `npm install` leaves the existing,
           # working tree alone. The lock churn that "ci" was meant to prevent
-          # no longer matters, because `git reset --hard` above cleans it.
+          # no longer matters either: package-lock.json is a tracked file, so
+          # the archive unpacked above overwrites whatever npm wrote here last
+          # time.
           npm install --omit=dev
           # better-sqlite3 IS the database. Note the check OPENS a database:
           # `require('better-sqlite3')` alone proves nothing, because the
