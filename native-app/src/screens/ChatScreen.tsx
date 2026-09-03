@@ -3154,8 +3154,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   function openViewerActions() {
     if (!viewerUrl) return;
     const rel = viewerUrl.startsWith(BASE_URL) ? viewerUrl.slice(BASE_URL.length) : viewerUrl;
-    const hit = (mediaState?.images || []).find((x) => x.url === rel);
-    setViewerActions(hit || { url: rel, name: rel.split('/').pop() || 'photo' });
+    const found = (mediaState?.images || []).find((x) => x.url === rel);
+    setViewerActions(found || { url: rel, name: rel.split('/').pop() || 'photo' });
   }
 
   // What the media browser's long-press menu does. Everything routes through
@@ -5274,6 +5274,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 const hitSlop10 = { top: 10, bottom: 10, left: 10, right: 10 };
 // Bubble padding, subtracted from a tap so it lines up with the text box.
 const BUBBLE_PAD = 10;
+
+/**
+ * A finger-sized margin around the small icon buttons.
+ *
+ * Every other component in this app defines its own; this file did NOT, and
+ * `hitSlop={hit}` was copied in here from one that does. `hit` was therefore
+ * simply undefined, and rendering it threw — which is the whole of "tapping
+ * the comment button crashes the app": opening a thread draws its header, the
+ * header touches `hit`, and ChatScreen dies.
+ */
+const hit = { top: 10, bottom: 10, left: 10, right: 10 };
 
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: C.bg },
