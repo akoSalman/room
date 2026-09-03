@@ -295,6 +295,76 @@ test('the web and the app answer identically, over every input that matters', ()
   assert.strictEqual(W.MAX_BYTES, N.MAX_BYTES, 'the two platforms disagree about the size limit');
 });
 
+// ── Pasting from a button, which is the only way on a phone ─────────────────
+
+test('THE GAP: an image is picked out of a clipboard entry that also holds text', () => {
+  // Copying an image from a page puts the image, some HTML and a scrap of text
+  // on the clipboard together. Taking the text would drop the photo.
+  assert.strictEqual(W.pickType(['text/plain', 'text/html', 'image/png']), 'image/png');
+  assert.strictEqual(W.pickType(['image/png', 'image/jpeg']), 'image/png');
+  // The image wins even when something else file-shaped is offered FIRST —
+  // copying out of a document viewer offers the PDF ahead of the picture, and
+  // the picture is what was on screen. (Written this way because a check with
+  // the image already first passed with the preference deleted entirely.)
+  assert.strictEqual(W.pickType(['application/pdf', 'image/png']), 'image/png');
+  assert.strictEqual(W.pickType(['application/octet-stream', 'image/jpeg']), 'image/jpeg');
+});
+
+test('a non-image file still beats the text beside it', () => {
+  assert.strictEqual(W.pickType(['text/plain', 'application/pdf']), 'application/pdf');
+});
+
+test('a clipboard holding only text is not a file, and says so', () => {
+  // The caller puts it in the message box. Refusing a copied link would be a
+  // worse answer than pasting it.
+  assert.strictEqual(W.pickType(['text/plain', 'text/html']), null);
+  assert.strictEqual(W.pickType([]), null);
+  assert.strictEqual(W.pickType(null), null);
+});
+
+test('the button is offered only where the clipboard can be read', () => {
+  // Firefox has no clipboard.read(). A button that always fails is worse than
+  // no button.
+  assert.strictEqual(W.clipboardReadable({ clipboard: { read: () => {} } }), true);
+  assert.strictEqual(W.clipboardReadable({ clipboard: { readText: () => {} } }), false);
+  assert.strictEqual(W.clipboardReadable({ clipboard: {} }), false);
+  assert.strictEqual(W.clipboardReadable({}), false);
+  assert.strictEqual(W.clipboardReadable(null), false);
+});
+
+test('being refused the clipboard is not reported as a failure', () => {
+  // The user just made that choice in Safari's own prompt; "paste failed"
+  // would teach them the button is broken.
+  const denied = W.clipboardProblem({ items: 0, error: { name: 'NotAllowedError' } });
+  assert.ok(/allow/i.test(denied), denied);
+  assert.ok(!/error|fail/i.test(denied), denied);
+});
+
+test('…and neither is an empty clipboard', () => {
+  assert.ok(/empty/i.test(W.clipboardProblem({ items: 0 })));
+  assert.strictEqual(W.clipboardProblem({ items: 1 }), null, 'a paste that worked still complains');
+  const broke = W.clipboardProblem({ items: 0, error: { name: 'DataError' } });
+  assert.ok(broke && !/allow/i.test(broke), broke);
+});
+
+test('the web has a paste button, and it reads the clipboard in the click', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'app.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+  assert.ok(/id="composer-paste"[^>]*onclick="composerPaste\(\)"/.test(html),
+    'there is no way to paste without a keyboard');
+  assert.ok(/PasteDrop\.clipboardReadable\(navigator\)/.test(src),
+    'the button is shown in browsers that cannot read the clipboard');
+  const fn = src.slice(src.indexOf('async function composerPaste()'), src.indexOf('function setupPasteAndDrop('));
+  assert.ok(fn.length > 0, 'composerPaste is gone — this check would be vacuous');
+  // Safari grants the clipboard only to a read inside the user gesture, and
+  // any await before it spends that gesture.
+  assert.ok(!/await [\s\S]*?await navigator\.clipboard\.read\(\)/.test(fn),
+    'something is awaited before the clipboard read, which loses the user gesture in Safari');
+  assert.ok(fn.includes('PasteDrop.pickType('), 'the button takes the text beside a copied image');
+  assert.ok(fn.includes('stageFiles(files)'), 'a pasted file is never staged');
+  assert.ok(/input\.value \+= text/.test(fn), 'a clipboard holding only text is refused');
+});
+
 // ── The wiring, which no unit test can reach ────────────────────────────────
 
 test('the web actually listens for paste and drop', () => {

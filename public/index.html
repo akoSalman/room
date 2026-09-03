@@ -185,6 +185,10 @@
       <button onclick="composerRecord()">🎙 Voice</button>
       <button id="composer-one-time" onclick="composerOneTime()">🔥 One-time</button>
       <button onclick="LocPicker.open()">📍 Location</button>
+      <!-- Hidden until we know the browser can be asked for the clipboard.
+           Ctrl+V and drag-and-drop already work; neither exists on a phone. -->
+      <button id="composer-paste" class="hidden" onclick="composerPaste()"
+              title="Paste an image or file">📋 Paste</button>
       <button id="composer-emoji" class="hidden" onclick="openQuickEmoji()" title="Quick emojis">😊</button>
     </div>
     <!-- Staged media preview (media is sent only when the user hits send) -->

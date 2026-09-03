@@ -2418,7 +2418,61 @@ function stageFiles(files, opts) {
   return true;
 }
 
+/**
+ * Paste, from a button.
+ *
+ * Ctrl+V and drag-and-drop are keyboard-and-mouse gestures, so on a phone the
+ * paste support below — which works — could not be reached at all. This asks
+ * the browser for the clipboard instead of waiting to be handed it. The app's
+ * attachment sheet has had the same option all along.
+ *
+ * Must stay in the click: Safari grants clipboard access only to a read that
+ * happens inside a user gesture, and an `await` before it spends that gesture.
+ */
+async function composerPaste() {
+  if (!currentRoomId) return;
+  let items = [];
+  try {
+    items = await navigator.clipboard.read();
+  } catch (e) {
+    showToast(PasteDrop.clipboardProblem({ items: 0, error: e }));
+    return;
+  }
+  const at = Date.now();
+  const files = [];
+  let text = '';
+  for (const item of items) {
+    const type = PasteDrop.pickType([...(item.types || [])]);
+    if (!type) {
+      // Only text on the clipboard: put it in the message box rather than
+      // refuse. Somebody who copied a link and tapped Paste meant this.
+      try { text += await item.getType('text/plain').then(b => b.text()); } catch {}
+      continue;
+    }
+    try {
+      const blob = await item.getType(type);
+      files.push(new File([blob], PasteDrop.pastedName(type, at, ''), { type }));
+    } catch {}
+  }
+  if (files.length) { stageFiles(files); return; }
+  if (text) {
+    const input = document.getElementById('msg-input');
+    input.value += text;
+    input.focus();
+    onTypingInput();
+    return;
+  }
+  const problem = PasteDrop.clipboardProblem({ items: items.length });
+  if (problem) showToast(problem);
+}
+
 function setupPasteAndDrop() {
+  // The button is offered only where the clipboard can actually be read.
+  // Firefox cannot, and an option that always fails is worse than none.
+  if (PasteDrop.clipboardReadable(navigator)) {
+    document.getElementById('composer-paste')?.classList.remove('hidden');
+  }
+
   // Paste anywhere in the page: the composer rarely has focus when somebody
   // takes a screenshot and hits Ctrl+V, and requiring them to click into the
   // box first is exactly the kind of small refusal that makes a feature feel

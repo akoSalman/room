@@ -184,8 +184,66 @@
     }
   }
 
+  // ── Pasting from a button, for phones ──────────────────────────────────────
+  //
+  // Ctrl+V and drag-and-drop are both keyboard-and-mouse gestures. On a phone
+  // there is neither, so the paste support above — which works — was
+  // unreachable for most of the people using this. The app has had a Paste
+  // item in its attachment sheet all along; this is the web's.
+
+  /**
+   * Can this browser be ASKED for the clipboard, rather than waiting to be
+   * given it?
+   *
+   * Safari and Chrome can (both put up their own permission prompt, which is
+   * as it should be — a page reading your clipboard unasked would be a bug).
+   * Firefox cannot, and there the button is not offered at all: an option that
+   * always fails is worse than no option.
+   */
+  function clipboardReadable(nav) {
+    return !!(nav && nav.clipboard && typeof nav.clipboard.read === 'function');
+  }
+
+  /**
+   * Which of the several forms a clipboard entry offers is the one to send?
+   *
+   * A copied image usually arrives as an image AND as HTML AND as a scrap of
+   * text. Same rule as a paste event: if something file-shaped is there, that
+   * is what was meant. Returns null when the entry really is just text, which
+   * the caller puts in the message box instead of refusing.
+   */
+  function pickType(types) {
+    var list = types || [];
+    for (var i = 0; i < list.length; i++) {
+      if (String(list[i]).toLowerCase().indexOf('image/') === 0) return list[i];
+    }
+    for (var j = 0; j < list.length; j++) {
+      if (String(list[j]).toLowerCase().indexOf('text/') !== 0) return list[j];
+    }
+    return null;
+  }
+
+  /**
+   * What to say when a paste produced nothing.
+   *
+   * Each of these is a different situation and none of them is "an error":
+   * being refused the clipboard is a choice the user just made, and an empty
+   * clipboard is simply empty. Saying "paste failed" to all three would teach
+   * people the button is broken.
+   */
+  function clipboardProblem(o) {
+    var name = (o && o.error && (o.error.name || o.error)) || '';
+    if (name === 'NotAllowedError') return 'Allow this page to read the clipboard to paste here.';
+    if (name) return 'Nothing could be read from the clipboard.';
+    if (!o || !o.items) return 'The clipboard is empty.';
+    return null;
+  }
+
   root.PasteDrop = {
     MAX_BYTES: MAX_BYTES,
+    clipboardReadable: clipboardReadable,
+    pickType: pickType,
+    clipboardProblem: clipboardProblem,
     pasteCarriesFiles: pasteCarriesFiles,
     dragCarriesFiles: dragCarriesFiles,
     pastedName: pastedName,
