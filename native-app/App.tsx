@@ -11,6 +11,8 @@ import * as Notifications from 'expo-notifications';
 import notifee, { EventType } from '@notifee/react-native';
 import { registerCallPush } from './src/callPush';
 import { registerCallService, onEndFromShade, handleNotifeeEvent } from './src/ongoingCall';
+import CrashBoundary from './src/components/CrashScreen';
+import { installGlobalCrashHandler } from './src/globalCrash';
 import * as mediaCache from './src/mediaCache';
 import * as offlineStore from './src/offlineStore';
 import {
@@ -74,6 +76,10 @@ registerCallPush();
 // notification is displayed, and a registration done when a call starts is
 // already too late — Android kills the service on the spot.
 registerCallService();
+
+// A JavaScript error outside React's render — in a promise, a socket handler,
+// a timer — never reaches the boundary below. This puts those on screen too.
+installGlobalCrashHandler();
 onEndFromShade(() => { try { callManager.end(); } catch {} });
 
 // Actions pressed while the app IS running — onBackgroundEvent is not called
@@ -486,6 +492,10 @@ export default function App() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
+      {/* Inside the providers so the crash screen can be drawn even when the
+          fault is in a screen; outside every screen so it catches all of
+          them. See crashReport.ts for why this exists. */}
+      <CrashBoundary onRestart={() => { setScreen('auth'); setRoom(null); setScreen('rooms'); }}>
       <SafeAreaProvider>
         <StatusBar barStyle="dark-content" backgroundColor={C.header} />
         <SafeAreaView style={{ flex: 1, backgroundColor: C.bg }} edges={['top']}>
@@ -567,6 +577,7 @@ export default function App() {
           {screen !== 'auth' && <ConnectionStatus />}
         </SafeAreaView>
       </SafeAreaProvider>
+      </CrashBoundary>
     </GestureHandlerRootView>
   );
 }

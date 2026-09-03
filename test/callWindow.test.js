@@ -277,18 +277,24 @@ test('the minimized state is cleared when the call is', () => {
     'minimized survives the call, so the next one starts shrunk');
 });
 
-test('THE OTHER HALF: a live call runs a foreground service', () => {
-  // `types.length > 0`, not `true`: a service may only claim a type whose
-  // permission the app actually holds, and claiming one it does not is a
-  // SecurityException on the main thread — the crash reported as "tapping
-  // call and at the first ring the app crashes". With nothing claimable this
-  // stays an ordinary notification, which loses the protection from being
-  // frozen but keeps the app alive. See test/mapCall.test.js.
-  assert.ok(/asForegroundService: types\.length > 0/.test(ongoing),
-    'the ongoing notification does not keep the process alive, so leaving the app freezes the call');
-  assert.ok(/FOREGROUND_SERVICE_TYPE_PHONE_CALL/.test(ongoing)
-    && /FOREGROUND_SERVICE_TYPE_MICROPHONE/.test(ongoing),
-    'the service does not declare its types — Android 14 refuses to start it');
+test('THE CAPABILITY THAT WAS GIVEN UP: a call no longer runs a service', () => {
+  // This test used to assert the opposite, and it is worth keeping the reason
+  // rather than quietly inverting it.
+  //
+  // A foreground service is what stops Android freezing the process when the
+  // app is in the background — the whole reason it was added, so that leaving
+  // the app during a call did not silently kill the audio. But "tapping call
+  // crashes at the first ring" has now been reported twice, the second time on
+  // a build carrying my fix for it, and the crash cannot be caught in
+  // JavaScript: the service starts natively after displayNotification()
+  // returns. A call that connects and can be frozen in the background beats an
+  // app that dies before it rings.
+  //
+  // It goes back on when there is a crash log saying what Android objected to.
+  assert.ok(/export const CALL_FOREGROUND_SERVICE = false;/.test(ongoing),
+    'the service is back on without a crash log to justify it');
+  assert.ok(/asForegroundService: wantsService,/.test(ongoing),
+    'the notification asks for a service regardless of the switch');
   assert.ok(/ongoing: true/.test(ongoing),
     'the call notification can be swiped away, leaving a call running with nothing on screen');
 });

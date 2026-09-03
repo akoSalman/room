@@ -127,6 +127,36 @@ async function hasManageOwnCalls(): Promise<boolean> {
   }
 }
 
+/**
+ * Whether a call may start a foreground service at all. Currently: no.
+ *
+ * "On tapping call, at the first ring, the app crashes" has now been reported
+ * TWICE, the second time on a build carrying my fix for it — so the fix was
+ * wrong, and this is the honest response to that.
+ *
+ * The fix assumed the crash was Android 14 refusing a service type whose
+ * permission the app did not hold, and gated the types on what is actually
+ * granted. It still asks for a service whenever ANY type qualifies, so if the
+ * refusal comes from anywhere else — the service element notifee declares, the
+ * device's own policy, the OEM's — the crash survives unchanged. And it cannot
+ * be caught here: the service starts natively after displayNotification()
+ * returns, so the try/catch around it is decoration. Nothing in JavaScript can
+ * turn that into a handled error.
+ *
+ * So the whole mechanism is off. What is lost is real but small: a call is no
+ * longer protected from being frozen when the app is in the background, which
+ * is the thing the service was added for. What is gained is that the call
+ * connects. An app that dies at the first ring has no background behaviour
+ * worth protecting.
+ *
+ * The notification itself is unaffected — it still shows, still says who and
+ * how long, and still offers End call.
+ *
+ * This goes back on only when there is a crash log saying what Android
+ * actually objected to. Guessing at it once has already cost a release.
+ */
+export const CALL_FOREGROUND_SERVICE = false;
+
 export function registerCallService(): void {
   try {
     notifee.registerForegroundService(() => new Promise(() => {}));
@@ -153,6 +183,8 @@ export async function startOngoing(info: OngoingInfo): Promise<void> {
   try {
     await ensureChannel();
     const types = await allowedTypes(info.kind);
+    // See CALL_FOREGROUND_SERVICE: currently always off.
+    const wantsService = CALL_FOREGROUND_SERVICE && types.length > 0;
     await notifee.displayNotification({
       id: ONGOING_ID,
       title: info.title,
@@ -164,12 +196,8 @@ export async function startOngoing(info: OngoingInfo): Promise<void> {
         // refused by Android 14 just as firmly as one with the wrong type, so
         // with nothing to declare this stays an ordinary notification and the
         // call simply loses its protection from being frozen.
-        asForegroundService: types.length > 0,
-        // Only the types whose permission this app actually holds — see
-        // allowedTypes(). Asking for one it does not hold is not a warning,
-        // it is a SecurityException on the main thread: the crash at the first
-        // ring.
-        foregroundServiceTypes: types,
+        asForegroundService: wantsService,
+        foregroundServiceTypes: wantsService ? types : undefined,
         category: AndroidCategory.CALL,
         importance: AndroidImportance.LOW,
         // Not dismissable: swiping away a live call would leave it running

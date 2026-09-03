@@ -109,7 +109,8 @@ test('THE CRASH: MANAGE_OWN_CALLS is declared', () => {
 
 test('and no service type is asked for without its permission', () => {
   assert.ok(ongoing.includes('async function allowedTypes('), 'the types are still a fixed list');
-  assert.ok(/foregroundServiceTypes: types,/.test(ongoing), 'the fixed list is still what is sent');
+  assert.ok(/foregroundServiceTypes: wantsService \? types : undefined,/.test(ongoing),
+    'the type list is sent even when no service is being asked for');
   assert.ok(/PermissionsAndroid\.check\(/.test(ongoing), 'nothing checks what is actually held');
   assert.ok(/PERMISSIONS\.RECORD_AUDIO/.test(ongoing),
     'MICROPHONE is claimed without checking that the microphone was granted');
@@ -120,8 +121,11 @@ test('a call with no usable type still runs, as an ordinary notification', () =>
   // A foreground service with NO valid type is refused just as firmly as one
   // with the wrong type. Losing the protection from being frozen is a far
   // smaller failure than the app disappearing mid-ring.
-  assert.ok(/asForegroundService: types\.length > 0/.test(ongoing),
-    'an empty type list still asks for a foreground service, which is refused');
+  // Now stricter than it was: not merely "no service without a type", but no
+  // service at all until a crash log says which type Android objected to. See
+  // test/crashReport.test.js — the same crash has been reported twice.
+  assert.ok(/const wantsService = CALL_FOREGROUND_SERVICE && types\.length > 0;/.test(ongoing),
+    'a call still asks for a foreground service');
 });
 
 test('the camera type is only for video calls, and only if granted', () => {
