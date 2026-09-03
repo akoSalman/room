@@ -325,7 +325,7 @@ window.addEventListener('DOMContentLoaded', () => {
       const root = document.documentElement;
       root.style.setProperty('--vv-top', box.top + 'px');
       root.style.setProperty('--vv-h', box.height + 'px');
-      document.body.classList.toggle('kb-open', ViewportFit.hidesExtras(box.keyboardOpen));
+      document.body.classList.toggle('kb-open', ViewportFit.hidesBanner(box.keyboardOpen));
       // iOS scrolls the page itself to bring the caret into view, which is
       // what takes the chat header off the top. Undo it: the app is already
       // sized to what can be seen.

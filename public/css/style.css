@@ -159,12 +159,11 @@ html {
   overflow: hidden;
 }
 
-/* With the keyboard up, the two rows of extras fold away. They cost about a
-   third of what is left of the screen, and both are one tap from coming
-   back — the emoji bar from the 😊 in the composer, the attachments from the
-   ＋. What matters while typing is seeing the conversation. */
-body.kb-open #composer-strip,
-body.kb-open #quick-emoji-bar,
+/* With the keyboard up, the install banner stands down — and nothing else.
+   An earlier version folded the attachment strip and the emoji row away too,
+   to win back room, and it was reported straight back: those are the controls
+   somebody typing actually reaches for, and the emoji bar is only ever open
+   BECAUSE the keyboard is. */
 body.kb-open #install-hint { display: none; }
 
 /* ── Sidebar overlay ──────────────────────────────── */

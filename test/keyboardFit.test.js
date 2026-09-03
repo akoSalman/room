@@ -75,9 +75,9 @@ test('nonsense from the browser falls back to the window', () => {
     'a negative offset moved the app off the top of the screen');
 });
 
-test('the extras fold away only while the keyboard is up', () => {
-  assert.strictEqual(V.hidesExtras(true), true);
-  assert.strictEqual(V.hidesExtras(false), false);
+test('the install banner stands down only while the keyboard is up', () => {
+  assert.strictEqual(V.hidesBanner(true), true);
+  assert.strictEqual(V.hidesBanner(false), false);
 });
 
 // ── The wiring ──────────────────────────────────────────────────────────────
@@ -118,13 +118,27 @@ test('the newest message stays in view when the keyboard takes half the screen',
   assert.ok(/nearBottom/.test(fn), 'it scrolls to the bottom even when the reader is up in the history');
 });
 
-test('the two rows of extras fold away while typing', () => {
-  // They cost about a third of what is left of the screen, and both are one
-  // tap from coming back.
-  const rule = /body\.kb-open #composer-strip,\s*body\.kb-open #quick-emoji-bar,\s*body\.kb-open #install-hint\s*\{([^}]*)\}/.exec(css);
-  assert.ok(rule, 'nothing folds away while the keyboard is up');
+test('THE SECOND REPORT: the composer keeps every control while typing', () => {
+  // "On web version and opened keyboard nothing is above composer" — an
+  // earlier attempt at this fix folded the attachment strip and the emoji row
+  // away to win back room. Both were wrong: the attachments are what somebody
+  // typing reaches for, and the emoji bar is only ever shown BECAUSE the
+  // keyboard is open, so hiding it made the 😊 button do nothing at all.
+  const kb = [...css.matchAll(/body\.kb-open ([^{]*)\{([^}]*)\}/g)];
+  assert.ok(kb.length > 0, 'the kb-open rule is gone — this check would be vacuous');
+  for (const m of kb) {
+    const selector = m[1];
+    assert.ok(!/#composer-strip/.test(selector), 'the attachment buttons vanish while typing');
+    assert.ok(!/#quick-emoji-bar/.test(selector), 'the emoji bar cannot open while the keyboard is up');
+    assert.ok(!/#composer\b/.test(selector), 'the composer itself is styled away while typing');
+  }
+});
+
+test('the install banner still stands down, being an interruption', () => {
+  const rule = /body\.kb-open #install-hint\s*\{([^}]*)\}/.exec(css);
+  assert.ok(rule, 'the banner covers the composer while typing');
   assert.ok(/display:\s*none/.test(rule[1]), rule[1]);
-  assert.ok(/classList\.toggle\('kb-open', ViewportFit\.hidesExtras\(/.test(app),
+  assert.ok(/classList\.toggle\('kb-open', ViewportFit\.hidesBanner\(/.test(app),
     'the class is set by hand rather than by the rule');
 });
 

@@ -17,17 +17,23 @@
 // laid out against the layout viewport and does not care what its ancestors
 // are sized to. It has to be told directly.
 //
-// So: the app is sized and positioned from window.visualViewport, and while
-// the keyboard is up the two rows of extras — the emoji strip and the
-// attachment buttons — are folded away. They are one tap from coming back,
-// and they were taking a third of what little was left.
+// So: the app is sized and positioned from window.visualViewport.
+//
+// A first attempt also folded away the emoji row and the attachment strip
+// while the keyboard was up, to win back some room. That was wrong twice
+// over, and it was reported straight back — "on web version and opened
+// keyboard nothing is above composer". The buttons are needed MOST while
+// typing (that is when you attach a photo or a voice note), and the emoji bar
+// is only ever shown BECAUSE the keyboard is open, so hiding it made the 😊
+// button do nothing at all. Only the install banner — an interruption, not a
+// control — stands down while typing.
 (function (global) {
   /**
    * How much of the screen has to disappear before we call it a keyboard.
    *
    * Safari's own toolbars shrink the visual viewport too, by far less than
-   * this — treating those as a keyboard would fold the composer's buttons
-   * away every time somebody scrolled.
+   * this — treating those as a keyboard would dismiss the install banner, and
+   * re-lay the app out, every time somebody scrolled the chat.
    */
   var KEYBOARD_MIN = 120;
 
@@ -50,12 +56,18 @@
     };
   }
 
-  /** With the keyboard up, the extra rows are folded away to leave room. */
-  function hidesExtras(keyboardOpen) { return !!keyboardOpen; }
+  /**
+   * With the keyboard up, the install banner stands down — and nothing else.
+   *
+   * Every control the composer offers stays exactly where it was. Somebody
+   * typing is the person most likely to reach for the attachment buttons, and
+   * the emoji bar exists only while the keyboard is open.
+   */
+  function hidesBanner(keyboardOpen) { return !!keyboardOpen; }
 
   global.ViewportFit = {
     KEYBOARD_MIN: KEYBOARD_MIN,
     boxFor: boxFor,
-    hidesExtras: hidesExtras,
+    hidesBanner: hidesBanner,
   };
 })(typeof window !== 'undefined' ? window : this);
