@@ -82,7 +82,7 @@ import { searchLocal, mergeResults } from '../localSearch';
 import * as win from '../messageWindow';
 import { fabMode, atPresent, clearsUnseenOnTap } from '../scrollFab';
 import {
-  reduceSelection, initialSelection, LONG_PRESS_MS, DOUBLE_TAP_MS,
+  reduceSelection, initialSelection, stillMoving, LONG_PRESS_MS, DOUBLE_TAP_MS,
   type SelectionState, type MsgId,
 } from '../textSelection';
 import ChatSearch from '../components/ChatSearch';
@@ -2565,7 +2565,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // A finger landing on a list that is still gliding is spent stopping it:
     // Android never delivers that touch as a tap and starts no selection from
     // it. Told to the reducer so it is not counted as half of a double-tap.
-    const settling = listSettling.current;
+    const settling = stillMoving({ lastScrollAt: lastScrollAt.current, now: Date.now() });
     textTouchAt.current = Date.now();
     textTouchFrom.current = {
       x: e?.nativeEvent?.pageX ?? 0, y: e?.nativeEvent?.pageY ?? 0,
@@ -2636,8 +2636,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   function menuSpentByToken() {
     return spentByToken({ pressedAt: tokenPressedAt.current, now: Date.now() });
   }
-  /** Is the list still gliding after a flick? */
-  const listSettling = useRef(false);
+  /**
+   * When the list was last seen moving, or null once it has definitely
+   * stopped. A timestamp rather than a flag — see SETTLE_MS for why a flag
+   * left double-tap broken for the rest of the session after scrolling up.
+   */
+  const lastScrollAt = useRef<number | null>(null);
   /** Beyond this many pixels it is a drag, not a tap. */
   const TAP_SLOP = 10;
 
@@ -4181,17 +4185,22 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             cancelSettling();
             selectionEvent({ type: 'clear' });
           }}
-          onScroll={onMessagesScroll}
+          onScroll={(e: any) => {
+            // Every sign of movement, throttled: while the list glides these
+            // keep arriving, and when it stops they simply stop. That silence
+            // is what ends the settling window, so no missing end-event can
+            // strand it.
+            lastScrollAt.current = Date.now();
+            onMessagesScroll(e);
+          }}
           scrollEventThrottle={100}
-          onMomentumScrollBegin={() => { listSettling.current = true; }}
-          // A drag that grabs a gliding list ends the glide. Without this the
-          // flag would stay set until a momentum-end that never comes, and
-          // every later tap would be treated as one that stopped a fling.
-          onScrollEndDrag={() => { listSettling.current = false; }}
-          // The throttled onScroll can miss the final resting position; this
-          // fires once the list has actually stopped.
+          onMomentumScrollBegin={() => { lastScrollAt.current = Date.now(); }}
+          // These two are exact when they arrive, so they end it outright
+          // rather than waiting for the window to lapse. What they can no
+          // longer do is fail to arrive and leave it set forever.
+          onScrollEndDrag={() => { lastScrollAt.current = null; }}
           onMomentumScrollEnd={(e: any) => {
-            listSettling.current = false;
+            lastScrollAt.current = null;
             applyScrollPosition(e.nativeEvent.contentOffset.y);
           }}
           onViewableItemsChanged={onViewableItemsChanged}

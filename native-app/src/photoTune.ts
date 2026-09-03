@@ -1,4 +1,4 @@
-// Applying the brightness and the makeup to a photo.
+// Applying the brightness to a photo.
 //
 // The numbers live in cameraTune.ts and are tested there; this is the part
 // that touches Skia and the filesystem.
@@ -8,12 +8,10 @@
 // `undefined` because a decoder failed is a lost moment, and the user has
 // already put the phone down by the time anyone finds out.
 import * as FileSystem from 'expo-file-system';
-import { Skia, ImageFormat, TileMode, BlendMode } from '@shopify/react-native-skia';
-import {
-  Makeup, exposureMatrix, makeupMatrix, makeupParams, needsProcessing, scaledSigma,
-} from './cameraTune';
+import { Skia, ImageFormat } from '@shopify/react-native-skia';
+import { exposureMatrix, needsProcessing } from './cameraTune';
 
-export type TuneOptions = { ev: number; makeup: Makeup; quality?: number };
+export type TuneOptions = { ev: number; quality?: number };
 
 /**
  * Return a corrected copy of `uri`, or `uri` itself when there is nothing to do.
@@ -38,25 +36,10 @@ export async function tunePhoto(uri: string, o: TuneOptions): Promise<string> {
     const canvas = surface.getCanvas();
     const rect = Skia.XYWHRect(0, 0, w, h);
 
-    // 1. The picture, with the exposure correction the preview promised.
+    // The picture, with the exposure correction the preview promised.
     const base = Skia.Paint();
     base.setColorFilter(Skia.ColorFilter.MakeMatrix(exposureMatrix(o.ev)));
     canvas.drawImageRect(image, rect, rect, base);
-
-    // 2. Makeup: the same picture again, blurred, laid over at part opacity.
-    //    Softening skin by blending a blurred copy is the oldest trick there
-    //    is, and the reason it still looks right is that it keeps the edges —
-    //    eyes, hair, the outline of a face — from the sharp copy underneath.
-    const params = makeupParams(o.makeup);
-    if (params.blend > 0) {
-      const sigma = scaledSigma(params.blurSigma, w);
-      const soft = Skia.Paint();
-      soft.setImageFilter(Skia.ImageFilter.MakeBlur(sigma, sigma, TileMode.Clamp, null));
-      soft.setColorFilter(Skia.ColorFilter.MakeMatrix(makeupMatrix(o.makeup)));
-      soft.setAlphaf(params.blend);
-      soft.setBlendMode(BlendMode.SrcOver);
-      canvas.drawImageRect(image, rect, rect, soft);
-    }
 
     const out = surface.makeImageSnapshot();
     const b64 = out.encodeToBase64(ImageFormat.JPEG, Math.round((o.quality ?? 0.9) * 100));

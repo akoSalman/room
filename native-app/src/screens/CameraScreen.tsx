@@ -27,7 +27,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { C } from '../theme';
 import { pinchToLinear, linearToFactor, formatFactor, zoomStops } from '../cameraZoom';
 import {
-  Makeup, clampEv, evFromDrag, knobFraction, previewOverlay, placeTarget,
+  clampEv, evFromDrag, knobFraction, previewOverlay, placeTarget,
   tuningAvailable, TARGET_FADE_MS, needsProcessing,
 } from '../cameraTune';
 import { tunePhoto } from '../photoTune';
@@ -70,7 +70,7 @@ export default function CameraScreen({
   const [mode, setMode] = useState<CameraMode>(initialMode === 'video' ? 'video' : 'picture');
   const [ratio, setRatio] = useState<CameraRatio>('4:3');
   const [zoom, setZoom] = useState(0);
-  // ── Tap to set the brightness, and the makeup pass ──
+  // ── Tap to set the brightness ──
   //
   // The tap cannot tell the SENSOR to expose for that spot: expo-camera has no
   // metering-point API, and its exposure settings are web-only. What it can do
@@ -78,7 +78,6 @@ export default function CameraScreen({
   // brightened to show the choice, and the photo is corrected by exactly that
   // amount. The two numbers come from one place so they cannot disagree.
   const [ev, setEv] = useState(0);
-  const [makeup, setMakeup] = useState<Makeup>('off');
   const [target, setTarget] = useState<ReturnType<typeof placeTarget> | null>(null);
   const evStart = useRef(0);
   const targetTimer = useRef<any>(null);
@@ -185,7 +184,7 @@ export default function CameraScreen({
       // Read once, here: the correction applied to the file must be the one
       // that was on screen when the shutter was pressed, not whatever the
       // sliders say by the time the file has been written.
-      const tune = { ev, makeup };
+      const tune = { ev };
       await camRef.current?.takePictureAsync({
         quality: 0.7,
         exif: false,
@@ -436,20 +435,6 @@ export default function CameraScreen({
             <Ionicons name="grid-outline" size={21} color={grid ? C.accent : '#fff'} />
           </TouchableOpacity>
 
-          {/* Makeup: off → light → strong. Photo only, and shown only there:
-              a control that silently does nothing to a video is worse than no
-              control at all. */}
-          {tuningAvailable(mode as 'photo' | 'video') && (
-            <TouchableOpacity
-              style={s.topBtn}
-              onPress={() => setMakeup(m => (m === 'off' ? 'light' : m === 'light' ? 'strong' : 'off'))}
-              hitSlop={hit}
-              accessibilityLabel={`Makeup ${makeup}`}
-            >
-              <Ionicons name="sparkles-outline" size={21} color={makeup === 'off' ? '#fff' : C.accent} />
-              {makeup !== 'off' && <Text style={s.topBadge}>{makeup === 'light' ? '1' : '2'}</Text>}
-            </TouchableOpacity>
-          )}
 
           {Platform.OS === 'android' && (
             <TouchableOpacity style={s.topBtn} onPress={() => setRatio(r => (r === '4:3' ? '16:9' : r === '16:9' ? '1:1' : '4:3'))} hitSlop={hit}>

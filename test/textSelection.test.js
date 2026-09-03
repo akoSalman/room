@@ -20,6 +20,7 @@ execFileSync(TSC, [SRC, '--outDir', OUT, '--module', 'commonjs', '--target', 'es
   { stdio: 'pipe' });
 const S = require(path.join(OUT, 'textSelection.js'));
 
+const DOUBLE_TAP = 300;   // mirrors DOUBLE_TAP_MS, asserted below
 const tests = [];
 const test = (n, f) => tests.push({ n, f });
 
@@ -571,16 +572,75 @@ test('the screen tells the reducer when a touch turns into a drag', () => {
   assert.ok(move.includes("type: 'moved'"), 'the move event is sent from somewhere other than onTouchMove');
 });
 
-test('the screen knows whether the list was gliding', () => {
+// ── "After scrolling up, double-tap still does not work" ────────────────────
+//
+// The third report of this. The previous fix — mine — is what caused it.
+//
+// It kept a BOOLEAN: set when a fling began, cleared on momentum-end or on the
+// next drag. A touch marked as "stopped a fling" throws away the timestamp a
+// double-tap is measured from, which is right when it is true and fatal when
+// it is stuck.
+//
+// And it does get stuck. A fling up reaches the end of the list, older
+// messages are fetched and PREPENDED, and the content shifting under the glide
+// ends it without a momentum-end event. That is precisely the "scroll up" in
+// the report. The flag stayed true and double-tap was dead in every message
+// for the rest of the session.
+//
+// The test that used to be here asserted `listSettling.current = false` was
+// present in the file. It was — on a line that never ran. It passed
+// throughout, which is why this shipped three times.
+
+test('THE LATCH IS GONE: settling cannot outlive the scroll that set it', () => {
+  const now = 10_000;
+  assert.strictEqual(S.stillMoving({ lastScrollAt: now - 10, now }), true, 'a stab at a gliding list');
+  assert.strictEqual(S.stillMoving({ lastScrollAt: now - S.SETTLE_MS - 1, now }), false,
+    'a scroll long finished still counts as gliding — this is the bug');
+  // The case that broke it: momentum began and NOTHING ever ended it.
+  assert.strictEqual(S.stillMoving({ lastScrollAt: now - 60_000, now }), false,
+    'a fling whose end event never arrived disables double-tap forever');
+  assert.strictEqual(S.stillMoving({ lastScrollAt: null, now }), false);
+});
+
+test('the window is longer than the scroll throttle, or stabs slip through', () => {
+  // onScroll is throttled to 100ms, so the last sighting of a moving list can
+  // be 100ms old when the finger lands.
+  assert.ok(S.SETTLE_MS > 100, `SETTLE_MS is ${S.SETTLE_MS}`);
+  // And short enough that a deliberate tap after the list settles is a tap.
+  assert.ok(S.SETTLE_MS < DOUBLE_TAP, `SETTLE_MS is ${S.SETTLE_MS}`);
+});
+
+test('a clock that misbehaves reads as stopped, not as gliding', () => {
+  // Erring this way costs one missed double-tap. Erring the other way is the
+  // bug being fixed.
+  assert.strictEqual(S.stillMoving({ lastScrollAt: 10_050, now: 10_000 }), false);
+  assert.strictEqual(S.stillMoving({ lastScrollAt: NaN, now: 10_000 }), false);
+});
+
+test('the screen keeps a timestamp, and no flag anywhere', () => {
   const src = fs.readFileSync(
     path.join(__dirname, '..', 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
-  assert.ok(src.includes('onMomentumScrollBegin'), 'nothing notices a fling starting');
-  assert.ok(/listSettling\.current = false/.test(src), 'the flag is set and never cleared');
+  assert.ok(!/listSettling/.test(src), 'the latching flag is still there');
+  assert.ok(/const settling = stillMoving\(\{ lastScrollAt: lastScrollAt\.current, now: Date\.now\(\) \}\)/.test(src),
+    'the screen decides for itself whether the list is moving');
   assert.ok(/type: 'down', id, at: textTouchAt\.current, settling/.test(src),
     'the down event does not carry whether the list was still moving');
-  // …and that it carries the real answer, not a constant.
-  assert.ok(/const settling = listSettling\.current;/.test(src),
-    'the settling flag is hard-coded rather than read from the list');
+});
+
+test('every sign of movement refreshes it, and the exact ends clear it', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  // onScroll is the one that cannot fail to arrive while the list moves — and
+  // whose SILENCE is what ends the window.
+  const onScroll = src.slice(src.indexOf('onScroll={(e: any) => {'), src.indexOf('scrollEventThrottle'));
+  assert.ok(onScroll.includes('lastScrollAt.current = Date.now();'),
+    'ordinary scrolling does not refresh the window, so only flings are noticed');
+  assert.ok(onScroll.includes('onMessagesScroll(e)'), 'the scroll handler it replaced is no longer called');
+  assert.ok(/onMomentumScrollBegin=\{\(\) => \{ lastScrollAt\.current = Date\.now\(\); \}\}/.test(src));
+  assert.ok(/onScrollEndDrag=\{\(\) => \{ lastScrollAt\.current = null; \}\}/.test(src),
+    'a drag ending does not end the window');
+  assert.ok(/onMomentumScrollEnd=\{\(e: any\) => \{\s*lastScrollAt\.current = null;/.test(src),
+    'a momentum end does not end the window');
 });
 
 test('no long-press timer runs while the list is gliding', () => {

@@ -118,53 +118,19 @@ test('every channel gets the same gain, or the colours shift', () => {
   assert.strictEqual(m[18], 1, 'the alpha channel was scaled with the colours');
 });
 
-// ── Makeup ──────────────────────────────────────────────────────────────────
-
-test('off means off — no blur, no blend, no warmth', () => {
-  const p = T.makeupParams('off');
-  assert.deepStrictEqual([p.blurSigma, p.blend, p.warmth, p.lift], [0, 0, 0, 0]);
-});
-
-test('strong is stronger than light, and light is genuinely light', () => {
-  const l = T.makeupParams('light');
-  const s = T.makeupParams('strong');
-  assert.ok(s.blend > l.blend && s.blurSigma > l.blurSigma);
-  assert.ok(l.blend <= 0.4, `a "light" blend of ${l.blend} is not light`);
-  assert.ok(s.blend < 0.7, `a "strong" blend of ${s.blend} would erase the face`);
-});
-
-test('the blur is scaled to the photo, not fixed in pixels', () => {
-  // The same sigma is invisible on a 4000px photo and heavy on a 1080px one,
-  // so "light" would mean something different on every phone.
-  const small = T.scaledSigma(3, 1080);
-  const big = T.scaledSigma(3, 4320);
-  assert.ok(Math.abs(small - 3) < 1e-9);
-  assert.ok(Math.abs(big - 12) < 1e-9, `a 4x wider photo got sigma ${big}`);
-  assert.strictEqual(T.scaledSigma(0, 1080), 0);
-  assert.strictEqual(T.scaledSigma(3, 0), 0, 'an unknown width produced a blur anyway');
-});
-
-test('makeup warms the skin rather than greying it', () => {
-  const m = T.makeupMatrix('light');
-  assert.ok(m[0] > 1, 'red was not lifted, so smoothed skin goes grey');
-  assert.ok(m[12] < 1, 'blue was not pulled back');
-  assert.deepStrictEqual(T.makeupMatrix('off').slice(0, 3), [1, 0, 0], 'off tinted the photo');
-});
-
 // ── Doing nothing, properly ─────────────────────────────────────────────────
 
 test('THE OTHER BUG THIS AVOIDS: an untouched photo is not re-encoded', () => {
   // Decoding and re-encoding for a no-op costs a second of the user's time, a
   // generation of JPEG quality and the photo's EXIF.
-  assert.strictEqual(T.needsProcessing({ ev: 0, makeup: 'off' }), false);
-  assert.strictEqual(T.needsProcessing({ ev: 0.004, makeup: 'off' }), false,
+  assert.strictEqual(T.needsProcessing({ ev: 0 }), false);
+  assert.strictEqual(T.needsProcessing({ ev: 0.004 }), false,
     'a rounding-error exposure triggered a full re-encode');
 });
 
 test('anything actually asked for IS processed', () => {
-  assert.strictEqual(T.needsProcessing({ ev: 0.5, makeup: 'off' }), true);
-  assert.strictEqual(T.needsProcessing({ ev: -0.5, makeup: 'off' }), true);
-  assert.strictEqual(T.needsProcessing({ ev: 0, makeup: 'light' }), true);
+  assert.strictEqual(T.needsProcessing({ ev: 0.5 }), true);
+  assert.strictEqual(T.needsProcessing({ ev: -0.5 }), true);
 });
 
 // ── The honest limit ────────────────────────────────────────────────────────
@@ -239,7 +205,7 @@ test('the preview shows the correction that the photo will get', () => {
   assert.ok(/tunePhoto\(pic\.uri, tune\)/.test(cam), 'the photo is never corrected');
   // The SAME numbers, captured at the shutter — not whatever the sliders say
   // by the time the file has finished writing.
-  assert.ok(/const tune = \{ ev, makeup \};/.test(cam),
+  assert.ok(/const tune = \{ ev \};/.test(cam),
     'the correction is read after the capture, so it can drift from what was shown');
 });
 
@@ -259,11 +225,30 @@ test('a failure hands back the original photo rather than nothing', () => {
   assert.ok(/catch \{\s*\n?\s*return uri;/.test(body), 'a throw loses the photo');
 });
 
-test('makeup is offered on the camera and in the editor, at both strengths', () => {
-  assert.ok(/setMakeup\(m => \(m === 'off' \? 'light' : m === 'light' \? 'strong' : 'off'\)\)/.test(cam),
-    'the camera has no makeup control');
-  assert.ok(editor.includes("setMakeup(m => (m === 'off'"), 'the editor has no makeup control');
-  assert.ok(editor.includes('tunePhoto(uri, { ev, makeup })'), 'the editor never applies it');
+test('THE REMOVAL: makeup is gone from every file, not hidden behind a flag', () => {
+  // Asked for as: remove that makeup on edit images, remove the makeup feature
+  // totally. A softening filter nobody wants is a second of processing and a
+  // generation of JPEG quality spent on making a photo worse — so it goes,
+  // rather than lingering as dead code somebody re-enables by accident.
+  const files = ['src/cameraTune.ts', 'src/photoTune.ts',
+    'src/screens/CameraScreen.tsx', 'src/components/ImageEditor.tsx'];
+  for (const f of files) {
+    const src = fs.readFileSync(path.join(NAT, f), 'utf8');
+    // The one permitted mention is the note in cameraTune.ts saying it was
+    // removed; anything that could RUN is gone.
+    const code = src.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+    assert.ok(!/makeup/i.test(code), `${f} still has makeup in its code`);
+  }
+  const cam = fs.readFileSync(path.join(NAT, 'src/screens/CameraScreen.tsx'), 'utf8');
+  assert.ok(!/sparkles-outline/.test(cam), 'the camera still shows the makeup button');
+  const editor = fs.readFileSync(path.join(NAT, 'src/components/ImageEditor.tsx'), 'utf8');
+  assert.ok(!/sparkles-outline/.test(editor), 'the editor still shows the makeup button');
+});
+
+test('…but the brightness it sat beside is untouched', () => {
+  const editor = fs.readFileSync(path.join(NAT, 'src/components/ImageEditor.tsx'), 'utf8');
+  assert.ok(editor.includes('tunePhoto(uri, { ev })'), 'the editor no longer applies the brightness');
+  assert.ok(/needsProcessing\(\{ ev \}\)/.test(editor), 'the editor re-encodes an untouched photo');
 });
 
 test('the editor applies the correction AFTER the crop and the drawing', () => {

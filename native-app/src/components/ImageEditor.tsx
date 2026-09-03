@@ -28,12 +28,13 @@ import {
   PanResponder, ActivityIndicator, Alert, Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { Makeup, clampEv, EV_MIN, EV_MAX, needsProcessing } from '../cameraTune';
+import { Canvas, Path, Group } from '@shopify/react-native-skia';
+import { clampEv, EV_MIN, EV_MAX, needsProcessing } from '../cameraTune';
 import { tunePhoto } from '../photoTune';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { C } from '../theme';
 import {
-  fitRect, strokeSegments, nextUndo,
+  fitRect, pathFor, nextUndo,
   fracToScreen, screenToFrac, clampFrac, isWholeFrac, fracToNatural, WHOLE_IMAGE,
   savePlan, canSend,
   Rect, Size, Stroke, Point, FracRect,
@@ -52,7 +53,7 @@ try {
   }
 } catch {}
 
-type Tool = 'crop' | 'pen';
+type Tool = 'crop' | 'pen' | 'arrow';
 
 /**
  * One applied version of the photo, with the size it really is.
@@ -88,10 +89,9 @@ export default function ImageEditor({
   const natural: Size | null = current ? { width: current.width, height: current.height } : null;
   const [area, setArea] = useState<Size>({ width: 0, height: 0 });
   const [tool, setTool] = useState<Tool>('crop');
-  // Brightness and makeup, the same two corrections the camera offers — a
-  // photo from the gallery deserves them as much as one just taken.
+  // Brightness, the same correction the camera offers — a photo from the
+  // gallery deserves it as much as one just taken.
   const [ev, setEv] = useState(0);
-  const [makeup, setMakeup] = useState<Makeup>('off');
   const [busy, setBusy] = useState(false);
 
   const [crop, setCrop] = useState<FracRect>({ ...WHOLE_IMAGE });
@@ -148,6 +148,11 @@ export default function ImageEditor({
   const displayedRef = useRef<Rect | null>(null); displayedRef.current = displayed;
   const colorRef = useRef(color); colorRef.current = color;
   const widthRef = useRef(penWidth); widthRef.current = penWidth;
+  // Read inside the pan responder, which is created once and never sees a
+  // re-render's new `tool`.
+  const toolRef = useRef<Tool>('crop'); toolRef.current = tool;
+  /** The two tools drawn with a finger, as opposed to the crop box. */
+  const drawingTool = tool === 'pen' || tool === 'arrow';
 
   // Which corner is being dragged, decided once when the finger lands.
   const grab = useRef<{ corner: string; start: Rect } | null>(null);
@@ -204,10 +209,16 @@ export default function ImageEditor({
       const points = drawing.current;
       drawing.current = [];
       setLive([]);
-      if (points.length > 1) {
+      // An arrow too short to have a head draws nothing, so it must not be
+      // recorded either — an invisible stroke that Undo has to be pressed for
+      // is worse than no stroke.
+      if (points.length > 1 && pathFor({
+        points, width: widthRef.current, arrow: toolRef.current === 'arrow',
+      })) {
         seq.current += 1;
         setStrokes(prev => [...prev, {
           color: colorRef.current, width: widthRef.current, points, seq: seq.current,
+          arrow: toolRef.current === 'arrow',
         }]);
       }
     },
@@ -337,7 +348,7 @@ export default function ImageEditor({
       let uri = out.uri;
       // Applied last, over the finished crop and drawing: correcting first and
       // then cropping would re-encode the photo twice for no reason.
-      if (needsProcessing({ ev, makeup })) uri = await tunePhoto(uri, { ev, makeup });
+      if (needsProcessing({ ev })) uri = await tunePhoto(uri, { ev });
       onDone({ uri, action });
     } catch {
       Alert.alert('Could not edit', 'The photo could not be saved.');
@@ -358,25 +369,45 @@ export default function ImageEditor({
       <View ref={shotRef} collapsable={false} style={StyleSheet.absoluteFill}>
         <Image source={{ uri: working }} style={StyleSheet.absoluteFill} resizeMode="contain" />
 
-        {/* Finished strokes, then the one under the finger. */}
-        {strokes.map(st => (
-          <React.Fragment key={`st${st.seq}`}>
-            {strokeSegments(st.points, st.width).map((sg, j) => (
-              <View key={j} style={{
-                position: 'absolute', left: sg.x - displayed.x, top: sg.y - displayed.y,
-                width: sg.length, height: st.width, borderRadius: st.width / 2,
-                backgroundColor: st.color, transform: [{ rotate: `${sg.angle}deg` }],
-              }} />
-            ))}
-          </React.Fragment>
-        ))}
-        {strokeSegments(live, penWidth).map((sg, j) => (
-          <View key={`live${j}`} style={{
-            position: 'absolute', left: sg.x - displayed.x, top: sg.y - displayed.y,
-            width: sg.length, height: penWidth, borderRadius: penWidth / 2,
-            backgroundColor: color, transform: [{ rotate: `${sg.angle}deg` }],
-          }} />
-        ))}
+        {/* Finished strokes, then the one under the finger.
+            One Skia canvas for all of them: the old version built a native
+            view per segment, which is what made the line come out dotted at
+            every joint — and what made a long drawing crawl. */}
+        <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">
+          {/* Points are in the editor's coordinates; the canvas sits inside
+              the photo's frame, so everything shifts by the frame's origin. */}
+          <Group transform={[{ translateX: -displayed.x }, { translateY: -displayed.y }]}>
+          {strokes.map(st => {
+            const d = pathFor(st);
+            if (!d) return null;
+            return (
+              <Path
+                key={`st${st.seq}`}
+                path={d}
+                color={st.color}
+                style="stroke"
+                strokeWidth={st.width}
+                strokeCap="round"
+                strokeJoin="round"
+              />
+            );
+          })}
+          {(() => {
+            const d = pathFor({ points: live, width: penWidth, arrow: tool === 'arrow' });
+            if (!d) return null;
+            return (
+              <Path
+                path={d}
+                color={color}
+                style="stroke"
+                strokeWidth={penWidth}
+                strokeCap="round"
+                strokeJoin="round"
+              />
+            );
+          })()}
+          </Group>
+        </Canvas>
       </View>
     </View>
   );
@@ -423,7 +454,7 @@ export default function ImageEditor({
               </View>
             </View>
           )}
-          {tool === 'pen' && (
+          {drawingTool && (
             <View style={StyleSheet.absoluteFill} {...penPan.panHandlers} />
           )}
 
@@ -443,8 +474,8 @@ export default function ImageEditor({
           )}
         </View>
 
-        {/* Colour and thickness, only for the tool they apply to. */}
-        {tool === 'pen' && (
+        {/* Colour and thickness, only for the tools they apply to. */}
+        {drawingTool && (
           <View style={s.optionRow}>
             {COLORS.map(c => (
               <TouchableOpacity key={c} onPress={() => setColor(c)}
@@ -484,12 +515,12 @@ export default function ImageEditor({
           {!!captureRef && (
             <ToolBtn icon="brush-outline" label="Draw" on={tool === 'pen'} onPress={() => selectTool('pen')} />
           )}
-          <ToolBtn
-            icon="sparkles-outline"
-            label={makeup === 'off' ? 'Makeup' : makeup === 'light' ? 'Makeup 1' : 'Makeup 2'}
-            on={makeup !== 'off'}
-            onPress={() => setMakeup(m => (m === 'off' ? 'light' : m === 'light' ? 'strong' : 'off'))}
-          />
+          {/* An arrow, for pointing AT something. Only the two ends are used:
+              everything between them is the finger on its way, and an arrow
+              that follows the wander is not an arrow. */}
+          {!!captureRef && (
+            <ToolBtn icon="arrow-forward-outline" label="Arrow" on={tool === 'arrow'} onPress={() => selectTool('arrow')} />
+          )}
         </View>
 
         <View style={s.actions}>

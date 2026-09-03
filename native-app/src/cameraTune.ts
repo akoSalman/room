@@ -1,7 +1,13 @@
-// ── Tapping to set the brightness, and the makeup pass ───────────────────────
+// ── Tapping to set the brightness ────────────────────────────────────────────
 //
 // Asked for as: the camera should have brightness control by tapping the
-// object, and makeup, on both video and images.
+// object.
+//
+// This file also held a "makeup" pass — a blur-and-warm skin smoother, offered
+// on the camera and in the image editor. Asked for its removal, in full, so it
+// is gone rather than hidden behind a flag: a softening filter nobody wants is
+// a second of processing and a generation of JPEG quality spent on making a
+// photo worse.
 //
 // What the tap does, and what it cannot do
 // ----------------------------------------
@@ -20,15 +26,14 @@
 //
 // Video is the honest exception. A translucent layer over the preview is not
 // in the recorded frames, and there is no way to reach those frames without
-// replacing the camera stack. Brightness and makeup are therefore offered for
-// photos and NOT for video, rather than offered everywhere and silently doing
-// nothing on half of it.
+// replacing the camera stack. Brightness is therefore offered for photos and
+// NOT for video, rather than offered everywhere and silently doing nothing on
+// half of it.
 
 /** How far the brightness can be pushed, in stops. */
 export const EV_MIN = -1;
 export const EV_MAX = 1;
 
-export type Makeup = 'off' | 'light' | 'strong';
 
 export function clampEv(ev: number): number {
   if (!isFinite(ev)) return 0;
@@ -87,56 +92,6 @@ export function exposureMatrix(ev: number): number[] {
   ];
 }
 
-export type MakeupParams = {
-  /** Gaussian blur radius for the softened copy, in pixels at 1080px wide. */
-  blurSigma: number;
-  /** How much of the softened copy is laid over the original, 0..1. */
-  blend: number;
-  /** A touch of warmth, so skin does not go grey as it softens. */
-  warmth: number;
-  /** A small lift, because smoothing costs a little contrast. */
-  lift: number;
-};
-
-/**
- * What each makeup level does.
- *
- * "Light" is the one meant to be used: enough to take the edge off skin
- * texture and no more. "Strong" exists because people ask for it, and is still
- * short of the plastic look — a filter that makes somebody unrecognisable is
- * not a favour.
- */
-export function makeupParams(level: Makeup): MakeupParams {
-  switch (level) {
-    case 'light': return { blurSigma: 2.4, blend: 0.35, warmth: 0.03, lift: 0.02 };
-    case 'strong': return { blurSigma: 4.5, blend: 0.55, warmth: 0.05, lift: 0.04 };
-    default: return { blurSigma: 0, blend: 0, warmth: 0, lift: 0 };
-  }
-}
-
-/**
- * The blur radius for a picture of this width.
- *
- * Sigma in pixels means a different amount of smoothing on a 4000px photo than
- * on a 1080px one — the same number would be invisible on the first and heavy
- * on the second. Scaling by width keeps "light" looking light on every phone.
- */
-export function scaledSigma(sigma: number, imageWidth: number): number {
-  if (!(sigma > 0) || !(imageWidth > 0)) return 0;
-  return sigma * (imageWidth / 1080);
-}
-
-/** The colour matrix for the makeup's warmth and lift. */
-export function makeupMatrix(level: Makeup): number[] {
-  const { warmth, lift } = makeupParams(level);
-  return [
-    1 + warmth, 0, 0, 0, lift,
-    0, 1, 0, 0, lift,
-    0, 0, 1 - warmth * 0.6, 0, lift,
-    0, 0, 0, 1, 0,
-  ];
-}
-
 /**
  * Is there anything to do at all?
  *
@@ -144,8 +99,8 @@ export function makeupMatrix(level: Makeup): number[] {
  * taken: decoding and re-encoding it for a no-op costs a second of the user's
  * time, a generation of JPEG quality, and its EXIF.
  */
-export function needsProcessing(o: { ev: number; makeup: Makeup }): boolean {
-  return Math.abs(clampEv(o.ev)) > 0.01 || o.makeup !== 'off';
+export function needsProcessing(o: { ev: number }): boolean {
+  return Math.abs(clampEv(o.ev)) > 0.01;
 }
 
 /**

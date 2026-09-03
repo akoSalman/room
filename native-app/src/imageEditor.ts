@@ -118,8 +118,7 @@ export function fracToNatural(f: FracRect, natural: Size): Rect {
 // ── Freehand strokes ─────────────────────────────────────────────────────────
 
 export type Point = { x: number; y: number };
-export type Stroke = { color: string; width: number; points: Point[]; seq: number };
-export type Segment = { x: number; y: number; length: number; angle: number };
+export type Stroke = { color: string; width: number; points: Point[]; seq: number; arrow?: boolean };
 
 // ── Undo ─────────────────────────────────────────────────────────────────────
 
@@ -159,31 +158,78 @@ export function nextUndo(o: {
 }
 
 /**
- * A freehand stroke as a list of straight segments to draw.
+ * A freehand stroke as one path to draw.
  *
- * There is no canvas here, so a stroke is drawn as a run of thin rotated
- * rectangles between consecutive points. Each segment is positioned at its
- * midpoint because a View rotates about its own centre.
+ * Reported as: the pen is dotted; it should draw a solid line.
+ *
+ * It used to be a run of thin rotated rectangles, one per pair of points,
+ * because there was no canvas here. Each was its own native view, and at every
+ * joint two of them met at an angle with nothing filling the wedge between —
+ * so a quick stroke, whose points are far apart, came out as a string of beads
+ * rather than a line. (It also meant a few hundred views for one drawing,
+ * which is why drawing on a big photo crawled.)
+ *
+ * Now it is a single path, stroked once with round caps and round joins, so
+ * there are no joints to fall between.
  */
-export function strokeSegments(points: Point[], width: number): Segment[] {
-  const out: Segment[] = [];
-  for (let i = 1; i < points.length; i++) {
-    const a = points[i - 1];
-    const b = points[i];
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const length = Math.sqrt(dx * dx + dy * dy);
-    if (length < 0.5) continue;             // a jitter, not a movement
-    out.push({
-      // Top-left of a rectangle `length` long and `width` thick, centred on
-      // the midpoint between the two points.
-      x: (a.x + b.x) / 2 - length / 2,
-      y: (a.y + b.y) / 2 - width / 2,
-      length,
-      angle: (Math.atan2(dy, dx) * 180) / Math.PI,
-    });
-  }
-  return out;
+export function strokePath(points: Point[]): string {
+  const pts = (points || []).filter(p => p && Number.isFinite(p.x) && Number.isFinite(p.y));
+  if (!pts.length) return '';
+  // A tap with no movement is a dot, and has to be drawn as one: a path with a
+  // single point strokes nothing at all.
+  if (pts.length === 1) return `M${r(pts[0].x)} ${r(pts[0].y)}L${r(pts[0].x)} ${r(pts[0].y)}`;
+  let d = `M${r(pts[0].x)} ${r(pts[0].y)}`;
+  for (let i = 1; i < pts.length; i++) d += `L${r(pts[i].x)} ${r(pts[i].y)}`;
+  return d;
+}
+
+/** Two decimals is finer than a pixel and keeps the path string short. */
+function r(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+/** How long an arrowhead is, for a line of this thickness. */
+export function arrowHeadLength(width: number): number {
+  // Proportional to the line, or a thin arrow gets a huge head and a thick one
+  // a stub. Floored so the head on the thinnest pen is still a head.
+  return Math.max(12, (width || 1) * 4.5);
+}
+
+/**
+ * An arrow from the first point to the last.
+ *
+ * Asked for alongside the solid pen: a way to point AT something in a photo.
+ * Only the two ends matter — everything in between is the finger wandering on
+ * the way, and an arrow that follows the wander is not an arrow.
+ *
+ * The head is two straight barbs rather than a filled triangle, so it strokes
+ * with the same paint as the shaft and needs no second draw.
+ */
+export function arrowPath(points: Point[], width: number): string {
+  const pts = (points || []).filter(p => p && Number.isFinite(p.x) && Number.isFinite(p.y));
+  if (pts.length < 2) return '';
+  const a = pts[0];
+  const b = pts[pts.length - 1];
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  // A tap, or a shake: an arrow shorter than its own head is not an arrow, and
+  // drawing one would leave a splat where somebody expected nothing.
+  if (len < arrowHeadLength(width)) return '';
+  const angle = Math.atan2(dy, dx);
+  const head = arrowHeadLength(width);
+  const spread = Math.PI / 7;   // ~26° each side: a recognisable arrow, not a spike
+  const b1x = b.x - head * Math.cos(angle - spread);
+  const b1y = b.y - head * Math.sin(angle - spread);
+  const b2x = b.x - head * Math.cos(angle + spread);
+  const b2y = b.y - head * Math.sin(angle + spread);
+  return `M${r(a.x)} ${r(a.y)}L${r(b.x)} ${r(b.y)}`
+    + `M${r(b1x)} ${r(b1y)}L${r(b.x)} ${r(b.y)}L${r(b2x)} ${r(b2y)}`;
+}
+
+/** The path for one finished or in-progress stroke, whichever kind it is. */
+export function pathFor(stroke: { points: Point[]; width: number; arrow?: boolean }): string {
+  return stroke.arrow ? arrowPath(stroke.points, stroke.width) : strokePath(stroke.points);
 }
 
 // ── Turning the outstanding edits into one file ──────────────────────────────

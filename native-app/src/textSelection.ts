@@ -35,6 +35,48 @@
 export const DOUBLE_TAP_MS = 300;
 export const LONG_PRESS_MS = 450;
 
+/**
+ * How long after the last sign of movement the list still counts as gliding.
+ *
+ * WHY THIS IS A CLOCK AND NOT A FLAG, which is the whole of the third report
+ * of this bug ("after scrolling up the double tap to select text still
+ * doesn't work").
+ *
+ * The previous fix — mine — kept a boolean: set on momentum-begin, cleared on
+ * momentum-end or on the next drag. On Android momentum-end is not guaranteed,
+ * and there is one place it reliably does NOT arrive: a fling up reaches the
+ * end of the list, older messages are fetched and PREPENDED, and the content
+ * shifting under the glide ends it without an end event. That is exactly the
+ * "scroll up" in the report. The flag stayed true, every later touch was
+ * marked as one that stopped a fling, and `settling` throws away the timestamp
+ * a double-tap is measured from — so double-tap was dead for the rest of the
+ * session, in every message, until the chat was left and reopened.
+ *
+ * A flag can latch. A timestamp cannot: nothing more arriving IS the list
+ * having stopped. Longer than the scroll event throttle, so a finger stabbing
+ * a gliding list is still caught, and short enough that a deliberate tap after
+ * the list settles is not.
+ */
+export const SETTLE_MS = 180;
+
+/**
+ * Is the list still moving?
+ *
+ * `lastScrollAt` is when movement was last seen, or null once something has
+ * said outright that it stopped (a drag ending, a momentum ending) — those are
+ * exact when they arrive, and this is what covers the times they do not.
+ */
+export function stillMoving(o: { lastScrollAt: number | null; now: number }): boolean {
+  const at = o.lastScrollAt;
+  if (at == null) return false;
+  const since = o.now - at;
+  // A clock that went backwards (or an impossible future timestamp) must read
+  // as "stopped": erring towards not-settling costs one missed double-tap,
+  // erring the other way is the bug being fixed.
+  if (!(since >= 0)) return false;
+  return since < SETTLE_MS;
+}
+
 export type MsgId = number | string;
 
 export type SelectionState = {

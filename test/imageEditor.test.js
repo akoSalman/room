@@ -43,50 +43,142 @@ test('a degenerate size does not produce NaN', () => {
 });
 
 // ── Pen strokes ──────────────────────────────────────────────────────────────
+//
+// Reported as: the pen is dotted when drawing; it should draw a solid line.
+//
+// It used to be a run of thin rotated rectangles, one native view per pair of
+// points, because there was no canvas in the editor. At every joint two of
+// them met at an angle with nothing filling the wedge between, so a quick
+// stroke — whose points are far apart — came out as a string of beads. (It was
+// also a few hundred views for one drawing, which is why drawing crawled.)
+//
+// Now one path, stroked once with round caps and joins. There are no joints to
+// fall between.
 
-test('a stroke becomes one segment per movement', () => {
-  const segs = E.strokeSegments([{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }], 4);
-  assert.strictEqual(segs.length, 2);
+test('THE BUG: a stroke is ONE path, not a segment per movement', () => {
+  const d = E.strokePath([{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }]);
+  assert.strictEqual(d, 'M0 0L10 0L10 10');
+  // One move-to. More than one would mean the line lifts off the page
+  // somewhere in the middle, which is the dotting in a different form.
+  assert.strictEqual((d.match(/M/g) || []).length, 1, 'the pen lifts mid-stroke');
 });
 
-test('a horizontal segment is placed and angled correctly', () => {
-  // Positioned by its midpoint, because a View rotates about its own centre.
-  // Deliberately not starting at the origin, where "midpoint minus half the
-  // length" and "the first point" happen to be the same number.
-  const [seg] = E.strokeSegments([{ x: 100, y: 50 }, { x: 110, y: 50 }], 4);
-  assert.strictEqual(seg.length, 10);
-  assert.strictEqual(seg.angle, 0);
-  assert.strictEqual(seg.x, 100);    // midpoint 105, minus half the length
-  assert.strictEqual(seg.y, 48);     // midpoint 50, minus half the thickness
+test('a tap with no movement still leaves a dot', () => {
+  // A path with a single point strokes nothing at all, so the dot has to be an
+  // explicit zero-length line — with a round cap, that is a dot.
+  assert.strictEqual(E.strokePath([{ x: 5, y: 7 }]), 'M5 7L5 7');
 });
 
-test('a vertical segment is rotated a quarter turn', () => {
-  const [seg] = E.strokeSegments([{ x: 0, y: 0 }, { x: 0, y: 10 }], 4);
-  assert.strictEqual(seg.angle, 90);
-  assert.strictEqual(seg.length, 10);
-  // A rectangle is laid out horizontally and THEN rotated about its centre,
-  // so before rotation it must straddle the midpoint. Placing it at the first
-  // point instead sends every non-left-to-right stroke off at a tangent —
-  // and for a left-to-right stroke the two happen to agree, which is exactly
-  // what makes the mistake survive casual testing.
-  assert.strictEqual(seg.x, -5, 'the segment was not centred on its midpoint');
-  assert.strictEqual(seg.y, 3);
+test('nothing at all draws nothing', () => {
+  assert.strictEqual(E.strokePath([]), '');
+  assert.strictEqual(E.strokePath(null), '');
+  assert.strictEqual(E.strokePath([{ x: NaN, y: 0 }]), '', 'a NaN reached the path string');
 });
 
-test('a right-to-left segment is centred too', () => {
-  const [seg] = E.strokeSegments([{ x: 110, y: 50 }, { x: 100, y: 50 }], 4);
-  assert.strictEqual(seg.x, 100, 'a backwards stroke was drawn from the wrong end');
-  assert.strictEqual(Math.abs(seg.angle), 180);
+test('coordinates are rounded, not written out to fifteen decimals', () => {
+  const d = E.strokePath([{ x: 1 / 3, y: 2 / 3 }, { x: 1, y: 1 }]);
+  assert.strictEqual(d, 'M0.33 0.67L1 1');
 });
 
-test('a finger resting still does not pile up invisible segments', () => {
-  const points = Array.from({ length: 50 }, () => ({ x: 5, y: 5 }));
-  assert.deepStrictEqual(E.strokeSegments(points, 4), []);
+// ── The arrow ────────────────────────────────────────────────────────────────
+//
+// Asked for alongside the solid pen: a way to point AT something in a photo.
+
+test('THE ARROW: only the two ends matter, not the wander between them', () => {
+  // An arrow that follows the finger's meander is not an arrow.
+  const straight = E.arrowPath([{ x: 0, y: 0 }, { x: 100, y: 0 }], 4);
+  const wandered = E.arrowPath(
+    [{ x: 0, y: 0 }, { x: 30, y: 40 }, { x: 60, y: -20 }, { x: 100, y: 0 }], 4);
+  assert.strictEqual(straight, wandered);
 });
 
-test('a single point is not a stroke', () => {
-  assert.deepStrictEqual(E.strokeSegments([{ x: 1, y: 1 }], 4), []);
-  assert.deepStrictEqual(E.strokeSegments([], 4), []);
+test('the shaft runs from the first point to the last, and the head is at the last', () => {
+  const d = E.arrowPath([{ x: 0, y: 0 }, { x: 100, y: 0 }], 4);
+  assert.ok(d.startsWith('M0 0L100 0'), d);
+  // Two barbs, drawn as one stroke through the tip.
+  const barbs = d.slice('M0 0L100 0'.length);
+  assert.ok(/^M[\d.-]+ [\d.-]+L100 0L[\d.-]+ [\d.-]+$/.test(barbs), barbs);
+  // Both barbs sit BEHIND the tip, one either side of the line.
+  const nums = barbs.match(/-?[\d.]+/g).map(Number);
+  assert.ok(nums[0] < 100 && nums[4] < 100, 'a barb points forward past the tip');
+  assert.ok(nums[1] < 0 !== nums[5] < 0, 'both barbs are on the same side of the line');
+});
+
+test('the head is drawn behind the tip whichever way the arrow points', () => {
+  for (const [bx, by] of [[100, 0], [-100, 0], [0, 100], [0, -100], [70, 70]]) {
+    const d = E.arrowPath([{ x: 0, y: 0 }, { x: bx, y: by }], 4);
+    const nums = d.match(/-?[\d.]+/g).map(Number);
+    const tipDist = Math.hypot(bx, by);
+    // Each barb end is nearer the start than the tip is.
+    for (const [px, py] of [[nums[4], nums[5]], [nums[8], nums[9]]]) {
+      assert.ok(Math.hypot(px, py) < tipDist,
+        `barb ${px},${py} is beyond the tip for ${bx},${by}`);
+    }
+  }
+});
+
+test('the head scales with the thickness of the line', () => {
+  assert.ok(E.arrowHeadLength(10) > E.arrowHeadLength(2),
+    'a thick arrow gets the same stub of a head as a thin one');
+  assert.ok(E.arrowHeadLength(1) >= 12, 'the thinnest pen gets a head too small to see');
+});
+
+test('an arrow too short to have a head draws nothing', () => {
+  // Better nothing than a splat where a tap landed.
+  assert.strictEqual(E.arrowPath([{ x: 0, y: 0 }, { x: 3, y: 0 }], 4), '');
+  assert.strictEqual(E.arrowPath([{ x: 5, y: 5 }], 4), '');
+  assert.strictEqual(E.arrowPath([], 4), '');
+});
+
+test('pathFor picks by the stroke\'s own kind', () => {
+  const points = [{ x: 0, y: 0 }, { x: 100, y: 0 }];
+  assert.strictEqual(E.pathFor({ points, width: 4 }), E.strokePath(points));
+  assert.strictEqual(E.pathFor({ points, width: 4, arrow: true }), E.arrowPath(points, 4));
+  assert.notStrictEqual(E.pathFor({ points, width: 4 }), E.pathFor({ points, width: 4, arrow: true }));
+});
+
+// ── How the editor draws them ────────────────────────────────────────────────
+
+test('THE FIX: one canvas, round joins, and no view-per-segment', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'native-app', 'src', 'components', 'ImageEditor.tsx'), 'utf8');
+  assert.ok(!/strokeSegments/.test(src), 'the segment rectangles are still being drawn');
+  assert.ok(/<Canvas style=\{StyleSheet\.absoluteFill\}/.test(src), 'there is no canvas');
+  const canvas = src.slice(src.indexOf('<Canvas'), src.indexOf('</Canvas>'));
+  const caps = canvas.match(/strokeCap="round"/g) || [];
+  const joins = canvas.match(/strokeJoin="round"/g) || [];
+  assert.strictEqual(caps.length, 2, 'a stroke is drawn with square ends');
+  assert.strictEqual(joins.length, 2,
+    'the corners are mitred or bevelled, which is the dotting coming back at speed');
+  assert.ok(canvas.includes('pathFor(st)'), 'finished strokes are not drawn from the rules');
+});
+
+test('the arrow is a tool you can pick, and it is remembered per stroke', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'native-app', 'src', 'components', 'ImageEditor.tsx'), 'utf8');
+  assert.ok(/type Tool = 'crop' \| 'pen' \| 'arrow';/.test(src), 'there is no arrow tool');
+  assert.ok(/label="Arrow"/.test(src), 'the arrow cannot be chosen');
+  // Read out of the setStrokes call ITSELF. The same expression appears in
+  // the guard a few lines above, and a check that merely found it in the file
+  // passed while a released arrow was being stored as a freehand scribble.
+  const saved = src.slice(src.indexOf('setStrokes(prev => [...prev, {'),
+    src.indexOf('}]);', src.indexOf('setStrokes(prev => [...prev, {')));
+  assert.ok(saved.length > 0, 'the stroke is no longer stored — this check would be vacuous');
+  assert.ok(/arrow: toolRef\.current === 'arrow'/.test(saved),
+    'a finished stroke does not remember whether it was an arrow, so it redraws as a scribble');
+  // Read from a ref: the pan responder is built once and never sees a
+  // re-render's new `tool`.
+  assert.ok(/toolRef\.current = tool;/.test(src), 'the ref is never updated, so it is stuck on crop');
+  assert.ok(/const drawingTool = tool === 'pen' \|\| tool === 'arrow';/.test(src),
+    'the arrow has no touch surface or no colour controls');
+});
+
+test('a stroke that would draw nothing is not recorded', () => {
+  // Otherwise Undo has to be pressed for something invisible.
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'native-app', 'src', 'components', 'ImageEditor.tsx'), 'utf8');
+  assert.ok(/if \(points\.length > 1 && pathFor\(\{/.test(src),
+    'an arrow too short to draw is still added to the undo stack');
 });
 
 // ── The crop box as a fraction ───────────────────────────────────────────────
