@@ -127,6 +127,39 @@ test('and the thread really is the whole screen', () => {
     'the room\'s own header is still stacked above the thread\'s');
 });
 
+test('THE EMPTY BAR: the home-indicator inset goes when the keyboard covers it', () => {
+  // `env(safe-area-inset-bottom)` still reports ~34px with a keyboard up, but
+  // the home indicator it reserves room for is UNDER the keyboard — so the
+  // padding is just an empty white band above it. That is the "empty bar below
+  // the composer".
+  const rule = /body\.kb-open #input-bar,([\s\S]*?)\{([^}]*)\}/.exec(css);
+  assert.ok(rule, 'nothing drops the safe-area padding while the keyboard is up');
+  assert.ok(/padding-bottom:\s*10px/.test(rule[2]), rule[2]);
+  assert.ok(/#recording-bar/.test(rule[1]) && /#preview-bar/.test(rule[1]),
+    'the recording and preview bars keep the band');
+  // …and it is still there when there IS a home indicator to clear.
+  const base = /#input-bar \{([^}]*)\}/.exec(css);
+  assert.ok(base && /var\(--sab\)/.test(base[1]),
+    'the composer now sits on the home indicator when the keyboard is closed');
+});
+
+test('THE REDUNDANT BAR IS GONE, not merely hidden', () => {
+  // "Commenting on …" above the composer was true and redundant: the thread's
+  // own header, two inches up, IS the message being commented on and is the
+  // way back out. With it gone the space belongs to the emoji bar, which is
+  // what was asked for.
+  assert.ok(!/#comment-bar \{/.test(css), 'the strip still has styles');
+  const html = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
+  assert.ok(!/id="comment-bar"/.test(html), 'the strip is still in the page');
+  assert.ok(!/syncCommentBar/.test(app), 'the code that filled it is still there');
+  // The emoji bar is what sits in that space now, and it must still be
+  // BETWEEN the thread and the composer.
+  assert.ok(html.indexOf('id="quick-emoji-bar"') > html.indexOf('id="comments-panel"'),
+    'the emoji bar is above the thread again');
+  assert.ok(html.indexOf('id="quick-emoji-bar"') < html.indexOf('id="composer-strip"'),
+    'the emoji bar is no longer next to the composer');
+});
+
 test('the redesign did not leave two rules for the same thing', () => {
   // A duplicate `.comments-parent` survived the rewrite and silently won on
   // padding, which is its own small way of making a screen unpredictable.

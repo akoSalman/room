@@ -4300,7 +4300,6 @@ async function openComments(msgId) {
   // there. Without this, back leaves the site from inside a thread.
   try { history.pushState({ comments: true }, ''); commentsPushed++; } catch {}
   renderComments(res);
-  syncCommentBar();
 }
 
 function closeComments(fromHistory) {
@@ -4317,24 +4316,6 @@ function closeComments(fromHistory) {
   }
   document.getElementById('comments-panel').classList.add('hidden');
   document.body.classList.remove('commenting');
-  syncCommentBar();
-}
-
-/** The strip above the composer saying where what you type is going. */
-function syncCommentBar() {
-  const bar = document.getElementById('comment-bar');
-  if (!bar) return;
-  bar.classList.toggle('hidden', !commentParent);
-  if (!commentParent) return;
-  const who = commentParent.username || '';
-  const what = (commentParent.content || '').slice(0, 60) || messageKindLabel(commentParent.type);
-  document.getElementById('comment-bar-text').textContent = `Commenting on ${who}: ${what}`;
-}
-
-function messageKindLabel(type) {
-  return type === 'audio' ? '🎙 Voice message' : type === 'image' ? '🖼 Image'
-    : type === 'gallery' ? '🖼 Photos' : type === 'video' ? '🎥 Video'
-    : type === 'location' ? '📍 Location' : type === 'music' ? '🎵 Audio file' : '📄 File';
 }
 
 function renderComments(res) {

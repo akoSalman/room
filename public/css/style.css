@@ -1455,6 +1455,13 @@ body.disappearing-on .msg-caption, body.disappearing-on .msg-time { color: #8fa3
 /* The conversation is still mounted, keeping its scroll position, its loaded
    history and its pending uploads — closing the thread puts it back exactly as
    it was rather than reloading the room. */
+/* The home indicator is COVERED by the keyboard, so the inset it reserves is
+   an empty white band above it — the "empty bar below the composer". The
+   padding is only right when there is a home indicator to clear. */
+body.kb-open #input-bar,
+body.kb-open #recording-bar,
+body.kb-open #preview-bar { padding-bottom: 10px; }
+
 body.commenting #messages,
 body.commenting #typing-bar,
 body.commenting #scroll-fab,
@@ -1541,13 +1548,3 @@ body.commenting #install-hint { display: none; }
 .comment-bar-label { flex: 1; }
 .comment-bar-chev { font-size: 1.05rem; line-height: 1; opacity: 0.7; }
 
-/* Says where what you type is going. A quiet strip with the accent standing
-   the left edge, rather than a wash of blue across the composer. */
-#comment-bar {
-  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
-  background: rgba(128, 128, 128, 0.08);
-  border-top: 1px solid var(--border);
-  border-inline-start: 3px solid var(--accent);
-  font-size: 0.8rem; color: var(--muted);
-}
-#comment-bar span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
