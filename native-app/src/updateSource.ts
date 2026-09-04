@@ -37,6 +37,15 @@ export type UpdateInfo = {
   source: Source;
   /** True when neither place could be asked at all. */
   failed: boolean;
+  /**
+   * How big the build is, when the source said.
+   *
+   * Carried through because the DOWNLOAD needs it: a response with no
+   * Content-Length cannot report a percentage, and this is the only other
+   * place the size is known. GitHub's fallback url has none, so it is
+   * undefined there and the download falls back to showing bytes.
+   */
+  sizeBytes?: number;
 };
 
 export const UNKNOWN: UpdateInfo = {
@@ -95,6 +104,7 @@ export function chooseSource(o: {
       apkUrl: absoluteUrl(o.server.url, o.baseUrl),
       source: 'server',
       failed: false,
+      sizeBytes: o.server.size,
     };
   }
   if (o.github !== null) {

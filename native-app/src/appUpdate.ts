@@ -17,6 +17,7 @@ import notifee, { AndroidImportance } from '@notifee/react-native';
 import * as connection from './connection';
 import {
   DownloadPhase, phaseOnNetworkChange, shouldAutoResume, snapshotMatches, canContinue,
+  fractionOf,
 } from './updateResume';
 // Re-exported so callers have one place to look.
 export { installChoice, UpdateChoice } from './updateChoice';
@@ -40,9 +41,26 @@ export type UpdateState = {
   uri?: string;
   /** Whether resuming will really continue, or start over. See updateResume. */
   continues?: boolean;
+  /** Bytes on disk so far — what to show when no percentage can be known. */
+  written?: number;
+  /**
+   * Is `progress` measured against a real total?
+   *
+   * False when neither the response nor the manifest said how big the file is.
+   * The bar is then indeterminate rather than a straight lie at 0%.
+   */
+  knowsTotal?: boolean;
 };
 
-let state: UpdateState = { progress: 0, status: 'idle' };
+let state: UpdateState = { progress: 0, status: 'idle', written: 0, knowsTotal: true };
+/**
+ * How big the build is, from the manifest.
+ *
+ * The reason this is here at all: a response with no Content-Length reports
+ * `totalBytesExpectedToWrite` as -1, and the bar was driven entirely by that.
+ * The manifest has known the size all along.
+ */
+let declaredSize: number | null = null;
 let task: FileSystem.DownloadResumable | null = null;
 const listeners = new Set<() => void>();
 /** What is being downloaded, so the watcher can resume it without being told. */
@@ -169,23 +187,43 @@ export async function forgetDownloaded(): Promise<void> {
  * `version` is what is being downloaded, remembered so that a download the user
  * never installed can be offered as Install rather than downloaded again.
  */
-export async function start(url: string, version?: number): Promise<void> {
+export async function start(url: string, version?: number, sizeBytes?: number | null): Promise<void> {
   if (state.status === 'downloading') return;
   currentUrl = url;
   currentVersion = version;
+  declaredSize = typeof sizeBytes === 'number' && sizeBytes > 0 ? sizeBytes : declaredSize;
   watchConnection();
   // The progress already made is kept: this may be a resume, and zeroing the
   // bar here is what made a continuing download look like a fresh one.
   state = { ...state, progress: state.status === 'paused' ? state.progress : 0, status: 'downloading' };
   emit();
 
+  let lastNotifiedPct = -1;
   const onProgress = (p: FileSystem.DownloadProgressData) => {
-    if (p.totalBytesExpectedToWrite > 0) {
-      state = { ...state, progress: p.totalBytesWritten / p.totalBytesExpectedToWrite };
-      emit();
-      // The shade is updated less often than the UI: a notification per frame
-      // is throttled by Android anyway and just burns battery.
-      if (Math.round(state.progress * 100) % 5 === 0) notify(state.progress);
+    // NOT gated on the response declaring a length. It was, and that is the
+    // bug: with no Content-Length this callback fires all the way through the
+    // download and every single call was thrown away, so the bar sat at zero
+    // until the installer appeared.
+    const written = Number(p.totalBytesWritten) || 0;
+    const frac = fractionOf({
+      written, expected: p.totalBytesExpectedToWrite, declared: declaredSize,
+    });
+    state = {
+      ...state,
+      written,
+      progress: frac === null ? state.progress : frac,
+      knowsTotal: frac !== null,
+    };
+    emit();
+    // The shade is updated less often than the UI: a notification per frame is
+    // throttled by Android anyway and just burns battery. Compared against the
+    // last one SENT — the old test was "the percentage divides by 5", which
+    // fires many times within one percent and skips whenever a percent is
+    // crossed between two callbacks.
+    const pct = frac === null ? -1 : Math.round(frac * 100);
+    if (pct >= 0 && pct !== lastNotifiedPct && pct % 5 === 0) {
+      lastNotifiedPct = pct;
+      notify(frac as number);
     }
   };
 
@@ -211,7 +249,7 @@ export async function start(url: string, version?: number): Promise<void> {
     await clearNotification();
 
     if (!res?.uri) throw new Error('no file');
-    state = { progress: 1, status: 'done', uri: res.uri };
+    state = { progress: 1, status: 'done', uri: res.uri, written: state.written, knowsTotal: true };
     emit();
     // Remembered BEFORE the installer is opened, because the user may well
     // back out of it — and that is exactly the case this record exists for.
@@ -247,7 +285,7 @@ export async function cancel() {
   task = null;
   currentUrl = null;
   currentVersion = undefined;
-  state = { progress: 0, status: 'idle' };
+  state = { progress: 0, status: 'idle', written: 0, knowsTotal: true };
   emit();
   try { await t?.cancelAsync(); } catch {}
   await AsyncStorage.removeItem(RESUME_KEY);

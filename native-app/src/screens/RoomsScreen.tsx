@@ -70,6 +70,8 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   const [latestVersion, setLatestVersion] = useState<number | null>(null);
   /** Where the newest build will be fetched from, once a check has answered. */
   const [apkUrl, setApkUrl] = useState<string | null>(null);
+  /** How big that build is, when the manifest said — see appUpdate.start. */
+  const [apkSize, setApkSize] = useState<number | null>(null);
   // An APK already on the phone that was downloaded but never installed —
   // backing out of Android's installer is easy to do and easy not to notice.
   const [downloadedUpdate, setDownloadedUpdate] =
@@ -347,6 +349,8 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
     });
     setLatestVersion(info.latestVersion);
     setApkUrl(info.apkUrl);
+    setApkSize(info.sizeBytes ?? null);
+    setApkSize(info.sizeBytes ?? null);
     setVersionCheckFailed(info.failed);
   }
 
@@ -357,7 +361,9 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
     // no longer cancels the download.
     // The version travels with it so a download the user never installs can be
     // offered as Install next time instead of being fetched all over again.
-    appUpdate.start(from, latestVersion ?? undefined).catch(() => {});
+    // The size travels with it: without a Content-Length the download cannot
+    // work out a percentage on its own, and the manifest has always known.
+    appUpdate.start(from, latestVersion ?? undefined, apkSize).catch(() => {});
   }
 
   /** Hand the already-downloaded APK back to Android's installer. */
@@ -692,7 +698,15 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
               {updateProgress !== null ? (
                 <View style={s.updateProgressWrap}>
                   <View style={s.updateProgressTrack}>
-                    <View style={[s.updateProgressFill, { width: `${Math.round(updateProgress * 100)}%` }]} />
+                    {/* Indeterminate when nothing knows the size: a bar
+                        frozen at 0% reads as "stuck", which is exactly what
+                        was reported. */}
+                    <View style={[
+                      s.updateProgressFill,
+                      updateState.knowsTotal === false
+                        ? s.updateProgressUnknown
+                        : { width: `${Math.round(updateProgress * 100)}%` },
+                    ]} />
                   </View>
                   <Text style={s.updateProgressText}>
                     {updateStatusLine({
@@ -700,6 +714,8 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
                       percent: updateProgress * 100,
                       online: online,
                       canContinue: !!updateState.continues,
+                      written: updateState.written,
+                      knowsTotal: updateState.knowsTotal !== false,
                     })}
                   </Text>
                 </View>
@@ -967,6 +983,9 @@ const s = StyleSheet.create({
   updateProgressWrap: { gap: 8 },
   updateProgressTrack: { height: 8, borderRadius: 4, backgroundColor: C.inputBg, overflow: 'hidden', borderWidth: 1, borderColor: C.border },
   updateProgressFill: { height: '100%', backgroundColor: C.accent },
+  // No percentage to draw: a third of the track, so the bar reads as "working"
+  // rather than as "nothing has happened".
+  updateProgressUnknown: { width: '35%', opacity: 0.7 },
   updateProgressText: { color: C.muted, fontSize: 12, textAlign: 'center' },
 
   // Rename modal

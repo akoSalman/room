@@ -66,14 +66,67 @@ export function canContinue(snap: Snapshot | null | undefined): boolean {
   return !!(snap && typeof snap.resumeData === 'string' && snap.resumeData.length > 0);
 }
 
+/**
+ * How far along, as a fraction, or null when nobody can say.
+ *
+ * Reported as: the update shows no progress at all and then, after a while,
+ * the install dialog appears.
+ *
+ * A download only knows a PERCENTAGE if something told it how big the file is,
+ * and `totalBytesExpectedToWrite` is -1 whenever the response arrives without
+ * a length — which is every chunked or re-encoded response, and every proxy
+ * that decides to stream. The bar was then driven by a number that never
+ * changed, so a forty-megabyte download looked like nothing happening.
+ *
+ * The manifest already says how big the build is, so that is used when the
+ * response will not say. And when NEITHER knows, this returns null rather than
+ * a made-up 0 — the caller shows the bytes so far instead, which is still a
+ * sign of life.
+ */
+export function fractionOf(o: {
+  written: number; expected?: number | null; declared?: number | null;
+}): number | null {
+  const written = Number(o.written);
+  if (!Number.isFinite(written) || written < 0) return null;
+  const total = [o.expected, o.declared]
+    .map(v => Number(v))
+    .find(v => Number.isFinite(v) && v > 0);
+  if (!total) return null;
+  return Math.max(0, Math.min(1, written / total));
+}
+
+/** Bytes as something a person can read. */
+export function humanBytes(n: number): string {
+  const b = Number(n);
+  if (!Number.isFinite(b) || b <= 0) return '0 MB';
+  if (b < 1024 * 1024) return `${Math.max(1, Math.round(b / 1024))} KB`;
+  return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 /** What the button and the line under it should say. */
 export function statusLine(o: {
   phase: DownloadPhase; percent: number; online: boolean; canContinue: boolean;
+  /** Bytes on disk, used when no percentage can be known. */
+  written?: number;
+  /** False when the percentage is a guess at nothing. */
+  knowsTotal?: boolean;
 }): string {
+  const unknown = o.knowsTotal === false;
   switch (o.phase) {
     case 'downloading':
-      return `Downloading update… ${Math.round(o.percent)}%`;
+      // Never "0%" forever: with no size to measure against, what IS known is
+      // how much has arrived, and that moves.
+      return unknown
+        ? `Downloading update… ${humanBytes(o.written || 0)}`
+        : `Downloading update… ${Math.round(o.percent)}%`;
     case 'paused':
+      if (unknown) {
+        return o.online
+          ? `Paused at ${humanBytes(o.written || 0)} — continuing…`
+          : o.canContinue
+            ? `Waiting for a connection — will continue from ${humanBytes(o.written || 0)}`
+            : 'Waiting for a connection — will start again when it returns';
+      }
       return o.online
         ? `Paused at ${Math.round(o.percent)}% — continuing…`
         : o.canContinue

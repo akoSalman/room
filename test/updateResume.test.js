@@ -173,6 +173,100 @@ test('the profile treats a paused download as still in progress', () => {
   assert.ok(rooms.includes('updateStatusLine({'), 'the screen writes its own status text again');
 });
 
+// ── The bar that never moved ────────────────────────────────────────────────
+//
+// Reported as: the update shows no progress at all, and then after a while the
+// install dialog appears.
+//
+// A download only knows a PERCENTAGE if something told it how big the file is.
+// `totalBytesExpectedToWrite` is -1 whenever the response arrives without a
+// Content-Length — a chunked response, a re-encoding proxy, anything that
+// streams — and the progress handler was wrapped in `if (expected > 0)`. Every
+// callback of a forty-megabyte download was thrown away, so the bar sat at
+// zero until the installer appeared. It looked like nothing was happening
+// because nothing was being drawn.
+
+test('THE BUG: progress is not thrown away when the response has no length', () => {
+  // -1 is what Android reports for a response with no Content-Length.
+  assert.strictEqual(U.fractionOf({ written: 5_000_000, expected: -1, declared: null }), null,
+    'a percentage was invented out of nothing');
+  // …but the MANIFEST knows how big the build is, and always did.
+  assert.strictEqual(U.fractionOf({ written: 5_000_000, expected: -1, declared: 10_000_000 }), 0.5,
+    'the size from the manifest is ignored, so the bar cannot move');
+  // The response wins when it has one — it is measuring the actual transfer.
+  assert.strictEqual(U.fractionOf({ written: 25, expected: 100, declared: 999 }), 0.25);
+});
+
+test('a fraction is never nonsense', () => {
+  assert.strictEqual(U.fractionOf({ written: 150, expected: 100 }), 1, 'the bar ran off its track');
+  assert.strictEqual(U.fractionOf({ written: -5, expected: 100 }), null);
+  assert.strictEqual(U.fractionOf({ written: 10, expected: 0, declared: 0 }), null,
+    'dividing by a zero total');
+  assert.strictEqual(U.fractionOf({ written: 0, expected: 100 }), 0);
+});
+
+test('with no size at all, the user is shown what IS known', () => {
+  // Bytes on disk. They move, which is the entire point — a bar frozen at 0%
+  // reads as "stuck", and that is what was reported.
+  const line = U.statusLine({
+    phase: 'downloading', percent: 0, online: true, canContinue: false,
+    written: 12_600_000, knowsTotal: false,
+  });
+  assert.ok(/12\.0 MB/.test(line), `no sign of life in "${line}"`);
+  assert.ok(!/0%/.test(line), `"${line}" still claims a percentage it does not have`);
+  // A pause says the same thing in its own terms.
+  const paused = U.statusLine({
+    phase: 'paused', percent: 0, online: false, canContinue: true,
+    written: 12_600_000, knowsTotal: false,
+  });
+  assert.ok(/12\.0 MB/.test(paused) && /continue/.test(paused), paused);
+  // And when the total IS known, nothing about the old wording changes.
+  assert.strictEqual(
+    U.statusLine({ phase: 'downloading', percent: 42, online: true, canContinue: false }),
+    'Downloading update… 42%');
+});
+
+test('bytes are readable', () => {
+  assert.strictEqual(U.humanBytes(0), '0 MB');
+  assert.strictEqual(U.humanBytes(2048), '2 KB');
+  assert.strictEqual(U.humanBytes(41_943_040), '40.0 MB');
+  assert.strictEqual(U.humanBytes(-1), '0 MB');
+});
+
+test('the downloader keeps every callback and the size travels to it', () => {
+  const fn = upd.slice(upd.indexOf('const onProgress ='), upd.indexOf('try {', upd.indexOf('const onProgress =')));
+  assert.ok(fn.length > 0, 'onProgress is gone — this check would be vacuous');
+  assert.ok(!/if \(p\.totalBytesExpectedToWrite > 0\)/.test(fn),
+    'the handler still throws away every callback when the response has no length');
+  assert.ok(/fractionOf\(\{/.test(fn), 'the progress is worked out by hand again');
+  assert.ok(/declared: declaredSize/.test(fn), 'the manifest size never reaches the calculation');
+  assert.ok(/written,/.test(fn), 'the bytes so far are not kept, so there is nothing to show');
+  // The size has to get there in the first place.
+  assert.ok(/sizeBytes\?: number \| null/.test(upd), 'start() cannot be told the size');
+  assert.ok(/sizeBytes: o\.server\.size/.test(
+    fs.readFileSync(path.join(NAT, 'src', 'updateSource.ts'), 'utf8')),
+    'the manifest size is parsed and then dropped');
+  assert.ok(/appUpdate\.start\(from, latestVersion \?\? undefined, apkSize\)/.test(rooms),
+    'the screen never passes the size to the download');
+  assert.ok(/setApkSize\(info\.sizeBytes \?\? null\)/.test(rooms), 'the size is never remembered');
+});
+
+test('the shade is updated once per step, not many times or never', () => {
+  // The old test was "the percentage divides by 5", which fires repeatedly
+  // within one percent and SKIPS a step entirely whenever two callbacks
+  // straddle it.
+  const fn = upd.slice(upd.indexOf('const onProgress ='), upd.indexOf('try {', upd.indexOf('const onProgress =')));
+  assert.ok(/pct !== lastNotifiedPct/.test(fn), 'the notification is posted many times per percent');
+});
+
+test('the bar is indeterminate rather than a frozen zero', () => {
+  assert.ok(/updateState\.knowsTotal === false/.test(rooms),
+    'a download with no known size still draws a bar stuck at 0%');
+  assert.ok(/updateProgressUnknown/.test(rooms), 'there is no indeterminate style to switch to');
+  assert.ok(/knowsTotal: updateState\.knowsTotal !== false/.test(rooms),
+    'the status line is never told the percentage is meaningless');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }
