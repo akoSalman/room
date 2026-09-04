@@ -4338,11 +4338,7 @@ function messageKindLabel(type) {
 }
 
 function renderComments(res) {
-  document.getElementById('comments-title').textContent =
-    Comments.commentsTitle(res.comments.length);
-  const head = document.getElementById('comments-parent');
-  head.innerHTML = '';
-  head.appendChild(buildMessageElement(res.parent));
+  renderCommentsHead(res.parent, res.comments.length);
   const list = document.getElementById('comments-list');
   list.innerHTML = '';
   if (!res.comments.length) {
@@ -4389,6 +4385,42 @@ function syncCommentsFab() {
   fab.classList.toggle('hidden', !commentParent || !CommentsView.showsJumpButton({
     scrollHeight: list.scrollHeight, scrollTop: list.scrollTop, clientHeight: list.clientHeight,
   }));
+}
+
+/**
+ * The message being discussed, reduced to one line beside the back arrow.
+ *
+ * It used to be pinned here in full, rendered exactly as in the chat. That is
+ * fine on a whole screen and useless on what is left when a keyboard takes
+ * half of it — a photo filled the space and the comments had none. It is a
+ * heading now, and tapping it goes to the real message.
+ */
+function renderCommentsHead(parent, count) {
+  const preview = CommentsView.parentPreview(parent);
+  document.getElementById('comments-parent-preview').textContent = preview.text;
+  document.getElementById('comments-title').textContent = Comments.commentsTitle(count);
+  const thumb = document.getElementById('comments-parent-thumb');
+  const src = preview.thumb ? firstImageOf(parent) : '';
+  thumb.classList.toggle('hidden', !src);
+  if (src) thumb.src = thumbUrl(src, 64);
+}
+
+/** The first picture in a message, whatever shape the message stores. */
+function firstImageOf(msg) {
+  const path = msg && msg.file_path;
+  if (!path) return '';
+  if (msg.type === 'gallery') {
+    try { return JSON.parse(path)[0] || ''; } catch { return ''; }
+  }
+  return path;
+}
+
+/** Leave the thread and go to the message it is about. */
+function jumpToParentMessage() {
+  const id = commentParent && commentParent.id;
+  if (id == null) return;
+  closeComments();
+  jumpToMessage(Number(id));
 }
 
 /** One comment arriving while its thread is open. */

@@ -42,10 +42,47 @@
     return o.pushed > 0 ? 'back' : 'none';
   }
 
+
+  var PREVIEW_CHARS = 48;
+
+  function trimTo(text, max) {
+    var s = String(text || '');
+    if (s.length <= max) return s;
+    var cut = s.slice(0, max);
+    var space = cut.lastIndexOf(' ');
+    return (space > max * 0.6 ? cut.slice(0, space) : cut).replace(/\s+$/, '') + '\u2026';
+  }
+
+  function labelFor(type) {
+    switch (type) {
+      case 'image': return 'Photo';
+      case 'gallery': return 'Photos';
+      case 'video': return 'Video';
+      case 'audio': return 'Voice message';
+      case 'music': return 'Audio';
+      case 'location': return 'Location';
+      default: return 'File';
+    }
+  }
+
+  function parentPreview(msg) {
+    var m = msg || {};
+    var type = String(m.type || 'text');
+    var words = trimTo(String(m.content || '').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, ''), PREVIEW_CHARS);
+    var pictorial = type === 'image' || type === 'gallery' || type === 'video';
+    if (pictorial) return { text: words || labelFor(type), thumb: true };
+    if (type === 'text') return { text: words || 'Message', thumb: false };
+    var named = trimTo(String(m.file_name || '').replace(/^\s+|\s+$/g, ''), PREVIEW_CHARS);
+    return { text: words || named || labelFor(type), thumb: false };
+  }
+
   global.CommentsView = {
     NEAR_BOTTOM_PX: NEAR_BOTTOM_PX,
     SWIPE_CLOSE_PX: SWIPE_CLOSE_PX,
     commentsBarLabel: commentsBarLabel,
+    PREVIEW_CHARS: PREVIEW_CHARS,
+    parentPreview: parentPreview,
+    trimTo: trimTo,
     isNearBottom: isNearBottom,
     shouldStickToBottom: shouldStickToBottom,
     showsJumpButton: showsJumpButton,

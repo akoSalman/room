@@ -312,8 +312,13 @@ test('THE SAME DESIGN: the thread is not a Modal, so it keeps the composer', () 
   const view = chat.slice(chat.indexOf('{commentParent && ('), chat.indexOf('{/* Messages */}'));
   assert.ok(view.length > 0, 'there is no comments screen');
   assert.ok(!/<Modal/.test(view), 'the thread is a Modal, which covers the composer that writes the comments');
-  assert.ok(/renderMessage\(\{ item: commentParent \}\)/.test(view),
-    'the message being commented on is drawn some other way than the chat draws it');
+  // The parent is no longer DRAWN here at all — it is one line in the header,
+  // asserted in test/commentsView.test.js. Pinning the whole message left no
+  // room for the comments once a keyboard was up.
+  assert.ok(/parentPreview\(commentParent\)/.test(view),
+    'the message being commented on is not summarised in the header');
+  assert.ok(!/renderMessage\(\{ item: commentParent \}\)/.test(view),
+    'the whole message is pinned at the top again');
   assert.ok(/renderItem=\{renderMessage\}/.test(view), 'the comments are not real message rows');
   assert.ok(/EMPTY_HINT/.test(view), 'an empty thread says nothing at all');
   // …and the conversation is hidden rather than unmounted, so its scroll

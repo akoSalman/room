@@ -137,3 +137,71 @@ export function backAction(o: {
   if (o.fromHistory) return 'none';
   return o.pushed > 0 ? 'back' : 'none';
 }
+
+// ── The parent, reduced to a line ────────────────────────────────────────────
+//
+// Asked for as: the thread has no room for new messages once the keyboard is
+// up. Make it a full screen, with only a SHORT preview of the message it is
+// about — a couple of words of text, or a small thumbnail for a picture — as a
+// link back to the original, stuck to the top bar. The rest should be a normal
+// chat with proper space.
+//
+// The first version pinned the whole message, rendered exactly as it appears
+// in the conversation, capped at a share of the panel. That is fine on a full
+// screen and useless on what is left when a keyboard takes half of it: a photo
+// filled the space and the comments — the reason for the screen — had none.
+//
+// So the parent stops being CONTENT and becomes a HEADING: one line, beside
+// the back arrow, tappable to jump to the real message. Everything below it is
+// the chat.
+
+/** How much of a text message survives in a heading. */
+export const PREVIEW_CHARS = 48;
+
+export type ParentPreview = {
+  /** A few words, or what the message is when it has no words. */
+  text: string;
+  /** True when a thumbnail should be drawn beside it. */
+  thumb: boolean;
+};
+
+/**
+ * The one-line description of the message a thread is about.
+ *
+ * A caption beats a type name — "Photo" says nothing that the thumbnail beside
+ * it does not — so a picture sent with words is described by its words.
+ */
+export function parentPreview(msg: {
+  type?: string | null; content?: string | null; file_name?: string | null;
+} | null | undefined): ParentPreview {
+  const m = msg || {};
+  const type = String(m.type || 'text');
+  const words = trimTo(String(m.content || '').replace(/\s+/g, ' ').trim(), PREVIEW_CHARS);
+  const pictorial = type === 'image' || type === 'gallery' || type === 'video';
+  if (pictorial) return { text: words || labelFor(type), thumb: true };
+  if (type === 'text') return { text: words || 'Message', thumb: false };
+  // A file's NAME is the useful part; a voice note has nothing but its kind.
+  const named = trimTo(String(m.file_name || '').trim(), PREVIEW_CHARS);
+  return { text: words || named || labelFor(type), thumb: false };
+}
+
+function labelFor(type: string): string {
+  switch (type) {
+    case 'image': return 'Photo';
+    case 'gallery': return 'Photos';
+    case 'video': return 'Video';
+    case 'audio': return 'Voice message';
+    case 'music': return 'Audio';
+    case 'location': return 'Location';
+    default: return 'File';
+  }
+}
+
+/** Cut on a word where one is near the end, so it does not stop mid-syllable. */
+export function trimTo(text: string, max: number): string {
+  const s = String(text || '');
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max);
+  const space = cut.lastIndexOf(' ');
+  return (space > max * 0.6 ? cut.slice(0, space) : cut).trimEnd() + '…';
+}

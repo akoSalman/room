@@ -103,21 +103,34 @@ test('…and the only fallbacks left belong to the two script-set ones', () => {
     'the app has no height on a browser that never sets --vv-h');
 });
 
-test('the pinned message cannot eat the screen when the keyboard is up', () => {
-  // 40% of a full screen is context; 40% of what is left with a keyboard open
-  // is the whole thread, and with a photo at the top there was nowhere for the
-  // comments to be. That is the other half of what the screenshots showed.
-  const rule = /\.comments-parent \{([^}]*)\}/.exec(css);
-  assert.ok(rule, '.comments-parent has no rule — this check would be vacuous');
-  assert.ok(/max-height:\s*min\(38%, 190px\)/.test(rule[1]),
-    'the pinned message is capped only as a fraction, so a short screen is all header');
-  assert.ok(/overflow-y:\s*auto/.test(rule[1]), 'a long pinned message cannot be read at all');
+test('THE PINNED MESSAGE IS GONE, and is a heading instead', () => {
+  // It was capped at 40% of the panel. With a keyboard up that is 40% of about
+  // 200px, and with a photo at the top there was nowhere for the comments to
+  // be — which is the whole of "not enough space for new messages". Capping it
+  // smaller was still the wrong answer: the message is context, not content,
+  // so it is one line beside the back arrow now.
+  assert.ok(!/\.comments-parent \{/.test(css), 'the pinned message block is still there');
+  const link = /\.comments-parent-link \{([^}]*)\}/.exec(css);
+  assert.ok(link, 'there is no heading to open the original with');
+  assert.ok(/flex:\s*1/.test(link[1]), 'the heading does not take the width beside the back arrow');
+  const thumb = /\.comments-parent-thumb \{([^}]*)\}/.exec(css);
+  assert.ok(thumb && /width:\s*32px/.test(thumb[1]),
+    'a picture is not reduced to a thumbnail');
+});
+
+test('and the thread really is the whole screen', () => {
+  // Two headers stacked — the room's and the thread's — was most of what made
+  // this cramped, and the emoji bar rendering above the panel was the rest.
+  const hidden = /body\.commenting #messages,([\s\S]*?)\{ display: none; \}/.exec(css);
+  assert.ok(hidden, 'nothing is hidden while a thread is open');
+  assert.ok(/body\.commenting #chat-header/.test(hidden[1]),
+    'the room\'s own header is still stacked above the thread\'s');
 });
 
 test('the redesign did not leave two rules for the same thing', () => {
   // A duplicate `.comments-parent` survived the rewrite and silently won on
   // padding, which is its own small way of making a screen unpredictable.
-  for (const sel of ['.comments-parent', '#comments-panel', '.comments-list', '.comment-bar-btn']) {
+  for (const sel of ['.comments-parent-link', '#comments-panel', '.comments-list', '.comment-bar-btn']) {
     const n = (css.match(new RegExp(sel.replace('.', '\\.') + '\\s*\\{', 'g')) || []).length;
     assert.strictEqual(n, 1, `${sel} is defined ${n} times`);
   }

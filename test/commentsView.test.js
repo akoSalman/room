@@ -71,6 +71,57 @@ test('the launcher-badge geometry is gone, not left behind as dead code', () => 
   assert.strictEqual(W.BADGE_SIZE, undefined);
 });
 
+// ── The parent, reduced to a line ──────────────────────────────────────────
+//
+// Asked for as: the thread has no room for new messages once the keyboard is
+// up. Make it a full screen, with only a SHORT preview of the message it is
+// about — a couple of words, or a small thumbnail for a picture — as a link
+// back to the original, stuck to the top bar.
+
+test('THE HEADING: a long message becomes a few words', () => {
+  const p = W.parentPreview({ type: 'text', content: 'hello there my friend this is quite a long message indeed' });
+  assert.ok(p.text.length <= W.PREVIEW_CHARS + 1, `${p.text.length} characters is not a heading`);
+  assert.ok(p.text.endsWith('…'), p.text);
+  assert.strictEqual(p.thumb, false, 'a text message asked for a thumbnail');
+});
+
+test('and a short one is left exactly as it is', () => {
+  assert.deepStrictEqual(W.parentPreview({ type: 'text', content: 'see this' }),
+    { text: 'see this', thumb: false });
+});
+
+test('it cuts on a word rather than mid-syllable', () => {
+  assert.strictEqual(W.trimTo('alpha beta gamma delta', 12), 'alpha beta…');
+  // …unless the last word is so long that cutting on it would throw most of
+  // the line away.
+  assert.strictEqual(W.trimTo('a supercalifragilistic', 12), 'a supercalif…');
+  assert.strictEqual(W.trimTo('short', 12), 'short');
+});
+
+test('a picture asks for a thumbnail, and its caption is the words', () => {
+  // "Photo" says nothing the thumbnail beside it does not.
+  assert.deepStrictEqual(W.parentPreview({ type: 'image', content: 'look at this' }),
+    { text: 'look at this', thumb: true });
+  assert.deepStrictEqual(W.parentPreview({ type: 'image' }), { text: 'Photo', thumb: true });
+  assert.strictEqual(W.parentPreview({ type: 'gallery' }).thumb, true);
+  assert.strictEqual(W.parentPreview({ type: 'video' }).thumb, true);
+});
+
+test('a message with no words is named by what it is', () => {
+  assert.strictEqual(W.parentPreview({ type: 'audio' }).text, 'Voice message');
+  assert.strictEqual(W.parentPreview({ type: 'location' }).text, 'Location');
+  // A file's NAME is the useful part.
+  assert.strictEqual(W.parentPreview({ type: 'file', file_name: 'report.pdf' }).text, 'report.pdf');
+  assert.strictEqual(W.parentPreview({ type: 'file' }).text, 'File');
+  assert.strictEqual(W.parentPreview(null).text, 'Message');
+  assert.strictEqual(W.parentPreview({ type: 'text', content: '   ' }).text, 'Message');
+});
+
+test('newlines do not turn a heading into three', () => {
+  assert.strictEqual(W.parentPreview({ type: 'text', content: 'one\n\ntwo   three' }).text,
+    'one two three');
+});
+
 // ── Following the thread ────────────────────────────────────────────────────
 
 test('THE BUG: a comment I sent is always shown to me', () => {
@@ -149,6 +200,15 @@ test('the app and the web behave identically', () => {
     assert.strictEqual(W.commentsBarLabel(n), A.commentsBarLabel(n), `commentsBarLabel ${n}`);
     checked++;
   }
+  for (const m of [
+    { type: 'text', content: 'hello there my friend this is quite a long message indeed' },
+    { type: 'text', content: 'see this' }, { type: 'text', content: '  ' },
+    { type: 'image' }, { type: 'image', content: 'look' }, { type: 'gallery' },
+    { type: 'audio' }, { type: 'file', file_name: 'report.pdf' }, { type: 'file' }, null,
+  ]) {
+    assert.deepStrictEqual(W.parentPreview(m), A.parentPreview(m), `parentPreview ${JSON.stringify(m)}`);
+    checked++;
+  }
   const boxes = [
     { scrollHeight: 1000, scrollTop: 900, clientHeight: 100 },
     { scrollHeight: 3000, scrollTop: 0, clientHeight: 600 },
@@ -179,7 +239,8 @@ test('the app and the web behave identically', () => {
       checked++;
     }
   }
-  assert.strictEqual(checked, 29, 'the drift check did not actually run');
+  assert.strictEqual(checked, 39, 'the drift check did not actually run');
+  assert.strictEqual(W.PREVIEW_CHARS, A.PREVIEW_CHARS);
   assert.strictEqual(W.NEAR_BOTTOM_PX, A.NEAR_BOTTOM_PX);
   assert.strictEqual(W.SWIPE_CLOSE_PX, A.SWIPE_CLOSE_PX);
 });
@@ -215,6 +276,49 @@ test('and it is built inside the bubble, saying what it opens', () => {
     'every message in the room carries a "0 Comments" strip');
   assert.ok(/dataset\.msgId = msg\.id/.test(fn),
     'a comment arriving live cannot find its bar, so the count only moves on reload');
+});
+
+test('THE FULL SCREEN: the panel sits above the emoji bar, not below it', () => {
+  // Reported as "on web the emoji bar is on top". Both take the space the
+  // conversation had, and the panel was further down the document — so the bar
+  // rendered above it and the thread began halfway down the screen.
+  assert.ok(html.indexOf('id="comments-panel"') > html.indexOf('id="messages"'),
+    'the thread is not where the conversation was');
+  assert.ok(html.indexOf('id="comments-panel"') < html.indexOf('id="quick-emoji-bar"'),
+    'the emoji bar still renders above the thread');
+});
+
+test('and the room\'s own header stands down while a thread is open', () => {
+  // Two stacked headers were most of what made the screen cramped.
+  assert.ok(/body\.commenting #chat-header/.test(css), 'the room header is still above the thread');
+  const chat = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  assert.ok(/\{!selectMode && !searching && !commentParent && \(/.test(chat),
+    'the app still stacks the room header above the thread');
+});
+
+test('THE HEADING is one line that opens the original', () => {
+  assert.ok(/id="comments-parent-link"[\s\S]{0,120}onclick="jumpToParentMessage\(\)"/.test(html),
+    'the heading does not lead back to the message');
+  assert.ok(/function jumpToParentMessage\(\)/.test(app), 'it leads nowhere');
+  const fn = app.slice(app.indexOf('function jumpToParentMessage()'), app.indexOf('function jumpToParentMessage()') + 300);
+  assert.ok(fn.indexOf('closeComments()') < fn.indexOf('jumpToMessage('),
+    'the thread stays open over the message it just jumped to');
+  assert.ok(/CommentsView\.parentPreview\(parent\)/.test(app), 'the heading is written by hand');
+  // The whole message is no longer drawn here.
+  assert.ok(!/renderMessage\(\{ item: commentParent \}\)/.test(
+    fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8')),
+    'the app still pins the whole message at the top of the thread');
+  assert.ok(!/appendChild\(buildMessageElement\(res\.parent\)\)/.test(app),
+    'the web still pins the whole message at the top of the thread');
+});
+
+test('a picture in the heading is a thumbnail, not the picture', () => {
+  assert.ok(/thumbUrl\(src, 64\)/.test(app), 'the web loads the full image into a 32px box');
+  const chat = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  assert.ok(/commentsParentThumb: \{ width: 32, height: 32/.test(chat),
+    'the app has no thumbnail size');
+  assert.ok(/parentPreview\(commentParent\)\.thumb/.test(chat),
+    'the app draws a thumbnail for messages that have no picture');
 });
 
 test('THE MARGINS: the thread gets the same room the conversation does', () => {

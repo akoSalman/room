@@ -138,6 +138,37 @@
 
     <div id="messages"></div>
 
+    <!-- ── Comments ──────────────────────────────────
+     A message's thread as its own screen. It sits HERE, directly after the
+     message list and before the emoji bar, because both take the space the
+     conversation had — with the panel further down, the emoji bar rendered
+     above it and the thread started halfway down the screen.
+
+     No composer of its own: the chat's own composer stays put and sends into
+     the open thread, which is how a comment gets every feature a message has
+     instead of a poorer copy of a few of them. -->
+    <div id="comments-panel" class="hidden">
+      <!-- One line, stuck to the top: the back arrow, a thumbnail when there
+           is a picture, a few words of the message, and the count. The whole
+           strip opens the original. The message used to be pinned here in
+           full, which left nothing for the comments once a keyboard was up. -->
+      <div class="comments-head">
+        <button class="icon-btn" onclick="closeComments()" aria-label="Back">←</button>
+        <button id="comments-parent-link" class="comments-parent-link"
+                onclick="jumpToParentMessage()">
+          <img id="comments-parent-thumb" class="comments-parent-thumb hidden" alt="" />
+          <span class="comments-parent-text">
+            <span id="comments-parent-preview"></span>
+            <small id="comments-title">Comments</small>
+          </span>
+          <span class="comment-bar-chev">›</span>
+        </button>
+      </div>
+      <div id="comments-list" class="comments-list"></div>
+      <button id="comments-fab" class="hidden" title="Go to the newest comment"
+              onclick="commentsToBottom()">↓</button>
+    </div>
+
     <button id="scroll-fab" class="hidden" onclick="handleScrollFabClick()">↓</button>
 
     <div id="typing-bar" class="hidden"></div>
@@ -177,22 +208,6 @@
         <small id="install-hint-steps"></small>
       </div>
       <button class="install-hint-close" onclick="dismissInstallHint()" aria-label="Not now">✕</button>
-    </div>
-
-    <!-- ── Comments ──────────────────────────────────
-     Its own screen over the conversation, headed by the message being
-     commented on. No composer of its own: the chat's own composer stays put
-     and sends into the open thread, which is how a comment gets every feature
-     a message has instead of a poorer copy of a few of them. -->
-    <div id="comments-panel" class="hidden">
-      <div class="comments-head">
-        <button class="icon-btn" onclick="closeComments()" aria-label="Back">←</button>
-        <span id="comments-title">Comments</span>
-      </div>
-      <div id="comments-parent" class="comments-parent"></div>
-      <div id="comments-list" class="comments-list"></div>
-      <button id="comments-fab" class="hidden" title="Go to the newest comment"
-              onclick="commentsToBottom()">↓</button>
     </div>
 
     <!-- Says where what you type is going, and gets you back out. -->

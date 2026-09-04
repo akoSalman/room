@@ -34,7 +34,7 @@ import {
   canComment, showsBadge, badgeLabel, normaliseCount, commentsTitle, EMPTY_HINT,
 } from '../comments';
 import {
-  commentsBarLabel, isNearBottom, shouldStickToBottom,
+  commentsBarLabel, parentPreview, isNearBottom, shouldStickToBottom,
   showsJumpButton, closesOnSwipe,
 } from '../commentsView';
 import * as up from '../uploadProgress';
@@ -495,6 +495,24 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     commentsAtBottom.current = true;
     setTimeout(() => scrollCommentsToEnd(false), 50);
     setCommentCounts(c => ({ ...c, [String(m.id)]: (res.comments || []).length }));
+  }
+
+  /** The first picture in the parent, whatever shape the message stores it in. */
+  function parentThumb(msg: Message | null): string {
+    const path = msg?.file_path;
+    if (!path) return '';
+    let rel = path;
+    if (msg?.type === 'gallery') {
+      try { rel = JSON.parse(path)[0] || ''; } catch { rel = ''; }
+    }
+    return rel ? `${BASE_URL}${rel}` : '';
+  }
+
+  /** Leave the thread and go to the message it is about. */
+  function jumpToParentMessage() {
+    const id = commentParent?.id;
+    closeComments();
+    if (id != null) jumpToMessage(Number(id));
   }
 
   function closeComments() {
@@ -4091,8 +4109,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         />
       )}
 
-      {/* Header */}
-      {!selectMode && !searching && (
+      {/* Header.
+          NOT while a thread is open: the room's header belongs to the
+          conversation, the thread has its own with a back arrow, and two
+          stacked headers were most of what made that screen feel cramped. */}
+      {!selectMode && !searching && !commentParent && (
       <View style={s.header}>
         <TouchableOpacity onPress={onBack} style={s.backBtn} activeOpacity={0.6}
           hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}>
@@ -4361,20 +4382,36 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           as it was instead of reloading the room. */}
       {commentParent && (
         <View style={{ flex: 1 }} {...commentsSwipe.panHandlers}>
+          {/* One line, stuck to the top: back, a thumbnail when there is a
+              picture, a few words of the message, and the count. The strip
+              opens the original.
+
+              The message used to be pinned here in full, rendered exactly as
+              in the chat and capped at a share of the panel. That is fine on a
+              whole screen and useless on what is left when a keyboard takes
+              half of it — a photo filled the space and the comments, the
+              reason for the screen, had none. It is context, not content. */}
           <View style={s.commentsHead}>
             <TouchableOpacity onPress={closeComments} hitSlop={hit}
               accessibilityLabel="Back to the conversation">
               <Ionicons name="arrow-back" size={22} color={C.text} />
             </TouchableOpacity>
-            <Text style={s.commentsTitle} numberOfLines={1}>
-              {commentsTitle(commentCountOf(commentParent))}
-            </Text>
+            <TouchableOpacity style={s.commentsParentLink} onPress={jumpToParentMessage}
+              accessibilityLabel="Go to the original message">
+              {parentPreview(commentParent).thumb && !!parentThumb(commentParent) && (
+                <Image source={{ uri: parentThumb(commentParent) }} style={s.commentsParentThumb} />
+              )}
+              <View style={s.commentsParentText}>
+                <Text style={s.commentsParentPreview} numberOfLines={1}>
+                  {parentPreview(commentParent).text}
+                </Text>
+                <Text style={s.commentsTitle} numberOfLines={1}>
+                  {commentsTitle(commentCountOf(commentParent))}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={C.muted} />
+            </TouchableOpacity>
           </View>
-          {/* Headed by the message being commented on: a list with no sight of
-              what it is about would be unreadable. Drawn by the same row the
-              chat uses, so it plays, expands and opens exactly as it does
-              there. */}
-          <ScrollView style={s.commentsParent}>{renderMessage({ item: commentParent })}</ScrollView>
           {commentsLoading ? (
             <View style={s.loadingContainer}><ActivityIndicator color={C.accent} /></View>
           ) : (
@@ -5696,19 +5733,19 @@ const s = StyleSheet.create({
   commentBarIcon: { fontSize: 12 },
   commentBarLabel: { flex: 1, color: C.accent, fontSize: 12.5, fontWeight: '600' },
     commentsHead: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    paddingHorizontal: 12, paddingVertical: 11,
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 8, paddingVertical: 6,
     backgroundColor: C.header,
     borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border,
   },
-  commentsTitle: { color: C.text, fontWeight: '700', fontSize: 15, flex: 1 },
-  // The post being discussed, held at the top the way Telegram pins it — set
-  // apart by its own ground rather than by a heavy border.
-  commentsParent: {
-    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border,
-    backgroundColor: 'rgba(128,128,128,0.05)',
-    paddingVertical: 6, paddingHorizontal: 4, maxHeight: 220,
+  commentsParentLink: {
+    flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingHorizontal: 4, paddingVertical: 2,
   },
+  commentsParentThumb: { width: 32, height: 32, borderRadius: 6 },
+  commentsParentText: { flex: 1, minWidth: 0 },
+  commentsParentPreview: { color: C.text, fontSize: 13.5, fontWeight: '600' },
+  commentsTitle: { color: C.muted, fontSize: 11, fontWeight: '500' },
   commentsListContent: { paddingHorizontal: 12, paddingTop: 10, paddingBottom: 8 },
   commentsFab: {
     position: 'absolute', right: 14, bottom: 14,
