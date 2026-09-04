@@ -368,6 +368,8 @@
 <div id="lightbox" class="hidden" onclick="closeLightbox()">
   <button class="lightbox-close" onclick="closeLightbox()">✕</button>
   <button class="lightbox-download" onclick="event.stopPropagation(); downloadLightboxImage()">⬇</button>
+  <button class="lightbox-more" onclick="event.stopPropagation(); openLightboxMenu()"
+          aria-label="More options for this photo">⋮</button>
   <button id="lightbox-prev" class="lightbox-nav" onclick="event.stopPropagation(); lightboxNav(-1)">‹</button>
   <button id="lightbox-next" class="lightbox-nav" onclick="event.stopPropagation(); lightboxNav(1)">›</button>
   <span id="lightbox-counter"></span>

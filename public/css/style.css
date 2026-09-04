@@ -582,15 +582,20 @@ body.kb-open #install-hint { display: none; }
 .bubble-row { display: flex; align-items: center; gap: 4px; max-width: 100%; min-width: 0; }
 .msg-wrapper.mine .bubble-row { flex-direction: row-reverse; }
 .msg-menu-btn {
-  flex-shrink: 0; background: none; border: none; cursor: pointer;
-  color: var(--muted); font-size: 1.05rem; font-weight: 700; line-height: 1;
+  flex-shrink: 0; border: 0; cursor: pointer;
+  color: var(--text); font-size: 1.05rem; font-weight: 700; line-height: 1;
   width: 26px; height: 26px; border-radius: 13px;
   display: flex; align-items: center; justify-content: center;
-  opacity: 0.4; transition: opacity .15s, background .15s;
+  /* A chip rather than a ghost. At 40% opacity on no background this was
+     nearly invisible against a bubble — the control that everything in the
+     message menu hangs on, and people could not see it was there. */
+  background: rgba(128, 128, 128, 0.16);
+  opacity: 0.85; transition: opacity .15s, background .15s;
 }
-.msg-wrapper:hover .msg-menu-btn { opacity: 1; }
-.msg-menu-btn:hover { background: rgba(128,128,128,0.18); }
-@media (pointer: coarse) { .msg-menu-btn { opacity: 0.6; } }
+.msg-wrapper:hover .msg-menu-btn { opacity: 1; background: rgba(128,128,128,0.28); }
+.msg-menu-btn:hover { background: rgba(128,128,128,0.34); }
+/* No hover on a finger: it is always at full strength there. */
+@media (pointer: coarse) { .msg-menu-btn { opacity: 1; } }
 
 /* ── Heart burst overlay ───────────────────────────── */
 #heart-burst {
@@ -891,7 +896,7 @@ body.kb-open #install-hint { display: none; }
   cursor: default; box-shadow: 0 8px 40px rgba(0,0,0,.6);
   transition: transform .05s linear; touch-action: none;
 }
-.lightbox-close, .lightbox-download {
+.lightbox-close, .lightbox-download, .lightbox-more {
   /* Reported from an iPhone: only part of these buttons is visible, under the
      top of the screen. The page is laid out with viewport-fit=cover, so a
      fixed element at top:16px sits under the status bar and the notch — the
@@ -903,7 +908,10 @@ body.kb-open #install-hint { display: none; }
   transition: background .15s; z-index: 2001;
 }
 .lightbox-download { right: 64px; }
-.lightbox-close:hover, .lightbox-download:hover { background: rgba(255,255,255,.25); }
+/* The photo's own menu — Show in chat and the rest, on the picture you are
+   actually looking at. The app has had this; the web had no menu at all. */
+.lightbox-more { right: 112px; }
+.lightbox-close:hover, .lightbox-download:hover, .lightbox-more:hover { background: rgba(255,255,255,.25); }
 
 /* ── My Rooms in profile ─────────────────────────── */
 .my-rooms-header {
@@ -1095,16 +1103,35 @@ body.kb-open #install-hint { display: none; }
 .media-row-wrap { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .media-row-wrap > .media-row { flex: 1; min-width: 0; }
 .media-row-menu {
-  flex-shrink: 0; background: none; border: 0; cursor: pointer;
-  color: var(--muted); font-size: 1.1rem; line-height: 1;
+  flex-shrink: 0; border: 0; cursor: pointer;
+  color: var(--text); font-size: 1.1rem; line-height: 1;
   /* A finger-sized target: this is the control the whole feature hangs on. */
   min-width: 40px; height: 40px; border-radius: 8px;
+  /* Visible before it is hovered — on a phone there is no hover at all, and
+     an invisible control is one nobody finds. */
+  background: rgba(128, 128, 128, 0.16);
 }
-.media-row-menu:hover { background: rgba(128, 128, 128, 0.14); color: var(--text); }
+.media-row-menu:hover { background: rgba(128, 128, 128, 0.34); }
+
+/* ── The same menu, on a photo in the grid ─────────────────────────────────── */
+.media-cell { position: relative; }
+.media-cell .media-row-menu {
+  position: absolute; top: 4px; inset-inline-end: 4px;
+  min-width: 28px; width: 28px; height: 28px; border-radius: 14px;
+  /* Dark on its own, whatever the photo behind it: a translucent grey chip
+     disappears against half the pictures people send. */
+  background: rgba(0, 0, 0, 0.55); color: #fff;
+  font-size: 1rem; padding: 0;
+}
+.media-cell .media-row-menu:hover { background: rgba(0, 0, 0, 0.75); }
+
 
 /* ── A menu of actions for one row ─────────────────────────────────────────── */
 .row-sheet-overlay {
-  position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, .5);
+  /* Above the gallery modal (500) and the lightbox (2000) it is opened from.
+     At 60 it rendered UNDERNEATH both: the sheet was there, taking the taps,
+     and invisible. Reported as: the menu is under the gallery modal. */
+  position: fixed; inset: 0; z-index: 3000; background: rgba(0, 0, 0, .5);
   display: flex; align-items: flex-end; justify-content: center;
 }
 .row-sheet {

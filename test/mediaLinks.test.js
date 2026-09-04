@@ -242,6 +242,84 @@ test('the menu is a finger-sized target and the sheet clears the home bar', () =
   assert.ok(sheet && /var\(--sab/.test(sheet[1]), 'the last row sits under the home indicator');
 });
 
+test('THE PHOTOS have the same menu the rows do', () => {
+  // Reported from an iPhone: media in the gallery has no menu, only links do.
+  // The grid cells were bare <img> elements — the ⋮ went on the rows and the
+  // photos, which are most of the gallery, were left out.
+  const grid = app.slice(app.indexOf("grid.className = 'media-grid'"),
+    app.indexOf("body.appendChild(grid)"));
+  assert.ok(grid.length > 0, 'the photo grid is gone — this check would be vacuous');
+  assert.ok(/media-cell/.test(grid), 'a photo cell has nowhere to put a menu');
+  assert.ok(/openMediaRowMenu\(item, 'Photo', 'image'\)/.test(grid),
+    'photos in the gallery still have no menu');
+  assert.ok(/e\.stopPropagation\(\)/.test(grid),
+    'tapping the photo menu also opens the photo underneath it');
+  // The menu means what it says for a picture: it views it rather than
+  // dumping a bare file into a new tab, and it can be saved.
+  const fn = app.slice(app.indexOf('function openMediaRowMenu('),
+    app.indexOf('function openMediaRowMenu(') + 2200);
+  assert.ok(/kind === 'image'/.test(fn), 'a photo is offered a link menu');
+  assert.ok(/🖼 View/.test(fn) && /⬇ Download/.test(fn), 'a photo cannot be viewed or saved');
+  assert.ok(/oneTimeMediaUrls\.has\(abs\)/.test(fn),
+    'a one-time photo can be downloaded out of the gallery');
+});
+
+test('THE SHEET IS ON TOP of whatever opened it', () => {
+  // Reported as: tapping the ⋮ puts the menu UNDER the gallery modal. It was
+  // there all along at z-index 60, taking the taps, invisible behind a modal
+  // at 500 and a lightbox at 2000.
+  const overlay = /\.row-sheet-overlay \{([^}]*)\}/.exec(css);
+  assert.ok(overlay, '.row-sheet-overlay has no rule — this check would be vacuous');
+  const z = /z-index:\s*(\d+)/.exec(overlay[1]);
+  assert.ok(z, 'the sheet has no stacking order at all');
+  const modal = /\.modal-overlay \{([^}]*)\}/.exec(css);
+  const light = /#lightbox \{([^}]*)\}/.exec(css) || [null, ''];
+  const zOf = (block) => parseInt((/z-index:\s*(\d+)/.exec(block || '') || [0, 0])[1], 10);
+  assert.ok(Number(z[1]) > zOf(modal[1]),
+    `the sheet (${z[1]}) is under the gallery modal (${zOf(modal[1])})`);
+  assert.ok(Number(z[1]) > zOf(light[1]),
+    `the sheet (${z[1]}) is under the lightbox (${zOf(light[1])})`);
+});
+
+test('the open photo carries the menu too, and knows its message', () => {
+  assert.ok(/function openLightboxMenu\(/.test(app), 'the open picture has no menu');
+  const fn = app.slice(app.indexOf('function openLightboxMenu('),
+    app.indexOf('function openLightboxMenu(') + 1200);
+  assert.ok(/Show in chat/.test(fn) && /jumpToMessage\(Number\(item\.msgId\)\)/.test(fn),
+    'the open picture cannot be traced back to its message');
+  // Only when it CAME from the gallery: opened from the conversation, the
+  // message is already on screen behind the picture.
+  assert.ok(/lightboxItems && lightboxItems\[lightboxIdx\]/.test(fn),
+    'Show in chat is offered on photos with no known message');
+  assert.ok(/lightboxItems = null;/.test(app.slice(app.indexOf('function openLightbox('),
+    app.indexOf('function openLightbox(') + 500)),
+    'a photo opened from the chat inherits the gallery\'s items');
+  assert.ok(/lightboxItems = mediaData\.images/.test(app),
+    'the gallery never hands its items to the lightbox');
+  const html = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
+  assert.ok(/onclick="event\.stopPropagation\(\); openLightboxMenu\(\)"/.test(html),
+    'the button is missing, or its tap closes the lightbox instead');
+});
+
+test('THE ⋮ CAN BE SEEN before it is touched', () => {
+  // Asked for: highlight it. On a phone there is no hover at all, so a control
+  // that only appears on hover is a control nobody knows exists — and this one
+  // is the way into every message action.
+  const msg = /\.msg-menu-btn \{([^}]*)\}/.exec(css);
+  assert.ok(msg, '.msg-menu-btn has no rule — this check would be vacuous');
+  assert.ok(!/background:\s*none/.test(msg[1]), 'the message ⋮ is drawn on nothing');
+  assert.ok(/background:\s*rgba/.test(msg[1]), 'the message ⋮ has no chip behind it');
+  const op = /opacity:\s*([\d.]+)/.exec(msg[1]);
+  assert.ok(op && Number(op[1]) >= 0.8, `the message ⋮ is drawn at ${op && op[1]}`);
+  const row = /\.media-row-menu \{([^}]*)\}/.exec(css);
+  assert.ok(/background:\s*rgba/.test(row[1]), 'the gallery ⋮ is invisible until hovered');
+  // Over a photo it needs its own contrast: a translucent grey chip disappears
+  // against half the pictures people send.
+  const cell = /\.media-cell \.media-row-menu \{([^}]*)\}/.exec(css);
+  assert.ok(cell, 'the photo ⋮ has no rule of its own');
+  assert.ok(/background:\s*rgba\(0, 0, 0/.test(cell[1]), 'the photo ⋮ can vanish into the photo');
+});
+
 test('the app gets the same links, from its own key', () => {
   const src = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
   const fn = src.slice(src.indexOf('async function addEncryptedLinks('), src.indexOf('/** The next page of photos'));

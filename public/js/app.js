@@ -1157,8 +1157,37 @@ function renderMedia() {
       img.src = thumbUrl(mediaUrl(mediaData.images[i]), 96);
       img.onerror = () => { img.onerror = null; img.src = src; };  // non-image or old upload
       img.loading = 'lazy';
-      img.onclick = () => { lightboxList = full; lightboxIdx = i; showLightboxAt(i); show('lightbox'); };
-      grid.appendChild(img);
+      const item = mediaData.images[i];
+      img.onclick = () => {
+        lightboxList = full;
+        // The gallery knows which MESSAGE each of these came from; the chat's
+        // own lightbox does not. Carried across so "Show in chat" works from
+        // the open picture too.
+        lightboxItems = mediaData.images;
+        lightboxIdx = i;
+        showLightboxAt(i);
+        show('lightbox');
+      };
+      // Reported as: photos in the gallery have no menu, only links do. The
+      // cell is a bare <img>, so the ⋮ goes on a wrapper over its corner —
+      // dark on its own, because a grey chip vanishes against half the
+      // pictures people send.
+      const cell = document.createElement('div');
+      cell.className = 'media-cell';
+      cell.appendChild(img);
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'media-row-menu';
+      more.textContent = '⋮';
+      more.title = 'More';
+      more.setAttribute('aria-label', 'More options for this photo');
+      more.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();   // not the photo underneath
+        openMediaRowMenu(item, 'Photo', 'image');
+      };
+      cell.appendChild(more);
+      grid.appendChild(cell);
     });
     body.appendChild(grid);
     return;
@@ -1292,8 +1321,9 @@ function withRowMenu(row, item, label) {
   return wrap;
 }
 
-function openMediaRowMenu(item, label) {
+function openMediaRowMenu(item, label, kind) {
   const url = mediaUrl(item);
+  const abs = /^https?:\/\//.test(url) ? url : location.origin + url;
   const rows = [];
   // Only when the message is still known. A "Show in chat" that lands nowhere
   // is worse than not offering it — the app says so out loud, and the web can
@@ -1304,11 +1334,27 @@ function openMediaRowMenu(item, label) {
       jumpToMessage(Number(item.msgId));
     }]);
   }
-  rows.push(['↗ Open', () => {
-    window.open(/^https?:\/\//.test(url) ? url : 'https://' + url, '_blank', 'noopener');
-  }]);
+  if (kind === 'image') {
+    // A photo opens in the lightbox, not in a tab: the gallery is the place
+    // to look at it, and a new tab is a bare file on a white page.
+    rows.push(['🖼 View', () => {
+      const list = (mediaData?.images || []);
+      lightboxList = list.map(x => location.origin + mediaUrl(x));
+      lightboxItems = list;
+      lightboxIdx = Math.max(0, list.indexOf(item));
+      showLightboxAt(lightboxIdx);
+      show('lightbox');
+    }]);
+    // One-time photos are view-only, here as everywhere else.
+    if (!oneTimeMediaUrls.has(abs)) {
+      rows.push(['⬇ Download', () => downloadUrl(abs)]);
+    }
+  } else {
+    rows.push(['↗ Open', () => {
+      window.open(/^https?:\/\//.test(url) ? url : 'https://' + url, '_blank', 'noopener');
+    }]);
+  }
   rows.push(['🔗 Copy link', () => {
-    const abs = /^https?:\/\//.test(url) ? url : location.origin + url;
     navigator.clipboard?.writeText(abs).then(
       () => showToast('Link copied'),
       () => showToast('Could not copy the link'),
@@ -5002,6 +5048,13 @@ let lightboxScale = 1, lightboxX = 0, lightboxY = 0;
 let lightboxSrc = '';
 
 let lightboxList = [];
+/**
+ * The gallery items behind lightboxList, when it came from the gallery.
+ *
+ * The chat's lightbox has urls and nothing else, so "Show in chat" has no
+ * message to go to and is not offered there.
+ */
+let lightboxItems = null;
 let lightboxIdx = 0;
 
 // Absolute URLs of one-time media — never downloadable from the lightbox
@@ -5033,6 +5086,8 @@ function openLightbox(src) {
   // Prefer the full chat history's images (server-side list); fall back to
   // what is currently rendered.
   const absolute = src.startsWith('http') ? src : location.origin + src;
+  // Opened from the conversation: no gallery items behind it.
+  lightboxItems = null;
   if (allChatImages.includes(absolute)) {
     lightboxList = allChatImages;
     lightboxIdx = allChatImages.indexOf(absolute);
@@ -5113,12 +5168,47 @@ function lightboxZoom(delta, clientX, clientY) {
 
 function downloadLightboxImage() {
   if (oneTimeMediaUrls.has(lightboxSrc)) return; // one-time media is view-only
+  downloadUrl(lightboxSrc);
+}
+
+/** Save a url to disk, without navigating away from the page. */
+function downloadUrl(url) {
   const a = document.createElement('a');
-  a.href = lightboxSrc;
-  a.download = lightboxSrc.split('/').pop() || 'image.jpg';
+  a.href = url;
+  a.download = String(url).split('/').pop() || 'image.jpg';
   document.body.appendChild(a);
   a.click();
   a.remove();
+}
+
+/**
+ * The menu for the photo currently open.
+ *
+ * The same actions the gallery's rows have, on the picture being looked at —
+ * which is where the app has always put them. Show in chat is offered only
+ * when the gallery knows which message this photo came from; opened from the
+ * conversation, that message is already on screen behind the picture.
+ */
+function openLightboxMenu() {
+  const item = lightboxItems && lightboxItems[lightboxIdx];
+  const rows = [];
+  if (item && item.msgId != null) {
+    rows.push(['💬 Show in chat', () => {
+      hide('lightbox');
+      closeMedia();
+      jumpToMessage(Number(item.msgId));
+    }]);
+  }
+  if (!oneTimeMediaUrls.has(lightboxSrc)) {
+    rows.push(['⬇ Download', () => downloadUrl(lightboxSrc)]);
+    rows.push(['🔗 Copy link', () => {
+      navigator.clipboard?.writeText(lightboxSrc).then(
+        () => showToast('Link copied'),
+        () => showToast('Could not copy the link'),
+      );
+    }]);
+  }
+  showSheet('Photo', rows);
 }
 
 (function setupLightboxGestures() {
