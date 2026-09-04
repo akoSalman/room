@@ -275,6 +275,9 @@
 <!-- ── Profile Modal ──────────────────────────────── -->
 <div id="profile-modal" class="modal-overlay hidden" onclick="closeProfile()">
   <div class="modal-card" onclick="event.stopPropagation()">
+    <!-- The app's grip. On a phone this profile is a sheet that comes up from
+         the bottom edge, and the grip is what says so before it is touched. -->
+    <div class="sheet-grip" aria-hidden="true"></div>
     <div class="modal-header">
       <h2>Profile</h2>
       <button class="icon-btn" onclick="closeProfile()">✕</button>

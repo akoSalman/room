@@ -190,6 +190,53 @@ test('the app uses the same wording it just gave the web', () => {
   assert.ok(/renameWorthDoing\(me, name\)/.test(rooms), 'the app spends a change on renaming to the same name');
 });
 
+// ── The shape of it ─────────────────────────────────────────────────────────
+//
+// Reported as: the web profile is not like the app's. On a phone the app draws
+// it as a SHEET — up from the bottom edge, full width, rounded only at the top,
+// with a grip. The web drew a floating card with all four corners rounded and a
+// hard 400px width: the same information in a shape from a different app.
+
+test('THE SHAPE: on a phone the web profile is the app\'s sheet', () => {
+  const css = fs.readFileSync(path.join(ROOT, 'public', 'css', 'style.css'), 'utf8');
+  const phone = css.slice(css.indexOf('@media (max-width: 600px) {',
+    css.indexOf('.sheet-grip { display: none; }')));
+  const block = phone.slice(0, phone.indexOf('\n}\n') + 3);
+  assert.ok(/#profile-modal\.modal-overlay/.test(block), 'the profile is not laid out as a sheet');
+  assert.ok(/align-items:\s*flex-end/.test(block), 'it still floats in the middle of the screen');
+  assert.ok(/border-radius:\s*20px 20px 0 0/.test(block),
+    'all four corners are still rounded, so it reads as a card and not a sheet');
+  assert.ok(/max-width:\s*none/.test(block), 'it is still pinned to a card width');
+  assert.ok(/max-height:\s*88vh/.test(block),
+    'it covers the whole screen, which reads as a new page rather than an overlay');
+  assert.ok(/var\(--sab\)/.test(block), 'the last row sits under the home indicator');
+  assert.ok(/#profile-modal \.sheet-grip/.test(block), 'the grip never appears');
+  // …and the grip has to exist to be shown.
+  assert.ok(/class="sheet-grip"/.test(html), 'there is no grip in the profile at all');
+});
+
+test('and a desktop still gets a card', () => {
+  // Nothing slides up from the bottom of a laptop screen; a full-width sheet
+  // there is a phone layout on the wrong device.
+  const css = fs.readFileSync(path.join(ROOT, 'public', 'css', 'style.css'), 'utf8');
+  const base = /\.sheet-grip \{([^}]*)\}/.exec(css);
+  assert.ok(base && /display:\s*none/.test(base[1]), 'the grip shows on a desktop too');
+  const card = /\.modal-card \{([^}]*)\}/.exec(css);
+  assert.ok(/max-width:\s*400px/.test(card[1]), 'every modal is now full width everywhere');
+});
+
+test('the sections are spaced like the app\'s', () => {
+  // 20 across, 14 down — the app's `section` style. The web had 20 all round,
+  // which is a visibly looser column of the same rows.
+  const css = fs.readFileSync(path.join(ROOT, 'public', 'css', 'style.css'), 'utf8');
+  const sec = /\.modal-section \{([^}]*)\}/.exec(css);
+  assert.ok(sec, '.modal-section is gone — this check would be vacuous');
+  assert.ok(/padding:\s*14px 20px/.test(sec[1]), sec[1]);
+  const rooms = fs.readFileSync(path.join(NAT, 'src', 'screens', 'RoomsScreen.tsx'), 'utf8');
+  assert.ok(/section: \{ paddingHorizontal: 20, paddingVertical: 14/.test(rooms),
+    'the app changed its own spacing, so this is now the drift it was meant to close');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

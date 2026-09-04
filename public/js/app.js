@@ -365,9 +365,35 @@ window.addEventListener('DOMContentLoaded', () => {
     // focusin as well: on iOS the keyboard animation and the resize event do
     // not always arrive in that order, and a tap on the message box that
     // scrolled the page would otherwise stay scrolled.
-    document.addEventListener('focusin', () => setTimeout(syncViewport, 50));
+    document.addEventListener('focusin', (e) => {
+      setTimeout(syncViewport, 50);
+      // …and bring the field being typed into above the keyboard. The chat's
+      // composer is pinned to the bottom of a box that is already sized to the
+      // visible area, but a form — sign-in, or the profile's password fields —
+      // is just content, and the one being filled in can be under it.
+      const el = e.target;
+      if (!el || !el.closest || !el.closest('input, textarea')) return;
+      // Twice: once as the keyboard starts, once after it has finished moving.
+      // iOS reports the visual viewport mid-animation, so a single scroll
+      // lands against a keyboard height that is already out of date.
+      [120, 350].forEach(ms => setTimeout(() => scrollFocusIntoView(el), ms));
+    });
     document.addEventListener('focusout', () => setTimeout(syncViewport, 50));
     syncViewport();
+  }
+
+  /** Put a focused field above the keyboard, when it is not already. */
+  function scrollFocusIntoView(el) {
+    if (!el || !el.isConnected || document.activeElement !== el) return;
+    const vv = window.visualViewport;
+    const r = el.getBoundingClientRect();
+    const viewTop = vv ? vv.offsetTop : 0;
+    const viewBottom = viewTop + (vv ? vv.height : window.innerHeight);
+    if (!ViewportFit.needsScroll({
+      top: r.top, bottom: r.bottom, viewTop, viewBottom,
+    })) return;
+    try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+    catch { el.scrollIntoView(false); }
   }
 
   /** Hold the newest message in view while the keyboard resizes everything. */

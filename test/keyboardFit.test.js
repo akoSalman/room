@@ -94,11 +94,14 @@ test('THE OLD FIX IS GONE: html/body height is not what gets set', () => {
 test('and the app really uses those variables', () => {
   const rule = /#app-screen\s*\{([^}]*)\}/.exec(css);
   assert.ok(rule, '#app-screen has no rule — this check would be vacuous');
-  assert.ok(/height:\s*var\(--vv-h/.test(rule[1]), 'the app is a fixed full height again');
-  assert.ok(/top:\s*var\(--vv-top/.test(rule[1]), 'the app cannot follow the viewport offset');
-  assert.ok(!/inset:\s*0/.test(rule[1]), 'inset:0 overrides the height it was just given');
+  // Comments stripped: this block explains what it replaced, and a search over
+  // the raw text finds the explanation rather than the declarations.
+  const decls = rule[1].replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.ok(/height:\s*var\(--vv-h/.test(decls), 'the app is a fixed full height again');
+  assert.ok(/top:\s*var\(--vv-top/.test(decls), 'the app cannot follow the viewport offset');
+  assert.ok(!/inset:\s*0/.test(decls), 'inset:0 overrides the height it was just given');
   // A browser with no visualViewport (older desktop) must still fill the page.
-  assert.ok(/var\(--vv-h,\s*100%\)/.test(rule[1]), 'there is no fallback height');
+  assert.ok(/var\(--vv-h,\s*100%\)/.test(decls), 'there is no fallback height');
 });
 
 test('the page is scrolled back after iOS scrolls it to the caret', () => {
@@ -140,6 +143,85 @@ test('the install banner still stands down, being an interruption', () => {
   assert.ok(/display:\s*none/.test(rule[1]), rule[1]);
   assert.ok(/classList\.toggle\('kb-open', ViewportFit\.hidesBanner\(/.test(app),
     'the class is set by hand rather than by the rule');
+});
+
+// ── The sign-in page ────────────────────────────────────────────────────────
+//
+// Reported from an iPhone, with a screenshot: on the login page the username
+// and password inputs are under the keyboard.
+//
+// Same cause as the chat, and the chat's fix was never applied here. iOS does
+// not shrink the layout viewport when the keyboard opens, so `position: fixed;
+// inset: 0` keeps this screen at full screen height — and the card, centred
+// inside it, stays exactly where it was while the keyboard covers the bottom
+// half of it. There is nothing to scroll, because as far as the browser is
+// concerned everything fits.
+
+test('THE BUG: the sign-in screen is sized to what can be SEEN', () => {
+  const rule = /#auth-screen \{([^}]*)\}/.exec(css);
+  assert.ok(rule, '#auth-screen has no rule — this check would be vacuous');
+  // Comments stripped first: this rule's own comment explains what `inset: 0`
+  // used to do, and a search over the raw block finds those words rather than
+  // the declaration — a test that fails on its own prose.
+  const decls = rule[1].replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.ok(!/inset:\s*0/.test(decls),
+    'the sign-in screen is still pinned to the full layout viewport, so the '
+    + 'keyboard covers the card and nothing can scroll');
+  assert.ok(/height:\s*var\(--vv-h/.test(rule[1]), 'it does not follow the visual viewport');
+  assert.ok(/top:\s*var\(--vv-top/.test(rule[1]),
+    'it does not follow the viewport OFFSET, so it sits off the top while iOS '
+    + 'scrolls the layout viewport under the keyboard');
+});
+
+test('and content taller than the screen can still be reached', () => {
+  // `justify-content: center` overflows EQUALLY in both directions, and the
+  // part above the top edge cannot be scrolled back to — so with the keyboard
+  // up the username field would be centred out of reach.
+  const decls = /#auth-screen \{([^}]*)\}/.exec(css)[1].replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.ok(/justify-content:\s*safe center/.test(decls),
+    'a card taller than the space left has its top cut off unreachably');
+  assert.ok(/overflow-y:\s*auto/.test(decls), 'there is nothing to scroll with');
+});
+
+test('the field being typed into is brought above the keyboard', () => {
+  // Sizing the screen is most of it; a form taller than what is left still
+  // has to scroll to the field in use.
+  assert.ok(/function scrollFocusIntoView\(/.test(app), 'nothing brings a field into view');
+  assert.ok(/ViewportFit\.needsScroll\(\{/.test(app),
+    'the decision is made by hand rather than by the rule');
+  const fn = app.slice(app.indexOf('function scrollFocusIntoView('),
+    app.indexOf('function scrollFocusIntoView(') + 800);
+  assert.ok(/document\.activeElement !== el/.test(fn),
+    'a field that has since lost focus is still scrolled to');
+  assert.ok(/scrollIntoView\(/.test(fn), 'nothing actually scrolls');
+  // Twice, because iOS reports the visual viewport mid-animation and a single
+  // scroll lands against a keyboard height that is already out of date.
+  assert.ok(/\[120, 350\]\.forEach\(ms => setTimeout\(\(\) => scrollFocusIntoView\(el\), ms\)\)/.test(app),
+    'the scroll happens once, against a keyboard that is still moving');
+});
+
+test('a field already in view is left alone', () => {
+  const view = { viewTop: 0, viewBottom: 400 };
+  assert.strictEqual(V.needsScroll({ top: 100, bottom: 140, ...view }), false,
+    'every focus scrolls the page, including ones that need nothing');
+  // Under the keyboard.
+  assert.strictEqual(V.needsScroll({ top: 380, bottom: 420, ...view }), true);
+  // Flush against its edge is not "visible" either — it reads as half hidden.
+  assert.strictEqual(V.needsScroll({ top: 360, bottom: 395, ...view }), true);
+  // Scrolled off the TOP, which is where iOS leaves things mid-animation.
+  assert.strictEqual(V.needsScroll({ top: -20, bottom: 20, ...view }), true);
+  // Nonsense in, no scroll out.
+  assert.strictEqual(V.needsScroll(null), false);
+  assert.strictEqual(V.needsScroll({ top: 1, bottom: 2 }), false);
+});
+
+test('the chat keeps the behaviour it already had', () => {
+  // This is an ADDITION to focusin, not a replacement: the chat's own fix is
+  // the syncViewport call, and losing it would put the header back off-screen.
+  const fn = app.slice(app.indexOf("document.addEventListener('focusin'"),
+    app.indexOf("document.addEventListener('focusout'"));
+  assert.ok(/setTimeout\(syncViewport, 50\)/.test(fn),
+    'the focus handler no longer re-fits the app to the viewport');
 });
 
 test('the rules are loaded by the page', () => {

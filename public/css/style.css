@@ -82,11 +82,22 @@ html {
 
 /* ── Auth ─────────────────────────────────────────── */
 #auth-screen {
+  /* Sized from the VISUAL viewport, exactly like #app-screen and for exactly
+     the same reason. Reported from an iPhone: the sign-in inputs sit under the
+     keyboard. iOS does not shrink the layout viewport when the keyboard opens,
+     so `inset: 0` kept this box at full screen height and the card, centred
+     inside it, stayed put with the keyboard over the bottom half of it. */
   position: fixed;
-  inset: 0;
+  left: 0; right: 0;
+  top: var(--vv-top, 0px);
+  height: var(--vv-h, 100%);
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  /* `safe` matters: with plain `center`, content taller than the box overflows
+     EQUALLY in both directions and the part above the top edge cannot be
+     scrolled back to — so with the keyboard up the username field would be
+     centred out of reach. */
+  justify-content: safe center;
   gap: 14px;
   padding: max(24px, var(--sat)) 16px max(24px, var(--sab));
   overflow-y: auto;
@@ -878,7 +889,38 @@ body.kb-open #install-hint { display: none; }
 .modal-card { background: var(--sidebar-bg); border: 1px solid var(--border); border-radius: 20px; width: 100%; max-width: 400px; box-shadow: 0 20px 60px rgba(0,0,0,.5); overflow: hidden; margin: auto; }
 .modal-header { display: flex; align-items: center; justify-content: space-between; padding: 18px 20px; border-bottom: 1px solid var(--border); }
 .modal-header h2 { font-size: 1.05rem; font-weight: 700; }
-.modal-section { padding: 20px; border-top: 1px solid var(--border); }
+.modal-section { padding: 14px 20px; border-top: 1px solid var(--border); }
+
+/* ── The profile, as the app draws it ──────────────────────────────────────────
+   On a phone the app's profile is a SHEET: it comes up from the bottom edge,
+   is as wide as the screen, keeps its rounded corners only at the top, and
+   carries a grip. The web drew a floating card with all four corners rounded
+   and a hard 400px width — the same information in a shape from a different
+   app. On a desktop, where nothing slides up from anywhere, the card stays. */
+.sheet-grip { display: none; }
+@media (max-width: 600px) {
+  #profile-modal.modal-overlay {
+    align-items: flex-end;
+    padding: 0;
+  }
+  #profile-modal .modal-card {
+    max-width: none;
+    border-radius: 20px 20px 0 0;
+    border-bottom: 0; border-left: 0; border-right: 0;
+    margin: 0;
+    /* Not the whole screen: the strip of dimmed chat left above it is what
+       makes this read as something laid OVER the app rather than a new page. */
+    max-height: 88vh;
+    overflow-y: auto;
+    padding-bottom: var(--sab);
+  }
+  #profile-modal .sheet-grip {
+    display: block;
+    width: 40px; height: 4px; border-radius: 2px;
+    background: var(--border);
+    margin: 10px auto 6px;
+  }
+}
 .profile-avatar-big { width: 72px; height: 72px; border-radius: 50%; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 1.8rem; font-weight: 700; text-transform: uppercase; margin: 20px auto 8px; }
 .profile-name { text-align: center; font-weight: 600; font-size: 1rem; margin-bottom: 4px; }
 

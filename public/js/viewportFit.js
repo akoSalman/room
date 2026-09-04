@@ -65,9 +65,42 @@
    */
   function hidesBanner(keyboardOpen) { return !!keyboardOpen; }
 
+  /**
+   * How much clear space a focused field wants around it.
+   *
+   * Enough that the field is not flush against the top of the keyboard: a box
+   * whose bottom edge touches it reads as half-hidden even when every pixel is
+   * technically visible.
+   */
+  var FOCUS_MARGIN = 12;
+
+  /**
+   * Is a focused field actually visible, or behind the keyboard?
+   *
+   * Reported from an iPhone: on the SIGN-IN page the inputs sit under the
+   * keyboard. The chat was fixed by sizing it to the visual viewport, but the
+   * sign-in screen was never given the same treatment — it is centred inside a
+   * full-height box, so the card stayed exactly where it was while the
+   * keyboard covered the bottom half of it.
+   *
+   * Sizing that screen to the visual viewport too is most of the answer; this
+   * is the rest of it, because a card taller than what is left still has to be
+   * scrolled to the field being typed into.
+   */
+  function needsScroll(o) {
+    var margin = (o && typeof o.margin === 'number') ? o.margin : FOCUS_MARGIN;
+    if (!o || typeof o.top !== 'number' || typeof o.bottom !== 'number') return false;
+    if (typeof o.viewTop !== 'number' || typeof o.viewBottom !== 'number') return false;
+    // A field taller than the space left cannot be fitted; showing its TOP is
+    // the useful answer, so this still asks for a scroll.
+    return o.bottom > o.viewBottom - margin || o.top < o.viewTop + margin;
+  }
+
   global.ViewportFit = {
     KEYBOARD_MIN: KEYBOARD_MIN,
     boxFor: boxFor,
     hidesBanner: hidesBanner,
+    FOCUS_MARGIN: FOCUS_MARGIN,
+    needsScroll: needsScroll,
   };
 })(typeof window !== 'undefined' ? window : this);
