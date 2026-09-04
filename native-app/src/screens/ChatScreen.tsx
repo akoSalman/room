@@ -122,6 +122,10 @@ import EmojiBurst from '../components/EmojiBurst';
 import EmojiEditor from '../components/EmojiEditor';
 import { useOrderedFavEmojis, noteEmojiUse } from '../favEmojis';
 import {
+  phaseFor as e2ePhaseFor, undecryptedBody, undecryptedQuote,
+  keepTryingKey, keyRetryDelay,
+} from '../e2eState';
+import {
   noteComment, clearFor, countFor, chooseJump, jumpLabel,
   badgeLabel as commentBadgeLabel, Jump,
 } from '../commentUnread';
@@ -395,6 +399,24 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const dmPeerPk = useRef<Uint8Array | null>(null); // DM partner's public key (E2E)
   const dmPeerId = useRef<number | null>(null); // DM partner's user id (calls)
   const [e2eActive, setE2eActive] = useState(false);
+  /**
+   * How many times this chat has asked for the peer's key.
+   *
+   * State, not a ref: it decides what an unreadable bubble SAYS, and a ref
+   * changing would leave the old words on screen — which is the reported bug
+   * in its other half.
+   */
+  const [keyAttempts, setKeyAttempts] = useState(0);
+  /**
+   * Does this device have an unlocked identity at all?
+   *
+   * Starts true so the first paint says "Decrypting…" rather than announcing a
+   * permanent failure before anything has been checked.
+   */
+  const [identityReady, setIdentityReady] = useState(true);
+  const e2ePhase = e2ePhaseFor({
+    hasKey: !!dmPeerPk.current, ready: identityReady, attempts: keyAttempts,
+  });
   const [showE2EUnlock, setShowE2EUnlock] = useState(false);
   const [e2ePass, setE2ePass] = useState('');
   const [oneTimeExpiry, setOneTimeExpiry] = useState<Record<number, number>>({});
@@ -773,8 +795,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // Upload progress is deliberately NOT here. It used to be, and every
     // report — hundreds during a video transcode — re-rendered every row in
     // the chat. Each bubble subscribes to its own progress instead.
-    () => ({ maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode }),
-    [maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode],
+    // e2ePhase, not just e2eActive: a chat that runs out of attempts goes from
+    // "Decrypting…" to the permanent wording without the key ever changing,
+    // and the rows have to be told.
+    () => ({ maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode, e2ePhase }),
+    [maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode, e2ePhase],
   );
 
   const scrollBottom = useCallback(() => {
@@ -1148,31 +1173,59 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // player after leaving the chat and should keep chaining voice messages.
   }, [room.id]);
 
+  // The peer's key, asked for until it arrives.
+  //
+  // Reported with a photograph of a whole conversation reading "cannot decrypt
+  // on this device": this ran ONCE, and a request that failed — or merely
+  // landed after the messages were drawn — left that sentence on screen for
+  // good. It retries now, and every attempt is counted so the bubbles can say
+  // "Decrypting…" while there is still hope and the other thing when there is
+  // not.
   useEffect(() => {
     if (!room.is_dm) return;
-    (async () => {
+    let alive = true;
+    let timer: any = null;
+    let attempt = 0;
+
+    const tick = async () => {
+      if (!alive) return;
+      attempt++;
+      setKeyAttempts(attempt);
       try {
         const res = await apiFetch(`/dm-peer-key/${room.id}`);
+        if (!alive) return;
         dmPeerId.current = res?.userId ?? null;
       } catch {}
-      if (await e2eReady()) {
-        // Make sure the local keypair still matches what the server published
-        // for this account. If it diverged (e.g. the identity was rebuilt on
-        // the web and our stored private key no longer corresponds), peers
-        // encrypt to a key we can't open — so wipe it and prompt to unlock the
-        // real identity instead of silently showing undecryptable messages.
-        const status = await e2eVerifyIdentity();
-        if (status === 'mismatch') {
-          setShowE2EUnlock(true);
-        } else {
-          dmPeerPk.current = await e2eDMPeerKey(room.id);
-          setE2eActive(!!dmPeerPk.current);
-        }
-      } else {
-        // Session predates E2E: the identity was never unlocked on this device
+      if (!alive) return;
+      const ready = await e2eReady();
+      if (!alive) return;
+      setIdentityReady(ready);
+      if (!ready) {
+        // Session predates E2E: the identity was never unlocked on this device.
+        // Nothing to retry — it needs the password.
         setShowE2EUnlock(true);
+        return;
       }
-    })();
+      // Make sure the local keypair still matches what the server published
+      // for this account. If it diverged (e.g. the identity was rebuilt on the
+      // web and our stored private key no longer corresponds), peers encrypt
+      // to a key we can't open — so prompt to unlock the real identity instead
+      // of silently showing undecryptable messages.
+      const status = await e2eVerifyIdentity();
+      if (!alive) return;
+      if (status === 'mismatch') { setShowE2EUnlock(true); return; }
+      const key = await e2eDMPeerKey(room.id);
+      if (!alive) return;
+      dmPeerPk.current = key;
+      // Always set, even to the same value: this is what redraws the bubbles
+      // that were built before the key existed.
+      setE2eActive(!!key);
+      if (key || !keepTryingKey(attempt)) return;
+      timer = setTimeout(tick, keyRetryDelay(attempt - 1));
+    };
+
+    tick();
+    return () => { alive = false; clearTimeout(timer); };
   }, [room.id]);
 
   async function unlockE2E() {
@@ -3591,11 +3644,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     const copy: Message = { ...msg };
     if (e2eIsEncrypted(copy.content)) {
       const dec = e2eDecrypt(copy.content, dmPeerPk.current);
-      copy.content = dec !== null ? dec : '🔒 Encrypted message (cannot decrypt on this device)';
+      // "Cannot decrypt on this device" is the wrong sentence while the peer's
+      // key is still on its way — it announces a permanent loss during a wait
+      // of a second or two, across every bubble in the chat.
+      copy.content = dec !== null ? dec : undecryptedBody(e2ePhase);
     }
     if (e2eIsEncrypted(copy.reply_content)) {
       const decR = e2eDecrypt(copy.reply_content ?? null, dmPeerPk.current);
-      copy.reply_content = decR !== null ? decR : '🔒 Encrypted';
+      copy.reply_content = decR !== null ? decR : undecryptedQuote(e2ePhase);
     }
     return copy;
   }

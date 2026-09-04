@@ -4,7 +4,25 @@ let currentRoomId = null;
 let currentRoomIsDM = false;
 let maxOtherReadMsgId = 0; // highest message id any other room member has read (for seen checkmarks)
 let currentDMPeerPk = null; // the DM partner's public key (E2E) or null
-function setDMPeerPk(k) { currentDMPeerPk = k; }
+/** How many times this chat has asked for the peer's key. */
+let dmKeyAttempts = 0;
+function setDMPeerPk(k) {
+  const had = { hasKey: !!currentDMPeerPk };
+  currentDMPeerPk = k;
+  // A key arriving after the messages were drawn has to redraw them, or the
+  // conversation keeps the placeholder it was painted with — which is exactly
+  // the "it stays in this state" that was reported.
+  if (E2EState.repaintNeeded(had, { hasKey: !!k })) repaintEncrypted();
+}
+
+/** Where this chat's encryption stands: still trying, readable, or not. */
+function e2ePhase() {
+  return E2EState.phaseFor({
+    hasKey: !!currentDMPeerPk,
+    ready: E2E.ready(),
+    attempts: dmKeyAttempts,
+  });
+}
 let allChatImages = []; // every image of the current chat (from /room-media)
 let e2eUnlockAsked = false;
 
@@ -1897,16 +1915,9 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   document.getElementById('room-voice-btn').classList.toggle('hidden', isDM);
   document.getElementById('room-voice-btn').textContent = '📞';
   Calls.setDMPeer(null, null);
+  dmKeyAttempts = 0;
   if (isDM) {
-    try {
-      await ensureE2EUnlocked();
-      const pk = await api('/dm-peer-key/' + roomId);
-      Calls.setDMPeer(pk?.userId || null, roomName);
-      if (E2E.ready() && pk?.publicKey) {
-        setDMPeerPk(E2E.decodeKey(pk.publicKey));
-        document.getElementById('room-title').textContent = '🔒 ' + roomName;
-      }
-    } catch {}
+    await fetchDMPeerKey(roomId, roomName);
   }
   socket.emit('join_room', roomId);
   const msgs = await api('/messages/' + roomId);
@@ -1934,6 +1945,39 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   } catch {}
   updateSeenCheckmarks();
   scrollBottom();
+}
+
+/**
+ * Get the peer's public key, and keep asking.
+ *
+ * One attempt was all there was: a request made in the second before the
+ * network came up lost the whole conversation to "cannot decrypt on this
+ * device" until the chat was closed and opened again. It retries on its own
+ * now, and every arrival repaints whatever was drawn without it.
+ */
+async function fetchDMPeerKey(roomId, roomName) {
+  if (String(roomId) !== String(currentRoomId)) return;
+  dmKeyAttempts++;
+  try {
+    await ensureE2EUnlocked();
+    const pk = await api('/dm-peer-key/' + roomId);
+    if (String(roomId) !== String(currentRoomId)) return;   // chat switched meanwhile
+    Calls.setDMPeer(pk?.userId || null, roomName);
+    if (E2E.ready() && pk?.publicKey) {
+      setDMPeerPk(E2E.decodeKey(pk.publicKey));
+      document.getElementById('room-title').textContent = '🔒 ' + roomName;
+      return;
+    }
+  } catch {}
+  if (String(roomId) !== String(currentRoomId) || currentDMPeerPk) return;
+  if (!E2EState.keepTryingKey(dmKeyAttempts)) {
+    // Out of attempts: the bubbles still say "Decrypting…", which is no longer
+    // true. Repaint them with the honest answer.
+    repaintEncrypted();
+    return;
+  }
+  setTimeout(() => fetchDMPeerKey(roomId, roomName),
+    E2EState.keyRetryDelay(dmKeyAttempts - 1));
 }
 
 const MESSAGES_PAGE_SIZE = 20;
@@ -3871,23 +3915,54 @@ function buildLocationCard(msg) {
   return wrap;
 }
 
-/** A copy of a message with its body in plain text, for anything that reads it. */
+/**
+ * A copy of a message with its body in plain text, for anything that reads it.
+ *
+ * When it cannot be read, WHY matters: with no key yet this says so and the
+ * bubble is redrawn when one arrives. Announcing a permanent failure while the
+ * key request is still in flight is what put "cannot decrypt on this device"
+ * across an entire working conversation.
+ */
 function decryptedMessage(msg) {
   if (!msg) return msg;
   if (!E2E.isEncrypted(msg.content) && !E2E.isEncrypted(msg.reply_content)) return msg;
+  const phase = e2ePhase();
   const copy = { ...msg };
   if (E2E.isEncrypted(copy.content)) {
     const dec = E2E.decrypt(copy.content, currentDMPeerPk);
-    copy.content = dec !== null ? dec : '🔒 Encrypted message (cannot decrypt on this device)';
+    copy.content = dec !== null ? dec : E2EState.undecryptedBody(phase);
+    // Marked rather than worked out again later: whoever draws this needs to
+    // know it is a placeholder, and comparing rendered text against the
+    // placeholder strings is a comparison waiting to be got wrong.
+    if (dec === null) copy._undecrypted = true;
   }
   if (E2E.isEncrypted(copy.reply_content)) {
     const decR = E2E.decrypt(copy.reply_content, currentDMPeerPk);
-    copy.reply_content = decR !== null ? decR : '🔒 Encrypted';
+    copy.reply_content = decR !== null ? decR : E2EState.undecryptedQuote(phase);
+    if (decR === null) copy._undecrypted = true;
   }
   return copy;
 }
 
+/**
+ * Redraw the bubbles that were built without a key.
+ *
+ * The web has no message list to re-render — the text is written into the DOM
+ * once — so each bubble that could not be decrypted keeps the message it was
+ * built from, and is rebuilt from it when the key turns up.
+ */
+function repaintEncrypted() {
+  document.querySelectorAll('.msg-wrapper').forEach(el => {
+    const raw = el._encRaw;
+    if (!raw) return;
+    const fresh = buildMessageElement(raw);
+    el.replaceWith(fresh);
+  });
+  updateSeenCheckmarks();
+}
+
 function buildMessageElement(msg) {
+  const raw = msg;
   msg = decryptedMessage(msg);
   const isMine = msg.username === username;
 
@@ -3902,6 +3977,9 @@ function buildMessageElement(msg) {
     const due = Expiry.deadlineOf(msg);
     if (due) wrapper.dataset.expiresAt = String(due);
   }
+  // Kept only while it is UNREADABLE, so a repaint has something to rebuild
+  // from. A message that decrypted has nothing left to wait for.
+  if (msg._undecrypted) wrapper._encRaw = raw;
   if (!msg._uploading) addLongPress(wrapper, () => openCtxMenu(msg.id, msg.type, isMine, wrapper, msg));
   // Its disappearing clock starts when it is actually on screen.
   watchForSeen(wrapper, msg);
