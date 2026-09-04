@@ -398,7 +398,7 @@ class CallManager {
     }, (res: any) => {
       if (!this.mode?.startsWith('dm') || this.peerId !== userId) return;
       if (this.out.ringing || this.out.answered || this.out.connected) return;
-      this.out = { ...this.out, delivered: !!res?.delivered };
+      this.out = { ...this.out, delivered: !!res?.delivered, pushed: !!res?.pushed };
       this.status = outgoingStatus(this.out);
       this.emit();
     });

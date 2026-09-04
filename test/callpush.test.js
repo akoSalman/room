@@ -114,8 +114,18 @@ test('THE BUG: a call rings without needing any JavaScript to run', async () => 
 
   // On the CALLS channel, which is where the thirty-second ringtone lives. The
   // default channel chimes once, which is the complaint.
-  assert.strictEqual(msg.android.notification.channel_id, 'calls-v2',
-    'a call went out on the ordinary message channel, which chimes once');
+  // Read from the app rather than written out here, because the two must be
+  // the SAME STRING: a push naming a channel the app never created is played
+  // by Android on a default channel it invents, silently. Android also freezes
+  // a channel's settings at creation, so fixing the sound means a NEW id — and
+  // a test with the old id spelled out by hand would pass while every call
+  // went out on a channel that no longer exists.
+  const chan = /CALL_CHANNEL = '([^']+)'/.exec(
+    fs.readFileSync(path.join(__dirname, '..', 'native-app', 'src', 'incomingCall.ts'), 'utf8'));
+  assert.ok(chan, 'CALL_CHANNEL is gone — this check is vacuous');
+  assert.strictEqual(msg.android.notification.channel_id, chan[1],
+    'the call push names a channel the app never created, so Android plays it '
+    + 'on an invented default channel — silently');
   assert.strictEqual(msg.android.notification.sound, 'ring');
   assert.strictEqual(msg.android.notification.notification_priority, 'PRIORITY_MAX');
   // NOT click_action: it names an intent action the app declares no filter
@@ -187,7 +197,61 @@ test('an ordinary message still uses a normal notification', async () => {
 (async () => {
   await new Promise(r => setTimeout(r, 600));
   baseUrl = `http://127.0.0.1:${server.address().port}`;
-  let passed = 0, failed = 0;
+  test('THE BUG: hanging up leaves a closed app ringing, so the ring is replaced', () => {
+  // Reported as: the caller hangs up and the receiver is still ringing.
+  //
+  // A callee with no live socket is being rung BY A NOTIFICATION, and never
+  // sees the call_end event — there is no JavaScript running to receive it. A
+  // delivered notification cannot be recalled, but the same TAG replaces it,
+  // so the ring is overwritten by a silent record of the missed call.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const start = src.indexOf("socket.on('call_end'");
+  assert.ok(start > 0, 'call_end is gone — this check is vacuous');
+  const body = src.slice(start, src.indexOf("socket.on('ping_check'", start));
+  assert.ok(/rooms\.get\('user:' \+ toUserId\)/.test(body),
+    'call_end never asks whether the callee is actually live, so either every '
+    + 'hang-up sends a spurious missed-call push or none replaces the ring');
+  assert.ok(/sendPushToUsers\(/.test(body), 'nothing replaces the delivered ring');
+  assert.ok(/tag: 'incoming-call'/.test(body),
+    'the replacement push carries a different tag, so it lands BESIDE the '
+    + 'ringing notification instead of replacing it');
+  assert.ok(/call_missed/.test(body), 'the replacement is not marked as a missed call');
+  // On the ordinary channel: replacing a ring with another ring is worse than
+  // leaving it.
+  assert.ok(!/calls-v/.test(body), 'the replacement push rings all over again');
+});
+
+test('a call the callee can be pushed for is not reported as unreachable', async () => {
+  // Reported as: they are looking at the notification and it still says
+  // "connecting". Connecting must mean nothing reached them by any route.
+  const caller = await signUp('ackcaller');
+  const callee = await signUp('ackcallee');
+  const calleeId = db.prepare('SELECT id FROM users WHERE username = ?').get('ackcallee').id;
+  const noPush = await signUp('ackdark');
+  const darkId = db.prepare('SELECT id FROM users WHERE username = ?').get('ackdark').id;
+  db.prepare('INSERT OR REPLACE INTO push_tokens (user_id, token) VALUES (?, ?)')
+    .run(calleeId, 'device-token-ack');
+
+  const sock = await connect(caller.token);
+  const offer = to => new Promise(res => {
+    sock.emit('call_offer', { toUserId: to, roomId: null, kind: 'voice', sdp: 'x' }, res);
+    setTimeout(() => res(null), 2000);
+  });
+
+  const withPush = await offer(calleeId);
+  assert.ok(withPush, 'call_offer never acknowledged');
+  assert.strictEqual(withPush.delivered, false, 'the callee has no socket in this test');
+  assert.strictEqual(withPush.pushed, true,
+    'a callee whose phone is being rung by a push is reported as unreachable');
+
+  const dark = await offer(darkId);
+  assert.strictEqual(dark.pushed, false,
+    'a callee with no push route anywhere is reported as being alerted');
+  sock.close();
+  await settle();
+});
+
+let passed = 0, failed = 0;
   for (const { n, f } of tests) {
     try { await f(); console.log(`  ✓ ${n}`); passed++; }
     catch (e) { console.error(`  ✗ ${n}\n      ${e.message}`); failed++; }

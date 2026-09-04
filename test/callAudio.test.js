@@ -95,9 +95,20 @@ test('THE BUG: nothing says "Ringing" until the other phone says it is ringing',
   assert.strictEqual(A.outgoingStatus({ delivered: true, ringing: true }), 'Ringing…');
 });
 
-test('an offline callee is never described as ringing', () => {
-  // They are being woken by a push, and may be face down in a drawer.
+test('an offline callee with no push route is the only "Connecting"', () => {
+  // Reported as: the other phone is showing the notification and the caller's
+  // screen still says "connecting". "Connecting" has to mean what it says —
+  // nothing reached them by ANY route — or it is a lie every time a call is
+  // answered from a notification.
   assert.strictEqual(A.outgoingStatus({ delivered: false }), 'Connecting…');
+  assert.strictEqual(A.outgoingStatus({ delivered: false, pushed: true }), 'Ringing…',
+    'their phone is alerting them and the caller is told the call is not through');
+  // A push is exactly as good as an alert here: it is what makes the phone
+  // ring when the app is closed, which is the whole case this covers.
+  assert.strictEqual(A.outgoingStatus({ pushed: true }), 'Ringing…');
+  // But it is still outranked by the real thing.
+  assert.strictEqual(A.outgoingStatus({ pushed: true, answered: true }), 'Connecting…');
+  assert.strictEqual(A.outgoingStatus({ pushed: true, connected: true }), 'Connected');
 });
 
 test('answering and connecting outrank ringing, in that order', () => {
@@ -111,16 +122,16 @@ test('answering and connecting outrank ringing, in that order', () => {
 test('the web says exactly what the app says, for every combination', () => {
   // A call that reads "Ringing" on one platform and "Connecting" on the other
   // for the same facts is a bug in whichever is behind.
-  const flags = ['delivered', 'ringing', 'answered', 'connected'];
+  const flags = ['delivered', 'ringing', 'answered', 'connected', 'pushed'];
   let checked = 0;
-  for (let mask = 0; mask < 16; mask++) {
+  for (let mask = 0; mask < 32; mask++) {
     const s = {};
     flags.forEach((f, i) => { s[f] = !!(mask & (1 << i)); });
     assert.strictEqual(W.outgoingStatus(s), A.outgoingStatus(s),
       `web and app disagree for ${JSON.stringify(s)}`);
     checked++;
   }
-  assert.strictEqual(checked, 16, 'the drift check did not actually run');
+  assert.strictEqual(checked, 32, 'the drift check did not actually run');
   // And the shapes the callers really pass: undefined, not false.
   assert.strictEqual(W.outgoingStatus({}), A.outgoingStatus({}));
   assert.strictEqual(W.outgoingStatus({ ringing: true }), A.outgoingStatus({ ringing: true }));
@@ -187,6 +198,18 @@ test('no function in calls.js calls itself unconditionally', () => {
     if (new RegExp(`(^|[;\\s])${name}\\s*\\(\\s*\\)\\s*;`).test(top)) bad.push(name);
   }
   assert.deepStrictEqual(bad, [], `these functions recurse forever: ${bad.join(', ')}`);
+});
+
+test('both clients keep the "their phone is alerting them" flag from the ack', () => {
+  // outgoingStatus can only report what it is given: if the ack's pushed flag
+  // is dropped on the way in, every push-woken call reads "Connecting" no
+  // matter what the rule says.
+  const nat = fs.readFileSync(path.join(NAT, 'src', 'callManager.ts'), 'utf8');
+  assert.ok(/delivered: !!res\?\.delivered, pushed: !!res\?\.pushed/.test(nat),
+    'the app throws away the ack\'s pushed flag');
+  const web = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'calls.js'), 'utf8');
+  assert.ok(/pushed: !!\(res && res\.pushed\)/.test(web),
+    'the web throws away the ack\'s pushed flag');
 });
 
 let passed = 0, failed = 0;

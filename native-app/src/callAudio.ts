@@ -85,6 +85,8 @@ export function sessionNeeded(phase: CallPhase): boolean {
 // Only the second justifies the word "Ringing".
 
 export type OutgoingState = {
+  /** A push notification was dispatched: their phone is alerting them. */
+  pushed?: boolean;
   /** The server had a live socket for them and handed the offer over. */
   delivered?: boolean;
   /** Their device confirmed it is alerting. */
@@ -99,10 +101,17 @@ export function outgoingStatus(s: OutgoingState): string {
   if (s.connected) return 'Connected';
   if (s.answered) return 'Connecting…';
   if (s.ringing) return 'Ringing…';
-  // Delivered but not yet alerting, or not delivered at all and being woken by
-  // a push. Both are "we are still trying to reach them", which is what
-  // "Connecting…" says — and it is the honest word for a phone that may be
-  // face down in a drawer.
+  // A PUSH WENT OUT, so their phone is alerting them — that is ringing, and
+  // saying "Connecting…" while the other person is looking at an incoming call
+  // is simply wrong. Reported exactly that way: "the other user is seeing the
+  // notification on their device but the call is still connecting".
+  //
+  // `ringing` above is better evidence — it is the callee's app saying so —
+  // but it only exists when their app is awake. This covers the closed app,
+  // which is the case the complaint is about.
+  if (s.pushed) return 'Ringing…';
   if (s.delivered) return 'Calling…';
+  // Nothing reached them by any route: no socket, no push token. THIS is what
+  // "Connecting…" is for — somebody with no internet at all.
   return 'Connecting…';
 }

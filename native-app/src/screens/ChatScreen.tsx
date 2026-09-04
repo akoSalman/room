@@ -120,7 +120,7 @@ import { toast } from '../components/Toast';
 import * as outbox from '../outbox';
 import EmojiBurst from '../components/EmojiBurst';
 import EmojiEditor from '../components/EmojiEditor';
-import { useFavEmojis } from '../favEmojis';
+import { useOrderedFavEmojis, noteEmojiUse } from '../favEmojis';
 
 type Message = {
   id: number | string; room_id: number; user_id: number; username: string; avatar?: string | null;
@@ -579,7 +579,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [showPlayer, setShowPlayer] = useState(false);
   // Tapped link / phone number → sheet offering both sensible actions.
   const [tokenAction, setTokenAction] = useState<{ kind: 'url' | 'phone'; text: string } | null>(null);
-  const favEmojis = useFavEmojis();
+  // Reordered when a picker OPENS, never while one is on screen.
+  const favEmojis = useOrderedFavEmojis(!!emojiPicker || !!actionsMsg);
   const [editEmojis, setEditEmojis] = useState(false);
   // How many messages arrived while the user was scrolled up, shown as a badge
   // on the scroll-to-bottom button.
@@ -2501,6 +2502,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   function toggleReact(messageId: number | string, emoji: string) {
+    // A reaction is a deliberate pick, so it counts towards the bar's order.
+    noteEmojiUse(emoji, 'reaction');
     socketRef.current?.emit('toggle_reaction', { messageId, emoji });
     setEmojiPicker(null);
   }
@@ -5729,9 +5732,13 @@ const s = StyleSheet.create({
     marginTop: 8, marginHorizontal: -10, marginBottom: -10,
     paddingHorizontal: 10, paddingVertical: 7,
     borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(128,128,128,0.35)',
+    // Tinted rather than transparent: asked for as "slightly more
+    // highlighted". Enough of a wash to read as a control instead of a
+    // footnote, without competing with the message above it.
+    backgroundColor: 'rgba(59,125,216,0.12)',
   },
   commentBarIcon: { fontSize: 12 },
-  commentBarLabel: { flex: 1, color: C.accent, fontSize: 12.5, fontWeight: '600' },
+  commentBarLabel: { flex: 1, color: C.accent, fontSize: 12.5, fontWeight: '700' },
     commentsHead: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     paddingHorizontal: 8, paddingVertical: 6,

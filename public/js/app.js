@@ -2162,13 +2162,34 @@ function triggerEmojiBurst(emoji) {
 // the same quick bar on two platforms that offered different emoji would be a
 // small, constant irritation.
 const QUICK_EMOJIS = ['😂', '❤️', '😘', '👍', '🙏', '😍', '🔥', '🍑', '🎉', '😢', '😮', '👌'];
+/** How often each emoji has been picked, on this device. */
+function emojiCounts() {
+  try { return JSON.parse(localStorage.getItem('emojiCounts') || '{}') || {}; } catch { return {}; }
+}
+
+/**
+ * Record a use, and do NOT redraw the bar.
+ *
+ * The order changes only when the bar is next built — see initQuickEmoji. A
+ * bar that re-sorts under a finger already moving towards the next emoji is
+ * worse than one in a fixed, wrong order.
+ */
+function noteEmojiUse(em, source) {
+  if (!EmojiOrder.countsAsUse(source)) return;
+  try {
+    localStorage.setItem('emojiCounts', JSON.stringify(EmojiOrder.bump(emojiCounts(), em)));
+  } catch {}
+}
+
 function initQuickEmoji() {
   const list = document.getElementById('quick-emoji-list');
   list.innerHTML = '';
-  QUICK_EMOJIS.forEach(em => {
+  // Most-used first, decided HERE — once, as the bar is built.
+  EmojiOrder.orderFor(QUICK_EMOJIS, emojiCounts()).forEach(em => {
     const b = document.createElement('button');
     b.textContent = em;
     b.onclick = () => {
+      noteEmojiUse(em, 'bar');
       const input = document.getElementById('msg-input');
       input.value += em;
       input.focus();
@@ -4560,6 +4581,8 @@ function hideEmojiPicker() {
 }
 function pickEmoji(emoji) {
   if (!pickerTarget) return;
+  // Reacting is picking an emoji, so it counts towards the bar's order.
+  noteEmojiUse(emoji, 'reaction');
   socket.emit('toggle_reaction', { messageId: pickerTarget.messageId, emoji });
   hideEmojiPicker();
 }

@@ -21,7 +21,7 @@ import notifee, {
   AndroidCategory, AndroidImportance, AndroidVisibility, EventType,
 } from '@notifee/react-native';
 
-export const CALL_CHANNEL = 'calls-v2';
+export const CALL_CHANNEL = 'calls-v3';
 /** One notification id, so a second offer replaces the first rather than stacking. */
 export const CALL_NOTIFICATION_ID = 'incoming-call';
 
@@ -29,9 +29,18 @@ export const CALL_NOTIFICATION_ID = 'incoming-call';
  * The ringing channel.
  *
  * A channel's settings are FIXED once Android has created it — changing the
- * sound or importance in code does nothing to an existing one. That is why
- * this is versioned: 'calls-v2' is a new channel, so the looping-call settings
- * actually apply on devices that already had the old one.
+ * sound or importance in code does nothing to an existing one, and there is no
+ * error to notice. Versioning the id is the only way to change them, which is
+ * why this is on its third.
+ *
+ * v3, reported as: with the app closed a call arrives as a notification and
+ * does not ring. The sound and the importance here are what a phone rings
+ * with, and a device that created 'calls-v2' before the ring tone was bundled
+ * kept that channel silent for good — no amount of setting `sound` afterwards
+ * could reach it. A new id is a new channel, created from these values.
+ *
+ * The server names this same id on the notification it sends, so the two must
+ * be changed together; a test reads both and fails when they disagree.
  */
 export async function ensureCallChannel(): Promise<void> {
   try {

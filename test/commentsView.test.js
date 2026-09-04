@@ -414,6 +414,22 @@ test('the app draws the same strip, inside the bubble', () => {
   assert.ok(!/#22c55e/.test(block), 'the rejected green is still in the comment styles');
 });
 
+test('the strip reads as a control, not as a footnote', () => {
+  // Asked for as: that comment count bar below messages should be slightly
+  // more highlighted. Transparent on top of the bubble, it was just another
+  // line of the message; a faint wash of the accent separates it without
+  // shouting.
+  const css = fs.readFileSync(path.join(ROOT, 'public', 'css', 'style.css'), 'utf8');
+  const web = css.slice(css.indexOf('.comment-bar-btn {'), css.indexOf('.comment-bar-icon'));
+  assert.ok(!/background: none/.test(web), 'the web strip has no background of its own');
+  assert.ok(/background: rgba\(59, 125, 216/.test(web), 'the web strip is not tinted with the accent');
+  assert.ok(/font-weight: 700/.test(web), 'the web strip is no heavier than the text above it');
+
+  const block = chat.slice(chat.indexOf('  commentBar: {'), chat.indexOf('  commentsHead: {'));
+  assert.ok(/backgroundColor: 'rgba\(59,125,216/.test(block), 'the app strip is not tinted');
+  assert.ok(/fontWeight: '700'/.test(block), 'the app strip is no heavier than the text above it');
+});
+
 test('the app thread scrolls, jumps and swipes like the web', () => {
   assert.ok(/contentContainerStyle=\{s\.commentsListContent\}/.test(chat), 'the comments have no margins');
   assert.ok(/shouldStickToBottom\(\{ reason: 'mine'/.test(chat), 'my own comment is not scrolled to');

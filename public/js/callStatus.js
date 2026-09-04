@@ -17,17 +17,19 @@
   'use strict';
 
   /**
-   * @param {{delivered?:boolean, ringing?:boolean, answered?:boolean, connected?:boolean}} s
+   * @param {{delivered?:boolean, pushed?:boolean, ringing?:boolean,
+   *          answered?:boolean, connected?:boolean}} s
    */
   function outgoingStatus(s) {
     s = s || {};
     if (s.connected) return 'Connected';
     if (s.answered) return 'Connecting…';
     if (s.ringing) return 'Ringing…';
-    // Delivered but not yet alerting, or not delivered at all and being woken
-    // by a push. Both mean "still trying to reach them", which is the honest
-    // thing to say about a phone that may be face down in a drawer.
+    // A push went out, so their phone is alerting them — that IS ringing.
+    // See callAudio.ts for why this case exists separately from `ringing`.
+    if (s.pushed) return 'Ringing…';
     if (s.delivered) return 'Calling…';
+    // Nothing reached them by any route. THIS is what "Connecting…" is for.
     return 'Connecting…';
   }
 

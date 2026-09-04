@@ -747,6 +747,28 @@ async function getFcmAccessToken() {
  * notification and nothing else: the message still arrives, the chat still
  * shows it, and the unread count still counts it.
  */
+/**
+ * Will a push actually reach this person?
+ *
+ * Not "was one sent" — this is asked BEFORE sending, so the caller's screen
+ * can say "Ringing…" rather than "Connecting…" while the callee's phone is
+ * alerting them. Reported as: the other user is looking at an incoming call
+ * notification and the caller is still told the call is connecting.
+ *
+ * Answers the same two questions the sender does, in the same order: has this
+ * person muted the caller, and is there any route to their device at all —
+ * a Firebase token for the app, or a Web Push subscription for a home-screen
+ * PWA. "Connecting…" then means what it should: nothing can reach them.
+ */
+function hasPushRoute(userId, fromUserId) {
+  try {
+    if (!recipientsFor([userId], fromUserId, hasMuted).length) return false;
+    const fcm = db.prepare('SELECT 1 FROM push_tokens WHERE user_id = ? LIMIT 1').get(userId);
+    if (fcm) return true;
+    return !!db.prepare('SELECT 1 FROM web_push_subs WHERE user_id = ? LIMIT 1').get(userId);
+  } catch { return false; }
+}
+
 async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
   if (!userIds.length) return;
   // The rule lives in notify.js so it can be tested: the rest of this function
@@ -2439,7 +2461,11 @@ io.on('connection', (socket) => {
     // callee was offline and being woken by a push.
     const live = io.sockets.adapter.rooms.get('user:' + toUserId);
     const delivered = !!(live && live.size > 0);
-    if (typeof ack === 'function') ack({ delivered });
+    // Whether their phone will be alerted even with the app closed. The caller
+    // is told "Ringing…" for this, and "Connecting…" only when NEITHER route
+    // exists — which is the honest meaning of the word.
+    const pushed = !roomId && hasPushRoute(parseInt(toUserId, 10), socket.user.id);
+    if (typeof ack === 'function') ack({ delivered, pushed });
     io.to('user:' + toUserId).emit('call_offer', {
       fromUserId: socket.user.id, fromUsername: socket.user.username,
       roomId: roomId || null, kind: kind === 'video' ? 'video' : 'voice', sdp,
@@ -2487,7 +2513,11 @@ io.on('connection', (socket) => {
           fromUsername: socket.user.username,
         },
         {
-          channelId: 'calls-v2',
+          // MUST match CALL_CHANNEL in native-app/src/incomingCall.ts — the
+          // app creates the channel, this names it, and a name Android has
+          // never heard of falls back to the default channel with the default
+          // sound. A test compares the two.
+          channelId: 'calls-v3',
           sound: 'ring',
           priorityMax: true,
           // One tag, so a second offer replaces the first rather than stacking.
@@ -2546,7 +2576,25 @@ io.on('connection', (socket) => {
   });
   socket.on('call_end', ({ toUserId }) => {
     clearPendingCallsBetween(socket.user.id, parseInt(toUserId, 10));
+    const live = io.sockets.adapter.rooms.get('user:' + toUserId);
     io.to('user:' + toUserId).emit('call_end', { fromUserId: socket.user.id });
+    // A callee whose app is CLOSED never sees that event — they are being rung
+    // by a notification, and hanging up left it ringing on their phone with
+    // nobody on the other end. Reported exactly that way.
+    //
+    // There is no way to cancel a notification that has already been
+    // delivered, but there IS a way to replace it: the same tag. So the ring
+    // is overwritten by a silent "Missed call" on the ordinary channel, which
+    // stops the sound and leaves a true record of what happened.
+    if (!(live && live.size > 0)) {
+      sendPushToUsers(
+        [toUserId],
+        (socket.user.avatar ? socket.user.avatar + ' ' : '') + socket.user.username,
+        '📞 Missed call',
+        { type: 'call_missed', fromUserId: socket.user.id },
+        { tag: 'incoming-call', fromUserId: socket.user.id },
+      );
+    }
   });
 
   // Lightweight liveness probe: clients verify the socket isn't a zombie

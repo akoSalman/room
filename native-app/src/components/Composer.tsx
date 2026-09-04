@@ -10,7 +10,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { C, isRTL } from '../theme';
-import { useFavEmojis } from '../favEmojis';
+import { useOrderedFavEmojis, noteEmojiUse } from '../favEmojis';
 import EmojiEditor from './EmojiEditor';
 import { mentionQuery, applyMention, filterUsernames } from '../mentions';
 import { pasteLabel } from '../pasteDrop';
@@ -82,7 +82,7 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
   const caretRef = useRef(0);
   const [suggest, setSuggest] = useState<string[]>([]);
   const suggestAt = useRef<{ start: number; caret: number } | null>(null);
-  const favEmojis = useFavEmojis();
+  const favEmojis = useOrderedFavEmojis(quickEmoji);
   const [editEmojis, setEditEmojis] = useState(false);
   const textRef = useRef('');
   const inputRef = useRef<TextInput>(null);
@@ -150,7 +150,7 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
         <View style={s.quickEmojiBar}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="always" contentContainerStyle={{ alignItems: 'center' }} style={{ flex: 1 }}>
             {favEmojis.map(em => (
-              <TouchableOpacity key={em} style={s.quickEmojiBtn} onPress={() => set(textRef.current + em)}>
+              <TouchableOpacity key={em} style={s.quickEmojiBtn} onPress={() => { noteEmojiUse(em, 'bar'); set(textRef.current + em); }}>
                 <Text style={s.quickEmojiText}>{em}</Text>
               </TouchableOpacity>
             ))}

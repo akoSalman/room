@@ -1539,12 +1539,15 @@ body.commenting #install-hint { display: none; }
      edge; the bubble's own rounded corners clip it into shape. */
   margin: 8px -12px -8px; padding: 7px 12px;
   border: 0; border-top: 1px solid rgba(128, 128, 128, 0.22);
-  background: none; cursor: pointer;
-  color: var(--accent); font-size: 0.82rem; font-weight: 600;
+  /* Tinted rather than transparent: asked for as "slightly more highlighted".
+     A faint wash of the accent is enough to read as a control instead of as a
+     footnote, without competing with the message above it. */
+  background: rgba(59, 125, 216, 0.10); cursor: pointer;
+  color: var(--accent); font-size: 0.82rem; font-weight: 700;
   font-family: inherit; text-align: start;
 }
-.comment-bar-btn:hover { background: rgba(59, 125, 216, 0.08); }
+.comment-bar-btn:hover { background: rgba(59, 125, 216, 0.18); }
 .comment-bar-icon { font-size: 0.85rem; }
 .comment-bar-label { flex: 1; }
-.comment-bar-chev { font-size: 1.05rem; line-height: 1; opacity: 0.7; }
+.comment-bar-chev { font-size: 1.05rem; line-height: 1; opacity: 0.9; }
 

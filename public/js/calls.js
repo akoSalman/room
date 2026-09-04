@@ -137,7 +137,7 @@ const Calls = (() => {
       sdp: pc.localDescription, ...extra,
     }, (res) => {
       if (out.ringing || out.answered || out.connected) return;
-      out = Object.assign({}, out, { delivered: !!(res && res.delivered) });
+      out = Object.assign({}, out, { delivered: !!(res && res.delivered), pushed: !!(res && res.pushed) });
       setStatus(CallStatus.outgoingStatus(out));
     });
   }
