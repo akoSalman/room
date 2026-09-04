@@ -138,6 +138,12 @@
 
     <div id="messages"></div>
 
+    <!-- New comments, and which way they lie.
+         A comment never appears in the conversation, so without this the chat
+         was badged for something with no way to find it. Pinned to the edge it
+         points at, and it scrolls to the message when tapped. -->
+    <button id="comment-jump" class="comment-jump hidden" onclick="goToUnreadComments()"></button>
+
     <!-- ── Comments ──────────────────────────────────
      A message's thread as its own screen. It sits HERE, directly after the
      message list and before the emoji bar, because both take the space the
@@ -153,7 +159,7 @@
            strip opens the original. The message used to be pinned here in
            full, which left nothing for the comments once a keyboard was up. -->
       <div class="comments-head">
-        <button class="icon-btn" onclick="closeComments()" aria-label="Back">←</button>
+        <button class="icon-btn" onclick="jumpToParentMessage()" aria-label="Back">←</button>
         <button id="comments-parent-link" class="comments-parent-link"
                 onclick="jumpToParentMessage()">
           <img id="comments-parent-thumb" class="comments-parent-thumb hidden" alt="" />
@@ -626,6 +632,7 @@
 <script src="/js/mediaLinks.js"></script>
 <script src="/js/comments.js"></script>
 <script src="/js/commentsView.js"></script>
+<script src="/js/commentUnread.js"></script>
 <script src="/js/emojiOrder.js"></script>
 <script src="/js/touchScroll.js"></script>
 <script src="/js/linkPreview.js"></script>

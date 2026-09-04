@@ -44,6 +44,9 @@ export type PushData = {
   roomId?: string | number;
   msgId?: string | number;
   type?: string;
+  /** Set on a comment: the message whose thread it belongs to. */
+  parentId?: string | number;
+  comment?: string | number | boolean;
   /** Newer servers send enough to open the chat without asking anything. */
   roomName?: string;
   isDm?: string | number | boolean;
@@ -100,6 +103,30 @@ export function resolveRoom(
     name: String(r.name ?? ''),
     is_dm: r.is_dm ? 1 : 0,
     other_username: r.other_username ?? null,
+  };
+}
+
+/**
+ * The thread a notification is about, when it is about one.
+ *
+ * Reported as: tapping a new-comment notification opens the chat, where there
+ * is nothing to see — a comment never appears in the conversation, by design.
+ * It has to open the THREAD, at the comment.
+ *
+ * Both ids are required. A comment push without its parent cannot open
+ * anything better than the chat, and guessing would put the user in some other
+ * message's thread.
+ */
+export function commentTargetFromPush(
+  data: PushData | null | undefined,
+): { parentId: number; commentId: number | null } | null {
+  if (!data) return null;
+  const parent = parseInt(String(data.parentId ?? ''), 10);
+  if (!Number.isFinite(parent) || parent <= 0) return null;
+  const comment = parseInt(String(data.msgId ?? ''), 10);
+  return {
+    parentId: parent,
+    commentId: Number.isFinite(comment) && comment > 0 ? comment : null,
   };
 }
 

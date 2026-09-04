@@ -279,7 +279,14 @@ function urlBase64ToUint8Array(base64) {
 // A notification tapped while the app is already open: the service worker
 // hands the room over rather than reloading the page.
 navigator.serviceWorker?.addEventListener('message', (e) => {
-  if (e.data?.type === 'open-room' && e.data.roomId) openRoomById(e.data.roomId);
+  if (e.data?.type !== 'open-room' || !e.data.roomId) return;
+  openRoomById(e.data.roomId);
+  // A comment notification names the thread it came from. Opening the chat is
+  // not enough: a comment never appears in the conversation, so the user was
+  // sent to a room with nothing new in it.
+  if (e.data.parentId) {
+    setTimeout(() => openComments(e.data.parentId), 400);
+  }
 });
 function showNotif(msg) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
@@ -404,6 +411,9 @@ window.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('messages').addEventListener('scroll', () => {
     updateScrollFab();
+    // Which way the unread comments lie depends on what is on screen, so it is
+    // recomputed as the screen moves.
+    refreshCommentJump();
     if (document.getElementById('messages').scrollTop < 80) loadOlderMessages();
   });
 });
@@ -721,6 +731,7 @@ function connectSocket() {
     // the comment itself for anyone with that thread open.
     socket.on('comment_added', (ev) => {
       bumpCommentBadge(ev.parentId, ev.count);
+      noteUnreadComment(ev);
       if (commentParent && String(commentParent.id) === String(ev.parentId)) {
         appendCommentBubble(ev.comment);
       }
@@ -3814,18 +3825,24 @@ function buildLocationCard(msg) {
   return wrap;
 }
 
-function buildMessageElement(msg) {
-  if (E2E.isEncrypted(msg.content) || E2E.isEncrypted(msg.reply_content)) {
-    msg = { ...msg };
-    if (E2E.isEncrypted(msg.content)) {
-      const dec = E2E.decrypt(msg.content, currentDMPeerPk);
-      msg.content = dec !== null ? dec : '🔒 Encrypted message (cannot decrypt on this device)';
-    }
-    if (E2E.isEncrypted(msg.reply_content)) {
-      const decR = E2E.decrypt(msg.reply_content, currentDMPeerPk);
-      msg.reply_content = decR !== null ? decR : '🔒 Encrypted';
-    }
+/** A copy of a message with its body in plain text, for anything that reads it. */
+function decryptedMessage(msg) {
+  if (!msg) return msg;
+  if (!E2E.isEncrypted(msg.content) && !E2E.isEncrypted(msg.reply_content)) return msg;
+  const copy = { ...msg };
+  if (E2E.isEncrypted(copy.content)) {
+    const dec = E2E.decrypt(copy.content, currentDMPeerPk);
+    copy.content = dec !== null ? dec : '🔒 Encrypted message (cannot decrypt on this device)';
   }
+  if (E2E.isEncrypted(copy.reply_content)) {
+    const decR = E2E.decrypt(copy.reply_content, currentDMPeerPk);
+    copy.reply_content = decR !== null ? decR : '🔒 Encrypted';
+  }
+  return copy;
+}
+
+function buildMessageElement(msg) {
+  msg = decryptedMessage(msg);
   const isMine = msg.username === username;
 
   const wrapper = document.createElement('div');
@@ -4113,10 +4130,13 @@ function buildMessageElement(msg) {
     bar.dataset.msgId = msg.id;
     bar.type = 'button';
     bar.innerHTML = '<span class="comment-bar-icon">💬</span>'
-      + '<span class="comment-bar-label"></span><span class="comment-bar-chev">›</span>';
+      + '<span class="comment-bar-label"></span>'
+      + '<span class="comment-bar-new hidden"></span>'
+      + '<span class="comment-bar-chev">›</span>';
     bar.querySelector('.comment-bar-label').textContent =
       CommentsView.commentsBarLabel(Comments.normaliseCount(msg.comment_count));
     bar.classList.toggle('hidden', !Comments.showsBadge(msg.comment_count));
+    paintUnreadComments(bar, CommentUnread.countFor(unreadComments, msg.id));
     bar.onclick = (e) => { e.stopPropagation(); openComments(msg.id); };
     // Inside the bubble: the strip belongs to the message, and the bubble's
     // rounded corners clip it into shape.
@@ -4274,7 +4294,10 @@ function setupCommentsGestures() {
   let from = null;
   // Back closes the thread before it leaves the chat — the same step the ← in
   // the header takes.
-  window.addEventListener('popstate', () => { if (commentParent) closeComments(true); });
+  // Back goes to the MESSAGE the thread hangs off. Reported as: back drops
+  // you at the bottom of the conversation, having lost the place you were
+  // reading — and the message may be a long way up.
+  window.addEventListener('popstate', () => { if (commentParent) jumpToParentMessage(true); });
   panel.addEventListener('touchstart', (e) => {
     const t = e.touches[0];
     from = t ? { x: t.clientX, y: t.clientY } : null;
@@ -4285,7 +4308,7 @@ function setupCommentsGestures() {
     if (!t) return;
     const closed = CommentsView.closesOnSwipe({ dx: t.clientX - from.x, dy: t.clientY - from.y });
     from = null;
-    if (closed) closeComments();
+    if (closed) jumpToParentMessage();
   }, { passive: true });
 }
 
@@ -4303,6 +4326,7 @@ function sendingParentId() {
 
 async function openComments(msgId) {
   if (!currentRoomId) return;
+  clearUnreadComments(msgId);
   const roomId = currentRoomId;
   const panel = document.getElementById('comments-panel');
   document.getElementById('comments-list').innerHTML = '<div class="media-empty">Loading…</div>';
@@ -4398,7 +4422,10 @@ function syncCommentsFab() {
  * heading now, and tapping it goes to the real message.
  */
 function renderCommentsHead(parent, count) {
-  const preview = CommentsView.parentPreview(parent);
+  // Decrypted first. Decryption lives where a message is DRAWN, which a
+  // heading is not — so this printed the ciphertext it was handed. Reported
+  // as: the preview is "some hash".
+  const preview = CommentsView.parentPreview(decryptedMessage(parent));
   document.getElementById('comments-parent-preview').textContent = preview.text;
   document.getElementById('comments-title').textContent = Comments.commentsTitle(count);
   const thumb = document.getElementById('comments-parent-thumb');
@@ -4418,10 +4445,10 @@ function firstImageOf(msg) {
 }
 
 /** Leave the thread and go to the message it is about. */
-function jumpToParentMessage() {
+function jumpToParentMessage(fromHistory) {
   const id = commentParent && commentParent.id;
   if (id == null) return;
-  closeComments();
+  closeComments(fromHistory);
   jumpToMessage(Number(id));
 }
 
@@ -4450,6 +4477,82 @@ function appendCommentBubble(msg) {
   stickComments('theirs');
   document.getElementById('comments-title').textContent =
     Comments.commentsTitle(list.querySelectorAll('.msg-wrapper').length);
+}
+
+// ─── Comments nobody has looked at yet ───────────────────────────────────────
+//
+// Reported as: the chat is badged for something new, you open it, and there is
+// nothing new in it. There wasn't — the new thing was a COMMENT, which never
+// appears in the conversation and hangs off a message that may be far up the
+// list. These counts put a number inside that message's strip, and a chip at
+// the edge of the screen pointing the way to it.
+let unreadComments = {};
+
+/** Draw (or clear) the "new" count inside one comments strip. */
+function paintUnreadComments(bar, count) {
+  const el = bar && bar.querySelector('.comment-bar-new');
+  if (!el) return;
+  const label = CommentUnread.badgeLabel(count);
+  el.textContent = label;
+  el.classList.toggle('hidden', !label);
+}
+
+/** One comment arrived somewhere in this room. */
+function noteUnreadComment(ev) {
+  const mine = ev && ev.comment && ev.comment.username === username;
+  unreadComments = CommentUnread.noteComment(unreadComments, {
+    parentId: ev.parentId,
+    mine,
+    threadOpenId: commentParent ? commentParent.id : null,
+  });
+  const bar = document.querySelector(`.comment-bar-btn[data-msg-id="${ev.parentId}"]`);
+  if (bar) paintUnreadComments(bar, CommentUnread.countFor(unreadComments, ev.parentId));
+  refreshCommentJump();
+}
+
+/** Opening a thread is reading it. */
+function clearUnreadComments(parentId) {
+  unreadComments = CommentUnread.clearFor(unreadComments, parentId);
+  const bar = document.querySelector(`.comment-bar-btn[data-msg-id="${parentId}"]`);
+  if (bar) paintUnreadComments(bar, 0);
+  refreshCommentJump();
+}
+
+/** Point at the nearest message with unread comments, or at nothing. */
+function refreshCommentJump() {
+  const chip = document.getElementById('comment-jump');
+  const box = document.getElementById('messages');
+  if (!chip || !box) return;
+  const rows = [...box.querySelectorAll('.msg-wrapper')];
+  const view = box.getBoundingClientRect();
+  let first = Infinity, last = -Infinity;
+  rows.forEach((el, i) => {
+    const r = el.getBoundingClientRect();
+    if (r.bottom > view.top && r.top < view.bottom) {
+      first = Math.min(first, i); last = Math.max(last, i);
+    }
+  });
+  const index = new Map(rows.map((el, i) => [String(el.dataset.msgId), i]));
+  const items = Object.keys(unreadComments).map(id => ({
+    id,
+    index: index.has(id) ? index.get(id) : -1,
+    count: unreadComments[id],
+  }));
+  const jump = Number.isFinite(first)
+    ? CommentUnread.chooseJump(items, { first, last })
+    : null;
+  commentJump = jump;
+  chip.classList.toggle('hidden', !jump);
+  chip.classList.toggle('up', !!jump && jump.dir === 'up');
+  chip.classList.toggle('down', !!jump && jump.dir === 'down');
+  chip.textContent = CommentUnread.jumpLabel(jump);
+}
+let commentJump = null;
+
+/** Go to the message whose thread has something new. */
+function goToUnreadComments() {
+  if (!commentJump) return;
+  jumpToMessage(Number(commentJump.id));
 }
 
 /**
@@ -4546,7 +4649,14 @@ function ctxDelete() { if (!ctxTarget) return; const id = ctxTarget.messageId; c
 
 function addLongPress(el, cb) {
   let t;
-  el.addEventListener('touchstart', () => { t = setTimeout(cb, 500); }, { passive: true });
+  el.addEventListener('touchstart', (e) => {
+    // A press that started on a BUTTON belongs to that button. Reported as:
+    // tapping the comments strip also opens the message menu — the strip's
+    // click stopped propagating, but the touch underneath it never did, so a
+    // tap held for half a second opened the menu over the thread.
+    if (e.target && e.target.closest && e.target.closest('button, a')) return;
+    t = setTimeout(cb, 500);
+  }, { passive: true });
   el.addEventListener('touchend', () => clearTimeout(t));
   el.addEventListener('touchmove', () => clearTimeout(t));
 }

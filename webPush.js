@@ -80,6 +80,10 @@ function payloadFor(title, body, data = {}) {
     roomId: data.roomId ? String(data.roomId) : '',
     roomName: data.roomName ? String(data.roomName) : '',
     msgId: data.msgId ? String(data.msgId) : '',
+    // A comment names the message it hangs off, so tapping the notification
+    // can open that THREAD. A comment is never in the conversation itself, so
+    // without this the tap led to a chat with nothing new in it.
+    parentId: data.parentId ? String(data.parentId) : '',
   });
 }
 

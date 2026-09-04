@@ -796,8 +796,21 @@ async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
           message: {
             token: t,
             notification: { title, body },
+            // channelId is in the DATA as well as in android.notification.
+            //
+            // Reported as: with the app closed a call still does not ring.
+            // expo-notifications intercepts every FCM message and builds the
+            // notification ITSELF rather than letting Firebase present it, and
+            // the channel it builds on comes from the data payload — the
+            // android.notification.channel_id below is only used on the paths
+            // where the system draws the notification directly. Naming the
+            // channel in one place and not the other meant the call was drawn
+            // on the default channel: one short default chime, no ring.
             data: Object.fromEntries(
-              Object.entries({ ...data, title, body }).map(([k, v]) => [k, String(v)]),
+              Object.entries({
+                ...data, title, body,
+                channelId: android.channelId || 'messages-v3',
+              }).map(([k, v]) => [k, String(v)]),
             ),
             android: {
               priority: 'high',
@@ -2441,7 +2454,14 @@ io.on('connection', (socket) => {
       memberIds.filter(id => id !== socket.user.id && !viewingUserIds.has(id)),
       (msg.avatar ? msg.avatar + ' ' : '') + msg.username + roomLabel,
       messagePreview(msg),
-      { roomId: String(roomId), msgId: String(msg.id), ...openData },
+      // A comment names the message it hangs off, so tapping the notification
+      // can open the THREAD at that comment. Without it the app could only
+      // open the chat, where a comment deliberately never appears — the user
+      // was sent to a conversation with nothing new in it.
+      {
+        roomId: String(roomId), msgId: String(msg.id), ...openData,
+        ...(parent ? { parentId: String(parent.id), comment: '1' } : {}),
+      },
       { fromUserId: socket.user.id },
     );
 

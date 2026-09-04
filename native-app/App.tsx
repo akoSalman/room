@@ -10,13 +10,14 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import * as Notifications from 'expo-notifications';
 import notifee, { EventType } from '@notifee/react-native';
 import { registerCallPush } from './src/callPush';
+import { CALL_CHANNEL } from './src/incomingCall';
 import { registerCallService, onEndFromShade, handleNotifeeEvent } from './src/ongoingCall';
 import CrashBoundary from './src/components/CrashScreen';
 import { installGlobalCrashHandler } from './src/globalCrash';
 import * as mediaCache from './src/mediaCache';
 import * as offlineStore from './src/offlineStore';
 import {
-  roomIdFromPush, roomFromPush, resolveRoom, screenFor,
+  roomIdFromPush, roomFromPush, resolveRoom, screenFor, commentTargetFromPush,
   shouldKeepTrying, retryDelay, intentStillWanted, RoomRef, PushData,
 } from './src/openIntent';
 import AuthScreen from './src/screens/AuthScreen';
@@ -95,10 +96,19 @@ notifee.onForegroundEvent(async ({ type, detail }) => {
     } catch {}
   }
 });
-// The older single-shot channel, kept so existing installs still get SOMETHING
-// if the ringer is unavailable.
-Notifications.setNotificationChannelAsync('calls-v1', {
-  name: 'Calls',
+// The SAME channel notifee creates in incomingCall.ts, created again here.
+//
+// Not belt and braces for its own sake: the server's call push names this
+// channel, and if notifee is unavailable — an old build, a headless start that
+// failed — ensureCallChannel swallows the error and the channel never exists.
+// Android then draws the call on a default channel with a default chime, which
+// is exactly the "it does not ring" that was reported. Creating a channel that
+// already exists is a no-op, so whichever library gets there first wins and
+// the ring survives either one failing.
+//
+// The id MUST match CALL_CHANNEL; the sound is the same res/raw/ring.
+Notifications.setNotificationChannelAsync(CALL_CHANNEL, {
+  name: 'Incoming calls',
   importance: Notifications.AndroidImportance.MAX,
   sound: 'ring.wav',
   vibrationPattern: [0, 800, 400, 800, 400, 800],
@@ -139,6 +149,9 @@ export default function App() {
   const [room, setRoom] = useState<Room | null>(null);
   const [openProfileOnRooms, setOpenProfileOnRooms] = useState(false);
   const [pendingJumpMsgId, setPendingJumpMsgId] = useState<number | null>(null);
+  /** A tapped comment notification, carried through to the chat that opens. */
+  const [pendingComment, setPendingComment] =
+    useState<{ parentId: number; commentId: number | null } | null>(null);
   const [pendingJoinRoomId, setPendingJoinRoomId] = useState<number | null>(null);
 
   const pushRegisteredRef = React.useRef(false);
@@ -297,6 +310,9 @@ export default function App() {
   function openChatFromPush(data: PushData | null | undefined) {
     const roomId = roomIdFromPush(data);
     if (!roomId) return;
+    // Set before the chat opens, so the thread is part of opening it rather
+    // than a second jump the user watches happen.
+    setPendingComment(commentTargetFromPush(data));
     openIntent.current = { roomId, at: Date.now(), from: roomFromPush(data) };
     resolveOpenIntent();
   }
@@ -524,10 +540,11 @@ export default function App() {
             <ChatScreen
               key={room.id}
               room={room}
-              onBack={() => { setScreen('rooms'); setPendingJumpMsgId(null); }}
+              onBack={() => { setScreen('rooms'); setPendingJumpMsgId(null); setPendingComment(null); }}
               onOpenDM={r => { setRoom(r); setPendingJumpMsgId(null); }}
               onOpenProfile={() => { setOpenProfileOnRooms(true); setScreen('rooms'); setPendingJumpMsgId(null); }}
               initialJumpMsgId={pendingJumpMsgId}
+              initialCommentTarget={pendingComment}
               initialShare={pendingShare}
               onShareConsumed={() => setPendingShare(null)}
             />

@@ -121,6 +121,10 @@ import * as outbox from '../outbox';
 import EmojiBurst from '../components/EmojiBurst';
 import EmojiEditor from '../components/EmojiEditor';
 import { useOrderedFavEmojis, noteEmojiUse } from '../favEmojis';
+import {
+  noteComment, clearFor, countFor, chooseJump, jumpLabel,
+  badgeLabel as commentBadgeLabel, Jump,
+} from '../commentUnread';
 
 type Message = {
   id: number | string; room_id: number; user_id: number; username: string; avatar?: string | null;
@@ -162,7 +166,7 @@ function looksRTLText(t: string): boolean {
   return rtl > 0 && rtl >= (rtl + latin) * 0.3;
 }
 
-export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, initialJumpMsgId, initialShare, onShareConsumed }: {
+export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, initialJumpMsgId, initialCommentTarget, initialShare, onShareConsumed }: {
   room: { id: number; name: string; is_dm: number; other_username?: string; other_avatar?: string | null; is_private?: number; created_by?: number };
   initialShare?: { files?: { path: string; mimeType?: string; fileName?: string }[]; text?: string | null } | null;
   onShareConsumed?: () => void;
@@ -170,6 +174,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   onOpenDM: (room: { id: number; name: string; is_dm: number; other_username?: string }) => void;
   onOpenProfile: () => void;
   initialJumpMsgId?: number | null;
+  /** A tapped comment notification: the thread to open, and the comment in it. */
+  initialCommentTarget?: { parentId: number; commentId: number | null } | null;
 }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [reactions, setReactions] = useState<Record<number, Reaction[]>>({});
@@ -413,6 +419,19 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [commentsLoading, setCommentsLoading] = useState(false);
   /** Counts that have moved since the messages were fetched, by parent id. */
   const [commentCounts, setCommentCounts] = useState<Record<string, number>>({});
+  /**
+   * Comments that arrived and have not been looked at, by parent id.
+   *
+   * Reported as: the chat is badged, you open it, and there is nothing new.
+   * There wasn't — in the chat. The new thing was a comment, which never
+   * appears in the conversation and hangs off a message that may be far up the
+   * list. These counts put a number in that message's strip and a chip at the
+   * edge of the screen pointing the way to it.
+   */
+  const [unreadComments, setUnreadComments] = useState<Record<string, number>>({});
+  /** What the visible range was at the last scroll, for choosing which way to point. */
+  const viewRange = useRef({ first: 0, last: 0 });
+  const [commentJump, setCommentJump] = useState<Jump | null>(null);
   const commentParentRef = useRef<Message | null>(null); commentParentRef.current = commentParent;
 
   /**
@@ -470,6 +489,45 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     return found;
   }
 
+  /** The number drawn in a message's own strip. Empty when nothing is waiting. */
+  function unreadBadge(id: number | string): string {
+    return commentBadgeLabel(countFor(unreadComments, id));
+  }
+
+  /**
+   * Recompute which unread thread to point at, from what is on screen now.
+   *
+   * Kept as state rather than computed in render: it depends on the visible
+   * RANGE, which changes on scroll and would otherwise redraw every message on
+   * every frame of a flick.
+   */
+  function refreshCommentJump(counts: Record<string, number>) {
+    const order = new Map(messagesRef.current.map((m, i) => [String(m.id), i]));
+    const items = Object.keys(counts).map(id => ({
+      id, index: order.has(id) ? (order.get(id) as number) : -1, count: counts[id],
+    }));
+    const next = chooseJump(items, viewRange.current);
+    // Compared before setting: this runs on every viewability change, and a
+    // fresh object each time would redraw the whole list mid-flick.
+    const key = next ? `${next.id}:${next.dir}:${next.count}` : '';
+    if (key === lastJumpKey.current) return;
+    lastJumpKey.current = key;
+    setCommentJump(next);
+  }
+  const lastJumpKey = useRef('');
+  // Held in a ref because the viewability handler is created once and would
+  // otherwise keep calling the first render's copy, with the first render's
+  // (empty) counts.
+  const refreshJumpRef = useRef<() => void>(() => {});
+  refreshJumpRef.current = () => refreshCommentJump(unreadComments);
+
+  /** Go to the message whose thread has something new, and stop pointing at it. */
+  function goToUnreadComments() {
+    const target = commentJump;
+    if (!target) return;
+    jumpToMessage(Number(target.id));
+  }
+
   /** How many comments a message has now, live count first. */
   function commentCountOf(m: Message): number {
     const live = commentCounts[String(m.id)];
@@ -477,6 +535,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   async function openComments(m: Message) {
+    // Opened means read: the badge on this message and any chip pointing at it
+    // go now, not when the fetch comes back.
+    setUnreadComments(u => {
+      const next = clearFor(u, m.id);
+      setTimeout(() => refreshJumpRef.current(), 0);
+      return next;
+    });
     setCommentParent(m);
     setComments([]);
     setCommentsLoading(true);
@@ -869,6 +934,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
     if (viewableItems.length > 0) {
       visibleIdRef.current = viewableItems[0].item.id;
+      // Back into CHAT order. The list is inverted, so its index 0 is the
+      // newest message at the visual bottom; a chip that said "up" from those
+      // numbers would point the wrong way every time.
+      const len = messagesRef.current.length;
+      const idxs = viewableItems.map((v: any) => v?.index).filter((n: any) => Number.isFinite(n));
+      if (idxs.length) {
+        viewRange.current = {
+          first: len - 1 - Math.max(...idxs),
+          last: len - 1 - Math.min(...idxs),
+        };
+        refreshJumpRef.current();
+      }
     }
     for (const v of viewableItems) {
       const m = v?.item;
@@ -1317,6 +1394,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       } catch {}
       setLoading(false);
       if (initialJumpMsgId) setTimeout(() => jumpToMessage(initialJumpMsgId), 300);
+      // A tapped comment notification opens the THREAD, not the chat. The
+      // comment is not in the conversation and never will be — sending the
+      // user to the room was sending them somewhere with nothing new in it.
+      // openComments refetches from the id, so a stub parent is enough.
+      if (initialCommentTarget?.parentId) {
+        setTimeout(() => {
+          openComments({ id: initialCommentTarget.parentId } as Message);
+          if (initialCommentTarget.commentId != null) {
+            setHighlightId(initialCommentTarget.commentId);
+          }
+        }, 300);
+      }
 
       // Mentions of me that arrived while I was away.
       apiFetch(`/mentions/${room.id}`)
@@ -1346,6 +1435,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         if (String(ev.roomId) !== String(room.id)) return;
         setCommentCounts(c => ({ ...c, [String(ev.parentId)]: normaliseCount(ev.count) }));
         const msg: Message = ev.comment;
+        // Somebody else's comment, on a thread that is not open: this is the
+        // thing the user opened the chat looking for and could not find.
+        setUnreadComments(u => {
+          const next = noteComment(u, {
+            parentId: ev.parentId,
+            mine: msg?.username === meRef.current,
+            threadOpenId: commentParentRef.current?.id ?? null,
+          });
+          setTimeout(() => refreshJumpRef.current(), 0);
+          return next;
+        });
         // Our own comment coming back. The same bookkeeping the room's echo
         // does — without it a comment's upload bar spins forever, its voice
         // player keeps the temporary id, and the crash-safety copy is left on
@@ -3087,7 +3187,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   useEffect(() => {
     if (!commentParent) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      closeComments();
+      // To the MESSAGE, not to the end of the chat. Reported as: back drops
+      // you at the bottom of the conversation, having lost the place you were
+      // reading — and the thread was opened from a message that may be a
+      // hundred messages up.
+      jumpToParentMessage();
       return true;
     });
     return () => sub.remove();
@@ -3475,18 +3579,29 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     return (msg.reply_content || '').slice(0, 60);
   }
 
-  function renderMessage({ item: msg }: { item: Message }) {
-    if (e2eIsEncrypted(msg.content) || e2eIsEncrypted(msg.reply_content)) {
-      msg = { ...msg };
-      if (e2eIsEncrypted(msg.content)) {
-        const dec = e2eDecrypt(msg.content, dmPeerPk.current);
-        msg.content = dec !== null ? dec : '🔒 Encrypted message (cannot decrypt on this device)';
-      }
-      if (e2eIsEncrypted(msg.reply_content)) {
-        const decR = e2eDecrypt(msg.reply_content ?? null, dmPeerPk.current);
-        msg.reply_content = decR !== null ? decR : '🔒 Encrypted';
-      }
+  /**
+   * A copy with its body in plain text.
+   *
+   * Decryption happened where a message was DRAWN and nowhere else, so the
+   * comments heading — which describes a message without drawing it — printed
+   * the base64 it was handed. Reported as: the preview is "some hash".
+   */
+  function decrypted(msg: Message): Message {
+    if (!e2eIsEncrypted(msg.content) && !e2eIsEncrypted(msg.reply_content)) return msg;
+    const copy: Message = { ...msg };
+    if (e2eIsEncrypted(copy.content)) {
+      const dec = e2eDecrypt(copy.content, dmPeerPk.current);
+      copy.content = dec !== null ? dec : '🔒 Encrypted message (cannot decrypt on this device)';
     }
+    if (e2eIsEncrypted(copy.reply_content)) {
+      const decR = e2eDecrypt(copy.reply_content ?? null, dmPeerPk.current);
+      copy.reply_content = decR !== null ? decR : '🔒 Encrypted';
+    }
+    return copy;
+  }
+
+  function renderMessage({ item: msg }: { item: Message }) {
+    msg = decrypted(msg);
     // System notices (a member joined, or was removed) render as a centered
     // line rather than a chat bubble, with the affected username tappable so
     // you can open a DM with them straight from the announcement.
@@ -3945,12 +4060,28 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             just fought the text. This says what it is rather than leaving a
             number to be decoded, and the whole strip is the tap target. */}
         {!msg._uploading && canComment(msg) && showsBadge(commentCountOf(msg)) && (
-          <TouchableOpacity style={s.commentBar} onPress={() => openComments(msg)}
+          // Through tokenPress, like every other control inside a bubble.
+          //
+          // Reported as: tapping the strip ALSO opens the message menu. A text
+          // bubble watches its own touches (that is how a tap on selectable
+          // text is seen at all) and those handlers fire whether or not the
+          // bubble owns the responder — so the tap that opened the thread went
+          // on to open the menu over it. tokenPress is how this file says
+          // "this touch has already been answered".
+          <TouchableOpacity style={s.commentBar}
+            onPress={() => tokenPress(() => openComments(msg))}
             accessibilityLabel={commentsTitle(commentCountOf(msg))}>
             <Text style={s.commentBarIcon}>💬</Text>
             <Text style={s.commentBarLabel} numberOfLines={1}>
               {commentsBarLabel(commentCountOf(msg))}
             </Text>
+            {/* What is NEW in there, where somebody looking at this message
+                would look for it. */}
+            {!!unreadBadge(msg.id) && (
+              <View style={s.commentBarBadge}>
+                <Text style={s.commentBarBadgeText}>{unreadBadge(msg.id)}</Text>
+              </View>
+            )}
             <Ionicons name="chevron-forward" size={14} color={C.accent} />
           </TouchableOpacity>
         )}
@@ -4401,12 +4532,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             </TouchableOpacity>
             <TouchableOpacity style={s.commentsParentLink} onPress={jumpToParentMessage}
               accessibilityLabel="Go to the original message">
-              {parentPreview(commentParent).thumb && !!parentThumb(commentParent) && (
+              {parentPreview(decrypted(commentParent)).thumb && !!parentThumb(commentParent) && (
                 <Image source={{ uri: parentThumb(commentParent) }} style={s.commentsParentThumb} />
               )}
               <View style={s.commentsParentText}>
                 <Text style={s.commentsParentPreview} numberOfLines={1}>
-                  {parentPreview(commentParent).text}
+                  {parentPreview(decrypted(commentParent)).text}
                 </Text>
                 <Text style={s.commentsTitle} numberOfLines={1}>
                   {commentsTitle(commentCountOf(commentParent))}
@@ -4579,6 +4710,21 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               <Text style={s.scrollFabBadgeText}>{mentionIds.length > 99 ? '99+' : mentionIds.length}</Text>
             </View>
           )}
+        </TouchableOpacity>
+      )}
+
+      {/* New comments, and which way they are.
+          Pinned to the edge it points at — a chip that says "up" while sitting
+          at the bottom of the screen makes the reader work out the direction
+          twice. Tapping it goes to the message, whose own strip carries the
+          count. */}
+      {!commentParent && !!commentJump && (
+        <TouchableOpacity
+          style={[s.commentJump, commentJump.dir === 'up' ? s.commentJumpTop : s.commentJumpBottom]}
+          onPress={goToUnreadComments}
+          accessibilityLabel={`New comments, ${commentJump.dir === 'up' ? 'above' : 'below'}`}
+        >
+          <Text style={s.commentJumpText}>{jumpLabel(commentJump)}</Text>
         </TouchableOpacity>
       )}
 
@@ -5817,6 +5963,20 @@ const s = StyleSheet.create({
     borderWidth: 2, borderColor: C.bg,
   },
   scrollFabBadgeText: { color: '#fff', fontSize: 10.5, fontWeight: '800' },
+  commentJump: {
+    position: 'absolute', alignSelf: 'center', flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 14, paddingVertical: 7, borderRadius: 16,
+    backgroundColor: C.accent,
+    elevation: 4, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 6, shadowOffset: { width: 0, height: 2 },
+  },
+  commentJumpTop: { top: 10 },
+  commentJumpBottom: { bottom: 148 },
+  commentJumpText: { color: '#fff', fontSize: 13, fontWeight: '800' },
+  commentBarBadge: {
+    minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 5,
+    backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center',
+  },
+  commentBarBadgeText: { color: '#fff', fontSize: 10.5, fontWeight: '800' },
   // Sits above the scroll-to-bottom button so the two never overlap.
   mentionFab: {
     position: 'absolute', end: 16, bottom: 200, width: 44, height: 44, borderRadius: 22,

@@ -315,7 +315,7 @@ test('THE SAME DESIGN: the thread is not a Modal, so it keeps the composer', () 
   // The parent is no longer DRAWN here at all — it is one line in the header,
   // asserted in test/commentsView.test.js. Pinning the whole message left no
   // room for the comments once a keyboard was up.
-  assert.ok(/parentPreview\(commentParent\)/.test(view),
+  assert.ok(/parentPreview\(decrypted\(commentParent\)\)/.test(view),
     'the message being commented on is not summarised in the header');
   assert.ok(!/renderMessage\(\{ item: commentParent \}\)/.test(view),
     'the whole message is pinned at the top again');

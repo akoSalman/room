@@ -65,13 +65,20 @@
     }
   }
 
+  function looksEncrypted(text) {
+    return /^e2e:/.test(String(text || ''));
+  }
+
   function parentPreview(msg) {
     var m = msg || {};
     var type = String(m.type || 'text');
-    var words = trimTo(String(m.content || '').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, ''), PREVIEW_CHARS);
+    var raw = String(m.content || '').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+    var words = looksEncrypted(raw) ? '' : trimTo(raw, PREVIEW_CHARS);
     var pictorial = type === 'image' || type === 'gallery' || type === 'video';
     if (pictorial) return { text: words || labelFor(type), thumb: true };
     if (type === 'text') return { text: words || 'Message', thumb: false };
+    // A voice note's file_name carries the waveform, not a name.
+    if (type === 'audio') return { text: words || labelFor(type), thumb: false };
     var named = trimTo(String(m.file_name || '').replace(/^\s+|\s+$/g, ''), PREVIEW_CHARS);
     return { text: words || named || labelFor(type), thumb: false };
   }
@@ -82,6 +89,7 @@
     commentsBarLabel: commentsBarLabel,
     PREVIEW_CHARS: PREVIEW_CHARS,
     parentPreview: parentPreview,
+    looksEncrypted: looksEncrypted,
     trimTo: trimTo,
     isNearBottom: isNearBottom,
     shouldStickToBottom: shouldStickToBottom,

@@ -299,11 +299,13 @@ test('and the room\'s own header stands down while a thread is open', () => {
 test('THE HEADING is one line that opens the original', () => {
   assert.ok(/id="comments-parent-link"[\s\S]{0,120}onclick="jumpToParentMessage\(\)"/.test(html),
     'the heading does not lead back to the message');
-  assert.ok(/function jumpToParentMessage\(\)/.test(app), 'it leads nowhere');
-  const fn = app.slice(app.indexOf('function jumpToParentMessage()'), app.indexOf('function jumpToParentMessage()') + 300);
-  assert.ok(fn.indexOf('closeComments()') < fn.indexOf('jumpToMessage('),
+  assert.ok(/function jumpToParentMessage\(fromHistory\)/.test(app), 'it leads nowhere');
+  const fn = app.slice(app.indexOf('function jumpToParentMessage(fromHistory)'),
+    app.indexOf('function jumpToParentMessage(fromHistory)') + 300);
+  assert.ok(fn.indexOf('closeComments(fromHistory)') < fn.indexOf('jumpToMessage('),
     'the thread stays open over the message it just jumped to');
-  assert.ok(/CommentsView\.parentPreview\(parent\)/.test(app), 'the heading is written by hand');
+  assert.ok(/CommentsView\.parentPreview\(decryptedMessage\(parent\)\)/.test(app),
+    'the heading is written by hand');
   // The whole message is no longer drawn here.
   assert.ok(!/renderMessage\(\{ item: commentParent \}\)/.test(
     fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8')),
@@ -317,7 +319,7 @@ test('a picture in the heading is a thumbnail, not the picture', () => {
   const chat = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
   assert.ok(/commentsParentThumb: \{ width: 32, height: 32/.test(chat),
     'the app has no thumbnail size');
-  assert.ok(/parentPreview\(commentParent\)\.thumb/.test(chat),
+  assert.ok(/parentPreview\(decrypted\(commentParent\)\)\.thumb/.test(chat),
     'the app draws a thumbnail for messages that have no picture');
 });
 
@@ -360,7 +362,7 @@ test('BACK closes the thread rather than leaving the site', () => {
   // there — without it, back leaves the site from inside a thread.
   assert.ok(/history\.pushState\(\{ comments: true \}, ''\); commentsPushed\+\+;/.test(app),
     'opening a thread pushes nothing for back to pop');
-  assert.ok(/window\.addEventListener\('popstate', \(\) => \{ if \(commentParent\) closeComments\(true\); \}\)/.test(app),
+  assert.ok(/window\.addEventListener\('popstate', \(\) => \{ if \(commentParent\) jumpToParentMessage\(true\); \}\)/.test(app),
     'back does not close the thread');
   const fn = app.slice(app.indexOf('function closeComments(fromHistory)'), app.indexOf('function syncCommentBar()'));
   assert.ok(fn.length > 0, 'closeComments is gone — this check would be vacuous');
@@ -374,7 +376,7 @@ test('and the app leaves the THREAD before it leaves the chat', () => {
   const fn = chat.slice(chat.indexOf('// Hardware back leaves the THREAD'), chat.indexOf('// Hardware back closes search'));
   assert.ok(fn.length > 0, 'hardware back is not handled for the thread');
   assert.ok(/if \(!commentParent\) return;/.test(fn), 'the handler runs when no thread is open');
-  assert.ok(/closeComments\(\);\s*\n\s*return true;/.test(fn),
+  assert.ok(/jumpToParentMessage\(\);\s*\n\s*return true;/.test(fn),
     'back does not close the thread, or does not stop there');
   assert.ok(/\}, \[commentParent\]\);/.test(fn), 'the handler never sees a thread being opened');
 });
@@ -384,7 +386,7 @@ test('THE SWIPE closes the thread, and only a real one does', () => {
   assert.ok(fn.length > 0, 'there are no gestures on the thread');
   assert.ok(/CommentsView\.closesOnSwipe\(\{ dx: t\.clientX - from\.x, dy: t\.clientY - from\.y \}\)/.test(fn),
     'the swipe is judged by hand rather than by the rule');
-  assert.ok(/if \(closed\) closeComments\(\)/.test(fn), 'a swipe does not close anything');
+  assert.ok(/if \(closed\) jumpToParentMessage\(\)/.test(fn), 'a swipe does not close anything');
   assert.ok(/if \(!from \|\| !commentParent\) return;/.test(fn),
     'a swipe in the conversation closes a thread that is not open');
   assert.ok(app.includes('setupCommentsGestures();'), 'the gestures are never installed');
@@ -412,6 +414,78 @@ test('the app draws the same strip, inside the bubble', () => {
   // indicator's green, which has nothing to do with this and must survive.
   const block = chat.slice(chat.indexOf('  commentBar: {'), chat.indexOf('  commentsHead: {'));
   assert.ok(!/#22c55e/.test(block), 'the rejected green is still in the comment styles');
+});
+
+test('THE HASH: a heading never prints ciphertext or a waveform', () => {
+  // Reported as: for text and voice messages the preview is "some hash".
+  //
+  // Two different causes with one symptom. A DM's body arrives ENCRYPTED and
+  // is decrypted where a message is drawn — which a heading is not, so it
+  // printed the base64. And a voice note's file_name is not a name at all: it
+  // carries the waveform the player draws.
+  const enc = 'e2e:v1:aGVsbG8gdGhlcmUgdGhpcyBpcyBjaXBoZXJ0ZXh0';
+  assert.strictEqual(W.parentPreview({ type: 'text', content: enc }).text, 'Message',
+    'the heading printed the ciphertext it was handed');
+  assert.strictEqual(
+    W.parentPreview({ type: 'audio', file_name: '0.12,0.98,0.44,0.07,0.91,0.33,0.5,0.02' }).text,
+    'Voice message', 'the heading printed a voice note\'s waveform data');
+  // A file still shows its name, which IS the useful part.
+  assert.strictEqual(W.parentPreview({ type: 'file', file_name: 'contract.pdf' }).text, 'contract.pdf');
+  // And a real caption still wins over both.
+  assert.strictEqual(W.parentPreview({ type: 'audio', content: 'listen to this' }).text, 'listen to this');
+  if (A) {
+    for (const m of [{ type: 'text', content: enc }, { type: 'audio', file_name: '0.1,0.2' },
+                     { type: 'file', file_name: 'a.pdf' }, { type: 'image', content: enc }]) {
+      assert.deepStrictEqual(W.parentPreview(m), A.parentPreview(m),
+        `web and app describe ${JSON.stringify(m)} differently`);
+    }
+  }
+});
+
+test('both clients hand the heading a DECRYPTED message', () => {
+  // The rule above can only refuse to print ciphertext; showing the words
+  // needs the caller to decrypt first.
+  assert.ok(/parentPreview\(decryptedMessage\(parent\)\)/.test(app),
+    'the web heading is built from the raw message, so a DM shows base64');
+  assert.ok(/parentPreview\(decrypted\(commentParent\)\)/.test(chat),
+    'the app heading is built from the raw message, so a DM shows base64');
+});
+
+test('THE MENU: tapping the strip opens the thread and nothing else', () => {
+  // Reported as: tapping the comments strip also opens the message menu.
+  //
+  // On the app a text bubble WATCHES its own touches — that is the only way a
+  // tap on selectable text can be seen — and those handlers fire whether or
+  // not the bubble owns the responder, so the tap went on to open the menu
+  // over the thread. tokenPress is this file's way of saying the touch has
+  // already been answered.
+  const bar = chat.slice(chat.indexOf('style={s.commentBar}'));
+  assert.ok(/onPress=\{\(\) => tokenPress\(\(\) => openComments\(msg\)\)\}/.test(bar.slice(0, 300)),
+    'the app strip opens the thread without spending the touch, so the menu opens too');
+  // On the web the click stopped propagating, but the TOUCH underneath never
+  // did: a press held half a second still opened the menu.
+  const lp = app.slice(app.indexOf('function addLongPress('));
+  assert.ok(/closest\('button, a'\)/.test(lp.slice(0, 700)),
+    'a long press that started on a control still opens the message menu');
+});
+
+test('BACK goes to the message, not to the end of the chat', () => {
+  // Reported as: back from a thread drops you at the bottom of the
+  // conversation — and the message the thread hangs off may be far above it.
+  const backer = chat.slice(chat.indexOf('// Hardware back leaves the THREAD'));
+  assert.ok(/jumpToParentMessage\(\)/.test(backer.slice(0, 900)),
+    'the app back key closes the thread without going to its message');
+  assert.ok(/if \(commentParent\) jumpToParentMessage\(true\)/.test(app),
+    'the web back button closes the thread without going to its message');
+  // The header arrow does the same thing the back key does; two doors out of
+  // one screen that land in different places is the confusing part.
+  const html = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
+  assert.ok(/onclick="jumpToParentMessage\(\)" aria-label="Back"/.test(html),
+    'the web header arrow and the back key disagree about where they lead');
+  // And the history entry is still consumed exactly once, or the second back
+  // press leaves the site.
+  assert.ok(/function jumpToParentMessage\(fromHistory\)[\s\S]{0,200}closeComments\(fromHistory\)/.test(app),
+    'a back press pops the history entry twice, so the next one leaves the site');
 });
 
 test('the strip reads as a control, not as a footnote', () => {

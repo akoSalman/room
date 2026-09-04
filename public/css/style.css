@@ -1546,6 +1546,23 @@ body.commenting #install-hint { display: none; }
   color: var(--accent); font-size: 0.82rem; font-weight: 700;
   font-family: inherit; text-align: start;
 }
+.comment-jump {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  z-index: 6; border: 0; border-radius: 16px;
+  padding: 7px 14px; background: var(--accent); color: #fff;
+  font-size: 0.82rem; font-weight: 800; font-family: inherit; cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+/* Pinned to the edge it points at: a chip saying "up" while sitting at the
+   bottom of the screen makes the direction be worked out twice. */
+.comment-jump.up { top: 10px; }
+.comment-jump.down { bottom: 92px; }
+/* Inside the strip, where the count of what is NEW belongs. */
+.comment-bar-new {
+  min-width: 18px; height: 18px; border-radius: 9px; padding: 0 5px;
+  background: var(--accent); color: #fff;
+  font-size: 0.66rem; font-weight: 800; line-height: 18px; text-align: center;
+}
 .comment-bar-btn:hover { background: rgba(59, 125, 216, 0.18); }
 .comment-bar-icon { font-size: 0.85rem; }
 .comment-bar-label { flex: 1; }

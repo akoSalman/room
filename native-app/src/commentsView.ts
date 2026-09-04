@@ -176,13 +176,34 @@ export function parentPreview(msg: {
 } | null | undefined): ParentPreview {
   const m = msg || {};
   const type = String(m.type || 'text');
-  const words = trimTo(String(m.content || '').replace(/\s+/g, ' ').trim(), PREVIEW_CHARS);
+  // Reported as: the preview of a text message is "some hash".
+  //
+  // It was ciphertext. In a DM the content arrives encrypted and is decrypted
+  // where the message is DRAWN, which the heading is not — so it printed the
+  // base64 it was handed. Callers now decrypt first, and this refuses to print
+  // anything that still looks encrypted rather than showing it again.
+  const raw = String(m.content || '').replace(/\s+/g, ' ').trim();
+  const words = looksEncrypted(raw) ? '' : trimTo(raw, PREVIEW_CHARS);
   const pictorial = type === 'image' || type === 'gallery' || type === 'video';
   if (pictorial) return { text: words || labelFor(type), thumb: true };
   if (type === 'text') return { text: words || 'Message', thumb: false };
-  // A file's NAME is the useful part; a voice note has nothing but its kind.
+  // A voice note has nothing but its kind — and its file_name field is not a
+  // name at all: it carries the waveform the player draws, which is what was
+  // being shown as "some hash". A real file's NAME is the useful part.
+  if (type === 'audio') return { text: words || labelFor(type), thumb: false };
   const named = trimTo(String(m.file_name || '').trim(), PREVIEW_CHARS);
   return { text: words || named || labelFor(type), thumb: false };
+}
+
+/**
+ * Does this still look like ciphertext?
+ *
+ * The prefix is how every client recognises an encrypted body; a heading that
+ * prints one has failed, and the message's KIND is a better answer than a
+ * screenful of base64.
+ */
+export function looksEncrypted(text: string | null | undefined): boolean {
+  return /^e2e:/.test(String(text || ''));
 }
 
 function labelFor(type: string): string {

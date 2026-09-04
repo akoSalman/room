@@ -197,6 +197,66 @@ test('a second tap replaces the first rather than racing it', () => {
   assert.ok(/if \(resolving\.current\) return;/.test(app), 'two resolves can run at once');
 });
 
+// ── A tapped COMMENT notification ───────────────────────────────────────────
+
+test('THE BUG: a comment notification opened a chat with nothing new in it', () => {
+  // A comment never appears in the conversation — that is the whole design —
+  // so opening the room left the user looking for something that was not
+  // there. The push names the message the thread hangs off, and the tap opens
+  // that thread at the comment.
+  const t = O.commentTargetFromPush({ roomId: '4', parentId: '17', msgId: '93', comment: '1' });
+  assert.deepStrictEqual(t, { parentId: 17, commentId: 93 });
+});
+
+test('an ordinary message notification is not a thread', () => {
+  assert.strictEqual(O.commentTargetFromPush({ roomId: '4', msgId: '93' }), null,
+    'every message notification now opens some thread');
+  assert.strictEqual(O.commentTargetFromPush(null), null);
+  assert.strictEqual(O.commentTargetFromPush({ parentId: 'nonsense' }), null);
+  assert.strictEqual(O.commentTargetFromPush({ parentId: '0' }), null);
+});
+
+test('a comment push with no comment id still opens the thread', () => {
+  // Better the right thread with nothing highlighted than the chat.
+  assert.deepStrictEqual(O.commentTargetFromPush({ parentId: '17' }),
+    { parentId: 17, commentId: null });
+});
+
+test('the app carries the thread from the notification into the chat', () => {
+  assert.ok(/commentTargetFromPush/.test(app), 'App.tsx never reads the thread out of the push');
+  assert.ok(/setPendingComment\(commentTargetFromPush\(data\)\)/.test(app),
+    'the thread is read and then dropped');
+  assert.ok(/initialCommentTarget=\{pendingComment\}/.test(app),
+    'the chat is never told which thread to open');
+  const chat = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  assert.ok(/initialCommentTarget\?\.parentId/.test(chat), 'the chat ignores it');
+  assert.ok(/openComments\(\{ id: initialCommentTarget\.parentId \} as Message\)/.test(chat),
+    'the chat opens something other than that thread');
+});
+
+test('the web opens the thread from its own notification', () => {
+  const sw = fs.readFileSync(path.join(ROOT, 'public', 'sw.js'), 'utf8');
+  assert.ok(/parentId: d\.parentId \|\| ''/.test(sw),
+    'the web notification forgets the thread before it is ever tapped');
+  assert.ok(/postMessage\(\{ type: 'open-room', roomId, parentId/.test(sw),
+    'the tap hands the page a room and nothing else');
+  const webApp = fs.readFileSync(path.join(ROOT, 'public', 'js', 'app.js'), 'utf8');
+  assert.ok(/openComments\(e\.data\.parentId\)/.test(webApp), 'the page ignores it');
+  const wp = fs.readFileSync(path.join(ROOT, 'webPush.js'), 'utf8');
+  assert.ok(/parentId: data\.parentId/.test(wp),
+    'the web push payload drops the thread, so nothing downstream can open it');
+});
+
+test('the server tells the notification which thread it came from', () => {
+  const at = server.indexOf('sendPushToUsers(\n      memberIds.filter(');
+  assert.ok(at > 0, 'the ordinary message push moved — this check would be vacuous');
+  const call = server.slice(at, at + 700);
+  assert.ok(/parentId: String\(parent\.id\)/.test(call),
+    'a comment push carries no parent, so a tap can only open the chat');
+  assert.ok(/parent \?/.test(call),
+    'an ordinary message is sent as though it were a comment');
+});
+
 // ── The server's half ───────────────────────────────────────────────────────
 
 const server = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');

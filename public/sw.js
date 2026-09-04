@@ -67,7 +67,7 @@ self.addEventListener('push', (e) => {
     // from the same conversation is how people turn notifications off.
     tag: d.roomId ? `room-${d.roomId}` : 'chat',
     renotify: true,
-    data: { roomId: d.roomId || '', msgId: d.msgId || '' },
+    data: { roomId: d.roomId || '', msgId: d.msgId || '', parentId: d.parentId || '' },
   }));
 });
 
@@ -75,7 +75,11 @@ self.addEventListener('push', (e) => {
 // where there is one, rather than a second copy of the app.
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();
-  const roomId = (e.notification.data && e.notification.data.roomId) || '';
+  const data = e.notification.data || {};
+  const roomId = data.roomId || '';
+  // A comment's notification names the message it hangs off, so the page can
+  // open the THREAD rather than a conversation the comment is not in.
+  const parentId = data.parentId || '';
   const url = roomId ? `/?join=${encodeURIComponent(roomId)}` : '/';
   e.waitUntil((async () => {
     const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
@@ -83,7 +87,7 @@ self.addEventListener('notificationclick', (e) => {
       if (new URL(c.url).origin !== self.location.origin) continue;
       await c.focus();
       // The page knows how to open a room without a reload.
-      c.postMessage({ type: 'open-room', roomId });
+      c.postMessage({ type: 'open-room', roomId, parentId, msgId: data.msgId || '' });
       return;
     }
     await self.clients.openWindow(url);
