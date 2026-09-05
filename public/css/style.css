@@ -1615,6 +1615,22 @@ body.commenting #install-hint { display: none; }
   color: var(--accent); font-size: 0.82rem; font-weight: 700;
   font-family: inherit; text-align: start;
 }
+/* ── Where the unread messages start ───────────────────────────────────────── */
+.unread-divider {
+  display: flex; align-items: center; justify-content: center;
+  margin: 10px 0; padding: 4px 0;
+  color: var(--accent); font-size: 0.74rem; font-weight: 800;
+  letter-spacing: .04em; text-transform: uppercase;
+  border-top: 1px solid var(--accent);
+  /* A line the width of the conversation, with the count sitting on it: the
+     jump has to explain itself, or the chat merely opened somewhere odd. */
+  position: relative;
+}
+.unread-divider::before {
+  content: ''; position: absolute; inset: 0; top: -1px;
+  border-top: 1px solid var(--accent); opacity: .35;
+}
+
 .comment-jump {
   position: absolute; left: 50%; transform: translateX(-50%);
   z-index: 6; border: 0; border-radius: 16px;

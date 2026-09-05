@@ -129,6 +129,7 @@ import {
   noteComment, clearFor, countFor, chooseJump, jumpLabel,
   badgeLabel as commentBadgeLabel, Jump,
 } from '../commentUnread';
+import { firstUnread, worthJumping, unreadLabel } from '../unreadJump';
 
 type Message = {
   id: number | string; room_id: number; user_id: number; username: string; avatar?: string | null;
@@ -454,6 +455,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   /** What the visible range was at the last scroll, for choosing which way to point. */
   const viewRange = useRef({ first: 0, last: 0 });
   const [commentJump, setCommentJump] = useState<Jump | null>(null);
+  /** The first message of this visit's unread run, so it can be marked on screen. */
+  const [unreadFrom, setUnreadFrom] = useState<number | null>(null);
+  /** How many were waiting when this chat was opened — the divider's number. */
+  const unreadCountOnEntry = useRef(0);
   const commentParentRef = useRef<Message | null>(null); commentParentRef.current = commentParent;
 
   /**
@@ -813,8 +818,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // e2ePhase, not just e2eActive: a chat that runs out of attempts goes from
     // "Decrypting…" to the permanent wording without the key ever changing,
     // and the rows have to be told.
-    () => ({ maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode, e2ePhase }),
-    [maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode, e2ePhase],
+    // unreadFrom too: it is drawn INSIDE a row, so a row that never re-renders
+    // never grows the divider.
+    () => ({ maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode, e2ePhase, unreadFrom }),
+    [maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode, e2ePhase, unreadFrom],
   );
 
   const scrollBottom = useCallback(() => {
@@ -1368,10 +1375,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   useEffect(() => {
     let mounted = true;
     (async () => {
-      const [msgs, u, sock] = await Promise.all([
+      // The read position is fetched ALONGSIDE the messages and before
+      // anything is marked read: opening the chat consumes it, so whatever
+      // wants to know where the reader had got to has to ask first.
+      const [msgs, u, sock, pos] = await Promise.all([
         apiFetch(`/messages/${room.id}`),
         getUsername(),
         getSocket(),
+        apiFetch(`/read-position/${room.id}`).catch(() => null),
       ]);
       if (!mounted) return;
       setMe(u || '');
@@ -1404,6 +1415,20 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         hasMoreOlderRef.current = msgs.length >= MESSAGES_PAGE_SIZE;
         setHasMoreNewer(false);
         if (msgs.length) sock.emit('mark_read', { roomId: room.id, lastMsgId: msgs[msgs.length - 1].id });
+        // …and open where the unread messages START, not at the bottom with
+        // everything new above the fold. Asked for as: take me to where those
+        // messages are.
+        const lastRead = Number(pos && !pos.error ? pos.lastReadId : 0) || 0;
+        const target = firstUnread(msgs, lastRead, u || '');
+        const waiting = msgs.filter((m: any) =>
+          Number(m.id) > lastRead && m.username !== (u || '')).length;
+        if (target && worthJumping(waiting)) {
+          unreadCountOnEntry.current = waiting;
+          setUnreadFrom(Number(target.id));
+          setTimeout(() => jumpToMessage(Number(target.id)), 350);
+        } else {
+          setUnreadFrom(null);
+        }
         offline.saveMessages(room.id, msgs);
         // Emoji effect received while we were away: if the newest message is a
         // recent emoji-only message from the other person, play it on entry.
@@ -3722,6 +3747,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     });
 
     return (
+      <>
+      {/* Where this visit's unread messages begin. Drawn inside the row rather
+          than as a list item of its own: the list is inverted and its data is
+          the messages, so an injected item would have to be kept out of every
+          index calculation in this file. */}
+      {unreadFrom === Number(msg.id) && (
+        <View style={s.unreadDivider}>
+          <View style={s.unreadDividerLine} />
+          <Text style={s.unreadDividerText}>{unreadLabel(unreadCountOnEntry.current)}</Text>
+          <View style={s.unreadDividerLine} />
+        </View>
+      )}
       <SelectedRow id={msg.id} base={s.msgRow} picked={s.msgRowPicked}>
       {/* Press-catcher across the WHOLE row, behind the bubble: the empty
           space beside a message reacts exactly like the message does. It sits
@@ -4223,6 +4260,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
       </View>
       </SelectedRow>
+      </>
     );
   }
 
@@ -5964,6 +6002,15 @@ const s = StyleSheet.create({
     // highlighted". Enough of a wash to read as a control instead of a
     // footnote, without competing with the message above it.
     backgroundColor: 'rgba(59,125,216,0.12)',
+  },
+  unreadDivider: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    marginVertical: 10, paddingHorizontal: 12,
+  },
+  unreadDividerLine: { flex: 1, height: 1, backgroundColor: C.accent, opacity: 0.5 },
+  unreadDividerText: {
+    color: C.accent, fontSize: 11, fontWeight: '800',
+    letterSpacing: 0.5, textTransform: 'uppercase',
   },
   commentBarIcon: { fontSize: 12 },
   commentBarLabel: { flex: 1, color: C.accent, fontSize: 12.5, fontWeight: '700' },

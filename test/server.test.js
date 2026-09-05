@@ -906,6 +906,124 @@ test('marking a thread read needs access to the room it is in', async () => {
   assert.strictEqual(res.status, 403, 'a stranger can list a private room\'s threads');
 });
 
+test('THE STUCK BADGE II: a message nobody can see is not an unread message', async () => {
+  // Reported as: I see some unread messages, and opening the chat does not
+  // mark them as read.
+  //
+  // A message written while the recipient had the sender BLOCKED is delivered
+  // to nobody — every list of messages in the server hides it — but the unread
+  // count did not apply that rule. So the badge counted a message that is not
+  // in the chat and never will be, and no amount of opening the chat could
+  // clear it: mark_read can only move the position to the newest message the
+  // reader was actually given.
+  const a = await signUp('blockcounta');
+  const b = await signUp('blockcountb');
+  const sa = await connect(a.token);
+  const sb = await connect(b.token);
+  const aId = (await api('/search?q=blockcounta', 'GET', null, b.token)).users[0].id;
+  const dm = await api(`/dm/${aId}`, 'POST', null, b.token);
+  const dmId = dm.id || dm.room?.id;
+  assert.ok(dmId, 'could not open a DM');
+
+  // B blocks A, then A writes anyway.
+  await api(`/block/${aId}`, 'POST', null, b.token);
+  await emit(sa, 'send_message', { roomId: dmId, type: 'text', content: 'you cannot see this' });
+  await new Promise(r => setTimeout(r, 150));
+
+  // B sees nothing in the chat…
+  const msgs = await api(`/messages/${dmId}`, 'GET', null, b.token);
+  assert.strictEqual(msgs.length, 0, 'a blocked message was shown after all');
+  // …and must therefore be told about nothing.
+  const counts = await api('/unread-counts', 'GET', null, b.token);
+  assert.ok(!counts[dmId],
+    `THE BUG: ${counts[dmId]} unread for a message that is not in the chat and `
+    + 'cannot be marked read by opening it');
+});
+
+test('a chat can be marked read from the list, threads and all', async () => {
+  // Asked for as a long-press action: clear the badge without opening the chat.
+  const a = await signUp('markreada');
+  const b = await signUp('markreadb');
+  const sa = await connect(a.token);
+  const sb = await connect(b.token);
+  const room = await api('/rooms', 'POST', { name: 'mark-read-room' }, a.token);
+  await emit(sb, 'accept_invite', { roomId: room.id });
+
+  await emit(sa, 'send_message', { roomId: room.id, type: 'text', content: 'one' });
+  await new Promise(r => setTimeout(r, 120));
+  const top = await api(`/messages/${room.id}`, 'GET', null, b.token);
+  const parentId = top[top.length - 1].id;
+  await emit(sa, 'send_message', { roomId: room.id, type: 'text', content: 'two' });
+  // …and a COMMENT, which is the case that makes this more than a one-liner:
+  // marking the room read has to clear the threads too, or the badge survives.
+  await emit(sa, 'send_message',
+    { roomId: room.id, type: 'text', content: 'a comment', parentId });
+  await new Promise(r => setTimeout(r, 150));
+  assert.ok((await api('/unread-counts', 'GET', null, b.token))[room.id] >= 3,
+    'the setup did not actually leave anything unread');
+
+  const ack = await emit(sb, 'mark_room_read', { roomId: room.id });
+  assert.ok(ack && ack.ok, `mark_room_read failed: ${JSON.stringify(ack)}`);
+  assert.strictEqual(ack.unread, 0, 'the ack reported a count that is not the truth');
+  assert.ok(!(await api('/unread-counts', 'GET', null, b.token))[room.id],
+    'the badge survived being marked read');
+  const threads = await api(`/comment-unread/${room.id}`, 'GET', null, b.token);
+  assert.deepStrictEqual(threads, {},
+    'the chat was marked read and its threads were left unread, so the badge comes back');
+
+  // And a message arriving AFTERWARDS is unread again: the mark is a position,
+  // not a "this chat is done" flag.
+  await emit(sa, 'send_message', { roomId: room.id, type: 'text', content: 'later' });
+  await new Promise(r => setTimeout(r, 120));
+  assert.strictEqual((await api('/unread-counts', 'GET', null, b.token))[room.id], 1);
+});
+
+test('marking a chat read needs access to it', async () => {
+  const a = await signUp('markreadc');
+  const b = await signUp('markreadd');
+  const sa = await connect(a.token);
+  const sb = await connect(b.token);
+  const room = await api('/rooms', 'POST', { name: 'mark-read-private', isPrivate: true }, a.token);
+  const ack = await emit(sb, 'mark_room_read', { roomId: room.id });
+  assert.ok(ack && ack.ok === false, 'a stranger could write a read mark for a private room');
+});
+
+test('the read position is available before it is consumed', async () => {
+  // The chat opens where the unread messages start, and opening it marks them
+  // read — so the position has to be readable as its own thing.
+  const a = await signUp('readposa');
+  const b = await signUp('readposb');
+  const sa = await connect(a.token);
+  const sb = await connect(b.token);
+  const room = await api('/rooms', 'POST', { name: 'read-position' }, a.token);
+  await emit(sb, 'accept_invite', { roomId: room.id });
+  await emit(sa, 'send_message', { roomId: room.id, type: 'text', content: 'first' });
+  await new Promise(r => setTimeout(r, 120));
+  const msgs = await api(`/messages/${room.id}`, 'GET', null, b.token);
+  const firstId = msgs[msgs.length - 1].id;
+
+  assert.strictEqual((await api(`/read-position/${room.id}`, 'GET', null, b.token)).lastReadId, 0,
+    'a chat never opened reports a position it does not have');
+
+  sb.emit('mark_read', { roomId: room.id, lastMsgId: firstId });
+  await new Promise(r => setTimeout(r, 200));
+  assert.strictEqual(
+    (await api(`/read-position/${room.id}`, 'GET', null, b.token)).lastReadId, firstId,
+    'the position is not reported back, so the chat cannot open where the reader left off');
+
+  // A stranger asking about a PRIVATE room is refused. (A public room is
+  // readable by anyone, and the answer is that stranger's own position — which
+  // is zero and tells them nothing about anybody else.)
+  const priv = await api('/rooms', 'POST', { name: 'read-position-private', isPrivate: true }, a.token);
+  const stranger = await signUp('readposc');
+  const denied = await raw(`/read-position/${priv.id}`, 'GET', null, stranger.token);
+  assert.strictEqual(denied.status, 404, 'a stranger can reach a private room\'s read position');
+  // And what it reports for a public room is the ASKER's position, not anyone
+  // else's — B has read this room, the stranger has not.
+  const theirs = await api(`/read-position/${room.id}`, 'GET', null, stranger.token);
+  assert.strictEqual(theirs.lastReadId, 0, 'the position leaked from another user');
+});
+
 test('the DM name match is escaped, so it cannot cross-match another chat', () => {
   // Whether the leak above can even ARISE depends on which ids happen to be
   // allocated, so the predicate itself is checked directly — read out of

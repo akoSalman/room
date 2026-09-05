@@ -184,7 +184,17 @@ test('THE STUCK CHAT: an arriving key redraws what was drawn without it', () => 
     'the placeholder is detected by comparing rendered text, which is a trap');
 
   // The app re-renders from state, but only if the rows are told.
-  assert.ok(/selectMode, e2ePhase \}\)/.test(chat),
+  // Checked INSIDE the memo rather than by its exact tail: the list of things
+  // rows depend on grows, and pinning the last name in it fails the next time
+  // one is added without anything being wrong.
+  const extra = chat.slice(chat.indexOf('const rowExtraData = useMemo('),
+    chat.indexOf('const scrollBottom = useCallback('))
+    // Comments stripped: this memo's own comment explains WHY e2ePhase is in
+    // the list, so a plain search finds the explanation and passes even when
+    // the dependency itself has been removed.
+    .split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n');
+  assert.ok(extra.length > 0, 'rowExtraData is gone — this check would be vacuous');
+  assert.ok(/e2ePhase/.test(extra),
     'the app rows are not told the phase, so they keep the words they were drawn with');
 });
 

@@ -943,6 +943,38 @@ function setConnStatus(state) {
 function showConnectionBanner() { setConnStatus(navigator.onLine ? 'reconnecting' : 'offline'); }
 function hideConnectionBanner() { setConnStatus('online'); }
 
+/**
+ * Open the chat at the first thing the reader has not seen.
+ *
+ * Asked for as: direct me to where those messages are. A chat that opens at
+ * the bottom is right when one message arrived and useless when thirty did —
+ * everything new is above the fold, the badge clears on the way in, and the
+ * reader is left scrolling backwards guessing where they had got to.
+ *
+ * A divider says how many, so the jump explains itself rather than looking
+ * like the chat opened in a strange place.
+ */
+function showUnreadFrom(msgs, lastReadId, waiting) {
+  if (!UnreadJump.worthJumping(waiting)) return;
+  const first = UnreadJump.firstUnread(msgs, lastReadId, username);
+  if (!first) return;
+  const wrapper = document.querySelector(`.msg-wrapper[data-msg-id="${first.id}"]`);
+  if (!wrapper) return;
+  const divider = document.createElement('div');
+  divider.className = 'unread-divider';
+  divider.id = 'unread-divider';
+  divider.textContent = UnreadJump.unreadLabel(waiting);
+  wrapper.parentNode.insertBefore(divider, wrapper);
+  // After the images have had a moment to size themselves, or the position
+  // measured now is one the layout is about to move.
+  setTimeout(() => {
+    divider.scrollIntoView({ block: 'center' });
+  }, 60);
+}
+
+// No cleanup needed: the divider is a child of #messages, which is emptied
+// whenever a chat is opened.
+
 // ─── Unread badges ────────────────────────────────────────────────────────────
 function updateUnreadBadge(roomId) {
   const li = document.querySelector(`[data-room-id="${roomId}"]`);
@@ -1768,7 +1800,44 @@ function addRoomToList(room) {
   if (mark) li.appendChild(mark);
 
   li.onclick = () => { joinRoom(room.id, room.name, li); isMobile() ? closeSidebar() : collapseSidebar(); };
+  addRoomMenu(li, room.id, room.name);
   document.getElementById('room-list').appendChild(li);
+}
+
+/**
+ * A long press (or right-click) on a chat in the list.
+ *
+ * Asked for as: mark all the messages of that chat as read, from the list.
+ * The web had no menu here at all — the only way to clear a badge was to open
+ * the chat, which is exactly the thing somebody wants to avoid when they have
+ * already decided they are not interested in it right now.
+ */
+function addRoomMenu(li, roomId, label) {
+  const open = () => {
+    const rows = [];
+    if ((unreadCounts[roomId] || 0) > 0) {
+      rows.push(['✓ Mark as read', () => markRoomRead(roomId)]);
+    }
+    rows.push(['💬 Open chat', () => li.click()]);
+    showSheet(label, rows);
+  };
+  addLongPress(li, open);
+  li.oncontextmenu = (e) => { e.preventDefault(); open(); };
+}
+
+/** Clear a chat's badge without opening it. */
+function markRoomRead(roomId) {
+  if (!socketReady) return;
+  socket.emit('mark_room_read', { roomId }, (res) => {
+    if (!res || !res.ok) { showToast('Could not mark it read'); return; }
+    // Set from the server's answer rather than assumed: it also marks the
+    // chat's THREADS read, and guessing at the total is how a badge ends up
+    // disagreeing with the list it is on.
+    unreadCounts[res.roomId] = res.unread;
+    updateUnreadBadge(res.roomId);
+    unreadComments = {};
+    refreshCommentJump();
+  });
 }
 
 function isRoomOwner(room) {
@@ -1854,6 +1923,7 @@ function addDMToSidebar(room, otherUsername) {
   const mark = disappearingMarker(room);
   if (mark) li.appendChild(mark);
   li.onclick = () => { joinRoom(room.id, otherUsername, li, true); isMobile() ? closeSidebar() : collapseSidebar(); };
+  addRoomMenu(li, room.id, otherUsername);
   document.getElementById('room-list').appendChild(li);
 }
 
@@ -1958,6 +2028,14 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
     await fetchDMPeerKey(roomId, roomName);
   }
   socket.emit('join_room', roomId);
+  // How many were waiting, and where the reader had got to — both read BEFORE
+  // anything is marked read, because opening the chat consumes the position.
+  const waiting = unreadCounts[roomId] || 0;
+  let lastReadId = 0;
+  try {
+    const pos = await api('/read-position/' + roomId);
+    if (pos && !pos.error) lastReadId = Number(pos.lastReadId) || 0;
+  } catch {}
   const msgs = await api('/messages/' + roomId);
   try {
     const receipts = await api('/read-receipts/' + roomId);
@@ -1972,6 +2050,7 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
       socket.emit('mark_read', { roomId, lastMsgId: msgs[msgs.length - 1].id });
     }
     hasMoreOlderMsgs = msgs.length >= MESSAGES_PAGE_SIZE;
+    showUnreadFrom(msgs, lastReadId, waiting);
   }
   // Paint reactions that already exist on these messages — they were only ever
   // applied from live events, so a reload showed none of them.

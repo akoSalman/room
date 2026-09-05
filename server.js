@@ -1072,6 +1072,7 @@ function unreadCountFor(userId, roomId) {
       LEFT JOIN room_reads rr ON rr.room_id = m.room_id AND rr.user_id = ?
       LEFT JOIN comment_reads cr ON cr.parent_id = m.parent_id AND cr.user_id = ?
       WHERE m.room_id = ? AND m.user_id != ?
+        AND m.blocked_delivery = 0
         AND (
           CASE WHEN m.parent_id IS NULL
             THEN m.id > COALESCE(rr.last_read_msg_id, 0)
@@ -1101,6 +1102,7 @@ app.get('/comment-unread/:roomId', authMiddleware, (req, res) => {
     FROM messages m
     LEFT JOIN comment_reads cr ON cr.parent_id = m.parent_id AND cr.user_id = ?
     WHERE m.room_id = ? AND m.parent_id IS NOT NULL AND m.user_id != ?
+      AND m.blocked_delivery = 0
       AND m.id > COALESCE(cr.last_read_msg_id, 0)
       AND m.id > COALESCE(
         (SELECT rc.cleared_upto_id FROM room_clears rc
@@ -1128,6 +1130,13 @@ app.get('/unread-counts', authMiddleware, (req, res) => {
     LEFT JOIN comment_reads cr ON cr.parent_id = m.parent_id AND cr.user_id = ?
     JOIN rooms r ON r.id = m.room_id
     WHERE m.user_id != ?
+      -- Undelivered messages are not unread messages. A message written while
+      -- the recipient had the sender blocked is never shown to them by ANY
+      -- list in this file — but it was still counted here, so the badge could
+      -- not be cleared by opening the chat: the message it was counting is not
+      -- in the chat and never will be. Reported as: I see unread messages and
+      -- opening the chat does not mark them read.
+      AND m.blocked_delivery = 0
       AND (
         CASE WHEN m.parent_id IS NULL
           THEN m.id > COALESCE(rr.last_read_msg_id, 0)
@@ -1377,6 +1386,23 @@ app.get('/read-receipts/:roomId', authMiddleware, (req, res) => {
   const rows = db.prepare('SELECT user_id, last_read_msg_id FROM room_reads WHERE room_id = ? AND user_id != ?')
     .all(room.id, req.user.id);
   res.json(rows.reduce((acc, r) => { acc[r.user_id] = r.last_read_msg_id; return acc; }, {}));
+});
+
+/**
+ * Where this user had read up to in this room.
+ *
+ * Asked for as: take me to where those unread messages are. A chat that opens
+ * at the bottom and quietly marks everything read is fine when one message
+ * arrived and useless when thirty did — the reader has to find the seam by
+ * scrolling and guessing. The clients read this BEFORE marking the room read,
+ * so the position survives being consumed.
+ */
+app.get('/read-position/:roomId', authMiddleware, (req, res) => {
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
+  if (!room || !canAccessRoom(req.user.id, room)) return res.status(404).json({ error: 'Room not found' });
+  const row = db.prepare('SELECT last_read_msg_id FROM room_reads WHERE room_id = ? AND user_id = ?')
+    .get(room.id, req.user.id);
+  res.json({ lastReadId: row ? (row.last_read_msg_id || 0) : 0 });
 });
 
 // ── Blocking, muting, and clearing ───────────────────────────────────────────
@@ -2793,6 +2819,55 @@ io.on('connection', (socket) => {
     `).run(socket.user.id, parent, upto);
     if (typeof ack === 'function') {
       ack({ ok: true, roomId: room.id, unread: unreadCountFor(socket.user.id, room.id) });
+    }
+  });
+
+  /**
+   * Mark a whole chat read, from the list, without opening it.
+   *
+   * Asked for as a long-press action. It is not "pretend the newest message id
+   * is the mark": a chat with unread COMMENTS would keep its badge, which is
+   * precisely the confusion this is meant to end. So it moves the room's own
+   * position to the newest message in the room and marks every thread in it
+   * read as well — the badge means "there is something here for you", so
+   * clearing it has to clear all of it.
+   */
+  socket.on('mark_room_read', ({ roomId }, ack) => {
+    const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+    if (!room || !canAccessRoom(socket.user.id, room)) {
+      if (typeof ack === 'function') ack({ ok: false });
+      return;
+    }
+    try {
+      const newest = db.prepare('SELECT MAX(id) AS id FROM messages WHERE room_id = ?').get(room.id);
+      const upto = newest && newest.id ? newest.id : 0;
+      if (upto) {
+        db.prepare(`
+          INSERT INTO room_reads (user_id, room_id, last_read_msg_id) VALUES (?, ?, ?)
+          ON CONFLICT(user_id, room_id) DO UPDATE SET
+            last_read_msg_id = MAX(last_read_msg_id, excluded.last_read_msg_id)
+        `).run(socket.user.id, room.id, upto);
+        // Every thread in the room, in one statement: doing it per parent from
+        // the client would need the client to know which parents exist.
+        db.prepare(`
+          INSERT INTO comment_reads (user_id, parent_id, last_read_msg_id)
+          SELECT ?, m.parent_id, MAX(m.id)
+          FROM messages m
+          WHERE m.room_id = ? AND m.parent_id IS NOT NULL
+          GROUP BY m.parent_id
+          ON CONFLICT(user_id, parent_id) DO UPDATE SET
+            last_read_msg_id = MAX(last_read_msg_id, excluded.last_read_msg_id)
+        `).run(socket.user.id, room.id);
+        socket.to(String(room.id)).emit('messages_read', {
+          roomId: String(room.id), userId: socket.user.id, lastReadMsgId: upto,
+        });
+      }
+      if (typeof ack === 'function') {
+        ack({ ok: true, roomId: room.id, unread: unreadCountFor(socket.user.id, room.id) });
+      }
+    } catch (err) {
+      console.error('[mark_room_read]', err.message);
+      if (typeof ack === 'function') ack({ ok: false });
     }
   });
 

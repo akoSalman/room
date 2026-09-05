@@ -147,6 +147,23 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
     ]);
   }
 
+  /**
+   * Clear a chat's badge from the list, without opening it.
+   *
+   * The new count comes from the SERVER's answer: marking a room read also
+   * marks its threads read, and a client that assumed zero would disagree with
+   * the list the moment anything else was unread.
+   */
+  async function markRoomRead(room: Room) {
+    setClearing(null);
+    const sock = await getSocket().catch(() => null);
+    if (!sock) { Alert.alert('Not connected', 'Try again once the app is back online.'); return; }
+    sock.emit('mark_room_read', { roomId: room.id }, (res: any) => {
+      if (!res || !res.ok) { Alert.alert('Could not mark it read'); return; }
+      setUnread(u => ({ ...u, [res.roomId]: res.unread }));
+    });
+  }
+
   const load = useCallback(async () => {
     const [r, d, u, id, counts] = await Promise.all([
       apiFetch('/rooms'),
@@ -543,6 +560,20 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
             <Text style={s.sheetTitle} numberOfLines={1}>
               {clearing?.is_dm ? (clearing?.other_username || '') : clearing?.name}
             </Text>
+            {/* Mark as read, asked for so a chat can be cleared from the list
+                without opening it. First, because it is the harmless one and
+                everything below it destroys messages. */}
+            {clearing && (unread[clearing.id] || 0) > 0 && (
+              <TouchableOpacity style={s.sheetRow} onPress={() => markRoomRead(clearing)}>
+                <Ionicons name="checkmark-done-outline" size={19} color={C.text} />
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={s.sheetRowText}>Mark as read</Text>
+                  <Text style={s.sheetRowHint}>
+                    Clears the badge, including anything new in this chat's comments.
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            )}
             {clearing && clearScopes(!!clearing.is_dm).map(scope => (
               <TouchableOpacity
                 key={scope}
