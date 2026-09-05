@@ -233,6 +233,30 @@ test('the chip is recomputed as the view moves, and points from real positions',
     'the app feeds inverted list indices straight in, so the chip points the wrong way');
 });
 
+test('a comment moves its chat up both clients\' lists', () => {
+  // Asked for as: when a comment is added to a chat, the chat should reorder.
+  // A comment never arrives as `message_received` — it must never be appended
+  // to a conversation — so neither list heard about it at all.
+  const rooms = fs.readFileSync(path.join(NAT, 'src', 'screens', 'RoomsScreen.tsx'), 'utf8');
+  assert.ok(/sock\.on\('comment_added'/.test(rooms), 'the app list never hears about comments');
+  const handler = rooms.slice(rooms.indexOf("sock.on('comment_added'"),
+    rooms.indexOf("sock.on('dm_activity'"));
+  assert.ok(/bumpRoom\(ev\.roomId\)/.test(handler), 'the app hears it and does not move the chat');
+  assert.ok(/ev\.comment\?\.username === uname/.test(handler),
+    'the app badges the author for their own comment');
+  // The ordinary path must keep working: one helper, two callers.
+  assert.ok(/bumpRoom\(msg\.room_id\)/.test(rooms), 'an ordinary message no longer moves the chat');
+
+  assert.ok(/bumpRoomInList\(ev\.roomId\)/.test(webApp), 'the web hears it and does not move the chat');
+  assert.ok(/bumpRoomInList\(msg\.room_id\)/.test(webApp),
+    'the web moves the chat for comments but not for messages');
+  const fn = webApp.slice(webApp.indexOf('function bumpRoomInList('),
+    webApp.indexOf('// ─── Unread badges'));
+  assert.ok(/dm-divider/.test(fn),
+    'a direct chat is moved above the DIRECT MESSAGES heading, into the rooms');
+  assert.ok(/insertBefore/.test(fn), 'nothing actually moves');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

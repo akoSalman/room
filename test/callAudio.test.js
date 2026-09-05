@@ -145,9 +145,13 @@ test('the call manager routes BEFORE it makes a noise', () => {
   assert.ok(start > 0, 'startDM is gone — this check is vacuous');
   const body = src.slice(start, src.indexOf('async accept()', start));
   const route = body.indexOf("applyRoute('outgoing')");
-  const ring = body.indexOf('this.startRing()');
+  // The caller's sound is a RINGBACK now (see test/callTones.test.js), but the
+  // ordering it depends on is unchanged: until the audio session is open there
+  // is no voice-call route, so anything played is media at media volume.
+  const ring = body.indexOf("this.startTone('caller')");
   assert.ok(route > 0, 'an outgoing call no longer opens its audio session — the ringback is media again');
-  assert.ok(ring > route, 'the ring starts before the route is set, which is the original bug');
+  assert.ok(ring > 0, 'an outgoing call makes no sound at all');
+  assert.ok(ring > route, 'the tone starts before the route is set, which is the original bug');
 });
 
 test('the caller asks the server whether anyone got the offer', () => {

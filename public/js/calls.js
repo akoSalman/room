@@ -259,11 +259,23 @@ const Calls = (() => {
 
   // ── Ring sound + connected timer ──
   let ringAudio = null;
-  function startRing() {
+  /**
+   * Make the noise this END of the call should make.
+   *
+   * Reported as: the ringtone plays on the caller's device instead of the
+   * receiver's. Both ends played ring.wav — a RINGTONE, written to be heard
+   * across a room through a pocket, which is right for the phone being called
+   * and wrong for the one held to an ear. The caller gets a ringback: quiet,
+   * dull, and noticeable only when it stops. See js/callTones.js.
+   */
+  function startTone(role) {
     stopRing();
+    const tone = CallTones.toneFor({ role });
+    if (!tone) return;
     try {
-      ringAudio = new Audio('/ring.wav');
-      ringAudio.loop = true;
+      ringAudio = new Audio('/' + CallTones.toneFile(tone));
+      ringAudio.loop = CallTones.toneLoops(tone);
+      ringAudio.volume = CallTones.toneVolume(tone);
       ringAudio.play().catch(() => {});
     } catch {}
   }
@@ -331,7 +343,7 @@ const Calls = (() => {
     showOverlay((kind === 'video' ? '🎥 ' : '📞 ') + dmPeer.username, kind === 'video');
     out = {};
     setStatus(CallStatus.outgoingStatus(out));
-    startRing();
+    startTone('caller');
     if (kind === 'video') { $('call-local-video').srcObject = localStream; $('call-local-video').muted = true; }
     await makeOffer(dmPeer.userId);
   }
@@ -351,7 +363,7 @@ const Calls = (() => {
     }
     if (mode) { sock.emit('call_end', { toUserId: offer.fromUserId }); return; } // busy
     incoming = offer;
-    startRing();
+    startTone('callee');
     // Tell the caller their call is really ringing here.
     sock.emit('call_ringing', { toUserId: offer.fromUserId });
     $('incoming-call-text').textContent =

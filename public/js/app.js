@@ -776,12 +776,17 @@ function connectSocket() {
     socket.on('comment_added', (ev) => {
       bumpCommentBadge(ev.parentId, ev.count);
       noteUnreadComment(ev);
+      // A comment is activity in that chat, so the chat moves up the list —
+      // asked for, and previously impossible because a comment deliberately
+      // never arrives as `message_received`.
+      bumpRoomInList(ev.roomId);
       if (commentParent && String(commentParent.id) === String(ev.parentId)) {
         appendCommentBubble(ev.comment);
       }
     });
 
     socket.on('message_received', (msg) => {
+      bumpRoomInList(msg.room_id);
       if (msg.client_id && pendingUploads[msg.client_id]) {
         const pending = pendingUploads[msg.client_id];
         if (pending.previewUrl) URL.revokeObjectURL(pending.previewUrl);
@@ -974,6 +979,26 @@ function showUnreadFrom(msgs, lastReadId, waiting) {
 
 // No cleanup needed: the divider is a child of #messages, which is emptied
 // whenever a chat is opened.
+
+/**
+ * Move a chat to the top of its section, the way activity orders the list.
+ *
+ * The sidebar is drawn in the order the server sent it and never moved again,
+ * so the ordering was only ever as fresh as the last reload. It follows the
+ * conversation now — including comments, which is what was asked for.
+ */
+function bumpRoomInList(roomId) {
+  const li = document.querySelector(`[data-room-id="${roomId}"]`);
+  if (!li || !li.parentNode) return;
+  // A direct chat belongs under the DIRECT MESSAGES heading; a room belongs
+  // above it. Moving one past the divider would file it under the wrong one.
+  const divider = document.getElementById('dm-divider');
+  const anchor = li.dataset.isDm === '1'
+    ? (divider ? divider.nextSibling : li.parentNode.firstChild)
+    : li.parentNode.firstChild;
+  if (anchor === li) return;
+  li.parentNode.insertBefore(li, anchor);
+}
 
 // ─── Unread badges ────────────────────────────────────────────────────────────
 function updateUnreadBadge(roomId) {

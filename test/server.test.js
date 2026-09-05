@@ -1024,6 +1024,54 @@ test('the read position is available before it is consumed', async () => {
   assert.strictEqual(theirs.lastReadId, 0, 'the position leaked from another user');
 });
 
+test('a comment moves its chat up the list', async () => {
+  // Asked for as: when a comment is added to a chat, that chat should reorder
+  // in the chat list.
+  //
+  // The list is ordered by the newest thing that happened in each chat, and
+  // that query went through visibleMessagesSql — whose whole job everywhere
+  // else is to keep comments out. So a chat whose only new activity was a
+  // comment sank as though nothing had happened.
+  const a = await signUp('ordera');
+  const b = await signUp('orderb');
+  const c = await signUp('orderc');
+  const sa = await connect(a.token);
+  const sc = await connect(c.token);
+  const bId = (await api('/search?q=orderb', 'GET', null, a.token)).users[0].id;
+  const cId = (await api('/search?q=orderc', 'GET', null, a.token)).users[0].id;
+
+  // A talks to B, then to C — so C is at the top of A's list.
+  const dmB = await api(`/dm/${bId}`, 'POST', null, a.token);
+  const dmBId = dmB.id || dmB.room?.id;
+  await emit(sa, 'send_message', { roomId: dmBId, type: 'text', content: 'hello B' });
+  await new Promise(r => setTimeout(r, 120));
+  const withB = await api(`/messages/${dmBId}`, 'GET', null, a.token);
+  const parentId = withB[withB.length - 1].id;
+
+  const dmC = await api(`/dm/${cId}`, 'POST', null, a.token);
+  const dmCId = dmC.id || dmC.room?.id;
+  await emit(sc, 'send_message', { roomId: dmCId, type: 'text', content: 'hello C' });
+  await new Promise(r => setTimeout(r, 150));
+
+  let list = await api('/dm-rooms', 'GET', null, a.token);
+  assert.strictEqual(list[0].id, dmCId, `the setup did not order as expected: ${JSON.stringify(list.map(r => r.id))}`);
+
+  // B comments on A's message. Nothing appears in the conversation — that is
+  // the design — but something HAPPENED in that chat.
+  const sb = await connect(b.token);
+  await emit(sb, 'send_message',
+    { roomId: dmBId, type: 'text', content: 'a comment', parentId });
+  await new Promise(r => setTimeout(r, 150));
+
+  list = await api('/dm-rooms', 'GET', null, a.token);
+  assert.strictEqual(list[0].id, dmBId,
+    'THE BUG: a chat with a new comment stayed where it was in the list');
+  // …and the chat's own "last message" is still a MESSAGE: the preview under
+  // the name must not start quoting comments that are not in the conversation.
+  assert.strictEqual(list[0].last_msg_id, parentId,
+    'the comment became the chat\'s last message');
+});
+
 test('the DM name match is escaped, so it cannot cross-match another chat', () => {
   // Whether the leak above can even ARISE depends on which ids happen to be
   // allocated, so the predicate itself is checked directly — read out of

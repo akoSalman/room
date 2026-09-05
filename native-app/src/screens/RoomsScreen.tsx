@@ -228,11 +228,11 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
     (async () => {
       const uname = await getUsername();
       sock = await getSocket();
-      sock.on('message_received', (msg: any) => {
-        // Float the room that just received a message to the top of its list,
-        // so the ordering tracks activity live instead of only on reload.
+      // Float the room that just had activity to the top of its list, so the
+      // ordering tracks it live instead of only on reload.
+      const bumpRoom = (roomId: number) => {
         const bump = (list: Room[]) => {
-          const i = list.findIndex(r => r.id === msg.room_id);
+          const i = list.findIndex(r => r.id === roomId);
           if (i <= 0) return list; // absent, or already first
           const next = list.slice();
           const [hit] = next.splice(i, 1);
@@ -240,8 +240,20 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
         };
         setRooms(prev => bump(prev));
         setDms(prev => bump(prev));
+      };
+      sock.on('message_received', (msg: any) => {
+        bumpRoom(msg.room_id);
         if (msg.username === uname) return; // own messages are never "unread"
         setUnread(prev => ({ ...prev, [msg.room_id]: (prev[msg.room_id] || 0) + 1 }));
+      });
+      // A comment is activity too. It arrives under its own name — it must
+      // never be appended to a conversation — so this list never heard about
+      // it, and a chat whose only new thing was a comment sat where it was.
+      sock.on('comment_added', (ev: any) => {
+        if (!ev || ev.roomId == null) return;
+        bumpRoom(ev.roomId);
+        if (ev.comment?.username === uname) return;
+        setUnread(prev => ({ ...prev, [ev.roomId]: (prev[ev.roomId] || 0) + 1 }));
       });
       sock.on('dm_activity', () => load());
       // Cleared elsewhere — by the other person, or on another device. The

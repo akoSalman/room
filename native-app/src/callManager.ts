@@ -8,6 +8,7 @@ import { mediaDevices, RTCPeerConnection, MediaStream } from 'react-native-webrt
 import { apiFetch, getSocket } from './api';
 import { stopRinging } from './incomingCall';
 import { routeFor, outgoingStatus, CallMode, CallPhase, OutgoingState } from './callAudio';
+import { toneFor, toneVolume, toneLoops } from './callTones';
 import { canMinimize, canSwapVideos, CallPhase as WindowPhase } from './callWindow';
 import * as ongoing from './ongoingCall';
 import { audioManager } from './audioManager';
@@ -73,13 +74,25 @@ class CallManager {
     }).catch(() => {});
   }
 
-  private async startRing() {
+  /**
+   * Make the noise this END of the call should make.
+   *
+   * Reported as: the ringtone plays on the caller's device instead of the
+   * receiver's. Both ends were playing ring.wav — a RINGTONE, written to be
+   * heard across a room through a pocket, which is right for the phone being
+   * called and wrong for the one held to an ear. The caller gets a ringback:
+   * quiet, dull, and noticeable only when it stops. See src/callTones.ts.
+   */
+  private async startTone(role: 'caller' | 'callee') {
     this.stopRing();
+    const tone = toneFor({ role });
+    if (!tone) return;
     try {
       const { sound } = await Audio.Sound.createAsync(
-        // Quieter, too: at the earpiece this is an inch from an ear, where
-        // 0.8 of a ringtone written to be heard across a room is painful.
-        require('../assets/ring.wav'), { isLooping: true, shouldPlay: true, volume: 0.5 },
+        tone === 'ringtone'
+          ? require('../assets/ring.wav')
+          : require('../assets/ringback.wav'),
+        { isLooping: toneLoops(tone), shouldPlay: true, volume: toneVolume(tone) },
       );
       this.ringSound = sound;
     } catch {}
@@ -490,7 +503,7 @@ class CallManager {
     // off the earpiece.
     Audio.setAudioModeAsync({ playThroughEarpieceAndroid: false, staysActiveInBackground: true })
       .catch(() => {});
-    this.startRing();
+    this.startTone('callee');
     this.syncOngoing();
     // Tell the caller their phone is actually ringing here. Without this the
     // caller's screen has nothing to go on but hope.
@@ -540,11 +553,12 @@ class CallManager {
     // Route first, THEN make a noise: the order is the whole fix for a
     // ringback that came out of the loudspeaker.
     this.applyRoute('outgoing');
-    try { InCallManager?.startRingback?.('_DTMF_'); } catch {}
     this.out = {};
     this.minimized = false;
     this.status = outgoingStatus(this.out);
-    this.startRing();
+    // Our own ringback, and ONLY ours: InCallManager's was started here too,
+    // so two tones played over each other and the loud one won.
+    this.startTone('caller');
     this.syncOngoing();
     this.emit();
     // Give up after 45s of no answer (logged as a missed call)

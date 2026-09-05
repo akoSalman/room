@@ -1715,7 +1715,16 @@ app.get('/dm-rooms', authMiddleware, (req, res) => {
     // people expect from a chat list and the reason this is a mark rather
     // than a hidden flag anyone would have to remember to unset.
     const vis = visibleMessagesSql(myId, room.id, 'messages');
+    // The chat's PLACE in the list is about activity, and a comment is
+    // activity — asked for as: a chat should move up when a comment is added
+    // to it. `vis` alone hides comments (that is its job everywhere else), so
+    // a chat whose only new thing was a comment sank as if nothing had
+    // happened. The list's existence test stays on visible messages: a chat
+    // has to have a conversation before it can have a thread.
+    const order = visibleMessagesSql(myId, room.id, 'messages', { includeComments: true });
     const last = db.prepare(`SELECT MAX(id) AS id FROM messages WHERE room_id = ? ${vis}`)
+      .get(room.id);
+    const active = db.prepare(`SELECT MAX(id) AS id FROM messages WHERE room_id = ? ${order}`)
       .get(room.id);
     if (!last || !last.id) continue;
     rooms.push({
@@ -1723,11 +1732,14 @@ app.get('/dm-rooms', authMiddleware, (req, res) => {
       other_username: other.username,
       other_avatar: other.avatar || null,
       last_msg_id: last.id,
+      // What the list is SORTED by: the newest thing that happened here,
+      // comments included.
+      last_activity_id: (active && active.id) || last.id,
     });
   }
   // Most recently active DM first (was: newest-created, which never reordered
   // as conversations went back and forth).
-  rooms.sort((x, y) => (y.last_msg_id || 0) - (x.last_msg_id || 0));
+  rooms.sort((x, y) => (y.last_activity_id || 0) - (x.last_activity_id || 0));
   res.json(rooms);
 });
 
