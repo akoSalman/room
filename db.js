@@ -174,6 +174,24 @@ db.exec(`
     UNIQUE(user_id, room_id)
   );
 `);
+// How far each user has read each THREAD.
+//
+// Comments are messages, so they counted towards a room's unread badge — but
+// the position that clears that badge is advanced from the chat's own message
+// list, which never contains a comment. So a comment's id stayed above the
+// read mark for good and the badge could never go away. Reported exactly that
+// way: the number on the chat list does not clear.
+//
+// Keyed by the PARENT rather than the room: a thread is read by opening it,
+// and reading one says nothing about the others.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS comment_reads (
+    user_id INTEGER NOT NULL,
+    parent_id INTEGER NOT NULL,
+    last_read_msg_id INTEGER DEFAULT 0,
+    UNIQUE(user_id, parent_id)
+  );
+`);
 
 // ── One-time migrations ──────────────────────────────────────────────────────
 //

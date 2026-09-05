@@ -785,6 +785,127 @@ test('unread counts cover your rooms and DMs, and nothing else', async () => {
     'unread counts leaked from a DM between two other people');
 });
 
+test('THE STUCK BADGE: reading a thread clears what its comments added', async () => {
+  // Reported as: comments are not marked as seen, because the badge number on
+  // the chat list never goes away.
+  //
+  // A comment IS a message, so it counts towards the room's unread badge — but
+  // the read position that clears that badge is advanced from the CHAT's own
+  // message list, and a comment is deliberately never in it. So a comment's id
+  // stayed above the mark for ever and the number could not be cleared by any
+  // amount of reading.
+  const a = await signUp('threadreada');
+  const b = await signUp('threadreadb');
+  const sa = await connect(a.token);
+  const sb = await connect(b.token);
+  const room = await api('/rooms', 'POST', { name: 'thread-reads' }, a.token);
+  await emit(sb, 'accept_invite', { roomId: room.id });
+
+  await emit(sa, 'send_message',
+    { roomId: room.id, type: 'text', content: 'the message being discussed' });
+  await new Promise(r => setTimeout(r, 120));
+  // The id comes from the chat rather than the ack: send_message acknowledges
+  // that it worked, not what it made.
+  const seed = await api(`/messages/${room.id}`, 'GET', null, b.token);
+  const parentId = seed[seed.length - 1].id;
+
+  // B reads the conversation, the ordinary way. mark_read does not ack.
+  sb.emit('mark_read', { roomId: room.id, lastMsgId: parentId });
+  await new Promise(r => setTimeout(r, 200));
+  assert.ok(!(await api('/unread-counts', 'GET', null, b.token))[room.id],
+    'the chat was read and still shows a badge');
+
+  // A comments on it.
+  await emit(sa, 'send_message',
+    { roomId: room.id, type: 'text', content: 'a comment', parentId });
+  await new Promise(r => setTimeout(r, 120));
+  const withComment = await api('/unread-counts', 'GET', null, b.token);
+  assert.strictEqual(withComment[room.id], 1,
+    'a comment left no trace at all, so nobody would ever find it');
+
+  // Reading the CHAT again cannot clear it — the comment is not in the chat.
+  const again = await api(`/messages/${room.id}`, 'GET', null, b.token);
+  sb.emit('mark_read', { roomId: room.id, lastMsgId: again[again.length - 1].id });
+  await new Promise(r => setTimeout(r, 200));
+  assert.strictEqual((await api('/unread-counts', 'GET', null, b.token))[room.id], 1,
+    'opening the chat marked a comment read that the user never saw');
+
+  // Opening the THREAD does.
+  const thread = await api(`/comments/${room.id}/${parentId}`, 'GET', null, b.token);
+  assert.strictEqual(thread.comments.length, 1);
+  const ack = await emit(sb, 'mark_comments_read',
+    { parentId, lastMsgId: thread.comments[thread.comments.length - 1].id });
+  assert.ok(ack && ack.ok, `marking the thread read failed: ${JSON.stringify(ack)}`);
+  assert.strictEqual(ack.unread, 0, 'the ack reported a count that is not the truth');
+  assert.ok(!(await api('/unread-counts', 'GET', null, b.token))[room.id],
+    'THE BUG: the badge survives reading the thread');
+});
+
+test('a thread that is read stays read, and other threads are untouched', async () => {
+  const a = await signUp('threadreadc');
+  const b = await signUp('threadreadd');
+  const sa = await connect(a.token);
+  const sb = await connect(b.token);
+  const room = await api('/rooms', 'POST', { name: 'thread-reads-2' }, a.token);
+  await emit(sb, 'accept_invite', { roomId: room.id });
+
+  // Sent by A, then looked up: send_message acknowledges that it worked, not
+  // what it made.
+  const mk = async (content, parentId) => {
+    await emit(sa, 'send_message', { roomId: room.id, type: 'text', content, parentId });
+    await new Promise(r => setTimeout(r, 120));
+  };
+  await mk('first message');
+  await mk('second message');
+  const top = await api(`/messages/${room.id}`, 'GET', null, b.token);
+  const p1 = top[top.length - 2].id;
+  const p2 = top[top.length - 1].id;
+  await mk('comment on one', p1);
+  await mk('comment on two', p2);
+
+  // Which threads have something unread, so a reload can put the badges back.
+  let unread = await api(`/comment-unread/${room.id}`, 'GET', null, b.token);
+  assert.strictEqual(unread[String(p1)], 1, JSON.stringify(unread));
+  assert.strictEqual(unread[String(p2)], 1);
+
+  const t1 = await api(`/comments/${room.id}/${p1}`, 'GET', null, b.token);
+  await emit(sb, 'mark_comments_read', { parentId: p1, lastMsgId: t1.comments[0].id });
+  unread = await api(`/comment-unread/${room.id}`, 'GET', null, b.token);
+  assert.ok(!unread[String(p1)], 'the thread that was read is still marked unread');
+  assert.strictEqual(unread[String(p2)], 1, 'reading one thread marked another read as well');
+
+  // A NEW comment on the thread just read is unread again — the mark is a
+  // position, not a "done" flag.
+  await mk('another comment on one', p1);
+  unread = await api(`/comment-unread/${room.id}`, 'GET', null, b.token);
+  assert.strictEqual(unread[String(p1)], 1, 'a comment after the mark was treated as read');
+
+  // My own comment is never unread to me.
+  const mine = await emit(sb, 'send_message',
+    { roomId: room.id, type: 'text', content: 'my own comment', parentId: p2 });
+  assert.ok(mine, 'sending a comment failed');
+  await new Promise(r => setTimeout(r, 120));
+  const forMe = await api(`/comment-unread/${room.id}`, 'GET', null, b.token);
+  assert.strictEqual(forMe[String(p2)], 1, 'my own comment was counted as unread by me');
+});
+
+test('marking a thread read needs access to the room it is in', async () => {
+  const a = await signUp('threadreade');
+  const b = await signUp('threadreadf');
+  const sa = await connect(a.token);
+  const sb = await connect(b.token);
+  const room = await api('/rooms', 'POST', { name: 'thread-private', isPrivate: true }, a.token);
+  await emit(sa, 'send_message',
+    { roomId: room.id, type: 'text', content: 'private message' });
+  await new Promise(r => setTimeout(r, 120));
+  const own = await api(`/messages/${room.id}`, 'GET', null, a.token);
+  const parentId = own[own.length - 1].id;
+  const ack = await emit(sb, 'mark_comments_read', { parentId, lastMsgId: parentId + 1 });
+  assert.ok(ack && ack.ok === false, 'a stranger could write a read mark for a private room');
+  const res = await raw(`/comment-unread/${room.id}`, 'GET', null, b.token);
+  assert.strictEqual(res.status, 403, 'a stranger can list a private room\'s threads');
+});
+
 test('the DM name match is escaped, so it cannot cross-match another chat', () => {
   // Whether the leak above can even ARISE depends on which ids happen to be
   // allocated, so the predicate itself is checked directly — read out of

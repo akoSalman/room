@@ -1056,6 +1056,62 @@ app.delete('/push-token', authMiddleware, (req, res) => {
   res.json({ ok: true });
 });
 
+/**
+ * One room's unread count, by the same rule the list uses.
+ *
+ * Deliberately a second query rather than a shared string with /unread-counts:
+ * that one is scoped to every room the user belongs to and this one is not,
+ * and pretending they are the same query is how the two drift into disagreeing
+ * about what a badge means.
+ */
+function unreadCountFor(userId, roomId) {
+  try {
+    const row = db.prepare(`
+      SELECT COUNT(*) AS cnt
+      FROM messages m
+      LEFT JOIN room_reads rr ON rr.room_id = m.room_id AND rr.user_id = ?
+      LEFT JOIN comment_reads cr ON cr.parent_id = m.parent_id AND cr.user_id = ?
+      WHERE m.room_id = ? AND m.user_id != ?
+        AND (
+          CASE WHEN m.parent_id IS NULL
+            THEN m.id > COALESCE(rr.last_read_msg_id, 0)
+            ELSE m.id > COALESCE(cr.last_read_msg_id, 0)
+          END
+        )
+        AND m.id > COALESCE(
+          (SELECT rc.cleared_upto_id FROM room_clears rc
+            WHERE rc.room_id = m.room_id AND rc.user_id = ?), 0)
+    `).get(userId, userId, roomId, userId, userId);
+    return row ? row.cnt : 0;
+  } catch { return 0; }
+}
+
+/**
+ * Which threads in this room have comments the user has not seen.
+ *
+ * The clients badge the message itself and offer a jump to it, and both were
+ * held in memory only — so a reload lost them and the feature existed for
+ * exactly as long as the tab stayed open.
+ */
+app.get('/comment-unread/:roomId', authMiddleware, (req, res) => {
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
+  if (!canAccessRoom(req.user.id, room)) return res.status(403).json({ error: 'No access' });
+  const rows = db.prepare(`
+    SELECT m.parent_id AS parentId, COUNT(*) AS cnt
+    FROM messages m
+    LEFT JOIN comment_reads cr ON cr.parent_id = m.parent_id AND cr.user_id = ?
+    WHERE m.room_id = ? AND m.parent_id IS NOT NULL AND m.user_id != ?
+      AND m.id > COALESCE(cr.last_read_msg_id, 0)
+      AND m.id > COALESCE(
+        (SELECT rc.cleared_upto_id FROM room_clears rc
+          WHERE rc.room_id = m.room_id AND rc.user_id = ?), 0)
+    GROUP BY m.parent_id
+  `).all(req.user.id, room.id, req.user.id, req.user.id);
+  const out = {};
+  rows.forEach(r => { out[String(r.parentId)] = r.cnt; });
+  res.json(out);
+});
+
 // Per-room unread counts based on server-side read positions
 app.get('/unread-counts', authMiddleware, (req, res) => {
   // Scoped to rooms the user is actually in. It used to count EVERY room in
@@ -1065,8 +1121,19 @@ app.get('/unread-counts', authMiddleware, (req, res) => {
     SELECT m.room_id, COUNT(*) AS cnt
     FROM messages m
     LEFT JOIN room_reads rr ON rr.room_id = m.room_id AND rr.user_id = ?
+    -- A COMMENT is read by opening its thread, not by opening the chat. Its
+    -- id is never in the chat's own message list, so measuring it against the
+    -- room's read position left it unread for ever — reported as: the badge on
+    -- the chat list does not go away.
+    LEFT JOIN comment_reads cr ON cr.parent_id = m.parent_id AND cr.user_id = ?
     JOIN rooms r ON r.id = m.room_id
-    WHERE m.user_id != ? AND m.id > COALESCE(rr.last_read_msg_id, 0)
+    WHERE m.user_id != ?
+      AND (
+        CASE WHEN m.parent_id IS NULL
+          THEN m.id > COALESCE(rr.last_read_msg_id, 0)
+          ELSE m.id > COALESCE(cr.last_read_msg_id, 0)
+        END
+      )
       -- Cleared messages are not unread messages. Without this a chat the
       -- user has just emptied comes straight back with a badge on it.
       AND m.id > COALESCE(
@@ -1094,9 +1161,10 @@ app.get('/unread-counts', authMiddleware, (req, res) => {
     -- '%__2.0__' and matched no DM at all.
   `)
   // Bound in the order the placeholders appear: the read-position join, the
-  // author test, the clear mark, the membership test, then the two DM name
-  // patterns. Adding the clear mark shifted every one after it along.
-  .all(req.user.id, req.user.id, req.user.id, req.user.id,
+  // THREAD read-position join, the author test, the clear mark, the membership
+  // test, then the two DM name patterns. Every addition shifts the ones after
+  // it along, which is why they are listed here rather than counted by eye.
+  .all(req.user.id, req.user.id, req.user.id, req.user.id, req.user.id,
        String(req.user.id), String(req.user.id));
   const counts = {};
   rows.forEach(r => { counts[r.room_id] = r.cnt; });
@@ -2695,6 +2763,37 @@ io.on('connection', (socket) => {
     socket.to(String(roomId)).emit('messages_read', {
       roomId: String(roomId), userId: socket.user.id, lastReadMsgId: row.last_read_msg_id,
     });
+  });
+
+  /**
+   * A thread has been read up to this comment.
+   *
+   * Its own mark, because a thread is read by opening it — the chat's read
+   * position is advanced from the conversation's message list, which never
+   * contains a comment, so without this a comment stayed unread for ever and
+   * the chat list kept its badge.
+   *
+   * The room's new unread count is acknowledged back, so the badge that was
+   * wrong is corrected from the server rather than guessed at by subtracting.
+   */
+  socket.on('mark_comments_read', ({ parentId, lastMsgId }, ack) => {
+    const parent = parseInt(parentId, 10);
+    const upto = parseInt(lastMsgId, 10);
+    if (!parent || !upto) { if (typeof ack === 'function') ack({ ok: false }); return; }
+    const msg = db.prepare('SELECT room_id FROM messages WHERE id = ?').get(parent);
+    const room = msg && db.prepare('SELECT * FROM rooms WHERE id = ?').get(msg.room_id);
+    if (!room || !canAccessRoom(socket.user.id, room)) {
+      if (typeof ack === 'function') ack({ ok: false });
+      return;
+    }
+    db.prepare(`
+      INSERT INTO comment_reads (user_id, parent_id, last_read_msg_id) VALUES (?, ?, ?)
+      ON CONFLICT(user_id, parent_id) DO UPDATE SET
+        last_read_msg_id = MAX(last_read_msg_id, excluded.last_read_msg_id)
+    `).run(socket.user.id, parent, upto);
+    if (typeof ack === 'function') {
+      ack({ ok: true, roomId: room.id, unread: unreadCountFor(socket.user.id, room.id) });
+    }
   });
 
   // Voice message opened/played indicator: only a listener other than the

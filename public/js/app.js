@@ -1931,6 +1931,18 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   maxOtherReadMsgId = 0;
   setDMPeerPk(null);
   allChatImages = [];
+  // Which threads have something unread in them. Held only in memory before,
+  // so a reload lost every comment badge and the chip that leads to it.
+  unreadComments = {};
+  api('/comment-unread/' + roomId).then(u => {
+    if (!u || u.error || String(roomId) !== String(currentRoomId)) return;
+    unreadComments = u;
+    Object.keys(u).forEach(id => {
+      const bar = document.querySelector(`.comment-bar-btn[data-msg-id="${id}"]`);
+      if (bar) paintUnreadComments(bar, CommentUnread.countFor(u, id));
+    });
+    refreshCommentJump();
+  }).catch(() => {});
   api('/room-media/' + roomId).then(m => {
     if (m && !m.error && String(roomId) === String(currentRoomId)) {
       allChatImages = m.images.slice().reverse().map(u => location.origin + u);
@@ -4491,6 +4503,7 @@ async function openComments(msgId) {
     return;
   }
   commentParent = res.parent;
+  markCommentsRead(msgId, res.comments);
   // The thread is not a page, so back has nothing to pop unless one is put
   // there. Without this, back leaves the site from inside a thread.
   try { history.pushState({ comments: true }, ''); commentsPushed++; } catch {}
@@ -4658,6 +4671,28 @@ function noteUnreadComment(ev) {
   const bar = document.querySelector(`.comment-bar-btn[data-msg-id="${ev.parentId}"]`);
   if (bar) paintUnreadComments(bar, CommentUnread.countFor(unreadComments, ev.parentId));
   refreshCommentJump();
+}
+
+/**
+ * Tell the server this thread has been read, and correct the chat's badge.
+ *
+ * A comment is a message, so it counts towards the room's badge — but the mark
+ * that clears that badge is advanced from the CHAT's message list, which never
+ * contains a comment. Reported as: the number on the chat list does not go
+ * away. The server keeps a separate mark per thread and answers with the
+ * room's corrected count, so the badge is set from the truth rather than by
+ * subtracting a guess.
+ */
+function markCommentsRead(parentId, comments) {
+  const list = Array.isArray(comments) ? comments : [];
+  if (!list.length || !socketReady) return;
+  const last = list.reduce((n, c) => Math.max(n, Number(c.id) || 0), 0);
+  if (!last) return;
+  socket.emit('mark_comments_read', { parentId, lastMsgId: last }, (res) => {
+    if (!res || !res.ok) return;
+    unreadCounts[res.roomId] = res.unread;
+    updateUnreadBadge(res.roomId);
+  });
 }
 
 /** Opening a thread is reading it. */

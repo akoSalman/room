@@ -578,10 +578,25 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     }
     setCommentParent(res.parent);
     setComments(res.comments || []);
+    markCommentsRead(m.id, res.comments || []);
     // Opening a thread shows its newest comment, like opening a chat.
     commentsAtBottom.current = true;
     setTimeout(() => scrollCommentsToEnd(false), 50);
     setCommentCounts(c => ({ ...c, [String(m.id)]: (res.comments || []).length }));
+  }
+
+  /**
+   * Tell the server this thread has been read.
+   *
+   * A comment is a message, so it counts towards the room's badge — but the
+   * mark that clears that badge is advanced from the CHAT's message list,
+   * which never contains a comment, so the badge could never go away.
+   * Reported exactly that way. The server keeps a mark per thread.
+   */
+  function markCommentsRead(parentId: number | string, list: Message[]) {
+    const last = (list || []).reduce((n, c) => Math.max(n, Number(c.id) || 0), 0);
+    if (!last) return;
+    socketRef.current?.emit('mark_comments_read', { parentId, lastMsgId: last });
   }
 
   /** The first picture in the parent, whatever shape the message stores it in. */
@@ -1459,6 +1474,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           }
         }, 300);
       }
+
+      // Which threads have something unread in them. Held only in memory
+      // before, so leaving the chat lost every comment badge and the chip
+      // that leads to it.
+      apiFetch(`/comment-unread/${room.id}`)
+        .then((u: any) => {
+          if (!u || u.error) return;
+          setUnreadComments(u);
+          setTimeout(() => refreshJumpRef.current(), 0);
+        })
+        .catch(() => {});
 
       // Mentions of me that arrived while I was away.
       apiFetch(`/mentions/${room.id}`)
