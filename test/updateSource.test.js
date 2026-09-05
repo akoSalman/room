@@ -151,6 +151,26 @@ const webApp = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'app.j
 const workflow = fs.readFileSync(
   path.join(__dirname, '..', '.github', 'workflows', 'build-native-apk.yml'), 'utf8');
 
+test('a flaky npm cache does not cost a whole brand its build', () => {
+  // Build 243 lost bistbarg to this while akosalman, on the same commit,
+  // installed cleanly a minute later:
+  //   npm error code EEXIST … rename '_cacache/tmp/…' -> '…/content-v2/…'
+  // npm's own cache lost a race with itself. Nothing in the project caused it
+  // and nothing in the project can prevent it — but asking a second time with
+  // the cache cleared costs a minute on the rare failure and nothing at all
+  // otherwise.
+  const step = workflow.slice(workflow.indexOf('- name: Install dependencies'),
+    workflow.indexOf('- name: Generate native Android project'));
+  assert.ok(step.length > 0, 'the install step is gone — this check would be vacuous');
+  const lines = step.split('\n').filter(l => !/^\s*#/.test(l));
+  const installs = lines.filter(l => /npm install/.test(l)).length;
+  assert.ok(installs >= 2, 'a single npm install: one bad rename still loses the build');
+  assert.ok(lines.some(l => /npm cache clean --force/.test(l)),
+    'the retry reuses the cache that just refused to be written');
+  assert.ok(lines.some(l => /npm install && exit 0/.test(l)),
+    'the second install runs even when the first one worked');
+});
+
 test('the app asks its own server before GitHub', () => {
   assert.ok(rooms.includes('SERVER_MANIFEST_URL'), 'the app never asks its own server');
   const check = rooms.slice(rooms.indexOf('async function checkLatestVersion'),

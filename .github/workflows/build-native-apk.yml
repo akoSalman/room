@@ -191,7 +191,26 @@ jobs:
 
       - name: Install dependencies
         if: steps.want.outputs.build == 'yes'
-        run: npm install
+        # Twice, with the cache thrown away in between.
+        #
+        # Build 243 lost one of its two brands to this, on a commit whose other
+        # brand installed cleanly a minute later:
+        #
+        #   npm error code EEXIST
+        #   npm error ENOENT: rename '~/.npm/_cacache/tmp/…' -> '…/content-v2/…'
+        #   File exists: …/content-v2/sha512/…
+        #
+        # npm's content-addressed cache lost a race with itself while writing a
+        # package it had just downloaded. Nothing about the project caused it
+        # and nothing about the project can prevent it; the runner's cache is
+        # simply in a state npm will not write over. Clearing it and asking
+        # again costs a minute on the rare failure and nothing at all on every
+        # other run — which beats losing a whole brand's build to a rename.
+        run: |
+          npm install && exit 0
+          echo '--- npm install failed; clearing the cache and trying once more'
+          npm cache clean --force || true
+          npm install
 
       - name: Generate native Android project
         if: steps.want.outputs.build == 'yes'
