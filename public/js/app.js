@@ -983,7 +983,13 @@ function showUnreadFrom(msgs, lastReadId, waiting) {
   const divider = document.createElement('div');
   divider.className = 'unread-divider';
   divider.id = 'unread-divider';
-  divider.textContent = UnreadJump.unreadLabel(waiting);
+  // Counted from the line down, not from the room badge: reported with a
+  // screenshot of "2 NEW MESSAGES" sitting BETWEEN the two messages it was
+  // counting. Anything counted but not drawn — an expired one-time message, a
+  // message deleted for everyone, a comment the badge includes and the chat
+  // does not — made the label one too high and the line one message too low.
+  divider.textContent = UnreadJump.unreadLabel(
+    UnreadJump.unreadBelow(msgs, first.id, username));
   wrapper.parentNode.insertBefore(divider, wrapper);
   // After the images have had a moment to size themselves, or the position
   // measured now is one the layout is about to move.
@@ -4892,6 +4898,10 @@ function openCtxMenu(messageId, type, isMine, wrapperEl, msg) {
   // Decided in one place (js/messageMenu.js), so this and the app agree.
   if (!MessageMenu.canOpenMenu(msg)) return;
   ctxTarget = { messageId, type, isMine, username: msg?.username, content: msg?.content, filePath: msg?.file_path, fileName: msg?.file_name };
+  // Same reason as the viewer: have the bytes ready before Download is tapped.
+  if (msg?.file_path && type !== 'gallery' && !msg?.one_time_seconds) {
+    primeSave(msg.file_path, msg.file_name || '', '');
+  }
   const menu = document.getElementById('ctx-menu');
   document.getElementById('ctx-edit-btn').style.display = (isMine && type === 'text') ? '' : 'none';
   document.getElementById('ctx-forward-btn').style.display = (type !== 'invite' && !msg?.one_time_seconds) ? '' : 'none';
@@ -5282,16 +5292,13 @@ function ctxDownload() {
   if (ctxTarget.type === 'gallery') {
     try { paths = JSON.parse(ctxTarget.filePath); } catch {}
   }
-  paths.forEach((pth, i) => {
-    setTimeout(() => {
-      const a = document.createElement('a');
-      a.href = pth;
-      a.download = (ctxTarget?.fileName && !ctxTarget.fileName.includes(',')) ? ctxTarget.fileName : '';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-    }, i * 300);
-  });
+  // One at a time: the share sheet is modal, so firing several at once would
+  // stack sheets on top of each other and lose all but the last.
+  (async () => {
+    for (const pth of paths) {
+      await saveToDevice(pth, ctxTarget?.fileName || '', ctxTarget?.mime || '');
+    }
+  })();
   closeCtxMenu();
 }
 
@@ -5817,6 +5824,10 @@ function showLightboxAt(idx) {
     if (u) { const im = new Image(); im.src = u; }
   });
   lightboxSrc = lightboxList[lightboxIdx];
+  // Fetch it now, so Save is a tap and nothing else: the iOS share sheet —
+  // the only route to the camera roll — opens from a gesture, and awaiting a
+  // fetch inside the handler spends that gesture.
+  primeSave(lightboxSrc, '', '');
   lightboxScale = 1; lightboxX = 0; lightboxY = 0;
   document.getElementById('lightbox-img').src = lightboxSrc;
   const dlBtn = document.querySelector('.lightbox-download');
@@ -5856,17 +5867,79 @@ function lightboxZoom(delta, clientX, clientY) {
 
 function downloadLightboxImage() {
   if (oneTimeMediaUrls.has(lightboxSrc)) return; // one-time media is view-only
-  downloadUrl(lightboxSrc);
+  saveToDevice(lightboxSrc, '', '');
 }
 
-/** Save a url to disk, without navigating away from the page. */
-function downloadUrl(url) {
+/**
+ * Save something to the device.
+ *
+ * Reported: on the iOS web version, saving a photo puts it in Files, not in
+ * the gallery. `<a download>` cannot reach the camera roll on iOS — Safari
+ * ignores the attribute entirely. The system share sheet can, and it is the
+ * only thing that can, so pictures and video go through it and documents keep
+ * the plain link (Files is where a PDF belongs).
+ *
+ * The bytes are primed ahead of the tap where possible — see primeSave —
+ * because the sheet may only be opened from a user gesture, and fetching
+ * inside the handler spends it.
+ */
+async function saveToDevice(url, name, mime) {
+  const label = SaveMedia.saveName(url, name);
+  const route = SaveMedia.routeFor({
+    url, name: label, mime, canShareFiles: SaveMedia.canShareFiles(),
+  });
+  if (route === 'share') {
+    try {
+      const file = savePrimed.get(url) || await fetchAsFile(url, label, mime);
+      if (file && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file] });
+        return;
+      }
+    } catch (e) {
+      // Cancelling the sheet is not a failure and must not fall through to a
+      // download the person did not ask for.
+      if (SaveMedia.shareCancelled(e)) return;
+    }
+  }
+  downloadUrl(url, label);
+}
+
+/** The plain link: documents, desktops, and anything the sheet refused. */
+function downloadUrl(url, name) {
   const a = document.createElement('a');
   a.href = url;
-  a.download = String(url).split('/').pop() || 'image.jpg';
+  a.download = name || SaveMedia.saveName(url, '');
   document.body.appendChild(a);
   a.click();
   a.remove();
+}
+
+async function fetchAsFile(url, name, mime) {
+  const res = await fetch(url);
+  // A refusal has a body too, and sharing it would hand the person an error
+  // page named holiday.jpg. Falling through to the plain link is the honest
+  // answer — the browser will show them whatever the server said.
+  if (!res.ok) throw new Error(`fetch ${res.status}`);
+  const blob = await res.blob();
+  return new File([blob], name, { type: blob.type || mime || 'application/octet-stream' });
+}
+
+/**
+ * Fetch the bytes BEFORE the save is tapped.
+ *
+ * Safari only opens the share sheet from inside a user gesture, and an await
+ * in the handler loses it. Priming when the viewer or the menu opens means the
+ * tap itself does nothing but share a file that is already in hand.
+ */
+const savePrimed = new Map();
+function primeSave(url, name, mime) {
+  if (!url || savePrimed.has(url)) return;
+  if (!SaveMedia.canShareFiles()) return;
+  if (!SaveMedia.isGalleryMedia({ url, name, mime })) return;
+  savePrimed.set(url, null);
+  fetchAsFile(url, SaveMedia.saveName(url, name), mime)
+    .then(f => { savePrimed.set(url, f); })
+    .catch(() => { savePrimed.delete(url); });
 }
 
 /**

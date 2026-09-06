@@ -82,14 +82,28 @@ export const FAB_BASE = 148;
 export const FAB_GAP = 12;
 export const FAB_BANNER_LIFT = 66;
 export const FAB_ACTIVITY_LIFT = 26;
+/**
+ * The live-location bar, which is the same shape of mistake again.
+ *
+ * Reported with a screenshot: the go-to-newest button sitting exactly on top
+ * of that bar's Stop. Worse than the typing line, because the control being
+ * covered is the one that ends a broadcast of where you are — the tap that
+ * looks like Stop scrolls the chat instead, and the sharing carries on.
+ *
+ * Its own height plus the gap: one row of text at 8px padding top and bottom.
+ */
+export const FAB_LIVE_LIFT = 38;
 
 export function fabBottom(o: {
   /** A reply or edit banner is above the composer. */
   banner?: boolean;
   /** Somebody is typing or recording, which draws its own line. */
   activity?: boolean;
+  /** A live location is being shared, which draws its own bar with Stop on it. */
+  liveBar?: boolean;
 }): number {
   return FAB_BASE
     + (o?.banner ? FAB_BANNER_LIFT : 0)
-    + (o?.activity ? FAB_ACTIVITY_LIFT : 0);
+    + (o?.activity ? FAB_ACTIVITY_LIFT : 0)
+    + (o?.liveBar ? FAB_LIVE_LIFT : 0);
 }

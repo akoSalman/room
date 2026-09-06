@@ -234,9 +234,50 @@
       }
 
       if (stopped || paused || offset < total) return;
-      var fin = await window.api('/upload/session/' + sessionId + '/finish', 'POST');
-      if (!fin || fin.error || !fin.url) throw new Error((fin && fin.error) || 'Could not finish upload');
+
+      // The last request, and the one that used to hang forever: every byte
+      // has arrived, and this is what turns the pieces into a file. It had no
+      // timeout on it, so a connection that changed hands mid-request left the
+      // bar sitting at 100% with nothing below it that would ever fire.
+      //
+      // Retried, which is only safe because the server answers a repeat finish
+      // with the result it already produced rather than "no such upload".
+      var fin = null;
+      for (var fa = 0; fa <= MAX_ATTEMPTS; fa++) {
+        if (stopped || paused) return;
+        fin = await finishOnce(sessionId);
+        if (fin && fin.url) break;
+        if (!shouldRetry(fa, fin && fin.status)) break;
+        await sleep(retryDelay(fa));
+      }
+      if (!fin || !fin.url) throw new Error((fin && fin.error) || 'Could not finish upload');
       cb.onDone(fin);
+    }
+
+    /** One attempt at the finish, with a deadline on it. */
+    async function finishOnce(id) {
+      var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      var killer = setTimeout(function () { try { ctl && ctl.abort(); } catch (e) {} },
+        UploadTuning.FINISH_TIMEOUT_MS);
+      try {
+        // A relative path, like every other request the page makes; and
+        // fetch directly rather than through window.api(), which has no
+        // deadline — a deadline is the entire point of this function.
+        var r = await fetch('/upload/session/' + id + '/finish', {
+          method: 'POST',
+          headers: headers({ 'Content-Type': 'application/json' }),
+          signal: ctl ? ctl.signal : undefined,
+        });
+        var j = {};
+        try { j = await r.json(); } catch (e) {}
+        if (r.ok && j && j.url) return j;
+        return { status: r.status, error: j && j.error };
+      } catch (e) {
+        // Aborted by the deadline, or the network went away: both retryable.
+        return { status: 0 };
+      } finally {
+        clearTimeout(killer);
+      }
     }
 
     start();

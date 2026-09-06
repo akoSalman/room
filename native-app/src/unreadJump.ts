@@ -60,3 +60,41 @@ export function unreadLabel(count: number): string {
   if (n <= 0) return '';
   return n === 1 ? '1 new message' : `${n} new messages`;
 }
+
+/**
+ * How many unread messages the divider is actually standing above.
+ *
+ * Reported with a screenshot: the line said "2 NEW MESSAGES" and sat BETWEEN
+ * the two messages it was counting — one above it, one below. A divider that
+ * contradicts its own label is worse than no divider, because the reader
+ * cannot tell which of the two answers to believe.
+ *
+ * It happened because the count and the position came from two different
+ * lists: the count from every message newer than the read mark, the position
+ * from the list actually on screen — which is not the same list once expired
+ * one-time and disappearing messages have been dropped from it, or once a
+ * message has been deleted for everyone. Anything counted but not drawn shows
+ * up as a label one too high, and the line lands one message too low.
+ *
+ * So the label is counted from the ANCHOR down, over the same messages that
+ * are rendered: whatever number this returns, that many rows follow the line.
+ */
+export function unreadBelow(
+  messages: Msg[] | null | undefined,
+  anchorId: number | string | null | undefined,
+  me: string | null | undefined,
+): number {
+  // null is Number 0, and an anchor of 0 would count the whole chat as new —
+  // a label of "148 new messages" over a line at the top of the screen.
+  if (anchorId === null || anchorId === undefined || anchorId === '') return 0;
+  const anchor = Number(anchorId);
+  if (!Number.isFinite(anchor)) return 0;
+  let n = 0;
+  for (const m of messages || []) {
+    const id = Number(m?.id);
+    if (!Number.isFinite(id) || id < anchor) continue;
+    if (me && m.username === me) continue;
+    n++;
+  }
+  return n;
+}

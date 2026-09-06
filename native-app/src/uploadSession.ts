@@ -367,3 +367,31 @@ export function statusLine(o: {
   const eta = formatEta(etaSeconds(o.sent, o.total, o.bytesPerSec));
   return `${size} · ${formatBytes(o.bytesPerSec)}/s${eta ? ` · ${eta}` : ''}`;
 }
+
+// ── Finishing ────────────────────────────────────────────────────────────────
+
+/**
+ * How long to wait for the finish request before assuming it is never coming.
+ *
+ * Reported as: the upload hangs at the final stage and the app has to be
+ * closed and the file sent again. Every byte had arrived — the bar sat at
+ * 100% — and the ONE request that turns the pieces into a file had no timeout
+ * on it at all. A request that never settles on a mobile network is not rare;
+ * it is what happens whenever the connection changes hands between towers, and
+ * nothing below it will ever fire.
+ *
+ * Longer than a chunk's timeout, because the server is doing real work here
+ * (a rename, and on some filesystems a copy), but not open-ended.
+ */
+export const FINISH_TIMEOUT_MS = 45000;
+
+/**
+ * Is a failed finish worth another go?
+ *
+ * The same rules as a chunk, and safe for the same reason a chunk is: the
+ * server answers a repeat finish with the result it already produced, so a
+ * retry after a lost reply returns the file rather than "no such upload".
+ */
+export function shouldRetryFinish(attempt: number, status?: number): boolean {
+  return shouldRetry(attempt, status);
+}

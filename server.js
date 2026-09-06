@@ -2059,6 +2059,17 @@ try { fs.mkdirSync(PARTIAL_DIR, { recursive: true }); } catch {}
 
 const partPath = id => path.join(PARTIAL_DIR, `${id}.part`);
 const metaPath = id => path.join(PARTIAL_DIR, `${id}.json`);
+/**
+ * What a finished session turned into, kept so that finishing is IDEMPOTENT.
+ *
+ * Reported as: the upload sometimes hangs at the final stage and the app has
+ * to be closed and the file sent again. The clients now time the finish
+ * request out and retry it — which is only safe if a second finish for a
+ * session that already completed gives the same answer instead of "no such
+ * upload". Without this, an upload whose reply was lost on the way back would
+ * be reported as failed after the file had actually arrived.
+ */
+const donePath = id => path.join(PARTIAL_DIR, `${id}.done`);
 
 /**
  * Look up a session, or answer the request with why not.
@@ -2152,6 +2163,18 @@ function chunkHandler() {
 
 // All bytes in: turn the partial into a real upload.
 app.post('/upload/session/:id/finish', authMiddleware, (req, res) => {
+  // Already finished, and this is a retry of a reply that never arrived.
+  // Answered before openSession, which would say "no such upload" — the meta
+  // is gone precisely BECAUSE this worked.
+  const rawId = String(req.params.id || '');
+  if (/^[a-f0-9]{32}$/.test(rawId)) {
+    try {
+      const done = JSON.parse(fs.readFileSync(donePath(rawId), 'utf8'));
+      if (done && done.userId === req.user.id && done.url) {
+        return res.json({ url: done.url, name: done.name, mimetype: done.mimetype });
+      }
+    } catch {}
+  }
   const s = openSession(req, res);
   if (!s) return;
   if (s.offset !== s.meta.size) {
@@ -2165,6 +2188,17 @@ app.post('/upload/session/:id/finish', authMiddleware, (req, res) => {
   } catch {
     return res.status(500).json({ error: 'Could not finish upload' });
   }
+  // Written AFTER the rename and before replying, so a retry that overtakes a
+  // lost reply finds the same answer. Swept by the reaper with the partials.
+  try {
+    fs.writeFileSync(donePath(s.id), JSON.stringify({
+      userId: req.user.id,
+      url: '/uploads/' + filename,
+      name: s.meta.name,
+      mimetype: s.meta.mime,
+      at: Date.now(),
+    }));
+  } catch {}
   // Deliberately the same shape as POST /upload, so the two paths are
   // interchangeable to everything downstream.
   res.json({ url: '/uploads/' + filename, name: s.meta.name, mimetype: s.meta.mime });

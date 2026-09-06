@@ -201,6 +201,82 @@ test('the app was deliberately left alone, and says so', () => {
   assert.ok(/chunkBytes = CHUNK_BYTES/.test(chunked), 'the app quietly changed its chunk size too');
 });
 
+// ── The last request ────────────────────────────────────────────────────────
+//
+// Reported: "sometimes on apk the upload progress hangs on the final stage and
+// does not go ahead, i should close app and try again sending". Every byte had
+// arrived — the bar sat at 100% — and the one request that turns the pieces
+// into a file had no deadline and no retry on either client. A request that
+// never settles is routine on a mobile network; nothing below it ever fires.
+
+test('THE BUG: the finish request has a deadline at all', () => {
+  assert.ok(W.FINISH_TIMEOUT_MS > 0, 'the finish can still hang forever');
+  // Longer than a chunk's floor, because the server does real work here (a
+  // rename, and on some filesystems a copy), but not open-ended.
+  assert.ok(W.FINISH_TIMEOUT_MS >= W.STALL_FLOOR_MS,
+    `${W.FINISH_TIMEOUT_MS}ms is shorter than a chunk's own floor`);
+  assert.ok(W.FINISH_TIMEOUT_MS <= 120000, 'the deadline is long enough to feel like no deadline');
+  if (A) assert.strictEqual(W.FINISH_TIMEOUT_MS, A.FINISH_TIMEOUT_MS,
+    'the app and the web wait for different lengths of time');
+});
+
+test('the app retries the finish, and only where retrying is safe', () => {
+  if (!A) return;
+  // Same rules as a chunk: a network failure is what retrying is for, a
+  // refusal is not.
+  assert.strictEqual(A.shouldRetryFinish(0, 0), true, 'a lost reply is given up on');
+  assert.strictEqual(A.shouldRetryFinish(0, undefined), true);
+  assert.strictEqual(A.shouldRetryFinish(0, 500), true);
+  assert.strictEqual(A.shouldRetryFinish(0, 400), false, 'a refusal is retried forever');
+  assert.strictEqual(A.shouldRetryFinish(A.MAX_ATTEMPTS, 0), false, 'the retries never stop');
+});
+
+// ── The wiring ──────────────────────────────────────────────────────────────
+
+const REPO = path.join(__dirname, '..');
+const chunked = fs.readFileSync(
+  path.join(REPO, 'native-app', 'src', 'chunkedUpload.ts'), 'utf8');
+const resumable = fs.readFileSync(path.join(REPO, 'public', 'js', 'resumable.js'), 'utf8');
+
+test('THE BUG: the app finally puts a deadline on each CHUNK too', () => {
+  // stallTimeoutMs existed, was tested, and was used by the web — and the app
+  // never called it. `ontimeout` was handled and could not fire, because
+  // nothing set a timeout.
+  assert.ok(/xhr\.timeout = timeoutMs/.test(chunked), 'an app chunk can still hang forever');
+  assert.ok(/stallTimeoutMs\(range\.end - range\.start, rate\)/.test(chunked),
+    'the deadline is a fixed guess rather than measured from this connection');
+  assert.ok(/rate = \(\(range\.end - range\.start\) \/ took\) \* 1000/.test(chunked),
+    'the rate is never measured, so the deadline can only ever be the floor');
+});
+
+test('both clients retry the finish behind a deadline', () => {
+  for (const [src, who] of [[chunked, 'the app'], [resumable, 'the web']]) {
+    assert.ok(/FINISH_TIMEOUT_MS/.test(src), `${who} waits forever for the finish`);
+    assert.ok(/AbortController/.test(src), `${who} has no way to give up on it`);
+    assert.ok(/finishOnce\(/.test(src), `${who} does not retry the finish`);
+  }
+  // The app's loop, specifically: it must stop on a refusal and on pause.
+  const loop = chunked.slice(chunked.indexOf('let last:'), chunked.indexOf('/** One attempt at the finish'));
+  assert.ok(/if \(stopped \|\| paused\) return;/.test(loop), 'cancelling mid-retry keeps retrying');
+  assert.ok(/if \(!shouldRetryFinish\(fa, last\.status\)\) break;/.test(loop),
+    'a refusal is retried until the attempts run out');
+  assert.ok(/if \(last\.url\) \{ cb\.onDone/.test(loop), 'a successful finish is not reported');
+});
+
+test('the server makes that retry safe', () => {
+  const server = fs.readFileSync(path.join(REPO, 'server.js'), 'utf8');
+  const fin = server.slice(server.indexOf("app.post('/upload/session/:id/finish'"),
+    server.indexOf("app.delete('/upload/session/:id'"));
+  assert.ok(/donePath\(rawId\)/.test(fin),
+    'a repeated finish is answered with "no such upload", so a retry loses a file that arrived');
+  assert.ok(/done\.userId === req\.user\.id/.test(fin),
+    'knowing a session id is enough to be handed somebody else\'s upload');
+  // Written before the reply, or a retry that overtakes it finds nothing.
+  const wrote = fin.indexOf('fs.writeFileSync(donePath(s.id)');
+  const replied = fin.indexOf("res.json({ url: '/uploads/' + filename");
+  assert.ok(wrote > -1 && replied > wrote, 'the record is written after the reply it protects');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

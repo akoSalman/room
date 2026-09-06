@@ -185,6 +185,92 @@ test('the badge is set from the SERVER\'s answer, not from an assumption', () =>
   assert.ok(/if \(!res \|\| !res\.ok\)/.test(nat), 'a failure is treated as a success');
 });
 
+// ── The label and the line have to agree ────────────────────────────────────
+//
+// Reported with a screenshot: "2 NEW MESSAGES" written on a line sitting
+// BETWEEN the two messages it was counting — one above, one below. A divider
+// that contradicts its own position is worse than none: the reader cannot tell
+// which of the two answers is the truth.
+
+test('THE BUG: the label counts what is below the line, not what a badge said', () => {
+  const msgs = [
+    { id: 10, username: 'ako' },
+    { id: 11, username: 'soran' },
+    { id: 12, username: 'soran' },
+  ];
+  // The reader had got to 11, so only 12 is new — whatever any other count
+  // says. One message below the line, and the line says one.
+  const first = W.firstUnread(msgs, 11, 'ako');
+  assert.strictEqual(Number(first.id), 12);
+  assert.strictEqual(W.unreadBelow(msgs, first.id, 'ako'), 1);
+  assert.strictEqual(W.unreadLabel(W.unreadBelow(msgs, first.id, 'ako')), '1 new message');
+});
+
+test('two below the line say two', () => {
+  const msgs = [
+    { id: 10, username: 'ako' },
+    { id: 11, username: 'soran' },
+    { id: 12, username: 'soran' },
+  ];
+  const first = W.firstUnread(msgs, 10, 'ako');
+  assert.strictEqual(Number(first.id), 11);
+  assert.strictEqual(W.unreadBelow(msgs, first.id, 'ako'), 2);
+});
+
+test('my own replies underneath are not new messages to me', () => {
+  const msgs = [
+    { id: 11, username: 'soran' },
+    { id: 12, username: 'ako' },
+    { id: 13, username: 'soran' },
+  ];
+  assert.strictEqual(W.unreadBelow(msgs, 11, 'ako'), 2, 'the reader\'s own message was counted');
+});
+
+test('anything counted but NOT DRAWN cannot inflate the label', () => {
+  // This is the bug's actual mechanism: the count came from every message
+  // newer than the mark, the line from the list on screen — and those differ
+  // once expired one-time messages, disappearing messages and messages
+  // deleted for everyone have been dropped from it.
+  const onScreen = [{ id: 11, username: 'soran' }, { id: 14, username: 'soran' }];
+  assert.strictEqual(W.unreadBelow(onScreen, 11, 'ako'), 2,
+    'the label counts messages that are not in the list');
+});
+
+test('an anchor that is not in the list counts nothing rather than everything', () => {
+  const msgs = [{ id: 11, username: 'soran' }];
+  assert.strictEqual(W.unreadBelow(msgs, null, 'ako'), 0);
+  assert.strictEqual(W.unreadBelow(msgs, undefined, 'ako'), 0);
+  assert.strictEqual(W.unreadBelow(null, 11, 'ako'), 0);
+});
+
+test('the app and the web count the same way', () => {
+  if (!A) return;
+  const msgs = [
+    { id: 10, username: 'ako' }, { id: 11, username: 'soran' },
+    { id: 12, username: 'ako' }, { id: 13, username: 'soran' },
+  ];
+  let checked = 0;
+  for (const anchor of [10, 11, 12, 13, 99, null]) {
+    assert.strictEqual(W.unreadBelow(msgs, anchor, 'ako'), A.unreadBelow(msgs, anchor, 'ako'),
+      `unreadBelow diverges at ${anchor}`);
+    checked++;
+  }
+  assert.strictEqual(checked, 6, 'the drift check did not actually run');
+});
+
+test('both clients label the divider from that count', () => {
+  const ROOT = path.join(__dirname, '..');
+  const app = fs.readFileSync(path.join(ROOT, 'public', 'js', 'app.js'), 'utf8');
+  const chat = fs.readFileSync(
+    path.join(ROOT, 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  const fn = app.slice(app.indexOf('function showUnreadFrom('),
+    app.indexOf('function showUnreadFrom(') + 1400);
+  assert.ok(/UnreadJump\.unreadBelow\(msgs, first\.id, username\)/.test(fn),
+    'the web still labels the line with the room badge');
+  assert.ok(/unreadCountOnEntry\.current = unreadBelow\(msgs, target\.id/.test(chat),
+    'the app still labels the line with a count taken from somewhere else');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

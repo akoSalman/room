@@ -30,7 +30,15 @@
     return Math.max(f, Math.round(expected * 3));
   }
 
+  /**
+   * How long to wait for the finish request before assuming it is never
+   * coming. Reported as an upload that hangs at the final stage — see
+   * native-app/src/uploadSession.ts for the whole story.
+   */
+  var FINISH_TIMEOUT_MS = 45000;
+
   global.UploadTuning = {
+    FINISH_TIMEOUT_MS: FINISH_TIMEOUT_MS,
     CHUNK_BYTES: CHUNK_BYTES,
     CHUNK_MIN: CHUNK_MIN,
     CHUNK_MAX: CHUNK_MAX,

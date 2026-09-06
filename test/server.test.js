@@ -2344,6 +2344,54 @@ test('a file sent in chunks arrives byte-for-byte identical', async () => {
   assert.ok(got.equals(data), 'the reassembled file does not match what was sent');
 });
 
+test('THE BUG: finishing twice returns the same file, not "no such upload"', async () => {
+  // Reported as: the upload hangs at the final stage and the app has to be
+  // closed and the file sent again. Every byte had arrived and the ONE request
+  // that turns the pieces into a file had no timeout on it, so a connection
+  // that changed hands there left the bar at 100% forever.
+  //
+  // Both clients now time that request out and retry it — which is only safe
+  // if the server answers a repeat with the result it already produced. The
+  // session's meta is deleted by a successful finish, so without this the
+  // retry would report a failure for a file that had actually arrived.
+  const u = await signUp('upfinish1');
+  const data = require('crypto').randomBytes(1500);
+  const open = await api('/upload/session', 'POST',
+    { name: 'twice.bin', size: data.length, mime: 'application/octet-stream' }, u.token);
+  assert.ok(open.id, `no session: ${JSON.stringify(open)}`);
+  const r = await patchChunk(open.id, 0, data, u.token);
+  assert.strictEqual(r.status, 200);
+
+  const first = await api(`/upload/session/${open.id}/finish`, 'POST', null, u.token);
+  assert.ok(first.url, `finish failed: ${JSON.stringify(first)}`);
+
+  const again = await api(`/upload/session/${open.id}/finish`, 'POST', null, u.token);
+  assert.strictEqual(again.url, first.url,
+    `the retry did not get the same file: ${JSON.stringify(again)}`);
+  assert.strictEqual(again.name, first.name);
+  assert.strictEqual(again.mimetype, first.mimetype);
+  // …and it is still the file that was sent, not a second empty one.
+  const name = first.url.replace('/uploads/', '');
+  const res = await fetch(baseUrl + first.url + signUpload(name));
+  const got = Buffer.from(await res.arrayBuffer());
+  assert.ok(got.equals(data), 'the file changed under a repeated finish');
+});
+
+test('SECURITY: somebody else\'s finished upload is not handed out by id', async () => {
+  // The record that makes a retry safe must not become a way to read a file
+  // belonging to another account by guessing a session id.
+  const a = await signUp('upfinish2');
+  const b = await signUp('upfinish3');
+  const data = require('crypto').randomBytes(600);
+  const open = await api('/upload/session', 'POST',
+    { name: 'mine.bin', size: data.length }, a.token);
+  await patchChunk(open.id, 0, data, a.token);
+  const first = await api(`/upload/session/${open.id}/finish`, 'POST', null, a.token);
+  assert.ok(first.url);
+  const stolen = await api(`/upload/session/${open.id}/finish`, 'POST', null, b.token);
+  assert.ok(!stolen.url, `another account was given the file: ${JSON.stringify(stolen)}`);
+});
+
 test('THE ONE THAT CORRUPTS FILES: a chunk at the wrong offset is refused', async () => {
   // A client that lost track and carried on from its own count would punch a
   // hole in the middle of the file. The server refuses and says where it

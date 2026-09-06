@@ -19,6 +19,7 @@ import * as FileSystem from 'expo-file-system';
 import {
   CHUNK_BYTES, chunkRange, resumeOffset, isComplete,
   shouldRetry, retryDelay, MAX_UPLOAD_BYTES,
+  stallTimeoutMs, FINISH_TIMEOUT_MS, shouldRetryFinish, MAX_ATTEMPTS,
 } from './uploadSession';
 
 export type UploadHandle = {
@@ -81,9 +82,16 @@ function sendChunk(
   url: string, token: string, at: number, body: any, base64: boolean,
   onXhr: (x: XMLHttpRequest) => void,
   onBytes?: (loaded: number) => void,
+  timeoutMs?: number,
 ): Promise<ChunkResult> {
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
+    // A deadline, at last. `ontimeout` was handled below all along and could
+    // never fire, because nothing ever set one — so a request that stopped
+    // making progress (a connection changing hands between towers, which on
+    // these networks is routine) left the upload parked forever with the bar
+    // frozen. The web upload has had this from the start; the app never did.
+    if (timeoutMs && timeoutMs > 0) xhr.timeout = timeoutMs;
     // POST, not PATCH: there is no semantic need for PATCH here, and PATCH
     // with a body is the least well-trodden path through a reverse proxy or a
     // middlebox. The server accepts both.
@@ -149,6 +157,8 @@ export function uploadResumable(
   let inFlight: XMLHttpRequest | null = null;
   let reader: Reader | null = null;
   let timer: any = null;
+  /** Bytes per second, from the chunks that have landed — feeds the deadline. */
+  let rate = 0;
   // Resolves the backoff sleep early. Without it, pausing during the wait
   // between two retries left the loop parked on a promise nobody would ever
   // settle — `running` stayed true, and resume did nothing at all.
@@ -210,14 +220,20 @@ export function uploadResumable(
       if (!range) break;
       const { body, base64 } = await reader!(range.start, range.end);
       if (stopped || paused) return;
+      const startedAt = Date.now();
       const res = await sendChunk(
         api(`/upload/session/${sessionId}`), token, range.start, body, base64,
         (x) => { inFlight = x; },
-        (loaded) => cb.onProgress(range.start + loaded, total));
+        (loaded) => cb.onProgress(range.start + loaded, total),
+        // Generous, and measured from what this connection has actually
+        // managed so far, so a slow link is not mistaken for a dead one.
+        stallTimeoutMs(range.end - range.start, rate));
       inFlight = null;
 
       if (res.ok) {
         attempt = 0;
+        const took = Date.now() - startedAt;
+        if (took > 0) rate = ((range.end - range.start) / took) * 1000;
         offset = res.offset ?? offset;
         cb.onProgress(offset, total);
         continue;
@@ -239,10 +255,43 @@ export function uploadResumable(
 
     if (stopped || paused || !isComplete(offset, total)) return;
 
-    const r = await fetch(api(`/upload/session/${sessionId}/finish`), { method: 'POST', ...authed() });
-    const j = await r.json();
-    if (!r.ok || !j.url) throw new Error(j.error || 'Could not finish upload');
-    cb.onDone(j);
+    // The last request, and the one that used to hang: reported as the upload
+    // stopping at the final stage, needing the app closed and the file sent
+    // again. Every byte had arrived — the bar sat at 100% — and this one call
+    // had no deadline and no retry, so a connection that changed hands here
+    // left it waiting forever.
+    //
+    // Retrying is safe because the server answers a repeat finish with the
+    // result it already produced, rather than "no such upload".
+    let last: { url?: string; error?: string; status?: number } | null = null;
+    for (let fa = 0; fa <= MAX_ATTEMPTS; fa++) {
+      if (stopped || paused) return;
+      last = await finishOnce();
+      if (last.url) { cb.onDone(last as any); return; }
+      if (!shouldRetryFinish(fa, last.status)) break;
+      await sleep(retryDelay(fa));
+    }
+    throw new Error(last?.error || 'Could not finish upload');
+  }
+
+  /** One attempt at the finish, with a deadline on it. */
+  async function finishOnce(): Promise<{ url?: string; name?: string; mimetype?: string; error?: string; status?: number }> {
+    const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const killer = setTimeout(() => { try { ctl?.abort(); } catch {} }, FINISH_TIMEOUT_MS);
+    try {
+      const r = await fetch(api(`/upload/session/${sessionId}/finish`), {
+        method: 'POST', ...authed(), signal: ctl?.signal as any,
+      });
+      let j: any = {};
+      try { j = await r.json(); } catch {}
+      if (r.ok && j?.url) return j;
+      return { status: r.status, error: j?.error };
+    } catch {
+      // The deadline, or the network going away: both worth another go.
+      return { status: 0 };
+    } finally {
+      clearTimeout(killer);
+    }
   }
 
   start();

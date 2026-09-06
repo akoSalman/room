@@ -131,7 +131,7 @@ import {
   noteComment, clearFor, countFor, chooseJump, jumpLabel,
   badgeLabel as commentBadgeLabel, jumpArrow, Jump,
 } from '../commentUnread';
-import { firstUnread, worthJumping, unreadLabel } from '../unreadJump';
+import { firstUnread, worthJumping, unreadLabel, unreadBelow } from '../unreadJump';
 
 type Message = {
   id: number | string; room_id: number; user_id: number; username: string; avatar?: string | null;
@@ -1501,7 +1501,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         const waiting = msgs.filter((m: any) =>
           Number(m.id) > lastRead && m.username !== (u || '')).length;
         if (target && worthJumping(waiting)) {
-          unreadCountOnEntry.current = waiting;
+          // Counted from the divider DOWN, over the messages actually in the
+          // list: reported with a screenshot of "2 NEW MESSAGES" sitting
+          // between the two messages it was counting.
+          unreadCountOnEntry.current = unreadBelow(msgs, target.id, u || '');
           setUnreadFrom(Number(target.id));
           setTimeout(() => jumpToMessage(Number(target.id)), 350);
         } else {
@@ -4983,6 +4986,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
           style={[s.mentionFab, { bottom: fabBottom({
             banner: !!(replyTo || editingId),
             activity: someoneIsBusy,
+            // Reported with a screenshot: this button sitting on the live
+            // bar's Stop, so the tap that looks like Stop scrolled the chat
+            // and the location kept broadcasting.
+            liveBar: !!liveShare,
           }) + 52 }]}
           onPress={() => {
             const [next, ...rest] = mentionIds;
@@ -5009,6 +5016,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
           style={[s.commentJump, { bottom: fabBottom({
             banner: !!(replyTo || editingId),
             activity: someoneIsBusy,
+            // Reported with a screenshot: this button sitting on the live
+            // bar's Stop, so the tap that looks like Stop scrolled the chat
+            // and the location kept broadcasting.
+            liveBar: !!liveShare,
           }) - 60 }]}
           onPress={goToUnreadComments}
           accessibilityLabel={`${jumpLabel(commentJump)}, ${commentJump.dir === 'up' ? 'above' : 'below'}`}
@@ -5031,6 +5042,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
           style={[s.scrollFab, { bottom: fabBottom({
             banner: !!(replyTo || editingId),
             activity: someoneIsBusy,
+            // Reported with a screenshot: this button sitting on the live
+            // bar's Stop, so the tap that looks like Stop scrolled the chat
+            // and the location kept broadcasting.
+            liveBar: !!liveShare,
           }) }]}
           onPress={handleScrollFabPress}
         >

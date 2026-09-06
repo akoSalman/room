@@ -21,6 +21,23 @@
     return null;
   }
 
+
+  function unreadBelow(messages, anchorId, me) {
+    if (anchorId === null || anchorId === undefined || anchorId === '') return 0;
+    var anchor = Number(anchorId);
+    if (!isFinite(anchor)) return 0;
+    var list = messages || [];
+    var n = 0;
+    for (var i = 0; i < list.length; i++) {
+      var m = list[i];
+      var id = Number(m && m.id);
+      if (!isFinite(id) || id < anchor) continue;
+      if (me && m.username === me) continue;
+      n++;
+    }
+    return n;
+  }
+
   function worthJumping(unreadCount) {
     return (Number(unreadCount) || 0) >= JUMP_MIN;
   }
@@ -34,6 +51,7 @@
   global.UnreadJump = {
     JUMP_MIN: JUMP_MIN,
     firstUnread: firstUnread,
+    unreadBelow: unreadBelow,
     worthJumping: worthJumping,
     unreadLabel: unreadLabel,
   };

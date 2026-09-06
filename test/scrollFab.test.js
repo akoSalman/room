@@ -199,6 +199,59 @@ test('the web measures where the conversation actually ends', () => {
     'scrollFab.js is never loaded, so ScrollFab is undefined and every scroll throws');
 });
 
+// ── The live-location bar ───────────────────────────────────────────────────
+//
+// Reported with a screenshot: the go-to-newest button sitting exactly on top
+// of the live bar's Stop. Worse than the typing line it was lifted over
+// before, because the control being covered is the one that ends a broadcast
+// of where you are — the tap that looks like Stop scrolls the chat instead,
+// and the sharing carries on.
+
+test('THE BUG: the button clears the live-location bar', () => {
+  const plain = F.fabBottom({});
+  const lifted = F.fabBottom({ liveBar: true });
+  assert.ok(lifted > plain, 'the button still sits on the bar');
+  assert.ok(lifted - plain >= 34,
+    `lifted by only ${lifted - plain}px — the bar is a row of text with padding`);
+});
+
+test('the lifts stack, because the things they clear do', () => {
+  const both = F.fabBottom({ liveBar: true, activity: true, banner: true });
+  assert.strictEqual(both,
+    F.FAB_BASE + F.FAB_BANNER_LIFT + F.FAB_ACTIVITY_LIFT + F.FAB_LIVE_LIFT);
+});
+
+test('nothing is lifted when the bar is not there', () => {
+  assert.strictEqual(F.fabBottom({ liveBar: false }), F.FAB_BASE);
+});
+
+test('the app and the web lift by the same amount', () => {
+  let checked = 0;
+  for (const banner of [true, false]) {
+    for (const activity of [true, false]) {
+      for (const liveBar of [true, false]) {
+        assert.strictEqual(W.fabBottom({ banner, activity, liveBar }),
+          F.fabBottom({ banner, activity, liveBar }),
+          `fabBottom diverges for ${banner}/${activity}/${liveBar}`);
+        checked++;
+      }
+    }
+  }
+  assert.strictEqual(W.FAB_LIVE_LIFT, F.FAB_LIVE_LIFT);
+  assert.strictEqual(checked, 8, 'the drift check did not actually run');
+});
+
+test('every floating control in the app is lifted, not just one of them', () => {
+  const ROOT = path.join(__dirname, '..');
+  const chat = fs.readFileSync(
+    path.join(ROOT, 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  const calls = (chat.match(/fabBottom\(\{/g) || []).length;
+  const lifted = (chat.match(/liveBar: !!liveShare/g) || []).length;
+  assert.ok(calls > 0, 'fabBottom is no longer used');
+  assert.strictEqual(lifted, calls,
+    `${calls} floating controls, ${lifted} of them clear of the live bar`);
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  \u2713 ${n}`); passed++; }

@@ -10,6 +10,7 @@
   var FAB_GAP = 12;
   var FAB_BANNER_LIFT = 66;
   var FAB_ACTIVITY_LIFT = 26;
+  var FAB_LIVE_LIFT = 38;
 
   function atPresent(o) { return !!(o && o.atEndOfWindow && !o.hasNewer); }
 
@@ -23,7 +24,8 @@
   function fabBottom(o) {
     return FAB_BASE
       + (o && o.banner ? FAB_BANNER_LIFT : 0)
-      + (o && o.activity ? FAB_ACTIVITY_LIFT : 0);
+      + (o && o.activity ? FAB_ACTIVITY_LIFT : 0)
+      + (o && o.liveBar ? FAB_LIVE_LIFT : 0);
   }
 
   global.ScrollFab = {
@@ -31,6 +33,7 @@
     FAB_GAP: FAB_GAP,
     FAB_BANNER_LIFT: FAB_BANNER_LIFT,
     FAB_ACTIVITY_LIFT: FAB_ACTIVITY_LIFT,
+    FAB_LIVE_LIFT: FAB_LIVE_LIFT,
     atPresent: atPresent,
     fabMode: fabMode,
     clearsUnseenOnTap: clearsUnseenOnTap,
