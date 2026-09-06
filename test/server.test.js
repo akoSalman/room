@@ -1147,6 +1147,69 @@ test('disappearing messages: announced, applied to BOTH sides, and swept', async
     'a message sent after switching off still expires');
 });
 
+test('either side can turn one-time messages off for BOTH of them', async () => {
+  // Asked for: each side of a chat can turn one-time and disappearing messages
+  // off for both sides. Disappearing was already mutual. One-time was not — it
+  // is chosen by whoever SENDS, so the person receiving messages that burn
+  // after reading had no say at all.
+  const a = await signUp('otswitcha');
+  const b = await signUp('otswitchb');
+  const room = await api('/rooms', 'POST', { name: 'onetime-room' }, a.token);
+  const sa = await connect(a.token);
+  const sb = await connect(b.token);
+  await emit(sb, 'accept_invite', { roomId: room.id });
+
+  // On by default, and a one-time message goes through.
+  assert.strictEqual((await api(`/room-settings/${room.id}`, 'GET', null, b.token)).oneTimeAllowed, true);
+  await emit(sa, 'send_message', { roomId: room.id, type: 'text', content: 'burn me', oneTimeSeconds: 10 });
+  await new Promise(r => setTimeout(r, 150));
+
+  // The RECIPIENT switches them off — not the room owner, not the sender.
+  const announced = waitFor(sa, 'message_received',
+    m => m.type === 'system' && JSON.parse(m.content || '{}').kind === 'one_time_off');
+  const changed = waitFor(sa, 'one_time_allowed_changed', e => String(e.roomId) === String(room.id));
+  const off = await emit(sb, 'set_one_time_allowed', { roomId: room.id, allowed: false });
+  assert.ok(off.ok, `the other side could not switch it off: ${JSON.stringify(off)}`);
+  assert.strictEqual(off.allowed, false);
+  assert.strictEqual(JSON.parse((await announced).content).username, 'otswitchb',
+    'switching it off was not announced in the chat');
+  assert.strictEqual((await changed).allowed, false, 'the other side was never told');
+
+  // And now the SENDER cannot send one, whatever their client offers.
+  const refused = await emit(sa, 'send_message',
+    { roomId: room.id, type: 'text', content: 'burn me too', oneTimeSeconds: 10 });
+  assert.ok(refused && refused.error, 'a one-time message went through after being turned off');
+
+  // An ordinary message is unaffected.
+  const ok = await emit(sa, 'send_message', { roomId: room.id, type: 'text', content: 'plain' });
+  assert.ok(!ok.error, `ordinary messages were blocked too: ${JSON.stringify(ok)}`);
+  await new Promise(r => setTimeout(r, 150));
+  const stored = (await api(`/messages/${room.id}`, 'GET', null, b.token));
+  assert.ok(stored.find(m => m.content === 'plain'));
+  assert.ok(!stored.find(m => m.content === 'burn me too'), 'the refused message was stored anyway');
+
+  // Either side can turn it back on again — this is a switch, not a one-way door.
+  const back = await emit(sa, 'set_one_time_allowed', { roomId: room.id, allowed: true });
+  assert.strictEqual(back.allowed, true);
+  assert.strictEqual((await api(`/room-settings/${room.id}`, 'GET', null, b.token)).oneTimeAllowed, true);
+  const again = await emit(sa, 'send_message',
+    { roomId: room.id, type: 'text', content: 'burn again', oneTimeSeconds: 10 });
+  assert.ok(!again.error, 'one-time messages stayed blocked after being allowed again');
+});
+
+test('a stranger cannot change either setting for a chat they are not in', async () => {
+  // The switch is deliberately open to every MEMBER; that is not the same as
+  // open to anyone who knows the room id.
+  const a = await signUp('otowner');
+  const c = await signUp('otstranger');
+  const room = await api('/rooms', 'POST', { name: 'ot-private', isPrivate: true }, a.token);
+  const sc = await connect(c.token);
+  const r1 = await emit(sc, 'set_one_time_allowed', { roomId: room.id, allowed: false });
+  assert.ok(r1 && r1.error, 'an outsider switched one-time messages off');
+  const r2 = await emit(sc, 'set_disappearing', { roomId: room.id, seconds: 30 });
+  assert.ok(r2 && r2.error, 'an outsider switched disappearing messages on');
+});
+
 test('THE BUG: an expired message is destroyed at its deadline, not up to 30s later', async () => {
   // Reported as: disappearing messages do not disappear exactly after the set
   // time. The sweep ran every thirty seconds, so a thirty-second timer could

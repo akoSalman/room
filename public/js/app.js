@@ -865,6 +865,14 @@ function connectSocket() {
       const sheet = document.getElementById('fire-modal');
       if (sheet && !sheet.classList.contains('hidden')) renderFireSheet();
     });
+    // The other side turned one-time messages off (or back on).
+    socket.on('one_time_allowed_changed', ({ roomId, allowed }) => {
+      if (roomId != null && String(roomId) !== String(currentRoomId)) return;
+      oneTimeAllowed = !!allowed;
+      if (!oneTimeAllowed) clearOneTime();
+      const sheet = document.getElementById('fire-modal');
+      if (sheet && !sheet.classList.contains('hidden')) renderFireSheet();
+    });
     // A live share moved: swap the card in place, keeping everything else in
     // the bubble (reply quote, timestamp, reactions) untouched.
     socket.on('location_updated', ({ messageId, roomId, content }) => {
@@ -2017,11 +2025,14 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   // Whether THIS chat destroys its messages — the skin must follow the room,
   // not linger from the last one.
   disappearingSeconds = 0;
+  oneTimeAllowed = true;
   applyDisappearingSkin(0);
   api(`/room-settings/${roomId}`)
     .then(r => {
       if (!r || r.error || String(currentRoomId) !== String(roomId)) return;
       disappearingSeconds = r.disappearingSeconds || 0;
+      oneTimeAllowed = r.oneTimeAllowed !== false;
+      if (!oneTimeAllowed) clearOneTime();
       applyDisappearingSkin(disappearingSeconds);
     })
     .catch(() => {});
@@ -2477,6 +2488,10 @@ function composerRecord() {
 // in its 🔥 sheet next to one-time messages, so the web now has the same sheet
 // rather than a second place to look.
 let disappearingSeconds = 0;
+// Whether this chat allows one-time messages at all. Either side may turn
+// them off, and then nobody in the chat may send one — the server refuses it
+// as well, so this is only what the composer shows, not the rule itself.
+let oneTimeAllowed = true;
 
 function composerOneTime() { openFireSheet(); }
 
@@ -2503,11 +2518,22 @@ function renderFireSheet() {
     b.onclick = fn;
     ot.appendChild(b);
   };
+  const box = document.getElementById('one-time-allowed');
+  if (box) box.checked = oneTimeAllowed;
+  const otErr = document.getElementById('one-time-error');
+  if (otErr) { otErr.textContent = ''; otErr.classList.add('hidden'); }
+  if (!oneTimeAllowed) {
+    const off = document.createElement('p');
+    off.className = 'fire-hint';
+    off.textContent = 'Turned off for this chat.';
+    ot.appendChild(off);
+  } else {
   [5, 30, 60].forEach(secs => otChip(secs + 's', pendingOneTimeSeconds === secs,
     () => { armOneTime(pendingOneTimeSeconds === secs ? null : secs); renderFireSheet(); }));
   otChip('Custom…', !!pendingOneTimeSeconds && ![5, 30, 60].includes(pendingOneTimeSeconds),
     () => { askOneTimeSeconds(); renderFireSheet(); });
   otChip('Off', !pendingOneTimeSeconds, () => { armOneTime(null); renderFireSheet(); });
+  }
 
   // Disappearing: the fixed list the server accepts. A client cannot invent
   // its own duration, so there is no "custom" here.
@@ -2544,6 +2570,32 @@ function setDisappearing(seconds) {
     }
     disappearingSeconds = res.seconds || 0;
     applyDisappearingSkin(disappearingSeconds);
+    renderFireSheet();
+  });
+}
+
+/**
+ * Allow or forbid one-time messages for EVERYONE in this chat.
+ *
+ * Same shape as setDisappearing: nothing on screen moves until the server has
+ * agreed, because this binds the other person too.
+ */
+function setOneTimeAllowed(allowed) {
+  if (!currentRoomId || !socket) return;
+  const err = document.getElementById('one-time-error');
+  socket.emit('set_one_time_allowed', { roomId: currentRoomId, allowed: !!allowed }, (res) => {
+    if (!res || res.error) {
+      if (err) {
+        err.textContent = (res && res.error) || 'Could not change the setting';
+        err.classList.remove('hidden');
+      }
+      renderFireSheet();
+      return;
+    }
+    oneTimeAllowed = !!res.allowed;
+    // An armed one-time message would otherwise be sent into a chat that has
+    // just forbidden them, and be refused on send.
+    if (!oneTimeAllowed) clearOneTime();
     renderFireSheet();
   });
 }
@@ -4030,6 +4082,13 @@ function buildLocationCard(msg) {
   const map = document.createElement('div');
   map.className = 'loc-map';
   map.onclick = (e) => { e.stopPropagation(); openMapViewer(p.lat, p.lng, live); };
+  // Reported as "the map is a solid image and cannot be pinched" — which this
+  // preview is. The badge is the only thing that says the real map, the one
+  // that pans and pinches, is one tap away.
+  const expand = document.createElement('div');
+  expand.className = 'loc-expand';
+  expand.textContent = '⤢';
+  map.appendChild(expand);
   for (let dy = -1; dy <= 1; dy++) {
     for (let dx = -1; dx <= 1; dx++) {
       const tx = x0 + dx, ty = y0 + dy;
@@ -4262,6 +4321,8 @@ function buildMessageElement(msg) {
     rest.textContent = d.kind === 'disappearing_on' || d.kind === 'disappearing_off'
       ? ' ' + Disappearing.disappearingPredicate(
           d.kind === 'disappearing_on' ? (d.seconds || 0) : 0)
+      : d.kind === 'one_time_on' || d.kind === 'one_time_off'
+      ? ' ' + Disappearing.oneTimePredicate(d.kind === 'one_time_on')
       : d.kind === 'removed'
       ? ` ${isMe ? 'were' : 'was'} removed from the room${d.byUsername ? ' by ' + d.byUsername : ''}`
       : d.kind === 'left'
@@ -4517,6 +4578,11 @@ function prependMessages(msgs) {
 
 // ─── Context menu ─────────────────────────────────────────────────────────────
 function openCtxMenu(messageId, type, isMine, wrapperEl, msg) {
+  // Not while it is still uploading. Everything in the menu is a lie at that
+  // moment: the bubble is a local placeholder with no id, so Reply, Forward,
+  // Edit, Comment and Delete all name something the server has never heard of.
+  // Decided in one place (js/messageMenu.js), so this and the app agree.
+  if (!MessageMenu.canOpenMenu(msg)) return;
   ctxTarget = { messageId, type, isMine, username: msg?.username, content: msg?.content, filePath: msg?.file_path, fileName: msg?.file_name };
   const menu = document.getElementById('ctx-menu');
   document.getElementById('ctx-edit-btn').style.display = (isMine && type === 'text') ? '' : 'none';
@@ -4951,7 +5017,10 @@ async function openForwardModal(messageId) {
     li.textContent = t.label;
     li.onclick = () => {
       socket.emit('forward_message', { messageId: forwardMsgId, toRoomId: t.id }, (res) => {
-        if (res?.error) alert(res.error);
+        if (res?.error) { alert(res.error); return; }
+        // Say so, and say WHERE. Until now the only difference between "sent
+        // to the right person" and "the tap missed" was silence.
+        showToast(MessageMenu.forwardedTo(t.label));
       });
       closeForwardModal();
     };

@@ -1251,6 +1251,13 @@ body.kb-open #install-hint { display: none; }
 /* Location map built from proxied tiles (foreign map hosts are blocked in Iran) */
 .loc-map { display: block; position: relative; width: 100%; height: 150px; overflow: hidden; }
 .loc-tile { position: absolute; width: 256px; height: 256px; max-width: none; }
+.loc-expand {
+  position: absolute; right: 6px; top: 6px; z-index: 2;
+  width: 22px; height: 22px; border-radius: 11px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.45); color: #fff; font-size: 13px; line-height: 1;
+  pointer-events: none;
+}
 .loc-pin {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -100%);
   font-size: 22px; line-height: 1; filter: drop-shadow(0 1px 2px rgba(0,0,0,.5));
@@ -1410,6 +1417,14 @@ body.disappearing-on .msg-caption, body.disappearing-on .msg-time { color: #8fa3
 .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 .fire-hint { font-size: 0.78rem; color: var(--muted); margin: 2px 0 0; }
 .fire-error { font-size: 0.78rem; color: var(--danger); margin: 8px 0 0; }
+/* The chat-wide one-time switch. A real checkbox with a label around it, so
+   the words are part of the hit target — these are thumbs on small phones. */
+.fire-toggle {
+  display: flex; align-items: center; gap: 8px;
+  margin: 10px 0 0; font-size: 0.84rem; color: var(--muted);
+  cursor: pointer; user-select: none;
+}
+.fire-toggle input { width: 16px; height: 16px; accent-color: var(--accent); }
 
 /* Show more / Show less on a long message. */
 .fold-toggle {

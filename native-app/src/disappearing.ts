@@ -84,3 +84,16 @@ export function disappearingNotice(
 ): string {
   return `${isMe ? 'You' : username} ${disappearingPredicate(seconds)}`;
 }
+
+/**
+ * What someone did to the chat's one-time setting.
+ *
+ * Asked for: either side can turn one-time messages off for both sides. The
+ * wording says FOR THIS CHAT on purpose — it is not a preference about what
+ * this device shows, it is a rule the other person is now held to as well.
+ */
+export function oneTimePredicate(allowed: boolean): string {
+  return allowed
+    ? 'turned one-time messages back on for this chat'
+    : 'turned off one-time messages for this chat';
+}

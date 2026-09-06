@@ -69,6 +69,15 @@ try { db.exec('ALTER TABLE messages ADD COLUMN expires_at INTEGER'); } catch {}
 // mail.
 try { db.exec('ALTER TABLE messages ADD COLUMN disappear_seconds INTEGER'); } catch {}
 try { db.exec('ALTER TABLE rooms ADD COLUMN disappearing_seconds INTEGER'); } catch {}
+// One-time ("view once") messages, switched OFF for a whole chat.
+//
+// Asked for: either side of a chat can turn one-time and disappearing messages
+// off for both sides. Disappearing was already mutual — it is one setting on
+// the room and anyone in it may set it back to 0. One-time was not: it is
+// chosen per message by whoever sends it, so the person on the receiving end
+// of messages that burn after reading had no say at all. This column is that
+// say: 1 means nobody in this chat may send one.
+try { db.exec('ALTER TABLE rooms ADD COLUMN one_time_off INTEGER DEFAULT 0'); } catch {}
 // How many times this account has changed its username. A username is how
 // people find and address each other, so it is deliberately hard to churn.
 try { db.exec('ALTER TABLE users ADD COLUMN username_changes INTEGER DEFAULT 0'); } catch {}

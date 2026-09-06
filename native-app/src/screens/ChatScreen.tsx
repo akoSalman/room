@@ -116,12 +116,13 @@ import { compressVideo } from '../compressVideo';
 import { VideoQuality } from '../videoQuality';
 import { Quality } from '../imageQuality';
 import { tokenize, telHref, toAsciiDigits } from '../textTokens';
-import { DISAPPEARING_OPTIONS, disappearingLabel, disappearingPredicate, chipLabel } from '../disappearing';
+import { DISAPPEARING_OPTIONS, disappearingLabel, disappearingPredicate, chipLabel, oneTimePredicate } from '../disappearing';
 import { toast } from '../components/Toast';
 import * as outbox from '../outbox';
 import EmojiBurst from '../components/EmojiBurst';
 import EmojiEditor from '../components/EmojiEditor';
 import { useOrderedFavEmojis, noteEmojiUse } from '../favEmojis';
+import { canOpenMenu, forwardedTo } from '../messageMenu';
 import {
   phaseFor as e2ePhaseFor, undecryptedBody, undecryptedQuote,
   keepTryingKey, keyRetryDelay,
@@ -301,13 +302,32 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   // Chat-wide disappearing timer, 0 = off. Drives the menu, the banner and the
   // "secret" look of the whole screen.
   const [disappearing, setDisappearing] = useState(0);
+  // Whether one-time messages are allowed in this chat at all. Either side may
+  // switch them off for BOTH — the person a self-destructing message is aimed
+  // at is the one who has to live with it, and until now only the sender had a
+  // say. The server refuses them too; this is only what the composer offers.
+  const [oneTimeAllowed, setOneTimeAllowed] = useState(true);
   useEffect(() => {
     let alive = true;
     apiFetch(`/room-settings/${room.id}`)
-      .then((r: any) => { if (alive && r && !r.error) setDisappearing(r.disappearingSeconds || 0); })
+      .then((r: any) => {
+        if (!alive || !r || r.error) return;
+        setDisappearing(r.disappearingSeconds || 0);
+        setOneTimeAllowed(r.oneTimeAllowed !== false);
+        if (r.oneTimeAllowed === false) setOneTimeSecs(null);
+      })
       .catch(() => {});
     return () => { alive = false; };
   }, [room.id]);
+  function chooseOneTimeAllowed(allowed: boolean) {
+    socketRef.current?.emit('set_one_time_allowed', { roomId: room.id, allowed }, (res: any) => {
+      if (res?.error) { Alert.alert('Could not change', res.error); return; }
+      setOneTimeAllowed(!!res.allowed);
+      // An armed one-time message would otherwise be sent into a chat that has
+      // just forbidden them, and be refused on send.
+      if (!res.allowed) setOneTimeSecs(null);
+    });
+  }
   function chooseDisappearing(seconds: number) {
     setShowOneTimeMenu(false);
     socketRef.current?.emit('set_disappearing', { roomId: room.id, seconds }, (res: any) => {
@@ -2620,9 +2640,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   async function fetchWithProgress(url: string, to: string): Promise<string> {
     const task = FileSystem.createDownloadResumable(url, to, {}, (p) => {
       save.report(p.totalBytesWritten, p.totalBytesExpectedToWrite);
+      // Asked for: a cross on the progress. The flag is set by the overlay's
+      // button; the task is the only thing that can actually stop the bytes,
+      // and it is right here.
+      if (save.isCancelling()) task.cancelAsync().catch(() => {});
     });
     const res = await task.downloadAsync();
-    if (!res?.uri) throw new Error('Download failed');
+    // A cancelled task resolves with nothing rather than throwing.
+    if (!res?.uri) throw new Error(save.isCancelling() ? 'cancelled' : 'Download failed');
     return res.uri;
   }
 
@@ -2656,6 +2681,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       }
       let lastName = '';
       for (let i = 0; i < urls.length; i++) {
+        // Between files as well as during one: a gallery of ten photos must
+        // stop at the next one rather than finishing the set.
+        if (save.isCancelling()) { save.finish('cancelled'); return; }
         save.advance(i);
         const u = urls[i];
         lastName = (urls.length === 1 && msg.file_name && !msg.file_name.includes(','))
@@ -2671,7 +2699,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       // <name>" is information the indicator has no room for.
       if (!toGallery) Alert.alert('Downloaded', `Saved as ${lastName}`);
     } catch {
-      save.finish('failed');
+      // Stopping on purpose is not a failure, and must not be reported as one.
+      save.finish(save.isCancelling() ? 'cancelled' : 'failed');
     }
   }
 
@@ -2903,6 +2932,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     // server insert them in whatever order they happened to arrive, so a
     // forwarded conversation could land shuffled in the destination chat.
     (async () => {
+      let sent = 0;
       for (const id of ids) {
         const err = await new Promise<string | null>(resolve => {
           socketRef.current?.emit('forward_message', { messageId: id, toRoomId: target.id },
@@ -2910,7 +2940,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           setTimeout(() => resolve(null), 6000);   // never hang the loop
         });
         if (err) { Alert.alert('Cannot forward', err); break; }
+        sent++;
       }
+      // Say so, and say WHERE. Reported as: after forwarding, tell the user.
+      // Until now the only difference between "sent to the right person" and
+      // "the tap missed" was silence.
+      if (sent) toast(forwardedTo(target._label || target.other_username || target.name, sent));
     })();
     setForwardMsg(null);
     setForwardOpen(false);
@@ -3234,6 +3269,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   }
 
   function openMenuFor(msg: Message, e?: any) {
+    // Not while it is still uploading. Everything in the menu is a lie at that
+    // moment: the bubble is a local placeholder with no id, so Reply, Forward,
+    // Edit, Comment and Delete all name something the server has never heard
+    // of. One place decides it, so the tap, the long press and the ⋮ cannot
+    // disagree — see src/messageMenu.ts.
+    if (!canOpenMenu(msg as any)) return;
     menuOpenedAt.current = Date.now();
     setActionsMsg({ msg, x: e?.nativeEvent?.pageX ?? 0, y: e?.nativeEvent?.pageY ?? 0 });
   }
@@ -3273,6 +3314,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     if (selection.toggle(msg.id) === 0) setSelectMode(false);
   }
   function enterSelectMode(msg: Message) {
+    // A message with no id cannot be selected, forwarded or deleted either.
+    if (!canOpenMenu(msg as any)) return;
     clearTimeout(tapTimer.current);
     selection.begin(msg.id);
     setSelectMode(true);
@@ -3643,9 +3686,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         loose.push(pin);
       }
     }
-    // A static pin is still worth showing unless that person is live.
-    return [...byUser.values(), ...loose.filter(p => !byUser.has(p.username))];
-  }, [messages, me, clockTick]);
+    // A static pin is still worth showing unless that person is live — EXCEPT
+    // the one being opened. Dropping that one was reported as a map that does
+    // nothing: tap an older pin from somebody who is sharing live now and the
+    // fullscreen map could not find the message it was opened for, so it fell
+    // back to whatever pin happened to be first (or, with none, drew nothing
+    // at all and left the still preview on screen looking like a picture).
+    return [...byUser.values(), ...loose.filter(p =>
+      !byUser.has(p.username) || String(p.id) === String(openLocationId))];
+  }, [messages, me, clockTick, openLocationId]);
 
   // Distances are only meaningful with a position of our own.
   useEffect(() => {
@@ -3667,8 +3716,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       if (String(roomId) !== String(room.id)) return;
       setDisappearing(seconds || 0);
     };
+    const onOneTime = ({ roomId, allowed }: any) => {
+      if (String(roomId) !== String(room.id)) return;
+      setOneTimeAllowed(!!allowed);
+      if (!allowed) setOneTimeSecs(null);
+    };
     sock.on('disappearing_changed', onChanged);
-    return () => { sock.off('disappearing_changed', onChanged); };
+    sock.on('one_time_allowed_changed', onOneTime);
+    return () => {
+      sock.off('disappearing_changed', onChanged);
+      sock.off('one_time_allowed_changed', onOneTime);
+    };
   }, [room.id, socketRef.current]);
 
   // ── A message goes when its time is up, not when the server gets round to
@@ -3783,6 +3841,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             </Text>
             {d.kind === 'disappearing_on' || d.kind === 'disappearing_off'
               ? <Text>{' '}{disappearingPredicate(d.seconds || 0)}</Text>
+              : d.kind === 'one_time_on' || d.kind === 'one_time_off'
+              ? <Text>{' '}{oneTimePredicate(d.kind === 'one_time_on')}</Text>
               : d.kind === 'removed'
               ? <Text>{' '}{isMe ? 'were' : 'was'} removed from the room{d.byUsername ? ` by ${d.byUsername}` : ''}</Text>
               : d.kind === 'left'
@@ -4145,7 +4205,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               >
                 <View style={s.locCard}>
                   {/* A still preview: not interactive, so the tap opens the
-                      fullscreen map instead of being eaten by a map drag. */}
+                      fullscreen map instead of being eaten by a map drag.
+                      Reported as "the map is a solid image and cannot be
+                      pinched" — which it is, so it now says so: the badge is
+                      the only thing that tells you the real map is one tap
+                      away. */}
+                  <View style={s.locExpand} pointerEvents="none">
+                    <Ionicons name="expand" size={13} color="#fff" />
+                  </View>
                   <TileMap
                     center={{ lat: p.lat, lng: p.lng }}
                     zoom={15}
@@ -5222,23 +5289,39 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                 list. */}
             <Text style={s.fireHeading}>🔥  One-time message</Text>
             <Text style={s.fireHint}>Just the next message, gone after it is opened</Text>
-            <View style={s.chipRow}>
-              {[5, 30, 60].map(secs => (
+            {oneTimeAllowed ? (
+              <View style={s.chipRow}>
+                {[5, 30, 60].map(secs => (
+                  <TouchableOpacity
+                    key={secs}
+                    style={[s.chip, oneTimeSecs === secs && s.chipOn]}
+                    onPress={() => chooseOneTime(oneTimeSecs === secs ? null : secs)}
+                  >
+                    <Text style={[s.chipText, oneTimeSecs === secs && s.chipTextOn]}>{secs}s</Text>
+                  </TouchableOpacity>
+                ))}
                 <TouchableOpacity
-                  key={secs}
-                  style={[s.chip, oneTimeSecs === secs && s.chipOn]}
-                  onPress={() => chooseOneTime(oneTimeSecs === secs ? null : secs)}
+                  style={[s.chip, !oneTimeSecs && s.chipOn]}
+                  onPress={() => chooseOneTime(null)}
                 >
-                  <Text style={[s.chipText, oneTimeSecs === secs && s.chipTextOn]}>{secs}s</Text>
+                  <Text style={[s.chipText, !oneTimeSecs && s.chipTextOn]}>Off</Text>
                 </TouchableOpacity>
-              ))}
-              <TouchableOpacity
-                style={[s.chip, !oneTimeSecs && s.chipOn]}
-                onPress={() => chooseOneTime(null)}
-              >
-                <Text style={[s.chipText, !oneTimeSecs && s.chipTextOn]}>Off</Text>
-              </TouchableOpacity>
-            </View>
+              </View>
+            ) : (
+              <Text style={s.fireHint}>Turned off for this chat.</Text>
+            )}
+            {/* The switch itself: off for everyone here, not just for me. */}
+            <TouchableOpacity
+              style={s.fireToggle}
+              onPress={() => chooseOneTimeAllowed(!oneTimeAllowed)}
+            >
+              <Ionicons
+                name={oneTimeAllowed ? 'checkbox' : 'square-outline'}
+                size={18}
+                color={oneTimeAllowed ? C.accent : C.muted}
+              />
+              <Text style={s.fireToggleText}>Allow one-time messages in this chat</Text>
+            </TouchableOpacity>
 
             <View style={s.sheetDivider} />
 
@@ -5925,6 +6008,12 @@ const s = StyleSheet.create({
     width: 224, borderRadius: 12, overflow: 'hidden',
     borderWidth: 1, borderColor: C.border, backgroundColor: C.sidebar,
   },
+  locExpand: {
+    position: 'absolute', right: 6, top: 6, zIndex: 2,
+    width: 24, height: 24, borderRadius: 12,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
   locFoot: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 9 },
   locTitle: { color: C.text, fontSize: 13.5, fontWeight: '700' },
   locSub: { color: C.muted, fontSize: 11.5, marginTop: 1 },
@@ -5990,6 +6079,8 @@ const s = StyleSheet.create({
   },
   secretBarText: { color: '#9fb4d4', fontSize: 11.5, fontWeight: '700', textAlign: 'center' },
   fireHeading: { color: C.text, fontSize: 15.5, fontWeight: '800', paddingHorizontal: 16, paddingTop: 6 },
+  fireToggle: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10 },
+  fireToggleText: { color: C.muted, fontSize: 13 },
   fireHint: { color: C.muted, fontSize: 12, paddingHorizontal: 16, paddingTop: 2, paddingBottom: 8 },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 16, paddingBottom: 6 },
   chip: {

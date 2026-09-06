@@ -23,7 +23,16 @@ export type SaveState = {
   written: number;
   bytes: number;
   /** Set once it is over, so the overlay can say what happened. */
-  done?: 'saved' | 'failed';
+  done?: 'saved' | 'failed' | 'cancelled';
+  /**
+   * The user has asked for this to stop.
+   *
+   * A flag rather than a straight abort: the download itself lives in the
+   * screen, which checks this between files and hands it to the task in
+   * flight. Asked for as a cross on the progress — a forty-megabyte video
+   * started by a mistaken tap otherwise has to be waited out.
+   */
+  cancelling?: boolean;
 };
 
 type Listener = (s: SaveState | null) => void;
@@ -67,7 +76,7 @@ export function report(written: number, bytes: number) {
  * instant it finishes — an indicator that disappears the moment the work ends
  * leaves the user unsure whether it worked.
  */
-export function finish(result: 'saved' | 'failed') {
+export function finish(result: 'saved' | 'failed' | 'cancelled') {
   if (!current) return;
   current = { ...current, done: result };
   emit();
@@ -76,6 +85,23 @@ export function finish(result: 'saved' | 'failed') {
 export function clear() {
   current = null;
   emit();
+}
+
+/** The user pressed the cross. Whoever is downloading checks this. */
+export function requestCancel() {
+  if (!current || current.done) return;
+  current = { ...current, cancelling: true };
+  emit();
+}
+
+/** Has it been asked to stop? Read by the download loop between files. */
+export function isCancelling(): boolean {
+  return !!(current && current.cancelling);
+}
+
+/** Is there anything to cancel — i.e. should the cross be offered at all? */
+export function canCancel(s: SaveState | null): boolean {
+  return !!s && !s.done && !s.cancelling;
 }
 
 /** Only for tests. */
@@ -112,6 +138,11 @@ export function saveLabel(s: SaveState | null): string {
   if (!s) return '';
   if (s.done === 'saved') return s.total > 1 ? `${s.total} files saved` : 'Saved to your device';
   if (s.done === 'failed') return 'Could not save';
+  // Said in the past tense, and NOT as a failure: stopping something on
+  // purpose is not the same as it going wrong, and the ⚠ that "Could not
+  // save" carries would read as an error the user did not cause.
+  if (s.done === 'cancelled') return 'Download stopped';
+  if (s.cancelling) return 'Stopping…';
   if (s.total > 1) return `Saving ${Math.min(s.index + 1, s.total)} of ${s.total}…`;
   return 'Saving…';
 }

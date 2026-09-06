@@ -1524,7 +1524,10 @@ app.get('/room-settings/:roomId', authMiddleware, (req, res) => {
   const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
   if (!canAccessRoom(req.user.id, room)) return res.status(403).json({ error: 'No access' });
-  res.json({ disappearingSeconds: room.disappearing_seconds || 0 });
+  res.json({
+    disappearingSeconds: room.disappearing_seconds || 0,
+    oneTimeAllowed: !room.one_time_off,
+  });
 });
 
 app.get('/room-info/:roomId', authMiddleware, (req, res) => {
@@ -2438,6 +2441,12 @@ io.on('connection', (socket) => {
     }
 
     const msgType = CLIENT_MSG_TYPES.has(type) ? type : 'text';
+    // Refused here rather than only hidden in the composer: the switch is a
+    // promise made to the OTHER person, and a promise that only a cooperating
+    // client keeps is not one.
+    if (oneTimeSeconds && room && room.one_time_off) {
+      return reply({ error: 'One-time messages are turned off in this chat' });
+    }
     const oneTime = Number.isInteger(oneTimeSeconds) && oneTimeSeconds >= 1 && oneTimeSeconds <= 3600
       ? oneTimeSeconds : null;
     // Disappearing mode: record the LIFETIME now, but do not start the clock.
@@ -3107,6 +3116,47 @@ io.on('connection', (socket) => {
       reply({ ok: true, seconds: secs });
     } catch (err) {
       console.error('[set_disappearing]', err.message);
+      reply({ error: 'Could not change the setting' });
+    }
+  });
+
+  // Turning one-time messages off for a whole chat.
+  //
+  // Asked for: either side can turn one-time and disappearing messages off for
+  // both sides. Disappearing already worked that way — 'set_disappearing' is
+  // open to any member and 0 turns it off — so this is the half that was
+  // missing, one-time being a per-message choice by the SENDER until now.
+  //
+  // Deliberately symmetrical and not an owner privilege: the person harmed by
+  // messages that destroy themselves is the one receiving them.
+  socket.on('set_one_time_allowed', ({ roomId, allowed }, ack) => {
+    const reply = (r) => { if (typeof ack === 'function') ack(r); };
+    try {
+      const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+      if (!room) return reply({ error: 'Room not found' });
+      if (!isRoomMember(socket.user.id, room)) return reply({ error: 'Join the room first' });
+
+      const on = !!allowed;
+      const off = on ? 0 : 1;
+      if ((room.one_time_off ? 1 : 0) === off) return reply({ ok: true, allowed: on });
+      db.prepare('UPDATE rooms SET one_time_off = ? WHERE id = ?').run(off, room.id);
+
+      // A system message, like every other change to how a chat behaves: this
+      // is not a private preference, it changes what the other person may send.
+      const msg = insertSystemMessage(room.id, socket.user.id,
+        on ? 'one_time_on' : 'one_time_off', {
+          userId: socket.user.id,
+          username: socket.user.username,
+          avatar: socket.user.avatar || null,
+        });
+      if (msg) broadcastRoomMessage(room, msg);
+
+      const evt = { roomId: room.id, allowed: on, byUsername: socket.user.username };
+      io.to(String(room.id)).emit('one_time_allowed_changed', evt);
+      getRoomMemberIds(room).forEach(id => io.to('user:' + id).emit('one_time_allowed_changed', evt));
+      reply({ ok: true, allowed: on });
+    } catch (err) {
+      console.error('[set_one_time_allowed]', err.message);
       reply({ error: 'Could not change the setting' });
     }
   });

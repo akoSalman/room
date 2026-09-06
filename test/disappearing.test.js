@@ -177,10 +177,15 @@ test('somebody else changing it updates the sheet you are looking at', () => {
 test('opening a chat reads its setting, and does not carry the last one in', () => {
   const at = app.indexOf('api(`/room-settings/${roomId}`)');
   assert.ok(at > 0);
-  assert.ok(/disappearingSeconds = 0;\s*\n\s*applyDisappearingSkin\(0\);/.test(app),
+  assert.ok(/disappearingSeconds = 0;[\s\S]{0,200}?applyDisappearingSkin\(0\);/.test(app),
     'the previous chat\'s setting is still showing while the new one loads');
+  // The one-time switch is per chat too, and must not be carried in either.
+  assert.ok(/oneTimeAllowed = true;[\s\S]{0,120}?applyDisappearingSkin\(0\);/.test(app),
+    "the last chat's one-time setting is still showing while the new one loads");
   assert.ok(app.slice(at, at + 400).includes('disappearingSeconds = r.disappearingSeconds || 0'),
     'the sheet would offer the wrong chip as the current one');
+  assert.ok(app.slice(at, at + 400).includes('oneTimeAllowed = r.oneTimeAllowed !== false'),
+    'the sheet would offer one-time messages in a chat that forbids them');
 });
 
 test('the one-time control did not lose its custom value', () => {
@@ -202,6 +207,85 @@ test('the three hand-written duration ladders are gone', () => {
 test('the app uses the shared chip labels too', () => {
   const chat = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
   assert.ok(chat.includes('{chipLabel(secs)}'), 'the app builds chip labels with string replacement again');
+});
+
+// ── Turning them off for both sides ─────────────────────────────────────────
+//
+// Asked for: "each side of chat could turn off one time messages and
+// disappearing messages for both sides when someone activates it". Half of it
+// already worked — set_disappearing is open to any member and 0 turns it off —
+// so the tests below pin that half against regression and cover the half that
+// did not exist: one-time messages, chosen per message by the SENDER, which
+// left the receiver with no say.
+
+test('either side can turn the chat-wide timer off — not just whoever set it', () => {
+  // Pinned rather than added: the web sends a plain seconds value with no
+  // owner check anywhere near it, and the server's guard is membership. If
+  // either grows an "only the person who turned it on" condition, this fails.
+  const fn = app.slice(app.indexOf('function setDisappearing('),
+    app.indexOf('function setDisappearing(') + 900);
+  assert.ok(!/owner|is_owner|createdBy/i.test(fn),
+    'the web now decides for itself who may turn disappearing messages off');
+  const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const h = srv.slice(srv.indexOf("socket.on('set_disappearing'"),
+    srv.indexOf("socket.on('set_disappearing'") + 1200);
+  assert.ok(/isRoomMember\(socket\.user\.id, room\)/.test(h), 'the guard is no longer membership');
+  assert.ok(!/room\.owner_id === socket\.user\.id/.test(h),
+    'only the owner can change it now, which is not what either side means');
+});
+
+test('the wording says it is for the CHAT, not for this device', () => {
+  assert.ok(/for this chat/.test(W.oneTimePredicate(false)),
+    'the notice reads as a personal preference');
+  assert.ok(/turned off/.test(W.oneTimePredicate(false)));
+  assert.ok(/back on/.test(W.oneTimePredicate(true)));
+  if (A) {
+    assert.strictEqual(W.oneTimePredicate(true), A.oneTimePredicate(true));
+    assert.strictEqual(W.oneTimePredicate(false), A.oneTimePredicate(false));
+  }
+});
+
+test('both clients announce the switch in the chat', () => {
+  const chat = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  for (const [src, what] of [[app, 'the web'], [chat, 'the app']]) {
+    assert.ok(/one_time_on/.test(src) && /one_time_off/.test(src),
+      `${what} renders the new system message as "joined the room"`);
+    assert.ok(/oneTimePredicate\(/.test(src), `${what} writes the sentence by hand`);
+  }
+});
+
+test('the web has the switch, and only believes the server', () => {
+  assert.ok(html.includes('id="one-time-allowed"'), 'there is nothing to tap on the web');
+  assert.ok(/onchange="setOneTimeAllowed\(this\.checked\)"/.test(html), 'the checkbox does nothing');
+  const fn = app.slice(app.indexOf('function setOneTimeAllowed('),
+    app.indexOf('function setOneTimeAllowed(') + 900);
+  assert.ok(/socket\.emit\('set_one_time_allowed'/.test(fn), 'the web changes it locally only');
+  const assign = fn.indexOf('oneTimeAllowed = ');
+  const err = fn.indexOf('res.error');
+  assert.ok(err > -1 && assign > err,
+    'the switch flips on screen before the server agreed, which promises the other person something nobody kept');
+  // …and a live change from the other side lands too.
+  assert.ok(/socket\.on\('one_time_allowed_changed'/.test(app),
+    'the web never hears that the other side switched it off');
+});
+
+test('the app has it too, and drops an armed one-time message when it goes off', () => {
+  const chat = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  const fn = chat.slice(chat.indexOf('function chooseOneTimeAllowed('),
+    chat.indexOf('function chooseOneTimeAllowed(') + 800);
+  assert.ok(/emit\('set_one_time_allowed'/.test(fn), 'the app cannot change it');
+  assert.ok(/setOneTimeSecs\(null\)/.test(fn),
+    'a 🔥 message stays armed into a chat that has just forbidden them, and is refused on send');
+  assert.ok(/on\('one_time_allowed_changed'/.test(chat), 'the app never hears the other side');
+  assert.ok(/oneTimeAllowed \?/.test(chat), 'the chips are offered even when they are forbidden');
+});
+
+test('the server tells a client which chats allow them', () => {
+  const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const route = srv.slice(srv.indexOf("app.get('/room-settings/:roomId'"),
+    srv.indexOf("app.get('/room-settings/:roomId'") + 700);
+  assert.ok(/oneTimeAllowed/.test(route),
+    'a client opening a chat cannot tell whether one-time messages are allowed');
 });
 
 let passed = 0, failed = 0;

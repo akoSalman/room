@@ -55,6 +55,13 @@
     return (isMe ? 'You' : username) + ' ' + disappearingPredicate(seconds);
   }
 
+
+  function oneTimePredicate(allowed) {
+    return allowed
+      ? 'turned one-time messages back on for this chat'
+      : 'turned off one-time messages for this chat';
+  }
+
   /** The line along the top of a chat that destroys its messages. */
   function bannerText(seconds) {
     if (!seconds) return '';
@@ -67,6 +74,7 @@
     chipLabel: chipLabel,
     disappearingPredicate: disappearingPredicate,
     disappearingNotice: disappearingNotice,
+    oneTimePredicate: oneTimePredicate,
     bannerText: bannerText,
   };
 })(typeof window !== 'undefined' ? window : this);

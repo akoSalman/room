@@ -128,7 +128,10 @@ test('every path that can open the menu asks first', () => {
 });
 
 test('the menu records when it opened, or nothing can take it back', () => {
-  const fn = chat.slice(chat.indexOf('function openMenuFor('), chat.indexOf('function openMenuFor(') + 300);
+  // Bounded by the next function rather than by a character count, which a
+  // comment added inside this one has already broken once.
+  const at = chat.indexOf('function openMenuFor(');
+  const fn = chat.slice(at, chat.indexOf('function ', at + 40));
   assert.ok(fn.includes('menuOpenedAt.current = Date.now()'), 'the menu does not record when it opened');
 });
 

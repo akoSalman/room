@@ -174,6 +174,110 @@ test('reports for a save that never began are ignored', () => {
   assert.strictEqual(S.get(), null);
 });
 
+// ── Stopping it ─────────────────────────────────────────────────────────────
+//
+// Asked for: a cancel button or cross on the download progress. On these
+// connections a video started by a mistaken tap is minutes of the only
+// bandwidth there is, and there was no way out of it.
+
+test('the cross is offered exactly while there is something to stop', () => {
+  reset();
+  assert.strictEqual(S.canCancel(null), false, 'a cross with nothing behind it');
+  S.begin(1);
+  assert.strictEqual(S.canCancel(S.get()), true);
+  S.requestCancel();
+  assert.strictEqual(S.canCancel(S.get()), false, 'the cross stayed after being pressed');
+  reset();
+  S.begin(1); S.finish('saved');
+  assert.strictEqual(S.canCancel(S.get()), false, 'a finished save still offers a cross');
+});
+
+test('pressing it is visible immediately, before the bytes actually stop', () => {
+  // The task keeps writing for a moment after cancelAsync(). If the card said
+  // nothing in that gap the press would look ignored, and be pressed again.
+  reset();
+  let seen = 'never called';
+  S.begin(1);
+  S.subscribe(s => { seen = s; });
+  S.requestCancel();
+  assert.notStrictEqual(seen, 'never called', 'the overlay was not told');
+  assert.strictEqual(seen.cancelling, true);
+  assert.strictEqual(S.saveLabel(S.get()), 'Stopping…');
+});
+
+test('the downloader can read the request from anywhere', () => {
+  // It lives in the screen, not in the overlay, so it needs a getter rather
+  // than the state object.
+  reset();
+  assert.strictEqual(S.isCancelling(), false);
+  S.begin(2);
+  assert.strictEqual(S.isCancelling(), false);
+  S.requestCancel();
+  assert.strictEqual(S.isCancelling(), true);
+  S.clear();
+  assert.strictEqual(S.isCancelling(), false, 'the request outlived the download');
+});
+
+test('stopping on purpose is not reported as a failure', () => {
+  reset();
+  S.begin(1); S.requestCancel(); S.finish('cancelled');
+  assert.strictEqual(S.saveLabel(S.get()), 'Download stopped');
+  assert.notStrictEqual(S.saveLabel(S.get()), 'Could not save');
+  assert.strictEqual(S.canCancel(S.get()), false);
+});
+
+test('a fresh download is not born already cancelled', () => {
+  // begin() replaces the state rather than merging into it; if it did not, one
+  // cancelled download would stop the next one on its first tick.
+  reset();
+  S.begin(1); S.requestCancel();
+  S.begin(1);
+  assert.strictEqual(S.isCancelling(), false);
+  assert.strictEqual(S.canCancel(S.get()), true);
+});
+
+test('cancelling a finished save does nothing', () => {
+  reset();
+  S.begin(1); S.finish('saved');
+  S.requestCancel();
+  assert.strictEqual(S.get().done, 'saved');
+  assert.strictEqual(S.get().cancelling, undefined);
+});
+
+// ── The wiring ──────────────────────────────────────────────────────────────
+
+const NAT = path.join(__dirname, '..', 'native-app', 'src');
+const overlay = fs.readFileSync(path.join(NAT, 'components', 'SaveOverlay.tsx'), 'utf8');
+const chat = fs.readFileSync(path.join(NAT, 'screens', 'ChatScreen.tsx'), 'utf8');
+
+test('the card actually shows a cross, and can be pressed', () => {
+  assert.ok(/canCancel\(state\) && \(/.test(overlay), 'no cross on the progress card');
+  assert.ok(/save\.requestCancel\(\)/.test(overlay), 'the cross does not ask for a stop');
+  // The whole card used to ignore touches. A button inside something that
+  // does would be there on screen and dead to the finger.
+  assert.ok(!/pointerEvents="none"/.test(overlay),
+    'the card swallows no touches — the cross cannot be pressed');
+});
+
+test('the download in flight is actually stopped, not just relabelled', () => {
+  const fn = chat.slice(chat.indexOf('async function fetchWithProgress('),
+    chat.indexOf('async function downloadMedia('));
+  assert.ok(fn.length > 80, 'the download function moved');
+  assert.ok(/isCancelling\(\)/.test(fn) && /cancelAsync\(\)/.test(fn),
+    'the bytes keep coming after the cross is pressed');
+});
+
+test('a gallery stops at the next file rather than finishing the set', () => {
+  const loop = chat.slice(chat.indexOf('async function downloadMedia('),
+    chat.indexOf('async function downloadMedia(') + 3000);
+  const check = loop.indexOf('save.isCancelling()');
+  const advance = loop.indexOf('save.advance(');
+  assert.ok(check > -1 && advance > -1, 'the loop never looks at the cancel flag');
+  assert.ok(check < advance, 'the check happens after the next file has begun');
+  assert.ok(/save\.finish\('cancelled'\)/.test(loop),
+    "a stopped download never reports 'cancelled'");
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

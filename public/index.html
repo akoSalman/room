@@ -474,6 +474,12 @@
       <h3>🔥 One-time message</h3>
       <p class="fire-hint">Just the next message you send, gone after it is opened.</p>
       <div id="one-time-chips" class="chip-row"></div>
+      <!-- Either side may switch these off for the whole chat: the person a
+           self-destructing message is aimed at is the one who has to live
+           with it. -->
+      <label class="fire-toggle"><input type="checkbox" id="one-time-allowed"
+        onchange="setOneTimeAllowed(this.checked)"> Allow one-time messages in this chat</label>
+      <p id="one-time-error" class="fire-error hidden"></p>
     </div>
     <div class="modal-section">
       <h3>⏳ Disappearing messages</h3>
@@ -651,6 +657,7 @@
 <script src="/js/unreadJump.js"></script>
 <script src="/js/scrollFab.js"></script>
 <script src="/js/bidi.js"></script>
+<script src="/js/messageMenu.js"></script>
 <script src="/js/emojiOrder.js"></script>
 <script src="/js/touchScroll.js"></script>
 <script src="/js/linkPreview.js"></script>

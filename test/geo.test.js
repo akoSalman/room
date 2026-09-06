@@ -476,6 +476,69 @@ test('the app never runs its edge-back gesture while a map is open', () => {
   assert.ok(gate.includes('!showLocationPicker'), 'the picker can be swiped away mid-drag');
 });
 
+// ── The pin that was tapped is the pin that opens ───────────────────────────
+//
+// Reported as: "the map still is a solid image and could not be zoomed by
+// pinching or moving around on map". The still preview in the bubble is meant
+// to be a picture — tapping it opens the real map. What was NOT meant is that
+// the real map could not find the message it was opened for: the chat screen
+// dropped every static pin belonging to somebody who is sharing live, and the
+// fullscreen view falls back to pins[0], or to nothing at all. With nothing to
+// draw it renders null, the still preview stays on screen, and the map is
+// exactly what it was reported as: an image that does not move.
+
+test('THE BUG: the chat screen keeps the pin being opened, live share or not', () => {
+  // The screen's own filter, reproduced: a static pin survives if its sender
+  // is not sharing live OR it is the one being opened.
+  const build = (messages, openId) => {
+    const byUser = new Map();
+    const loose = [];
+    for (const m of messages) {
+      const p = { id: m.id, username: m.username, payload: m.payload };
+      if (G.isLiveNow(m.payload, NOW)) byUser.set(m.username, p);
+      else loose.push(p);
+    }
+    return [...byUser.values(), ...loose.filter(p =>
+      !byUser.has(p.username) || String(p.id) === String(openId))];
+  };
+  const messages = [
+    { id: 7, username: 'ako', payload: { lat: 1, lng: 1 } },                        // an old pin
+    { id: 9, username: 'ako', payload: { lat: 2, lng: 2, liveUntil: NOW + 60_000 } }, // sharing now
+  ];
+  const opened = build(messages, 7);
+  assert.ok(opened.some(p => String(p.id) === '7'),
+    'the tapped pin was dropped, so the fullscreen map had nothing to open');
+  // And dedupePins, which the view applies next, keeps it too.
+  const shown = G.dedupePins(opened.map(p => ({ ...p, mine: false })), 7, NOW);
+  assert.ok(shown.some(p => String(p.id) === '7'), 'the view then dropped it again');
+  // Nothing else changed: with no pin open, the old one still gives way.
+  assert.deepStrictEqual(build(messages, null).map(p => p.id), [9]);
+
+  // …and the screen really does filter that way, rather than this test having
+  // proved a rule that lives only in this file.
+  const chat = fs.readFileSync(
+    path.join(__dirname, '..', 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  const fn = chat.slice(chat.indexOf('const locationPins = useMemo'),
+    chat.indexOf('const locationPins = useMemo') + 1600);
+  assert.ok(/String\(p\.id\) === String\(openLocationId\)/.test(fn),
+    'the screen still drops the pin the user tapped');
+  assert.ok(/\}, \[messages, me, clockTick, openLocationId\]\)/.test(fn),
+    'the list is not rebuilt when a different pin is opened, so it keeps the last one');
+});
+
+test('the still preview says the real map is one tap away', () => {
+  const ROOT = path.join(__dirname, '..');
+  const chat = fs.readFileSync(path.join(ROOT, 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  const app = fs.readFileSync(path.join(ROOT, 'public', 'js', 'app.js'), 'utf8');
+  const css = fs.readFileSync(path.join(ROOT, 'public', 'css', 'style.css'), 'utf8');
+  assert.ok(/locExpand/.test(chat), 'the app preview looks like a map but cannot be pinched, and says nothing');
+  assert.ok(/loc-expand/.test(app), 'the web preview says nothing either');
+  assert.ok(/\.loc-expand \{/.test(css), 'the badge has no style, so it is invisible');
+  // And it must not eat the tap that opens the map.
+  const rule = css.slice(css.indexOf('.loc-expand {'), css.indexOf('.loc-expand {') + 400);
+  assert.ok(/pointer-events: none/.test(rule), 'the badge swallows the tap it exists to advertise');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

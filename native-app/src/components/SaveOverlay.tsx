@@ -8,10 +8,11 @@
 // the many progress reports a download produces re-render these few lines and
 // nothing else in the chat.
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { C } from '../theme';
 import * as save from '../saveProgress';
-import { isDeterminate, overallPercent, saveLabel } from '../saveProgress';
+import { isDeterminate, overallPercent, saveLabel, canCancel } from '../saveProgress';
 
 export default function SaveOverlay() {
   const [state, setState] = useState<save.SaveState | null>(() => save.get());
@@ -34,7 +35,10 @@ export default function SaveOverlay() {
   const determinate = isDeterminate(state) && !state.done;
 
   return (
-    <View style={s.wrap} pointerEvents="none">
+    // box-none: the card no longer swallows every touch, because there is a
+    // button inside it now — but the empty strip either side of it must still
+    // let taps through to the chat behind.
+    <View style={s.wrap} pointerEvents="box-none">
       <View style={s.card}>
         {state.done
           ? <Text style={s.tick}>{state.done === 'saved' ? '✓' : '⚠'}</Text>
@@ -48,6 +52,19 @@ export default function SaveOverlay() {
           )}
         </View>
         {determinate && <Text style={s.pct}>{pct}%</Text>}
+        {/* Asked for: a way out. A forty-megabyte video started by a mistaken
+            tap otherwise has to be waited out — on these connections, for
+            minutes. */}
+        {canCancel(state) && (
+          <TouchableOpacity
+            onPress={() => save.requestCancel()}
+            style={s.cancel}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            accessibilityLabel="Stop the download"
+          >
+            <Ionicons name="close" size={16} color={C.muted} />
+          </TouchableOpacity>
+        )}
       </View>
     </View>
   );
@@ -74,4 +91,8 @@ const s = StyleSheet.create({
   },
   fill: { height: '100%', backgroundColor: C.accent, borderRadius: 2 },
   pct: { color: C.muted, fontSize: 11.5, fontWeight: '700', minWidth: 34, textAlign: 'right' },
+  cancel: {
+    width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(128,128,128,0.16)',
+  },
 });
