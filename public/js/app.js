@@ -2888,6 +2888,232 @@ async function compressForSend(file, quality) {
     return file;
   }
 }
+// ── Sending a video: resolution and trim ─────────────────────────────────────
+//
+// Reported as: the iOS web version gives no way to change resolution or trim a
+// video, which the app has had all along. What a browser can actually do about
+// that is decided in js/webVideo.js — the short version is that re-encoding in
+// a page means playing the clip into a canvas and recording it, which iOS
+// Safari cannot do at all. There the sheet says so, with the size, rather than
+// showing controls that would do nothing.
+//
+// Keyed by the staged file, so choosing 720p for one clip does not silently
+// apply to the next one dropped in.
+let videoOpts = new Map();          // file -> { quality, start, end, duration, width, height }
+let videoSheetFile = null;
+
+function videoOptsFor(file) {
+  if (!videoOpts.has(file)) {
+    // "Original" by default: a re-encode here takes as long as the clip lasts,
+    // so it has to be asked for, never sprung on someone who pressed Send.
+    videoOpts.set(file, { quality: 'original', start: 0, end: 0, duration: 0, width: 0, height: 0 });
+  }
+  return videoOpts.get(file);
+}
+
+/** Duration and dimensions, read once per staged clip. */
+function readVideoMeta(p) {
+  const o = videoOptsFor(p.file);
+  if (o.duration > 0) return Promise.resolve(o);
+  return new Promise(resolve => {
+    const v = document.createElement('video');
+    v.preload = 'metadata';
+    v.onloadedmetadata = () => {
+      o.duration = isFinite(v.duration) ? v.duration : 0;
+      o.end = o.duration;
+      o.width = v.videoWidth || 0;
+      o.height = v.videoHeight || 0;
+      resolve(o);
+    };
+    v.onerror = () => resolve(o);
+    v.src = p.url;
+  });
+}
+
+async function openVideoSheet(file) {
+  const p = pendingFiles.find(x => x.file === file);
+  if (!p) return;
+  videoSheetFile = file;
+  await readVideoMeta(p);
+  const prev = document.getElementById('video-preview');
+  prev.src = p.url;
+  show('video-modal');
+  renderVideoSheet();
+}
+
+function closeVideoSheet() {
+  const prev = document.getElementById('video-preview');
+  prev.pause();
+  prev.removeAttribute('src');
+  prev.load();
+  videoSheetFile = null;
+  hide('video-modal');
+  renderPendingFiles();
+}
+
+function renderVideoSheet() {
+  const file = videoSheetFile;
+  if (!file) return;
+  const o = videoOptsFor(file);
+  const can = WebVideo.canReencode();
+  const plan = WebVideo.plan({
+    duration: o.duration, start: o.start, end: o.end, quality: o.quality,
+    bytes: file.size, width: o.width, height: o.height, canReencode: can,
+  });
+
+  // The two sections are hidden rather than disabled where they cannot work:
+  // a greyed-out control still invites a tap and then refuses it.
+  document.getElementById('video-quality-section').classList.toggle('hidden', !can);
+  document.getElementById('video-trim-section').classList.toggle('hidden', !can);
+
+  const note = document.getElementById('video-note');
+  const size = WebVideo.humanSize(plan.bytes || file.size);
+  // plan.seconds, not the clip's own length: with a trim set, showing the
+  // original duration beside the trimmed size describes a file nobody is
+  // going to send.
+  const secs = plan.seconds || o.duration;
+  note.textContent = `${size}${secs ? ' · ' + VideoQuality.fmtDuration(secs) : ''} — ${plan.why}`;
+
+  const chips = document.getElementById('video-chips');
+  chips.innerHTML = '';
+  VideoQuality.VIDEO_PRESETS.forEach(preset => {
+    const b = document.createElement('button');
+    b.className = 'chip' + (o.quality === preset.id ? ' on' : '');
+    b.textContent = preset.label;
+    b.onclick = () => { o.quality = preset.id; renderVideoSheet(); };
+    chips.appendChild(b);
+  });
+
+  const startEl = document.getElementById('video-trim-start');
+  const endEl = document.getElementById('video-trim-end');
+  const dur = Math.max(0.1, o.duration || 0.1);
+  [startEl, endEl].forEach(el => { el.min = 0; el.max = dur; el.step = 0.1; });
+  startEl.value = o.start;
+  endEl.value = o.end || dur;
+  document.getElementById('video-trim-label').textContent =
+    `${VideoQuality.fmtDuration(o.start)} – ${VideoQuality.fmtDuration(o.end || dur)}`
+    + ` · ${VideoQuality.fmtDuration(VideoQuality.trimmedDuration(o.duration, o.start, o.end || dur))} of video`;
+}
+
+function onTrimInput(moved) {
+  const file = videoSheetFile;
+  if (!file) return;
+  const o = videoOptsFor(file);
+  const range = WebVideo.clampRange({
+    duration: o.duration,
+    start: Number(document.getElementById('video-trim-start').value),
+    end: Number(document.getElementById('video-trim-end').value),
+    moved,
+  });
+  o.start = range.start;
+  o.end = range.end;
+  // Jump the preview to whichever handle moved, so trimming is something you
+  // watch rather than something you guess at.
+  const prev = document.getElementById('video-preview');
+  try { prev.currentTime = moved === 'start' ? o.start : o.end; } catch {}
+  renderVideoSheet();
+}
+
+function showVideoProgress(fraction) {
+  const bar = document.getElementById('video-progress');
+  bar.classList.remove('hidden');
+  const pct = Math.max(0, Math.min(100, Math.round((Number(fraction) || 0) * 100)));
+  document.getElementById('video-progress-fill').style.width = pct + '%';
+  document.getElementById('video-progress-label').textContent = `Preparing video… ${pct}%`;
+}
+
+function hideVideoProgress() {
+  document.getElementById('video-progress').classList.add('hidden');
+  document.getElementById('video-progress-fill').style.width = '0%';
+}
+
+/**
+ * Re-encode a staged clip, in real time, to the chosen size and range.
+ *
+ * There is no faster route in a browser: the frames have to be played out,
+ * drawn to a canvas and recorded. Anything that goes wrong returns the
+ * ORIGINAL file — a video that sends untouched is a disappointment, one that
+ * fails to send at all is a bug.
+ */
+async function encodeVideoForSend(file, onProgress) {
+  const o = videoOpts.get(file);
+  if (!o) return file;
+  const type = WebVideo.outputType();
+  const plan = WebVideo.plan({
+    duration: o.duration, start: o.start, end: o.end, quality: o.quality,
+    bytes: file.size, width: o.width, height: o.height,
+    canReencode: WebVideo.canReencode(),
+  });
+  if (plan.action !== 'reencode' || !type) return file;
+
+  const url = URL.createObjectURL(file);
+  const video = document.createElement('video');
+  try {
+    video.src = url;
+    video.playsInline = true;
+    await new Promise((res, rej) => { video.onloadedmetadata = res; video.onerror = rej; });
+    const target = plan.target || { width: video.videoWidth, height: video.videoHeight };
+    const canvas = document.createElement('canvas');
+    canvas.width = target.width;
+    canvas.height = target.height;
+    const ctx = canvas.getContext('2d');
+    const stream = canvas.captureStream(30);
+    // The sound comes from the element itself; without this the clip would
+    // arrive silent, which nobody asked for.
+    try {
+      const grab = video.captureStream || video.mozCaptureStream;
+      grab.call(video).getAudioTracks().forEach(t => stream.addTrack(t));
+    } catch {}
+
+    const rec = new MediaRecorder(stream, {
+      mimeType: type,
+      videoBitsPerSecond: VideoQuality.presetFor(o.quality).bitrate || undefined,
+    });
+    const chunks = [];
+    rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+    const stopped = new Promise(res => { rec.onstop = res; });
+
+    const end = o.end || o.duration;
+    video.currentTime = o.start;
+    await new Promise(res => { video.onseeked = res; });
+    rec.start(500);
+    await video.play();
+
+    await new Promise(res => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        try { rec.stop(); } catch {}
+        video.pause();
+        res();
+      };
+      const draw = () => {
+        if (done) return;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const span = Math.max(0.1, end - o.start);
+        onProgress?.(Math.min(1, (video.currentTime - o.start) / span));
+        if (video.ended || video.currentTime >= end) return finish();
+        requestAnimationFrame(draw);
+      };
+      video.onended = finish;
+      requestAnimationFrame(draw);
+    });
+    await stopped;
+
+    const blob = new Blob(chunks, { type: 'video/mp4' });
+    // A re-encode that came out bigger saved nothing — unless it was trimmed,
+    // where a shorter clip is the point whatever it weighs.
+    if (!blob.size || (!plan.trimmed && blob.size >= file.size)) return file;
+    return new File([blob], file.name.replace(/\.[^.]+$/, '') + '.mp4', { type: 'video/mp4' });
+  } catch {
+    return file;
+  } finally {
+    URL.revokeObjectURL(url);
+    video.removeAttribute('src');
+  }
+}
+
 // ── Pasting and dropping ─────────────────────────────────────────────────────
 //
 // Asked for as: accept pasted and dropped images and files.
@@ -3051,10 +3277,40 @@ function renderPendingFiles() {
       img.src = p.url;
       img.onclick = () => openLightbox(p.url); // preview before sending
       item.appendChild(img);
+    } else if (p.file.type.startsWith('video/')) {
+      // A real frame from the clip, its length and its weight — reported as:
+      // the web gives no options and no idea what is about to be sent.
+      item.classList.add('pending-video');
+      const v = document.createElement('video');
+      v.src = p.url;
+      v.preload = 'metadata';
+      v.muted = true;
+      v.playsInline = true;
+      item.appendChild(v);
+      const meta = document.createElement('div');
+      meta.className = 'pending-meta';
+      meta.textContent = WebVideo.humanSize(p.file.size);
+      item.appendChild(meta);
+      const cog = document.createElement('button');
+      cog.className = 'pending-cog';
+      cog.textContent = VideoQuality.presetFor(videoOptsFor(p.file).quality).label;
+      cog.title = 'Resolution and trim';
+      cog.onclick = (e) => { e.stopPropagation(); openVideoSheet(p.file); };
+      item.appendChild(cog);
+      readVideoMeta(p).then(o => {
+        if (!o.duration) return;
+        const plan = WebVideo.plan({
+          duration: o.duration, start: o.start, end: o.end, quality: o.quality,
+          bytes: p.file.size, width: o.width, height: o.height,
+          canReencode: WebVideo.canReencode(),
+        });
+        meta.textContent = `${VideoQuality.fmtDuration(plan.seconds || o.duration)} · `
+          + WebVideo.humanSize(plan.bytes || p.file.size);
+      });
     } else {
       const box = document.createElement('div');
       box.className = 'pending-file-box';
-      box.textContent = p.file.type.startsWith('video/') ? '🎥' : '📄';
+      box.textContent = '📄';
       box.title = p.file.name;
       item.appendChild(box);
     }
@@ -3105,9 +3361,17 @@ function sendPendingFiles() {
   // so a gallery of ten photos is resized once each rather than a bubble at a
   // time while the user watches.
   const quality = sendQuality;
-  const prepared = Promise.all(items.map(async p => (
-    { ...p, file: await compressForSend(p.file, quality) }
-  )));
+  const prepared = Promise.all(items.map(async p => {
+    // Videos go through their own preparation: the resolution and the trim
+    // chosen in the sheet, applied in real time before anything is uploaded.
+    if (p.file.type.startsWith('video/')) {
+      const out = await encodeVideoForSend(p.file, showVideoProgress);
+      hideVideoProgress();
+      videoOpts.delete(p.file);
+      return { ...p, file: out };
+    }
+    return { ...p, file: await compressForSend(p.file, quality) };
+  }));
 
   prepared.then(ready => sendPrepared(ready, caption, oneTimeSeconds, roomId, replyToId));
   cancelReply();
