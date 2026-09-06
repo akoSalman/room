@@ -1039,7 +1039,11 @@ function showRecordingUser(user) { recordingUsers.add(user); renderTypingBar(); 
 function hideRecordingUser(user) { recordingUsers.delete(user); renderTypingBar(); }
 function renderTypingBar() {
   const bar = document.getElementById('typing-bar');
-  if (typingUsers.size === 0 && recordingUsers.size === 0) { bar.classList.add('hidden'); return; }
+  if (typingUsers.size === 0 && recordingUsers.size === 0) {
+    bar.classList.add('hidden');
+    liftScrollFab();
+    return;
+  }
   // Recording takes priority over typing in the indicator
   let text;
   if (recordingUsers.size > 0) {
@@ -1054,6 +1058,9 @@ function renderTypingBar() {
   }
   bar.innerHTML = `<span>${text}</span><span class="typing-dots"><span></span><span></span><span></span></span>`;
   bar.classList.remove('hidden');
+  // This line adds a row above the composer, so the buttons pinned near that
+  // edge have to move with it.
+  liftScrollFab();
 }
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
@@ -4711,12 +4718,24 @@ function firstImageOf(msg) {
   return path;
 }
 
-/** Leave the thread and go to the message it is about. */
+/**
+ * Leave the thread and go to the message it is about.
+ *
+ * The jump waits for the CONVERSATION TO BE BACK ON SCREEN. Reported as:
+ * sometimes back from a thread lands at the end of the chat.
+ *
+ * While a thread is open the message list is `display: none` (body.commenting),
+ * and a hidden element has no layout — scrollIntoView on a child of one is
+ * measured against nothing and lands wherever the list happened to be, which
+ * after any message arriving during the thread is the bottom. Two frames is
+ * what it takes for the browser to lay the list out again after the class is
+ * removed.
+ */
 function jumpToParentMessage(fromHistory) {
   const id = commentParent && commentParent.id;
   if (id == null) return;
   closeComments(fromHistory);
-  jumpToMessage(Number(id));
+  requestAnimationFrame(() => requestAnimationFrame(() => jumpToMessage(Number(id))));
 }
 
 /** One comment arriving while its thread is open. */
@@ -4832,9 +4851,8 @@ function refreshCommentJump() {
     : null;
   commentJump = jump;
   chip.classList.toggle('hidden', !jump);
-  chip.classList.toggle('up', !!jump && jump.dir === 'up');
-  chip.classList.toggle('down', !!jump && jump.dir === 'down');
-  chip.textContent = CommentUnread.jumpLabel(jump);
+  document.getElementById('comment-jump-text').textContent = CommentUnread.jumpLabel(jump);
+  document.getElementById('comment-jump-arrow').textContent = CommentUnread.jumpArrow(jump);
 }
 let commentJump = null;
 
@@ -5277,6 +5295,7 @@ function updateScrollFab() {
   const container = document.getElementById('messages');
   const fab = document.getElementById('scroll-fab');
   if (!container || !fab) return;
+  liftScrollFab();
   const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
   fab.textContent = '↓';
   fab.title = 'Go to the newest messages';
@@ -5284,6 +5303,39 @@ function updateScrollFab() {
   // more history beyond the end of what is loaded.
   if (nearBottom && !hasNewerMsgs) fab.classList.add('hidden');
   else fab.classList.remove('hidden');
+}
+
+/**
+ * Hold the button clear of whatever is stacked under it.
+ *
+ * Reported as: while "… is typing" is showing, the go-to-newest button does
+ * not work. The typing line and the reply/edit banners each add their own row
+ * above the composer, and a button pinned a fixed distance from the bottom
+ * ends up sitting on them.
+ *
+ * The offsets come from the same rule the app uses, so the two cannot drift
+ * into disagreeing about where this button lives.
+ */
+function liftScrollFab() {
+  const fab = document.getElementById('scroll-fab');
+  const list = document.getElementById('messages');
+  const area = document.getElementById('chat-area');
+  if (!fab || !list || !area) return;
+  // MEASURED, not counted in px.
+  //
+  // The stack under the conversation grows and shrinks — the typing line, the
+  // reply and edit banners, the emoji bar, the composer itself on two lines —
+  // and a button pinned a fixed distance from the bottom ends up sitting on
+  // whichever of them happens to be there. The list's own bottom edge is where
+  // all of that begins, and the browser already knows where that is.
+  const areaRect = area.getBoundingClientRect();
+  const listRect = list.getBoundingClientRect();
+  if (!listRect.height) return;   // hidden (a thread is open): nothing to place
+  const bottom = Math.max(0, Math.round(areaRect.bottom - listRect.bottom)) + ScrollFab.FAB_GAP;
+  fab.style.bottom = bottom + 'px';
+  const chip = document.getElementById('comment-jump');
+  // The chip rides just above it, in the same one place.
+  if (chip) chip.style.bottom = (bottom + 52) + 'px';
 }
 
 // ─── Lightbox ─────────────────────────────────────────────────────────────────

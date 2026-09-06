@@ -140,9 +140,17 @@
 
     <!-- New comments, and which way they lie.
          A comment never appears in the conversation, so without this the chat
-         was badged for something with no way to find it. Pinned to the edge it
-         points at, and it scrolls to the message when tapped. -->
-    <button id="comment-jump" class="comment-jump hidden" onclick="goToUnreadComments()"></button>
+         was badged for something with no way to find it.
+
+         It sits directly above the composer, centred, in ONE fixed place: it
+         used to hop between the top and bottom edges depending on which way it
+         pointed, and a control that moves is one the eye has to hunt for. The
+         direction is something it says now, not somewhere it sits. -->
+    <button id="comment-jump" class="comment-jump hidden" onclick="goToUnreadComments()">
+      <span class="comment-jump-icon">💬</span>
+      <span id="comment-jump-text" class="comment-jump-text"></span>
+      <span id="comment-jump-arrow" class="comment-jump-arrow"></span>
+    </button>
 
     <!-- ── Comments ──────────────────────────────────
      A message's thread as its own screen. It sits HERE, directly after the
@@ -640,6 +648,7 @@
 <script src="/js/commentUnread.js"></script>
 <script src="/js/e2eState.js"></script>
 <script src="/js/unreadJump.js"></script>
+<script src="/js/scrollFab.js"></script>
 <script src="/js/emojiOrder.js"></script>
 <script src="/js/touchScroll.js"></script>
 <script src="/js/linkPreview.js"></script>

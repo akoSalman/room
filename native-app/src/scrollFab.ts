@@ -57,3 +57,39 @@ export function fabMode(o: {
 export function clearsUnseenOnTap(mode: FabMode): boolean {
   return mode === 'bottom';
 }
+
+/**
+ * How far to lift the button clear of what is stacked under it.
+ *
+ * Reported as: while "… is typing" is showing, the go-to-newest button does
+ * not work. The typing line is drawn AFTER the button and adds its own height
+ * at the bottom of the screen, so it lands on top of a button pinned a fixed
+ * distance from that edge — and a tap goes to the text rather than to the
+ * control underneath it. The reply and edit banners had already been given a
+ * lift for the same reason; the typing and recording lines never were.
+ *
+ * Returned in the same units both clients use for that offset (px), so neither
+ * has to remember the numbers.
+ */
+export const FAB_BASE = 148;
+/**
+ * The clearance between the button and whatever is under it.
+ *
+ * The web measures where the conversation actually ends — the browser knows,
+ * and the stack under it changes size — and adds this. The app cannot measure
+ * as cheaply, so it counts in the offsets below and uses the same gap.
+ */
+export const FAB_GAP = 12;
+export const FAB_BANNER_LIFT = 66;
+export const FAB_ACTIVITY_LIFT = 26;
+
+export function fabBottom(o: {
+  /** A reply or edit banner is above the composer. */
+  banner?: boolean;
+  /** Somebody is typing or recording, which draws its own line. */
+  activity?: boolean;
+}): number {
+  return FAB_BASE
+    + (o?.banner ? FAB_BANNER_LIFT : 0)
+    + (o?.activity ? FAB_ACTIVITY_LIFT : 0);
+}

@@ -88,7 +88,7 @@ import { shouldWarm, WARM_TTL_MS } from '../recordStart';
 import * as selection from '../selection';
 import { searchLocal, mergeResults } from '../localSearch';
 import * as win from '../messageWindow';
-import { fabMode, atPresent, clearsUnseenOnTap } from '../scrollFab';
+import { fabMode, atPresent, clearsUnseenOnTap, fabBottom } from '../scrollFab';
 import {
   reduceSelection, initialSelection, stillMoving, LONG_PRESS_MS, DOUBLE_TAP_MS,
   type SelectionState, type MsgId,
@@ -127,7 +127,7 @@ import {
 } from '../e2eState';
 import {
   noteComment, clearFor, countFor, chooseJump, jumpLabel,
-  badgeLabel as commentBadgeLabel, Jump,
+  badgeLabel as commentBadgeLabel, jumpArrow, Jump,
 } from '../commentUnread';
 import { firstUnread, worthJumping, unreadLabel } from '../unreadJump';
 
@@ -457,6 +457,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   const [commentJump, setCommentJump] = useState<Jump | null>(null);
   /** The first message of this visit's unread run, so it can be marked on screen. */
   const [unreadFrom, setUnreadFrom] = useState<number | null>(null);
+  /** A thread was closed; this message is where the reader should land. */
+  const [pendingParentJump, setPendingParentJump] = useState<number | null>(null);
   /** How many were waiting when this chat was opened — the divider's number. */
   const unreadCountOnEntry = useRef(0);
   const commentParentRef = useRef<Message | null>(null); commentParentRef.current = commentParent;
@@ -615,12 +617,52 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     return rel ? `${BASE_URL}${rel}` : '';
   }
 
-  /** Leave the thread and go to the message it is about. */
+  /**
+   * Leave the thread and go to the message it is about.
+   *
+   * The jump is REMEMBERED rather than performed here. Reported as: sometimes
+   * back from a thread lands at the end of the chat.
+   *
+   * The message list is unmounted while a thread is open — `commentParent ?
+   * null : <FlatList>` — so at this moment there is no list to scroll and no
+   * ref to scroll it by. Closing is a state change React has not applied yet;
+   * the old code scrolled 60ms later and hoped, and when the list had not
+   * mounted by then the scroll went nowhere. An inverted FlatList mounts at
+   * offset 0, which is the NEWEST message — the end of the chat, exactly as
+   * reported.
+   */
   function jumpToParentMessage() {
     const id = commentParent?.id;
     closeComments();
-    if (id != null) jumpToMessage(Number(id));
+    if (id != null) setPendingParentJump(Number(id));
   }
+
+  /**
+   * Perform that jump once the list is really back.
+   *
+   * Waits for the ref rather than for a delay: a slow device with a long chat
+   * is exactly the case a fixed timeout gets wrong, and it is also the case
+   * where landing in the wrong place is most disorienting.
+   */
+  useEffect(() => {
+    if (commentParent || pendingParentJump == null) return;
+    let alive = true;
+    let tries = 0;
+    const go = () => {
+      if (!alive) return;
+      if (flatListRef.current) {
+        jumpToMessage(pendingParentJump);
+        setPendingParentJump(null);
+        return;
+      }
+      if (tries++ < 20) { timer = setTimeout(go, 50); return; }
+      // A second of waiting and no list: give up rather than jump into
+      // whatever is on screen by then.
+      setPendingParentJump(null);
+    };
+    let timer: any = setTimeout(go, 0);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [commentParent, pendingParentJump]);
 
   function closeComments() {
     setCommentParent(null);
@@ -1169,6 +1211,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
     unseen: missedCount,
   });
   const fabVisible = currentFabMode !== 'hidden';
+  /** Is a typing or recording line being drawn under the buttons? */
+  const someoneIsBusy = recordingUsers.filter(u => u !== me).length > 0
+    || typing.filter(u => u !== me).length > 0;
 
   // When a voice message finishes, auto-play the next voice message in this chat
   useEffect(() => {
@@ -4817,7 +4862,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       {/* Jump to the oldest mention of me that I have not looked at yet. */}
       {mentionIds.length > 0 && (
         <TouchableOpacity
-          style={[s.mentionFab, (replyTo || editingId) && s.mentionFabRaised]}
+          // Above the go-to-newest button, wherever that has been lifted to.
+          style={[s.mentionFab, { bottom: fabBottom({
+            banner: !!(replyTo || editingId),
+            activity: someoneIsBusy,
+          }) + 52 }]}
           onPress={() => {
             const [next, ...rest] = mentionIds;
             setMentionIds(rest);
@@ -4833,18 +4882,23 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
         </TouchableOpacity>
       )}
 
-      {/* New comments, and which way they are.
-          Pinned to the edge it points at — a chip that says "up" while sitting
-          at the bottom of the screen makes the reader work out the direction
-          twice. Tapping it goes to the message, whose own strip carries the
-          count. */}
+      {/* New comments, in ONE place: directly above the composer, centred.
+          It used to hop between the top and bottom edges depending on which
+          way it pointed, and a control that moves is one the eye has to hunt
+          for. The direction is something it SAYS now — in words, because a
+          bare arrow beside a number was two symbols to decode. */}
       {!commentParent && !!commentJump && (
         <TouchableOpacity
-          style={[s.commentJump, commentJump.dir === 'up' ? s.commentJumpTop : s.commentJumpBottom]}
+          style={[s.commentJump, { bottom: fabBottom({
+            banner: !!(replyTo || editingId),
+            activity: someoneIsBusy,
+          }) - 60 }]}
           onPress={goToUnreadComments}
-          accessibilityLabel={`New comments, ${commentJump.dir === 'up' ? 'above' : 'below'}`}
+          accessibilityLabel={`${jumpLabel(commentJump)}, ${commentJump.dir === 'up' ? 'above' : 'below'}`}
         >
+          <Text style={s.commentJumpIcon}>💬</Text>
           <Text style={s.commentJumpText}>{jumpLabel(commentJump)}</Text>
+          <Text style={s.commentJumpArrow}>{jumpArrow(commentJump)}</Text>
         </TouchableOpacity>
       )}
 
@@ -4852,7 +4906,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
 
       {fabVisible && (
         <TouchableOpacity
-          style={[s.scrollFab, (replyTo || editingId) && s.scrollFabRaised]}
+          // Lifted clear of whatever is stacked under it. Reported as: while
+          // "… is typing" is showing, this button does not work — the typing
+          // line is drawn AFTER it and lands on top of a button pinned a fixed
+          // distance from the bottom of the screen, so the tap goes to the
+          // text. The banners had a lift already; the typing line never did.
+          style={[s.scrollFab, { bottom: fabBottom({
+            banner: !!(replyTo || editingId),
+            activity: someoneIsBusy,
+          }) }]}
           onPress={handleScrollFabPress}
         >
           <Text style={s.scrollFabIcon}>↓</Text>
@@ -4865,6 +4927,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       )}
 
       {/* Recording / typing indicator (recording takes priority) */}
+      {/* someoneIsBusy above is the same condition, so the button's lift and
+          the line's presence cannot disagree. */}
       {recordingUsers.filter(u => u !== me).length > 0 ? (
         <Text style={s.recordingBar}>🎙 {recordingUsers.filter(u => u !== me).join(', ')} is recording…</Text>
       ) : typing.filter(u => u !== me).length > 0 ? (
@@ -6081,9 +6145,6 @@ const s = StyleSheet.create({
     backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center',
     elevation: 4, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 6, shadowOffset: { width: 0, height: 2 },
   },
-  // The reply/edit banner adds a row above the composer; without this the FAB
-  // sat right on top of the banner's ✕.
-  scrollFabRaised: { bottom: 214 },
   scrollFabIcon: { color: '#fff', fontSize: 18, fontWeight: '700' },
   scrollFabBadge: {
     position: 'absolute', top: -5, right: -5, minWidth: 20, height: 20,
@@ -6094,13 +6155,21 @@ const s = StyleSheet.create({
   scrollFabBadgeText: { color: '#fff', fontSize: 10.5, fontWeight: '800' },
   commentJump: {
     position: 'absolute', alignSelf: 'center', flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: 14, paddingVertical: 7, borderRadius: 16,
-    backgroundColor: C.accent,
-    elevation: 4, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 6, shadowOffset: { width: 0, height: 2 },
+    gap: 8, paddingLeft: 14, paddingRight: 8, paddingVertical: 7, borderRadius: 999,
+    // Its own surface rather than a block of accent: this sits over the
+    // conversation and has to be legible without shouting over it.
+    backgroundColor: C.sidebar, borderWidth: 1, borderColor: C.accent,
+    elevation: 6, shadowColor: '#000', shadowOpacity: 0.28, shadowRadius: 9, shadowOffset: { width: 0, height: 4 },
   },
-  commentJumpTop: { top: 10 },
-  commentJumpBottom: { bottom: 148 },
-  commentJumpText: { color: '#fff', fontSize: 13, fontWeight: '800' },
+  commentJumpIcon: { fontSize: 13 },
+  commentJumpText: { color: C.accent, fontSize: 12.5, fontWeight: '700' },
+  // The arrow in its own disc: the direction reads as the ACTION the chip
+  // performs rather than as decoration on the sentence.
+  commentJumpArrow: {
+    width: 22, height: 22, borderRadius: 11, overflow: 'hidden',
+    backgroundColor: C.accent, color: '#fff',
+    fontSize: 12, fontWeight: '800', textAlign: 'center', lineHeight: 22,
+  },
   commentBarBadge: {
     minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 5,
     backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center',
@@ -6112,7 +6181,6 @@ const s = StyleSheet.create({
     backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center',
     elevation: 4, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 6, shadowOffset: { width: 0, height: 2 },
   },
-  mentionFabRaised: { bottom: 266 },
   mentionFabIcon: { color: '#fff', fontSize: 20, fontWeight: '800' },
   lightboxOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', alignItems: 'center', justifyContent: 'center' },
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },

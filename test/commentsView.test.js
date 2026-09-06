@@ -488,6 +488,31 @@ test('BACK goes to the message, not to the end of the chat', () => {
     'a back press pops the history entry twice, so the next one leaves the site');
 });
 
+test('BACK LANDS ON THE MESSAGE, not at the end of the chat', () => {
+  // Reported as: still sometimes, tapping back in a thread puts you at the
+  // latest message.
+  //
+  // Both clients HIDE the conversation while a thread is open — the app
+  // unmounts its list, the web sets display:none — and neither can be scrolled
+  // in that state. The jump was issued in the same breath as the close, so it
+  // landed on a list that was not there yet: on the app an inverted FlatList
+  // mounts at offset 0, which IS the newest message.
+  const chatSrc = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  const fn = chatSrc.slice(chatSrc.indexOf('function jumpToParentMessage()'),
+    chatSrc.indexOf('function closeComments()'));
+  assert.ok(fn.length > 0, 'jumpToParentMessage is gone — this check would be vacuous');
+  assert.ok(/setPendingParentJump\(Number\(id\)\)/.test(fn),
+    'the app still jumps before the list it is jumping in has come back');
+  assert.ok(!/jumpToMessage\(Number\(id\)\)/.test(fn), 'the jump is still done inline');
+  // …and it waits for the LIST, not for a guess at how long mounting takes.
+  assert.ok(/if \(flatListRef\.current\) \{/.test(chatSrc),
+    'the app waits on a timer rather than on the list actually existing');
+  assert.ok(/if \(tries\+\+ < 20\)/.test(chatSrc), 'it retries forever, or not at all');
+
+  assert.ok(/requestAnimationFrame\(\(\) => requestAnimationFrame\(\(\) => jumpToMessage\(Number\(id\)\)\)\)/.test(app),
+    'the web scrolls a list the browser has not laid out yet, which lands wherever it was');
+});
+
 test('the strip reads as a control, not as a footnote', () => {
   // Asked for as: that comment count bar below messages should be slightly
   // more highlighted. Transparent on top of the bubble, it was just another

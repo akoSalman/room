@@ -137,11 +137,42 @@ test('nothing to say when there is nothing unread', () => {
     'a chip was drawn before anything had been measured');
 });
 
-test('the chip says which way and how many', () => {
-  assert.strictEqual(W.jumpLabel({ id: 'a', dir: 'down', count: 3 }), '↓ 💬 3');
-  assert.strictEqual(W.jumpLabel({ id: 'a', dir: 'up', count: 1 }), '↑ 💬 1');
-  assert.strictEqual(W.jumpLabel({ id: 'a', dir: 'up', count: 150 }), '↑ 💬 99+');
+test('THE CHIP SAYS IT IN WORDS, and points with its own arrow', () => {
+  // It used to read "↑ 💬 2": two symbols and a number to decode, in a chip
+  // that also MOVED between the top and bottom edges of the screen depending
+  // on which way it pointed. Being told where to look is one job; being able
+  // to find the thing that tells you is another, and a control that moves is
+  // one the eye has to hunt for every time.
+  assert.strictEqual(W.jumpLabel({ id: 'a', dir: 'down', count: 3 }), '3 new comments');
+  assert.strictEqual(W.jumpLabel({ id: 'a', dir: 'up', count: 1 }), '1 new comment');
+  assert.strictEqual(W.jumpLabel({ id: 'a', dir: 'up', count: 150 }), '99+ new comments');
   assert.strictEqual(W.jumpLabel(null), '');
+  // The direction is still there — as an arrow of its own, so the chip can put
+  // it where it reads as the action rather than as decoration on the sentence.
+  assert.strictEqual(W.jumpArrow({ dir: 'up' }), '↑');
+  assert.strictEqual(W.jumpArrow({ dir: 'down' }), '↓');
+  assert.strictEqual(W.jumpArrow(null), '');
+});
+
+test('the chip lives in ONE place, above the composer', () => {
+  const css = fs.readFileSync(path.join(ROOT, 'public', 'css', 'style.css'), 'utf8');
+  const rule = /\.comment-jump \{([^}]*)\}/.exec(css);
+  assert.ok(rule, '.comment-jump has no rule — this check would be vacuous');
+  assert.ok(!/\.comment-jump\.up \{/.test(css) && !/\.comment-jump\.down \{/.test(css),
+    'the chip still hops between the top and bottom edges');
+  assert.ok(/bottom:/.test(rule[1]), 'the chip is not anchored above the composer');
+  assert.ok(/left: 50%/.test(rule[1]) && /translateX\(-50%\)/.test(rule[1]),
+    'the chip is not centred');
+  const html = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
+  assert.ok(/id="comment-jump-arrow"/.test(html) && /id="comment-jump-text"/.test(html),
+    'the chip is one blob of text again, so the arrow cannot be styled apart');
+
+  const chat = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  assert.ok(!/commentJumpTop|commentJumpBottom/.test(chat),
+    'the app chip still moves between the edges');
+  assert.ok(/jumpArrow\(commentJump\)/.test(chat), 'the app chip lost its direction');
+  assert.ok(/style=\{\[s\.commentJump, \{ bottom: fabBottom\(/.test(chat),
+    'the app chip is not placed with the same rule as the buttons beside it');
 });
 
 // ── The two copies ──────────────────────────────────────────────────────────

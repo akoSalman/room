@@ -60,8 +60,13 @@
   function jumpLabel(jump) {
     if (!jump) return '';
     var n = Math.max(0, Math.floor(Number(jump.count) || 0));
-    var arrow = jump.dir === 'up' ? '↑' : '↓';
-    return arrow + ' 💬 ' + (n > BADGE_CAP ? BADGE_CAP + '+' : n);
+    var count = n > BADGE_CAP ? BADGE_CAP + '+' : String(n);
+    return count + ' new ' + (n === 1 ? 'comment' : 'comments');
+  }
+
+  function jumpArrow(jump) {
+    if (!jump) return '';
+    return jump.dir === 'up' ? '↑' : '↓';
   }
 
   global.CommentUnread = {
@@ -73,6 +78,7 @@
     badgeLabel: badgeLabel,
     chooseJump: chooseJump,
     jumpLabel: jumpLabel,
+    jumpArrow: jumpArrow,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
 

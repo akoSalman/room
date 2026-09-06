@@ -106,10 +106,29 @@ export function chooseJump(
   return null;
 }
 
-/** What the chip says: an arrow the way it will move, and how many are waiting. */
+/**
+ * What the chip says.
+ *
+ * It sits above the composer now — centred, in one fixed place — rather than
+ * hopping between the top and bottom edges of the screen depending on which
+ * way it points. Being told where to look is one job; being ABLE TO FIND the
+ * thing that tells you is another, and a control that moves is one the eye has
+ * to hunt for every time.
+ *
+ * So the direction is now something it SAYS rather than somewhere it sits, and
+ * it says it in words: a bare arrow beside a number was two symbols to decode,
+ * and "1 new comment ↑" is a sentence.
+ */
 export function jumpLabel(jump: Jump | null | undefined): string {
   if (!jump) return '';
   const n = Math.max(0, Math.floor(Number(jump.count) || 0));
-  const arrow = jump.dir === 'up' ? '↑' : '↓';
-  return `${arrow} 💬 ${n > BADGE_CAP ? `${BADGE_CAP}+` : n}`;
+  const count = n > BADGE_CAP ? `${BADGE_CAP}+` : String(n);
+  const word = n === 1 ? 'comment' : 'comments';
+  return `${count} new ${word}`;
+}
+
+/** Which way the chip's arrow points. Its own function so both clients agree. */
+export function jumpArrow(jump: Jump | null | undefined): string {
+  if (!jump) return '';
+  return jump.dir === 'up' ? '↑' : '↓';
 }
