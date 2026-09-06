@@ -542,6 +542,9 @@ export default function App() {
               room={room}
               onBack={() => { setScreen('rooms'); setPendingJumpMsgId(null); setPendingComment(null); }}
               onOpenDM={r => { setRoom(r); setPendingJumpMsgId(null); }}
+              // The live-location bar, tapped from a different chat: switch to
+              // the one the share is in and land on the message itself.
+              onOpenRoom={(r, msgId) => { setRoom(r); setPendingJumpMsgId(msgId); setScreen('chat'); }}
               onOpenProfile={() => { setOpenProfileOnRooms(true); setScreen('rooms'); setPendingJumpMsgId(null); }}
               initialJumpMsgId={pendingJumpMsgId}
               initialCommentTarget={pendingComment}

@@ -539,6 +539,64 @@ test('the still preview says the real map is one tap away', () => {
   assert.ok(/pointer-events: none/.test(rule), 'the badge swallows the tap it exists to advertise');
 });
 
+// ── The live-location bar ───────────────────────────────────────────────────
+//
+// Asked for: "when tapping live location bar anywhere in any chat, user should
+// be conducted to the exact message of location". The bar follows you into
+// every chat — the share keeps running when you leave the conversation — but
+// tapping it only jumped when the share happened to be in the chat already
+// open, which is the one case where the message is easy to find by hand. From
+// anywhere else it was a dead label.
+
+test('THE BUG: the bar opens the share\'s own chat, from any other chat', () => {
+  const ROOT = path.join(__dirname, '..');
+  const chat = fs.readFileSync(path.join(ROOT, 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  const at = chat.indexOf('{liveShare ? (() => {');
+  assert.ok(at > -1, 'the live bar moved');
+  const bar = chat.slice(at, chat.indexOf('})() : null}', at));
+
+  assert.ok(/if \(here\) jumpToMessage\(target\);/.test(bar),
+    'tapping the bar in the share\'s own chat no longer scrolls to the message');
+  assert.ok(/else onOpenRoom!\(liveShare\.room, target\)/.test(bar),
+    'from another chat the bar still does nothing');
+  // The tap is only offered when it can actually land somewhere.
+  assert.ok(/const canJump = Number\.isFinite\(target\) && \(here \|\| !!\(liveShare\.room && onOpenRoom\)\)/.test(bar),
+    'the bar offers a jump it cannot make, or refuses one it can');
+  assert.ok(/disabled=\{!canJump\}/.test(bar), 'the label is pressable when there is nowhere to go');
+});
+
+test('the chat is carried with the share, not looked up on the tap', () => {
+  // An id alone would have to be fetched before anything could open, so the
+  // first tap would do nothing at all.
+  const ROOT = path.join(__dirname, '..');
+  const lm = fs.readFileSync(path.join(ROOT, 'native-app', 'src', 'locationManager.ts'), 'utf8');
+  const active = lm.slice(lm.indexOf('export function activeShare()'),
+    lm.indexOf('export function activeShare()') + 300);
+  assert.ok(/room: active\.room/.test(active), 'the share does not remember which chat it belongs to');
+  assert.ok(/room: room \|\| null/.test(lm), 'startSharing throws the chat away');
+  const chat = fs.readFileSync(path.join(ROOT, 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  const call = chat.slice(chat.indexOf('locationManager.startSharing('),
+    chat.indexOf('locationManager.startSharing(') + 400);
+  assert.ok(/\n\s*room\)\.catch/.test(call), 'the chat is never passed in, so the bar has nothing to open');
+});
+
+test('the app knows how to open another chat on a given message', () => {
+  const ROOT = path.join(__dirname, '..');
+  const app = fs.readFileSync(path.join(ROOT, 'native-app', 'App.tsx'), 'utf8');
+  const at = app.indexOf('onOpenRoom={');
+  assert.ok(at > -1, 'ChatScreen is never given a way to open another chat');
+  const prop = app.slice(at, at + 200);
+  assert.ok(/setRoom\(r\)/.test(prop) && /setPendingJumpMsgId\(msgId\)/.test(prop)
+    && /setScreen\('chat'\)/.test(prop),
+    'the other chat opens without landing on the message, which is the point of the tap');
+  const chat = fs.readFileSync(path.join(ROOT, 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  assert.ok(/onOpenRoom\?: \(room: any, msgId: number\) => void;/.test(chat),
+    'the prop is passed but not declared, so it is dropped');
+  // The message is landed on when that chat mounts.
+  assert.ok(/if \(initialJumpMsgId\) setTimeout\(\(\) => jumpToMessage\(initialJumpMsgId\)/.test(chat),
+    'nothing acts on the pending jump, so the chat opens at the bottom');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

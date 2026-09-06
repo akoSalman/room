@@ -458,7 +458,14 @@ window.addEventListener('DOMContentLoaded', () => {
     // Which way the unread comments lie depends on what is on screen, so it is
     // recomputed as the screen moves.
     refreshCommentJump();
-    if (document.getElementById('messages').scrollTop < 80) loadOlderMessages();
+    // One page at a time: while the last one is still being corrected the top
+    // of the list is close enough to fire this again, and each extra page
+    // added mid-correction is another jump.
+    if (ScrollAnchor.shouldLoadOlder({
+      scrollTop: document.getElementById('messages').scrollTop,
+      loading: loadingOlderMsgs,
+      done: !hasMoreOlderMsgs,
+    })) loadOlderMessages();
   });
 });
 
@@ -4568,12 +4575,49 @@ function appendMessage(msg) {
 function prependMessages(msgs) {
   if (!msgs.length) return;
   const container = document.getElementById('messages');
-  const prevScrollHeight = container.scrollHeight;
-  const prevScrollTop = container.scrollTop;
+  // The message that is currently at the top: everything added goes above it,
+  // so keeping IT still is the whole job. Measuring the container's total
+  // height instead was the bug — see js/scrollAnchor.js: a page containing
+  // photos measures as almost nothing until they load, and then grows above
+  // the reader, which is the hop.
+  const anchor = container.firstElementChild;
+  const where = () => (anchor
+    ? anchor.getBoundingClientRect().top - container.getBoundingClientRect().top
+    : 0);
+  let held = where();
+
   const frag = document.createDocumentFragment();
   msgs.forEach(m => frag.appendChild(buildMessageElement(m)));
+  const added = Array.from(frag.children);
   container.insertBefore(frag, container.firstChild);
-  container.scrollTop = prevScrollTop + (container.scrollHeight - prevScrollHeight);
+
+  const restore = () => {
+    if (!anchor || !anchor.isConnected) return;
+    const shift = ScrollAnchor.shiftFor(held, where());
+    if (!ScrollAnchor.worthCorrecting(shift)) return;
+    container.scrollTop = ScrollAnchor.nextTop(container.scrollTop, shift);
+  };
+  restore();
+
+  // …and again as the pictures in those messages arrive, each of which grows
+  // the content above the reader. Without this the correction above is exact
+  // and still wrong a second later.
+  const startedAt = Date.now();
+  const holdOnce = () => {
+    if (!ScrollAnchor.stillHolding(startedAt, Date.now())) return;
+    restore();
+  };
+  added.forEach(el => {
+    el.querySelectorAll('img, video').forEach(m => {
+      if (m.complete) return;
+      m.addEventListener('load', holdOnce, { once: true });
+      m.addEventListener('loadedmetadata', holdOnce, { once: true });
+      m.addEventListener('error', holdOnce, { once: true });
+    });
+  });
+  // One more after layout, for anything that settles without an event of its
+  // own (fonts, a link preview's own late measurements).
+  requestAnimationFrame(holdOnce);
 }
 
 // ─── Context menu ─────────────────────────────────────────────────────────────

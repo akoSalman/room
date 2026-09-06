@@ -183,13 +183,15 @@ function looksRTLText(t: string): boolean {
   return baseDirection(t) === 'rtl';
 }
 
-export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, initialJumpMsgId, initialCommentTarget, initialShare, onShareConsumed }: {
+export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOpenRoom, initialJumpMsgId, initialCommentTarget, initialShare, onShareConsumed }: {
   room: { id: number; name: string; is_dm: number; other_username?: string; other_avatar?: string | null; is_private?: number; created_by?: number };
   initialShare?: { files?: { path: string; mimeType?: string; fileName?: string }[]; text?: string | null } | null;
   onShareConsumed?: () => void;
   onBack: () => void;
   onOpenDM: (room: { id: number; name: string; is_dm: number; other_username?: string }) => void;
   onOpenProfile: () => void;
+  /** Open a DIFFERENT chat and land on one message in it. */
+  onOpenRoom?: (room: any, msgId: number) => void;
   initialJumpMsgId?: number | null;
   /** A tapped comment notification: the thread to open, and the comment in it. */
   initialCommentTarget?: { parentId: number; commentId: number | null } | null;
@@ -1718,7 +1720,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           const { until } = pendingLiveShare.current;
           pendingLiveShare.current = null;
           locationManager.startSharing(msg.id, room.id, until,
-            room.is_dm ? (room.other_username || room.name) : room.name).catch(() => {});
+            room.is_dm ? (room.other_username || room.name) : room.name,
+            // Kept so the bar can open this chat again from any other one.
+            room).catch(() => {});
         }
         if (win.followsNewMessage({
           atEnd: isNearBottomRef.current,
@@ -5770,11 +5774,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
       {liveShare ? (() => {
         // Tapping the bar goes to the message it is about — the bar names a
         // specific live share, so the obvious thing to do with it is look at
-        // it. Only when that message is in THIS chat, though; there is nothing
-        // to scroll to when the share belongs to another conversation.
+        // it.
+        //
+        // From ANY chat, as asked for. It used to jump only when the share
+        // happened to be in the chat already open, which is the one case where
+        // the message is easiest to find by hand; from anywhere else the bar
+        // was a dead label. Now it opens the conversation the share is in and
+        // lands on the message there.
         const here = String(liveShare.roomId) === String(room.id);
         const target = Number(liveShare.messageId);
-        const canJump = here && Number.isFinite(target);
+        const canJump = Number.isFinite(target) && (here || !!(liveShare.room && onOpenRoom));
         return (
         <View style={s.liveBar}>
           <Ionicons name="navigate" size={15} color="#22c55e" />
@@ -5783,12 +5792,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           <TouchableOpacity
             style={{ flex: 1, minWidth: 0 }}
             disabled={!canJump}
-            onPress={() => jumpToMessage(target)}
+            onPress={() => {
+              if (!canJump) return;
+              if (here) jumpToMessage(target);
+              else onOpenRoom!(liveShare.room, target);
+            }}
           >
             <Text style={s.liveBarText} numberOfLines={1}>
               {here
                 ? `Sharing your live location · ${formatRemaining(liveShare.until)}`
-                : `Sharing live location in another chat · ${formatRemaining(liveShare.until)}`}
+                : `Sharing live location in ${liveShare.room?.is_dm
+                    ? (liveShare.room?.other_username || liveShare.room?.name || 'another chat')
+                    : (liveShare.room?.name || 'another chat')} · ${formatRemaining(liveShare.until)}`}
             </Text>
           </TouchableOpacity>
           <TouchableOpacity onPress={stopLiveShare} hitSlop={hitSlop10}>

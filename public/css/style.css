@@ -341,6 +341,12 @@ body.kb-open #install-hint { display: none; }
   padding: 12px 16px 8px;
   display: flex; flex-direction: column; gap: 6px;
   -webkit-overflow-scrolling: touch;
+  /* Chrome quietly keeps your place when content above you grows; Safari has
+     never implemented scroll anchoring at all, which is why loading older
+     messages hopped on iOS and nowhere else. The list now keeps its own place
+     (js/scrollAnchor.js), so the browser's version of it is turned off rather
+     than left to correct the same thing twice on one browser out of two. */
+  overflow-anchor: none;
 }
 
 /* ── Typing bar — bottom center above input ───────── */

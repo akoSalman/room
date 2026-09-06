@@ -14,6 +14,15 @@ import { showLiveLocation, hideLiveLocation } from './incomingCall';
 type Active = {
   messageId: number | string;
   roomId: number | string;
+  /**
+   * The chat this share lives in, kept whole rather than as an id.
+   *
+   * Asked for: tapping the live-location bar should go to the message it is
+   * about, from ANY chat. From another chat that means opening a different
+   * conversation, and opening one needs the room itself — an id alone would
+   * have to be looked up, and the bar would do nothing until it came back.
+   */
+  room: any;
   until: number;
   sub: Location.LocationSubscription | null;
   timer: any;
@@ -29,7 +38,9 @@ export function subscribe(fn: () => void) {
 function emit() { listeners.forEach(f => f()); }
 
 export function activeShare() {
-  return active ? { messageId: active.messageId, roomId: active.roomId, until: active.until } : null;
+  return active
+    ? { messageId: active.messageId, roomId: active.roomId, room: active.room, until: active.until }
+    : null;
 }
 
 /** Foreground permission, asked only when it isn't already granted. */
@@ -67,6 +78,7 @@ export async function currentPosition(): Promise<{ lat: number; lng: number; acc
 /** Begin streaming positions into an existing live-location message. */
 export async function startSharing(
   messageId: number | string, roomId: number | string, until: number, chatName?: string,
+  room?: any,
 ) {
   await stopSharing({ silent: true });
 
@@ -100,6 +112,7 @@ export async function startSharing(
   active = {
     messageId,
     roomId,
+    room: room || null,
     until,
     sub,
     timer: setTimeout(() => stopSharing(), Math.max(0, until - Date.now())),
