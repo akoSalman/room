@@ -1,0 +1,108 @@
+diff --git a/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/views/textinput/ReactEditText.java b/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/views/textinput/ReactEditText.java
+index 0904f43..635eb65 100644
+--- a/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/views/textinput/ReactEditText.java
++++ b/node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/views/textinput/ReactEditText.java
+@@ -42,6 +42,12 @@ import androidx.annotation.Nullable;
+ import androidx.appcompat.widget.AppCompatEditText;
+ import androidx.core.util.Predicate;
+ import androidx.core.view.ViewCompat;
++import androidx.core.view.inputmethod.EditorInfoCompat;
++import androidx.core.view.inputmethod.InputConnectionCompat;
++import androidx.core.view.inputmethod.InputContentInfoCompat;
++import com.facebook.react.bridge.Arguments;
++import com.facebook.react.bridge.WritableMap;
++import com.facebook.react.modules.core.DeviceEventManagerModule;
+ import com.facebook.common.logging.FLog;
+ import com.facebook.infer.annotation.Assertions;
+ import com.facebook.react.bridge.ReactContext;
+@@ -300,6 +306,90 @@ public class ReactEditText extends AppCompatEditText {
+       // Remove IME_FLAG_NO_ENTER_ACTION to keep the original IME_OPTION
+       outAttrs.imeOptions &= ~EditorInfo.IME_FLAG_NO_ENTER_ACTION;
+     }
++
++    // ── Images pasted from the keyboard ───────────────────────────────────
++    //
++    // Reported with a photo of Gboard refusing: "BistbargChat does not support
++    // image pasting here". It did not. A React Native text field never tells
++    // the keyboard which kinds of content it can take, so every keyboard
++    // assumes plain text only — that is the whole of the bug, and there is no
++    // prop for it, which is why this is patched here.
++    //
++    // Everything below is wrapped: a text field that throws on focus is worse
++    // than one that cannot take a pasted image, so any failure falls back to
++    // the ordinary text-only connection.
++    if (inputConnection != null) {
++      try {
++        EditorInfoCompat.setContentMimeTypes(outAttrs, new String[] {"image/*"});
++        final ReactContext emitTo = reactContext;
++        InputConnectionCompat.OnCommitContentListener listener =
++            new InputConnectionCompat.OnCommitContentListener() {
++              @Override
++              public boolean onCommitContent(
++                  InputContentInfoCompat info, int flags, Bundle opts) {
++                boolean granted = false;
++                try {
++                  if ((flags & InputConnectionCompat.INPUT_CONTENT_GRANT_READ_URI_PERMISSION)
++                      != 0) {
++                    info.requestPermission();
++                    granted = true;
++                  }
++                  // Copied into our own cache rather than passed on as a
++                  // content:// URI: the read permission the keyboard grants
++                  // ends the moment this returns, and an upload that starts
++                  // later would find nothing there.
++                  String mime = "image/jpeg";
++                  if (info.getDescription() != null
++                      && info.getDescription().getMimeTypeCount() > 0) {
++                    mime = info.getDescription().getMimeType(0);
++                  }
++                  String ext = mime.contains("png") ? ".png"
++                      : mime.contains("gif") ? ".gif"
++                      : mime.contains("webp") ? ".webp" : ".jpg";
++                  java.io.File out =
++                      new java.io.File(
++                          getContext().getCacheDir(),
++                          "pasted-" + System.currentTimeMillis() + ext);
++                  java.io.InputStream in =
++                      getContext().getContentResolver().openInputStream(info.getContentUri());
++                  if (in == null) {
++                    return false;
++                  }
++                  java.io.OutputStream os = new java.io.FileOutputStream(out);
++                  byte[] buf = new byte[8192];
++                  int n;
++                  while ((n = in.read(buf)) > 0) {
++                    os.write(buf, 0, n);
++                  }
++                  os.close();
++                  in.close();
++
++                  WritableMap ev = Arguments.createMap();
++                  ev.putString("uri", "file://" + out.getAbsolutePath());
++                  ev.putString("name", out.getName());
++                  ev.putString("mime", mime);
++                  emitTo
++                      .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
++                      .emit("onPasteImage", ev);
++                  return true;
++                } catch (Throwable t) {
++                  return false;
++                } finally {
++                  if (granted) {
++                    try {
++                      info.releasePermission();
++                    } catch (Throwable ignored) {
++                    }
++                  }
++                }
++              }
++            };
++        inputConnection =
++            InputConnectionCompat.createWrapper(inputConnection, outAttrs, listener);
++      } catch (Throwable t) {
++        // Keyboards simply keep refusing images; typing still works.
++      }
++    }
+     return inputConnection;
+   }
+ 

@@ -3,7 +3,7 @@ import {
   View, Text, TextInput, FlatList, TouchableOpacity,
   StyleSheet, KeyboardAvoidingView, Platform, Alert, Dimensions,
   ActivityIndicator, Modal, ScrollView, Image, Linking, Share, Pressable, AppState, BackHandler,
-  PanResponder,
+  PanResponder, DeviceEventEmitter,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as DocumentPicker from 'expo-document-picker';
@@ -2179,6 +2179,33 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
   useEffect(() => {
     checkClipboard();
     const sub = AppState.addEventListener('change', st => { if (st === 'active') checkClipboard(); });
+    return () => sub.remove();
+  }, []);
+
+  // ── An image pasted from the KEYBOARD ─────────────────────────────────────
+  //
+  // Reported with a photo of Gboard refusing: "BistbargChat does not support
+  // image pasting here". A React Native text field never tells the keyboard
+  // which content types it accepts, so every keyboard assumes plain text and
+  // greys the image out. There is no prop for that — the field is patched
+  // (patches/react-native+0.74.5.patch) to advertise image/* and to hand the
+  // committed file over here, already copied into our own cache because the
+  // keyboard's read permission ends the moment it returns.
+  //
+  // The clipboard button below stays: it is the only route on iOS, and it
+  // still works when a keyboard has no image key at all.
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('onPasteImage', (ev: any) => {
+      if (!ev?.uri) return;
+      const mime = ev.mime || 'image/jpeg';
+      setPendingMedia(prev => [...prev, {
+        uri: ev.uri,
+        // Named the way a pasted screenshot is named everywhere else, so two
+        // of them are told apart rather than both being "image.png".
+        name: pastedName(mime, Date.now()),
+        mime,
+      }]);
+    });
     return () => sub.remove();
   }, []);
 
@@ -5232,7 +5259,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
                   <Row icon="download-outline" label="Download" onPress={() => { close(); downloadMedia(m); }} />
                 )}
                 {m.file_path && !hidden && !m.one_time_seconds && canTakeContent(m) && (
-                  <Row icon="share-outline" label="Share to another app" onPress={() => { close(); shareOut(m); }} />
+                  <Row icon="share-outline" label="Share" onPress={() => { close(); shareOut(m); }} />
                 )}
                 {mineMsg && m.type === 'text' && (
                   <Row icon="create-outline" label="Edit" onPress={() => {

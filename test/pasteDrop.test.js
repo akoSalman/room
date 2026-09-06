@@ -454,6 +454,71 @@ test('the app offers paste only when there is something to paste', () => {
     'the clipboard is never re-checked, so the option reflects a stale answer');
 });
 
+// ── Pasting an image from the KEYBOARD ──────────────────────────────────────
+//
+// Reported with a photo of Gboard refusing outright: "BistbargChat does not
+// support image pasting here". The clipboard button in the attach menu already
+// worked; what did not was the way people actually paste — the keyboard's own
+// image key, which every keyboard greys out unless the text field says it can
+// take images. A React Native TextInput never says so and has no prop for it,
+// which is why the field itself is patched.
+
+const PATCH = path.join(NAT, 'patches', 'react-native+0.74.5.patch');
+
+test('THE BUG: the text field tells the keyboard it accepts images', () => {
+  assert.ok(fs.existsSync(PATCH), 'the patch is gone, so keyboards refuse images again');
+  const patch = fs.readFileSync(PATCH, 'utf8');
+  assert.ok(patch.includes('ReactEditText.java'), 'the patch is not against the text field');
+  assert.ok(/setContentMimeTypes\(outAttrs, new String\[\] \{"image\/\*"\}\)/.test(patch),
+    'nothing advertises image support, which is the whole of the bug');
+  assert.ok(/createWrapper\(inputConnection, outAttrs, listener\)/.test(patch),
+    'the keyboard is told images are accepted and then has nowhere to deliver them');
+  assert.ok(/emit\("onPasteImage"/.test(patch), 'the committed image never reaches JS');
+});
+
+test('the pasted image is copied before the permission is given back', () => {
+  // The read grant on the keyboard's content:// URI ends when the callback
+  // returns. Staging that URI and uploading it a moment later would find
+  // nothing there — the paste would look accepted and send an empty file.
+  const patch = fs.readFileSync(PATCH, 'utf8');
+  const commit = patch.slice(patch.indexOf('onCommitContent'), patch.indexOf('createWrapper('));
+  assert.ok(commit.includes('requestPermission()'), 'the file is read without permission');
+  const copied = commit.indexOf('new java.io.FileOutputStream');
+  const released = commit.indexOf('releasePermission()');
+  assert.ok(copied > -1, 'the image is never copied out of the keyboard\'s temporary URI');
+  assert.ok(released > copied, 'the permission is handed back before the file has been copied');
+  assert.ok(commit.includes('getCacheDir()'), 'the copy is not somewhere this app can read later');
+});
+
+test('a field that cannot do it still types', () => {
+  // A text input that throws while being focused would be a far worse bug
+  // than one that cannot take a pasted image.
+  const patch = fs.readFileSync(PATCH, 'utf8');
+  assert.ok(/catch \(Throwable t\)/.test(patch), 'a failure here breaks every text field in the app');
+});
+
+test('the app stages what the keyboard hands over', () => {
+  const src = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  const at = src.indexOf("DeviceEventEmitter.addListener('onPasteImage'");
+  assert.ok(at > -1, 'the pasted image is emitted into nothing');
+  const fn = src.slice(at, at + 700);
+  assert.ok(/setPendingMedia\(/.test(fn), 'the image never reaches the composer');
+  assert.ok(/pastedName\(mime, Date\.now\(\)\)/.test(fn),
+    'two pasted screenshots are both called image.png and cannot be told apart');
+  assert.ok(/sub\.remove\(\)/.test(fn), 'the listener outlives the screen');
+  assert.ok(/DeviceEventEmitter,?\s*\n?\} from 'react-native'|DeviceEventEmitter/.test(src.slice(0, 2000)),
+    'DeviceEventEmitter is never imported');
+});
+
+test('sharing a file out is just called "Share"', () => {
+  // Asked for: rename "Share to another app". Everywhere else in the app
+  // already says Share — the row was the odd one out.
+  const src = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  assert.ok(!/Share to another app/.test(src), 'the long label is still there');
+  assert.ok(/label="Share" onPress=\{\(\) => \{ close\(\); shareOut\(m\); \}\}/.test(src),
+    'the share row lost its action along with its label');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }
