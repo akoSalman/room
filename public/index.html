@@ -250,6 +250,7 @@
     <div id="input-bar">
       <input type="file" id="file-input" style="display:none" multiple onchange="stageFile()" />
       <input id="msg-input" type="text" placeholder="Message..." name="chat-message"
+        dir="auto"
         autocomplete="off" autocorrect="off" autocapitalize="sentences" spellcheck="false"
         data-lpignore="true" data-form-type="other" data-1p-ignore
         onkeydown="handleInputKey(event)" oninput="onTypingInput()" />
@@ -649,6 +650,7 @@
 <script src="/js/e2eState.js"></script>
 <script src="/js/unreadJump.js"></script>
 <script src="/js/scrollFab.js"></script>
+<script src="/js/bidi.js"></script>
 <script src="/js/emojiOrder.js"></script>
 <script src="/js/touchScroll.js"></script>
 <script src="/js/linkPreview.js"></script>

@@ -17,6 +17,7 @@ import {
   PinchGestureHandler, PanGestureHandler, State as GHState, GestureHandlerRootView,
 } from 'react-native-gesture-handler';
 import { C, isRTL } from '../theme';
+import { baseDirection, textDirection, isolate as bidiIsolate } from '../bidi';
 import { apiFetch, getSocket, getToken, getUsername, getAvatar, BASE_URL, ensureSocketAlive } from '../api';
 import { e2eReady, e2eDMPeerKey, e2eEncrypt, e2eDecrypt, e2eIsEncrypted, e2eSetup, e2eVerifyIdentity } from '../e2e';
 import { callManager } from '../callManager';
@@ -164,11 +165,21 @@ const EMOJI_EFFECTS = new Set(BURST_EMOJIS.map(e => Array.from(e)[0]));
 const BURST_FORM: Record<string, string> = Object.fromEntries(BURST_EMOJIS.map(e => [Array.from(e)[0], e]));
 const MESSAGES_PAGE_SIZE = 20;
 
-// Right-align predominantly RTL text (Persian/Arabic) in the select sheet.
+/**
+ * Lay a message out the way it is written.
+ *
+ * The rule lives in src/bidi.ts so the web and the app cannot disagree about
+ * which way a paragraph goes — a message that reads correctly on one and is
+ * scrambled on the other is worse than either.
+ */
+function msgDirStyle(text: string) {
+  const { dir, align } = textDirection(text);
+  return { writingDirection: dir, textAlign: align } as const;
+}
+
+// Kept for the select sheet, which asks the same question.
 function looksRTLText(t: string): boolean {
-  const rtl = (t.match(/[\u0590-\u05FF\u0600-\u06FF\u0700-\u074F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/g) || []).length;
-  const latin = (t.match(/[A-Za-z]/g) || []).length;
-  return rtl > 0 && rtl >= (rtl + latin) * 0.3;
+  return baseDirection(t) === 'rtl';
 }
 
 export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, initialJumpMsgId, initialCommentTarget, initialShare, onShareConsumed }: {
@@ -3934,7 +3945,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
             <TouchableOpacity style={s.replyQuote}
               onPress={() => tokenPress(() => jumpToMessage(msg.reply_to_id!))}>
               <Text style={s.replyQuoteUser}>{msg.reply_username}</Text>
-              <Text style={s.replyQuoteText} numberOfLines={1}>{replyPreview(msg)}</Text>
+              {/* Isolated: a preview is a fragment dropped into a line of its
+                  own, and without a fence a Persian one drags that line's
+                  punctuation around with it. */}
+              <Text style={s.replyQuoteText} numberOfLines={1}>{bidiIsolate(replyPreview(msg))}</Text>
             </TouchableOpacity>
           )}
 
@@ -3969,7 +3983,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               // tapped. That is why double-tap was unreliable until you tapped
               // some other message first.
               msgId={msg.id}
-              style={s.msgText}
+              // WHICH WAY ROUND this paragraph goes, decided from what it
+              // says. A Persian sentence with English terms in it laid out
+              // against an LTR base keeps its words but hangs every neutral
+              // character off the wrong end — brackets closing around the
+              // wrong clause, a full stop on the left of its own sentence.
+              style={[s.msgText, msgDirStyle(msg.content || '')]}
               selectable={canTakeContent(msg)}
             >{renderTextWithLinks(shownText(msg.content || '', expandedIds.has(msg.id)))}{msg.edited ? <Text style={s.edited}> (edited)</Text> : null}{msg.one_time_seconds ? <Text style={s.oneTimeTag}> 🔥{msg.one_time_seconds}s</Text> : null}</SelectableText>
           )}
@@ -4201,7 +4220,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
           })()}
           {!hiddenOneTime && msg.type !== 'text' && msg.type !== 'invite' && msg.type !== 'call'
             && msg.type !== 'location' && msg.content ? (
-            <Text style={[s.msgText, s.caption]} selectable>{renderTextWithLinks(msg.content)}</Text>
+            <Text style={[s.msgText, s.caption, msgDirStyle(msg.content || '')]} selectable>{renderTextWithLinks(msg.content)}</Text>
           ) : null}
           {msg.one_time_seconds && !hiddenOneTime && !msg._uploading ? (
             <TouchableOpacity onPress={() => hideOneTime(msg)}>
@@ -4702,7 +4721,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, init
               )}
               <View style={s.commentsParentText}>
                 <Text style={s.commentsParentPreview} numberOfLines={1}>
-                  {parentPreview(decrypted(commentParent)).text}
+                  {bidiIsolate(parentPreview(decrypted(commentParent)).text)}
                 </Text>
                 <Text style={s.commentsTitle} numberOfLines={1}>
                   {commentsTitle(commentCountOf(commentParent))}

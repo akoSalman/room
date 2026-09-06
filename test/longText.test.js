@@ -137,7 +137,12 @@ test('THE THING THAT MUST NOT BREAK: copy and edit still get the whole message',
   // dataset.text is what Copy, Edit, Forward and search read.
   const at = app.indexOf("bubble.dataset.text = msg.content;");
   assert.ok(at > 0, 'the full text is no longer kept on the bubble');
-  assert.ok(app.slice(at, at + 600).includes('attachFold('),
+  // Bounded by the BRANCH rather than by a character count: a comment added
+  // above the fold pushed it past a 600-character window and failed this for
+  // no reason. What matters is that both happen while drawing a text message.
+  const branch = app.slice(at, app.indexOf("} else if (msg.type === 'call')", at));
+  assert.ok(branch.length > 0, 'the text branch is gone — this check would be vacuous');
+  assert.ok(branch.includes('attachFold('),
     'the fold is applied somewhere that may not have the full text beside it');
 });
 

@@ -2302,6 +2302,7 @@ function setReply(msg) {
   replyTo = { id: msg.id, username: msg.username, content: msg.content, type: msg.type };
   document.getElementById('reply-bar-user').textContent = msg.username;
   const preview = msg.type === 'text' ? (msg.content || '').slice(0, 60) : msg.type === 'audio' ? '🎙 Voice message' : msg.type === 'image' ? '🖼 Image' : msg.type === 'gallery' ? '🖼 Photos' : msg.type === 'video' ? '🎥 Video' : msg.type === 'location' ? '📍 Location' : msg.type === 'music' ? '🎵 Audio file' : '📄 File';
+  Bidi.applyDirection(document.getElementById('reply-bar-text'), preview);
   document.getElementById('reply-bar-text').textContent = preview;
   show('reply-bar');
   document.getElementById('msg-input').focus();
@@ -2614,6 +2615,7 @@ function applyEdit(messageId, content) {
   if (quote) bubble.appendChild(quote);
   const textSpan = document.createElement('span');
   textSpan.textContent = content;
+  Bidi.applyDirection(textSpan, content);
   bubble.appendChild(textSpan);
   if (tag) bubble.appendChild(tag);
   else { const t = document.createElement('span'); t.className = 'edited-tag'; t.textContent = '(edited)'; bubble.appendChild(t); }
@@ -4175,6 +4177,10 @@ function buildMessageElement(msg) {
       : msg.reply_type === 'location' ? '📍 Location'
       : msg.reply_type === 'music' ? '🎵 Audio file'
       : msg.reply_type === 'gallery' ? '🖼 Photos' : '📄 File';
+    // Isolated rather than merely aligned: a quote is a fragment dropped into
+    // a line of its own, and without a fence it drags the row's punctuation
+    // around with it.
+    Bidi.applyDirection(quoteText, quoteText.textContent);
     quote.appendChild(quoteUser);
     quote.appendChild(quoteText);
     bubble.appendChild(quote);
@@ -4208,6 +4214,15 @@ function buildMessageElement(msg) {
     bubble.dataset.text = msg.content;
     const textSpan = document.createElement('span');
     if (appendLinkifiedText(textSpan, msg.content || '')) bubble.classList.add('has-copyable');
+    // WHICH WAY ROUND this paragraph goes, decided from what it says.
+    //
+    // Reported with two screenshots: a Persian paragraph with English terms in
+    // it, correct where it was copied from and scrambled here. Nothing
+    // reordered the words — the message had no direction of its own, so it
+    // inherited the page's (LTR), and Unicode's bidi algorithm then hung every
+    // neutral character off the wrong end: brackets closing around the wrong
+    // clause, a full stop on the left of its sentence.
+    Bidi.applyDirection(textSpan, msg.content || '');
     bubble.appendChild(textSpan);
     // A pasted article or a forwarded poem fills the screen and pushes every
     // other message out of the chat. Past a certain size it is folded, with a
@@ -4700,6 +4715,7 @@ function renderCommentsHead(parent, count) {
   // heading is not — so this printed the ciphertext it was handed. Reported
   // as: the preview is "some hash".
   const preview = CommentsView.parentPreview(decryptedMessage(parent));
+  Bidi.applyDirection(document.getElementById('comments-parent-preview'), preview.text);
   document.getElementById('comments-parent-preview').textContent = preview.text;
   document.getElementById('comments-title').textContent = Comments.commentsTitle(count);
   const thumb = document.getElementById('comments-parent-thumb');
