@@ -178,47 +178,6 @@ test('the divider still lets the bar reach both ends', () => {
     'the bar would never report 100% with this divider');
 });
 
-// ── The web's copy ──────────────────────────────────────────────────────────
-//
-// Reported: "on ios web version sending video doesn't give user change
-// resolution and trim options". The web now offers both where the browser can
-// do them, which means it needs the same arithmetic — and a clip must not come
-// out at one size from the app and another from the web.
-
-global.window = global;
-const W = require(path.join(__dirname, '..', 'public', 'js', 'videoQuality.js'));
-
-test('the web and the app pick the same size for the same clip', () => {
-  const sizes = [[1920, 1080], [3840, 2160], [1080, 1920], [640, 480], [854, 480],
-    [1281, 720], [0, 0], [1, 1], [2160, 3840]];
-  let checked = 0;
-  for (const [w, h] of sizes) {
-    for (const q of ['low', 'medium', 'high', 'original']) {
-      assert.deepStrictEqual(W.videoTarget(w, h, q), V.videoTarget(w, h, q),
-        `target diverges for ${w}x${h} at ${q}`);
-      checked++;
-    }
-  }
-  assert.deepStrictEqual(W.VIDEO_PRESETS, JSON.parse(JSON.stringify(V.VIDEO_PRESETS)));
-  assert.strictEqual(checked, sizes.length * 4, 'the drift check did not actually run');
-});
-
-test('…and the same estimate, duration and decision', () => {
-  let checked = 0;
-  for (const secs of [0, 0.5, 6, 30, 125, 3600]) {
-    for (const q of ['low', 'medium', 'high', 'original']) {
-      assert.strictEqual(W.estimateBytes(q, secs, 5e6, 60), V.estimateBytes(q, secs, 5e6, 60),
-        `estimate diverges at ${q}/${secs}`);
-      assert.strictEqual(W.shouldTranscode(q, 5e6, secs, { width: 1920, height: 1080 }),
-        V.shouldTranscode(q, 5e6, secs, { width: 1920, height: 1080 }));
-      checked++;
-    }
-    assert.strictEqual(W.fmtDuration(secs), V.fmtDuration(secs));
-    assert.strictEqual(W.trimmedDuration(secs, 1, 4), V.trimmedDuration(secs, 1, 4));
-  }
-  assert.strictEqual(checked, 24, 'the drift check did not actually run');
-});
-
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

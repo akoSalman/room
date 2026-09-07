@@ -490,47 +490,6 @@
   </div>
 </div>
 
-<!-- How to send a video: resolution and trimming, the same two choices the
-     app offers. What this browser can actually do is decided in js/webVideo.js
-     and said out loud in #video-note, because on iOS neither is possible and a
-     row of dead buttons would be worse than a sentence. -->
-<!-- Re-encoding runs in real time, so a 40-second clip is 40 seconds between
-     pressing Send and the bubble appearing. Silence there reads as a failure. -->
-<div id="video-progress" class="video-progress hidden">
-  <span id="video-progress-label">Preparing video…</span>
-  <div class="video-progress-track"><div id="video-progress-fill" class="video-progress-fill"></div></div>
-</div>
-
-<div id="video-modal" class="modal-overlay hidden" onclick="closeVideoSheet()">
-  <div class="modal-card" onclick="event.stopPropagation()">
-    <div class="modal-header">
-      <h2>Send video</h2>
-      <button class="icon-btn" onclick="closeVideoSheet()">✕</button>
-    </div>
-    <div class="modal-section">
-      <video id="video-preview" class="video-preview" playsinline preload="metadata" controls></video>
-      <p id="video-note" class="fire-hint"></p>
-    </div>
-    <div class="modal-section" id="video-quality-section">
-      <h3>Resolution</h3>
-      <div id="video-chips" class="chip-row"></div>
-    </div>
-    <div class="modal-section" id="video-trim-section">
-      <h3>Trim</h3>
-      <div class="trim-row">
-        <input type="range" id="video-trim-start" class="trim-range" min="0" max="100" value="0"
-          oninput="onTrimInput('start')">
-        <input type="range" id="video-trim-end" class="trim-range" min="0" max="100" value="100"
-          oninput="onTrimInput('end')">
-      </div>
-      <p id="video-trim-label" class="fire-hint"></p>
-    </div>
-    <div class="modal-section">
-      <button class="btn-primary" onclick="closeVideoSheet()">Done</button>
-    </div>
-  </div>
-</div>
-
 <div id="room-info-modal" class="modal-overlay hidden" onclick="closeRoomInfo()">
   <div class="modal-card" onclick="event.stopPropagation()">
     <div class="modal-header">
@@ -700,8 +659,6 @@
 <script src="/js/bidi.js"></script>
 <script src="/js/messageMenu.js"></script>
 <script src="/js/scrollAnchor.js"></script>
-<script src="/js/videoQuality.js"></script>
-<script src="/js/webVideo.js"></script>
 <script src="/js/saveMedia.js"></script>
 <script src="/js/emojiOrder.js"></script>
 <script src="/js/touchScroll.js"></script>
