@@ -915,10 +915,21 @@ function connectSocket() {
     socket.on('removed_from_room', dropRoom);
     socket.on('room_deleted', ({ roomId }) => removeRoomFromList(roomId));
     socket.on('room_updated', (room) => updateRoomInList(room));
-    socket.on('user_typing', ({ username: u }) => showTyping(u));
-    socket.on('user_stopped_typing', ({ username: u }) => hideTyping(u));
-    socket.on('user_recording', ({ username: u }) => showRecordingUser(u));
-    socket.on('user_stopped_recording', ({ username: u }) => hideRecordingUser(u));
+    // Only about the chat on screen. Reported with a screenshot: a DM with one
+    // person open, and "somebody-else@example.com is typing" underneath it —
+    // see js/presence.js for how an event from another conversation got here.
+    socket.on('user_typing', ({ username: u, roomId }) => {
+      if (Presence.isForRoom(roomId, currentRoomId)) showTyping(u);
+    });
+    socket.on('user_stopped_typing', ({ username: u, roomId }) => {
+      if (Presence.isForRoom(roomId, currentRoomId)) hideTyping(u);
+    });
+    socket.on('user_recording', ({ username: u, roomId }) => {
+      if (Presence.isForRoom(roomId, currentRoomId)) showRecordingUser(u);
+    });
+    socket.on('user_stopped_recording', ({ username: u, roomId }) => {
+      if (Presence.isForRoom(roomId, currentRoomId)) hideRecordingUser(u);
+    });
     socket.on('dm_activity', ({ room }) => ensureDMInSidebar(room));
     socket.on('one_time_viewed', ({ messageId, viewedAt, seconds }) => {
       oneTimeExpiry[messageId] = (viewedAt || Date.now()) + seconds * 1000;
@@ -2009,6 +2020,13 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   typingUsers.clear(); recordingUsers.clear(); renderTypingBar();
   currentRoomId = roomId;
   currentRoomIsDM = isDM;
+  // Said FIRST, before anything that waits on the network. The server routes
+  // typing and recording by the room each socket is currently looking at, and
+  // this is how it is told — so saying it after the DM key fetch (a round trip
+  // with a retry ladder behind it) left a window of seconds in which the
+  // server still believed this socket was in the PREVIOUS chat, and drew that
+  // chat's typing indicator under this one.
+  socket.emit('join_room', roomId);
   // Written down so a reload comes back here. iOS reloads a backgrounded tab
   // by itself, so this is not something people choose to do.
   try {
@@ -2083,7 +2101,6 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   if (isDM) {
     await fetchDMPeerKey(roomId, roomName);
   }
-  socket.emit('join_room', roomId);
   // How many were waiting, and where the reader had got to — both read BEFORE
   // anything is marked read, because opening the chat consumes the position.
   const waiting = unreadCounts[roomId] || 0;

@@ -2344,6 +2344,70 @@ test('a file sent in chunks arrives byte-for-byte identical', async () => {
   assert.ok(got.equals(data), 'the reassembled file does not match what was sent');
 });
 
+test('THE BUG: typing in one chat is not delivered to somebody in another', async () => {
+  // Reported with a screenshot: a DM with one person open on the iOS web
+  // version, and "somebody-else@example.com is typing" underneath it. The
+  // event is routed by the room each socket is currently looking at, so this
+  // pins that routing down — and that the event now NAMES its room, which is
+  // what lets a client refuse one that slipped through anyway.
+  const a = await signUp('typea');
+  const b = await signUp('typeb');
+  const c = await signUp('typec');
+  const roomAB = await api('/rooms', 'POST', { name: 'typing-ab' }, a.token);
+  const roomAC = await api('/rooms', 'POST', { name: 'typing-ac' }, a.token);
+  const sa = await connect(a.token);
+  const sb = await connect(b.token);
+  const sc = await connect(c.token);
+  await emit(sb, 'accept_invite', { roomId: roomAB.id });
+  await emit(sc, 'accept_invite', { roomId: roomAC.id });
+
+  // B is looking at the first room; C is looking at the second.
+  sb.emit('join_room', roomAB.id);
+  sc.emit('join_room', roomAC.id);
+  sa.emit('join_room', roomAB.id);
+  await new Promise(r => setTimeout(r, 200));
+
+  const heardByB = waitFor(sb, 'user_typing', () => true);
+  let leaked = null;
+  sc.on('user_typing', (e) => { leaked = e; });
+
+  sa.emit('typing_start', { roomId: roomAB.id });
+  const seen = await heardByB;
+  assert.strictEqual(seen.username, 'typea', 'the person in the room was not told');
+  assert.strictEqual(String(seen.roomId), String(roomAB.id),
+    `the event does not say which chat it is about: ${JSON.stringify(seen)}`);
+
+  await new Promise(r => setTimeout(r, 250));
+  assert.strictEqual(leaked, null,
+    `somebody in another chat was shown it: ${JSON.stringify(leaked)}`);
+});
+
+test('and the same for stopping, which used to be routed differently', async () => {
+  const a = await signUp('stopa');
+  const b = await signUp('stopb');
+  const c = await signUp('stopc');
+  const roomAB = await api('/rooms', 'POST', { name: 'stop-ab' }, a.token);
+  const roomAC = await api('/rooms', 'POST', { name: 'stop-ac' }, a.token);
+  const sa = await connect(a.token);
+  const sb = await connect(b.token);
+  const sc = await connect(c.token);
+  await emit(sb, 'accept_invite', { roomId: roomAB.id });
+  await emit(sc, 'accept_invite', { roomId: roomAC.id });
+  sb.emit('join_room', roomAB.id);
+  sc.emit('join_room', roomAC.id);
+  sa.emit('join_room', roomAB.id);
+  await new Promise(r => setTimeout(r, 200));
+
+  const stopped = waitFor(sb, 'user_stopped_typing', () => true);
+  let leaked = null;
+  sc.on('user_stopped_typing', (e) => { leaked = e; });
+  sa.emit('typing_stop', { roomId: roomAB.id });
+  const seen = await stopped;
+  assert.strictEqual(String(seen.roomId), String(roomAB.id), 'the stop does not name its chat');
+  await new Promise(r => setTimeout(r, 250));
+  assert.strictEqual(leaked, null, `the stop reached another chat: ${JSON.stringify(leaked)}`);
+});
+
 test('THE BUG: finishing twice returns the same file, not "no such upload"', async () => {
   // Reported as: the upload hangs at the final stage and the app has to be
   // closed and the file sent again. Every byte had arrived and the ONE request

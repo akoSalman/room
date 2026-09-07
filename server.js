@@ -2824,12 +2824,25 @@ io.on('connection', (socket) => {
   socket.on('voice_leave', leaveVoice);
   socket.on('disconnect', leaveVoice);
 
+  // The room travels WITH the event. Reported as: a stranger's "is typing"
+  // appearing under somebody else's conversation on the web. These are routed
+  // by the room each socket is currently looking at, and "currently" is
+  // something the server is told — so a client that says it late, or a
+  // reconnect, leaves a window where this is delivered to the wrong screen.
+  // Naming the room lets the client refuse what is not about the chat it is
+  // showing, whatever the routing did.
   socket.on('typing_start', ({ roomId }) => {
-    emitToRoomUnblocked(roomId, socket.user.id, 'user_typing', { username: socket.user.username });
+    emitToRoomUnblocked(roomId, socket.user.id, 'user_typing',
+      { username: socket.user.username, roomId: String(roomId) });
   });
 
+  // Stopped by the same rule that started it. This used to go to the socket.io
+  // room instead, which is a different set of people — so a "stop" could reach
+  // somebody who never got the "start", and the indicator it was meant to
+  // clear was somewhere else entirely.
   socket.on('typing_stop', ({ roomId }) => {
-    socket.to(String(roomId)).emit('user_stopped_typing', { username: socket.user.username });
+    emitToRoomUnblocked(roomId, socket.user.id, 'user_stopped_typing',
+      { username: socket.user.username, roomId: String(roomId) });
   });
 
   socket.on('mark_read', ({ roomId, lastMsgId }) => {
@@ -2941,11 +2954,13 @@ io.on('connection', (socket) => {
   });
 
   socket.on('recording_start', ({ roomId }) => {
-    emitToRoomUnblocked(roomId, socket.user.id, 'user_recording', { username: socket.user.username });
+    emitToRoomUnblocked(roomId, socket.user.id, 'user_recording',
+      { username: socket.user.username, roomId: String(roomId) });
   });
 
   socket.on('recording_stop', ({ roomId }) => {
-    socket.to(String(roomId)).emit('user_stopped_recording', { username: socket.user.username });
+    emitToRoomUnblocked(roomId, socket.user.id, 'user_stopped_recording',
+      { username: socket.user.username, roomId: String(roomId) });
   });
 
   // Private-room invitation: owner invites a user; an invite message lands in
@@ -3477,8 +3492,12 @@ io.on('connection', (socket) => {
     const info = onlineUsers.get(socket.id);
     onlineUsers.delete(socket.id);
     if (info?.roomId) {
-      io.to(info.roomId).emit('user_stopped_typing', { username: socket.user.username });
-      io.to(info.roomId).emit('user_stopped_recording', { username: socket.user.username });
+      // Named here too: a client that filters by room would otherwise ignore
+      // the one event that clears an indicator left behind by a disconnect.
+      io.to(info.roomId).emit('user_stopped_typing',
+        { username: socket.user.username, roomId: String(info.roomId) });
+      io.to(info.roomId).emit('user_stopped_recording',
+        { username: socket.user.username, roomId: String(info.roomId) });
       emitRoomOnline(info.roomId);
     }
   });

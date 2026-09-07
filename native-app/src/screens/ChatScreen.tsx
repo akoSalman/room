@@ -132,6 +132,7 @@ import {
   badgeLabel as commentBadgeLabel, jumpArrow, Jump,
 } from '../commentUnread';
 import { firstUnread, worthJumping, unreadLabel, unreadBelow } from '../unreadJump';
+import { isForRoom } from '../presence';
 
 type Message = {
   id: number | string; room_id: number; user_id: number; username: string; avatar?: string | null;
@@ -1781,16 +1782,23 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         setReactions(prev => ({ ...prev, [messageId]: r }));
       });
       sock.on('room_online', ({ users }: any) => setOnline(users));
-      sock.on('user_typing', ({ username: u }: any) => {
+      // Only about THIS chat. Reported on the web as a stranger's "is typing"
+      // under somebody else's conversation; the app trusted the same routing,
+      // so it could show it too — see src/presence.ts.
+      sock.on('user_typing', ({ username: u, roomId }: any) => {
+        if (!isForRoom(roomId, room.id)) return;
         setTyping(prev => prev.includes(u) ? prev : [...prev, u]);
       });
-      sock.on('user_stopped_typing', ({ username: u }: any) => {
+      sock.on('user_stopped_typing', ({ username: u, roomId }: any) => {
+        if (!isForRoom(roomId, room.id)) return;
         setTyping(prev => prev.filter(x => x !== u));
       });
-      sock.on('user_recording', ({ username: u }: any) => {
+      sock.on('user_recording', ({ username: u, roomId }: any) => {
+        if (!isForRoom(roomId, room.id)) return;
         setRecordingUsers(prev => prev.includes(u) ? prev : [...prev, u]);
       });
-      sock.on('user_stopped_recording', ({ username: u }: any) => {
+      sock.on('user_stopped_recording', ({ username: u, roomId }: any) => {
+        if (!isForRoom(roomId, room.id)) return;
         setRecordingUsers(prev => prev.filter(x => x !== u));
       });
       sock.on('one_time_viewed', ({ messageId, roomId, viewedAt, seconds }: any) => {
