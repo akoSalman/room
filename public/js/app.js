@@ -5488,7 +5488,7 @@ function liftScrollFab() {
   fab.style.bottom = bottom + 'px';
   const chip = document.getElementById('comment-jump');
   // The chip rides just above it, in the same one place.
-  if (chip) chip.style.bottom = (bottom + 52) + 'px';
+  if (chip) chip.style.bottom = (bottom + ScrollFab.CHIP_LIFT) + 'px';
 }
 
 // ─── Lightbox ─────────────────────────────────────────────────────────────────

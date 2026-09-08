@@ -94,6 +94,22 @@ export const FAB_ACTIVITY_LIFT = 26;
  */
 export const FAB_LIVE_LIFT = 38;
 
+/**
+ * How much higher than the go-to-newest button the comments chip rides.
+ *
+ * The chip is placed RELATIVE TO THAT BUTTON, and never below it. Reported
+ * twice: the chip ended up behind the composer, because it was positioned by
+ * subtracting from the button's offset — 148 is the height that clears the
+ * composer stack, so 148 minus anything is inside it. Adding is the only safe
+ * direction, and the web (which measures the real geometry rather than
+ * counting pixels) already put the chip above the button; this makes the app
+ * agree with it.
+ *
+ * They do not collide: the button is pinned to the trailing edge and the chip
+ * is centred.
+ */
+export const CHIP_LIFT = 52;
+
 export function fabBottom(o: {
   /** A reply or edit banner is above the composer. */
   banner?: boolean;
@@ -106,4 +122,11 @@ export function fabBottom(o: {
     + (o?.banner ? FAB_BANNER_LIFT : 0)
     + (o?.activity ? FAB_ACTIVITY_LIFT : 0)
     + (o?.liveBar ? FAB_LIVE_LIFT : 0);
+}
+
+/** Where the comments chip sits, given the same stack. */
+export function chipBottom(o: {
+  banner?: boolean; activity?: boolean; liveBar?: boolean;
+}): number {
+  return fabBottom(o) + CHIP_LIFT;
 }

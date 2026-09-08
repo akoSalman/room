@@ -11,6 +11,7 @@
   var FAB_BANNER_LIFT = 66;
   var FAB_ACTIVITY_LIFT = 26;
   var FAB_LIVE_LIFT = 38;
+  var CHIP_LIFT = 52;
 
   function atPresent(o) { return !!(o && o.atEndOfWindow && !o.hasNewer); }
 
@@ -28,12 +29,16 @@
       + (o && o.liveBar ? FAB_LIVE_LIFT : 0);
   }
 
+  function chipBottom(o) { return fabBottom(o) + CHIP_LIFT; }
+
   global.ScrollFab = {
     FAB_BASE: FAB_BASE,
     FAB_GAP: FAB_GAP,
     FAB_BANNER_LIFT: FAB_BANNER_LIFT,
     FAB_ACTIVITY_LIFT: FAB_ACTIVITY_LIFT,
     FAB_LIVE_LIFT: FAB_LIVE_LIFT,
+    CHIP_LIFT: CHIP_LIFT,
+    chipBottom: chipBottom,
     atPresent: atPresent,
     fabMode: fabMode,
     clearsUnseenOnTap: clearsUnseenOnTap,

@@ -89,7 +89,7 @@ import { shouldWarm, WARM_TTL_MS } from '../recordStart';
 import * as selection from '../selection';
 import { searchLocal, mergeResults } from '../localSearch';
 import * as win from '../messageWindow';
-import { fabMode, atPresent, clearsUnseenOnTap, fabBottom } from '../scrollFab';
+import { fabMode, atPresent, clearsUnseenOnTap, fabBottom, chipBottom } from '../scrollFab';
 import {
   reduceSelection, initialSelection, stillMoving, LONG_PRESS_MS, DOUBLE_TAP_MS,
   type SelectionState, type MsgId,
@@ -5021,14 +5021,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
           bare arrow beside a number was two symbols to decode. */}
       {!commentParent && !!commentJump && (
         <TouchableOpacity
-          style={[s.commentJump, { bottom: fabBottom({
+          // ABOVE the go-to-newest button, never below it. Reported: the
+          // chip ended up behind the composer — it was placed by subtracting
+          // 60 from that button's offset, and that offset is precisely the
+          // height that clears the composer, so anything less is inside it.
+          style={[s.commentJump, { bottom: chipBottom({
             banner: !!(replyTo || editingId),
             activity: someoneIsBusy,
-            // Reported with a screenshot: this button sitting on the live
-            // bar's Stop, so the tap that looks like Stop scrolled the chat
-            // and the location kept broadcasting.
             liveBar: !!liveShare,
-          }) - 60 }]}
+          }) }]}
           onPress={goToUnreadComments}
           accessibilityLabel={`${jumpLabel(commentJump)}, ${commentJump.dir === 'up' ? 'above' : 'below'}`}
         >

@@ -171,7 +171,9 @@ test('the chip lives in ONE place, above the composer', () => {
   assert.ok(!/commentJumpTop|commentJumpBottom/.test(chat),
     'the app chip still moves between the edges');
   assert.ok(/jumpArrow\(commentJump\)/.test(chat), 'the app chip lost its direction');
-  assert.ok(/style=\{\[s\.commentJump, \{ bottom: fabBottom\(/.test(chat),
+  // chipBottom, which is the buttons' own offset PLUS a lift — never minus.
+  // Placing it by subtracting is what put it behind the composer.
+  assert.ok(/style=\{\[s\.commentJump, \{ bottom: chipBottom\(/.test(chat),
     'the app chip is not placed with the same rule as the buttons beside it');
 });
 

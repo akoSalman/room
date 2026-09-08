@@ -163,8 +163,10 @@ test('the web and the app agree about all of it', () => {
 test('the app lifts the button and the mention button with the same rule', () => {
   const chat = fs.readFileSync(
     path.join(__dirname, '..', 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
-  const lifts = (chat.match(/fabBottom\(\{/g) || []).length;
-  assert.ok(lifts >= 2, `only ${lifts} control asks where it should sit`);
+  // Both helpers: the chip is placed by chipBottom, which is fabBottom plus a
+  // lift, and it must be counted or it can be left behind unnoticed.
+  const lifts = (chat.match(/(?:fab|chip)Bottom\(\{/g) || []).length;
+  assert.ok(lifts >= 3, `only ${lifts} controls ask where they should sit`);
   // EVERY caller, counted — not "the string appears somewhere". One control
   // left behind is one control still sitting on the typing line, and the other
   // callers would hide it from a looser check.
@@ -245,11 +247,81 @@ test('every floating control in the app is lifted, not just one of them', () => 
   const ROOT = path.join(__dirname, '..');
   const chat = fs.readFileSync(
     path.join(ROOT, 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
-  const calls = (chat.match(/fabBottom\(\{/g) || []).length;
+  const calls = (chat.match(/(?:fab|chip)Bottom\(\{/g) || []).length;
   const lifted = (chat.match(/liveBar: !!liveShare/g) || []).length;
-  assert.ok(calls > 0, 'fabBottom is no longer used');
+  assert.ok(calls >= 3, `only ${calls} controls are placed by the rule`);
   assert.strictEqual(lifted, calls,
     `${calls} floating controls, ${lifted} of them clear of the live bar`);
+});
+
+// ── The comments chip ───────────────────────────────────────────────────────
+//
+// Reported twice, the second time angrily: the chip ended up BEHIND THE
+// COMPOSER. It was placed by subtracting 60 from the go-to-newest button's
+// offset — and that offset is precisely the height that clears the composer
+// stack, so anything below it is inside the composer. Subtracting was the
+// mistake; the direction is the rule now, not a number chosen by eye.
+
+test('THE BUG: the chip is never placed below the button that clears the composer', () => {
+  for (const banner of [true, false]) {
+    for (const activity of [true, false]) {
+      for (const liveBar of [true, false]) {
+        const o = { banner, activity, liveBar };
+        assert.ok(F.chipBottom(o) > F.fabBottom(o),
+          `the chip sits at or below the button for ${JSON.stringify(o)} — that is inside the composer`);
+        assert.ok(F.chipBottom(o) >= F.FAB_BASE,
+          `chip at ${F.chipBottom(o)} is below the ${F.FAB_BASE} that clears the composer`);
+      }
+    }
+  }
+});
+
+test('it rides a clear distance above it, not a hair', () => {
+  // Enough that the two do not read as one control, and that a shadow does
+  // not overlap.
+  assert.ok(F.CHIP_LIFT >= 40, `only ${F.CHIP_LIFT}px above the button`);
+  assert.strictEqual(F.chipBottom({}), F.FAB_BASE + F.CHIP_LIFT);
+});
+
+test('it moves with everything the button moves with', () => {
+  // A chip pinned to a fixed height would be back inside the composer the
+  // moment a reply banner or the typing line appears.
+  const plain = F.chipBottom({});
+  assert.ok(F.chipBottom({ banner: true }) > plain);
+  assert.ok(F.chipBottom({ activity: true }) > plain);
+  assert.ok(F.chipBottom({ liveBar: true }) > plain);
+});
+
+test('the app places the chip with that rule, not by subtracting from the button', () => {
+  const ROOT = path.join(__dirname, '..');
+  const chat = fs.readFileSync(
+    path.join(ROOT, 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  const at = chat.indexOf('s.commentJump, { bottom:');
+  assert.ok(at > -1, 'the chip moved');
+  const style = chat.slice(at, at + 400);
+  assert.ok(/chipBottom\(\{/.test(style), 'the chip is positioned by hand again');
+  assert.ok(!/\}\) - \d+/.test(style),
+    'the chip is placed by subtracting from the button, which is how it ended up behind the composer');
+});
+
+test('the web and the app agree about where it goes', () => {
+  let checked = 0;
+  for (const banner of [true, false]) {
+    for (const activity of [true, false]) {
+      for (const liveBar of [true, false]) {
+        assert.strictEqual(W.chipBottom({ banner, activity, liveBar }),
+          F.chipBottom({ banner, activity, liveBar }));
+        checked++;
+      }
+    }
+  }
+  assert.strictEqual(W.CHIP_LIFT, F.CHIP_LIFT);
+  assert.strictEqual(checked, 8, 'the drift check did not actually run');
+  // The web measures the real geometry rather than counting pixels, but it
+  // uses the same lift above whatever it measured.
+  const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'app.js'), 'utf8');
+  assert.ok(/chip\.style\.bottom = \(bottom \+ ScrollFab\.CHIP_LIFT\)/.test(app),
+    'the web has its own private number for the same distance');
 });
 
 let passed = 0, failed = 0;
