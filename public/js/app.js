@@ -3991,6 +3991,10 @@ function openMapViewer(lat, lng, live) {
     };
   };
 
+  // Same as the picker: on iOS a pinch zooms the page unless WebKit's gesture
+  // events are swallowed, and a zoomed page pans instead of the map.
+  MapGestures.blockPageZoom(surface);
+
   surface.addEventListener('touchstart', (e) => {
     if (e.cancelable) e.preventDefault();
     if (e.touches.length >= 2) {

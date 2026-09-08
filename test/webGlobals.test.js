@@ -79,6 +79,12 @@ function windowDefines() {
     for (const m of src.matchAll(/window\.([A-Za-z_$][\w$]*)\s*=[^=]/g)) defined.add(m[1]);
     // root.X = ... inside the (function (root) { … })(window) modules
     for (const m of src.matchAll(/\broot\.([A-Za-z_$][\w$]*)\s*=[^=]/g)) defined.add(m[1]);
+    // …and global.X = ... inside the (function (global) { … })(window) ones,
+    // which is what every module written since uses. Not knowing about that
+    // style meant this check was blind to a whole shelf of files: it would
+    // have reported a genuinely undefined global as defined nowhere, or — as
+    // it did — a defined one as missing.
+    for (const m of src.matchAll(/\bglobal\.([A-Za-z_$][\w$]*)\s*=[^=]/g)) defined.add(m[1]);
     // Object.defineProperties(window, { x: …, y: … })
     for (const m of src.matchAll(/Object\.defineProperties\(\s*window\s*,\s*\{([\s\S]*?)\n\}\)/g)) {
       for (const p of m[1].matchAll(/^\s{2}([A-Za-z_$][\w$]*)\s*:/gm)) defined.add(p[1]);

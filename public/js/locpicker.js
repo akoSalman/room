@@ -256,6 +256,10 @@
     var el = $('loc-map');
     if (!el || el.__geoBound) return;
     el.__geoBound = true;
+    // Safari zooms the PAGE on a pinch unless its own gesture events are
+    // swallowed — see js/mapGestures.js. Without this the pinch below never
+    // gets to run, which is the "the map does not zoom" report.
+    window.MapGestures.blockPageZoom($('loc-map-wrap') || el);
     el.addEventListener('touchstart', onDown, { passive: false });
     el.addEventListener('touchmove', onMove, { passive: false });
     el.addEventListener('touchend', onUp, { passive: false });
