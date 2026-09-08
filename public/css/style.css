@@ -1703,3 +1703,12 @@ body.commenting #install-hint { display: none; }
 .comment-bar-label { flex: 1; }
 .comment-bar-chev { font-size: 1.05rem; line-height: 1; opacity: 0.9; }
 
+
+/* The staged file's name, and the way to change it before sending. */
+.pending-name {
+  display: block; width: 100%; margin-top: 3px; padding: 0;
+  border: 0; background: none; cursor: pointer;
+  font-size: 9.5px; color: var(--muted); text-align: center;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pending-name:hover { color: var(--accent); }

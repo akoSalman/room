@@ -133,6 +133,7 @@ import {
 } from '../commentUnread';
 import { firstUnread, worthJumping, unreadLabel, unreadBelow } from '../unreadJump';
 import { isForRoom } from '../presence';
+import { safeName, cacheName, renamed, editableStem } from '../fileName';
 
 type Message = {
   id: number | string; room_id: number; user_id: number; username: string; avatar?: string | null;
@@ -365,6 +366,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   // instant double-tap turns it into a selectable field; released a moment
   // later so the handles become draggable.
   const [pendingMedia, setPendingMedia] = useState<{ uri: string; name: string; mime: string }[]>([]);
+  /** The staged file being renamed, what has been typed, and its old name. */
+  const [renaming, setRenaming] = useState<{ index: number; value: string; of: string } | null>(null);
   /**
    * Staged photos survive leaving the chat.
    *
@@ -2224,6 +2227,35 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     return () => sub.remove();
   }, []);
 
+  /**
+   * Rename a staged file before it is sent.
+   *
+   * Asked for: allow renaming a file when sharing, whether it arrived from
+   * another app or was picked inside this one. Both routes end up in
+   * pendingMedia, so renaming there covers both — and the name that is typed
+   * is the name the message carries, so the person receiving it sees it too.
+   */
+  //
+  // A Modal with a TextInput, NOT Alert.prompt: that one exists only on iOS
+  // and does nothing at all on Android, which is what this app ships as. It
+  // would have been a button that looked fine and never opened anything.
+  function renameStaged(index: number) {
+    const item = pendingMedia[index];
+    if (!item) return;
+    // The stem only: nobody wants to edit around ".pdf" on a phone keyboard,
+    // and the extension is kept whatever they type.
+    setRenaming({ index, value: editableStem(item.name), of: item.name });
+  }
+
+  function commitRename() {
+    const r = renaming;
+    setRenaming(null);
+    if (!r) return;
+    const next = renamed(r.of, r.value);
+    if (next === r.of) return;
+    setPendingMedia(prev => prev.map((m, i) => (i === r.index ? { ...m, name: next } : m)));
+  }
+
   async function pasteFromClipboard() {
     setShowAttachMenu(false);
     try {
@@ -2656,17 +2688,28 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         return;
       }
       setSharingOut(true);
-      const name = msg.file_name && msg.type !== 'gallery' && msg.type !== 'audio'
+      const name = safeName(msg.file_name && msg.type !== 'gallery' && msg.type !== 'audio'
         ? msg.file_name
-        : (String(remote).split('/').pop() || 'file');
-      const local = FileSystem.cacheDirectory + name;
+        : String(remote).split('/').pop());
+      // THE CRASH: this used to be `cacheDirectory + name`, with `name` taken
+      // straight from the message. A file called "گزارش ۱۴۰۳.pdf", or anything
+      // with a space, a "/" or a "#" in it, is not a valid path — and a signed
+      // media URL turns into "1788-4.jpg?e=1&s=abc", a filename with a question
+      // mark in it. The download threw before the sheet could open, which is
+      // "it prepares the file and then nothing happens".
+      //
+      // Stamped, so two files with the same name from two chats cannot become
+      // one path where the second share hands out the first file.
+      const local = FileSystem.cacheDirectory + cacheName(name);
       const { uri } = await FileSystem.downloadAsync(`${BASE_URL}${remote}`, local);
       await Sharing.shareAsync(uri, {
         mimeType: guessMime(name, 'application/octet-stream') || undefined,
         dialogTitle: name,
       });
-    } catch {
-      Alert.alert('Error', 'Could not share that file.');
+    } catch (e: any) {
+      // Say WHAT went wrong. "Could not share that file" for every cause is
+      // how a broken path stayed a mystery through several reports.
+      Alert.alert('Could not share', String(e?.message || e || 'Unknown error'));
     } finally {
       setSharingOut(false);
     }
@@ -5657,6 +5700,40 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         />
       )}
 
+      {/* Renaming a staged file, before it is sent. */}
+      <Modal visible={!!renaming} transparent animationType="fade" onRequestClose={() => setRenaming(null)}>
+        <View style={s.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setRenaming(null)} />
+          <View style={s.renameCard}>
+            <Text style={s.renameTitle}>Rename file</Text>
+            <TextInput
+              style={s.renameInput}
+              value={renaming?.value ?? ''}
+              onChangeText={(v) => setRenaming(r => (r ? { ...r, value: v } : r))}
+              autoFocus
+              selectTextOnFocus
+              placeholder="File name"
+              placeholderTextColor={C.muted}
+              returnKeyType="done"
+              onSubmitEditing={commitRename}
+            />
+            {/* What it will actually be called, extension and all, before the
+                decision is made rather than after. */}
+            <Text style={s.renameHint} numberOfLines={1}>
+              {renamed(renaming?.of, renaming?.value)}
+            </Text>
+            <View style={s.renameRow}>
+              <TouchableOpacity onPress={() => setRenaming(null)} style={s.renameBtn}>
+                <Text style={s.renameCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={commitRename} style={s.renameBtn}>
+                <Text style={s.renameOkText}>Rename</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* Forward picker */}
       <Modal visible={forwardOpen} transparent animationType="slide" onRequestClose={() => { setForwardOpen(false); setForwardMsg(null); }}>
         <View style={s.overlay}>
@@ -5858,6 +5935,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         <Composer
           ref={composerRef}
           pendingMedia={pendingMedia}
+          onRenameMedia={renameStaged}
           oneTimeSecs={oneTimeSecs}
           quickEmoji={quickEmoji}
           editing={!!editingId}
@@ -6084,6 +6162,20 @@ const s = StyleSheet.create({
   locTitle: { color: C.text, fontSize: 13.5, fontWeight: '700' },
   locSub: { color: C.muted, fontSize: 11.5, marginTop: 1 },
 
+  renameCard: {
+    alignSelf: 'center', width: '86%', maxWidth: 420, borderRadius: 14, padding: 16,
+    backgroundColor: C.sidebar, borderWidth: 1, borderColor: C.border, gap: 10,
+  },
+  renameTitle: { color: C.text, fontSize: 15, fontWeight: '800' },
+  renameInput: {
+    color: C.text, fontSize: 15, paddingHorizontal: 12, paddingVertical: 10,
+    backgroundColor: C.inputBg, borderRadius: 10, borderWidth: 1, borderColor: C.border,
+  },
+  renameHint: { color: C.muted, fontSize: 11.5 },
+  renameRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 18, marginTop: 2 },
+  renameBtn: { paddingVertical: 6, paddingHorizontal: 8 },
+  renameCancelText: { color: C.muted, fontSize: 14, fontWeight: '700' },
+  renameOkText: { color: C.accent, fontSize: 14, fontWeight: '800' },
   liveBar: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     paddingHorizontal: 14, paddingVertical: 8,

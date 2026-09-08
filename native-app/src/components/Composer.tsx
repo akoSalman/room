@@ -26,6 +26,8 @@ type Media = { uri: string; name: string; mime: string };
 
 type Props = {
   pendingMedia: Media[];
+  /** Rename the staged file at this index. */
+  onRenameMedia?: (index: number) => void;
   oneTimeSecs: number | null;
   quickEmoji: boolean;
   editing: boolean;
@@ -73,7 +75,7 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
     onTyping, onSend, onAttach, onRecord, onRecordPressIn, onOneTime, onLocation, liveLocation,
     sendQuality, onQuality, disappearing,
     clipboard, onPaste,
-    onToggleQuickEmoji, onRemoveMedia, onPreviewMedia, mentionables,
+    onToggleQuickEmoji, onRemoveMedia, onRenameMedia, onPreviewMedia, mentionables,
   } = props;
 
   const [text, setText] = useState('');
@@ -263,6 +265,20 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
                 <TouchableOpacity style={s.pendingMediaRemove} onPress={() => onRemoveMedia(i)}>
                   <Text style={s.pendingMediaRemoveText}>✕</Text>
                 </TouchableOpacity>
+                {/* The name, and the way to change it. Asked for: rename a
+                    file before sending it, whichever way it was staged. It is
+                    under the thumbnail rather than behind a long press,
+                    because a name you cannot see is one you cannot know needs
+                    changing. */}
+                <TouchableOpacity
+                  onPress={() => onRenameMedia && onRenameMedia(i)}
+                  disabled={!onRenameMedia}
+                  hitSlop={{ top: 4, bottom: 6, left: 6, right: 6 }}
+                >
+                  <Text style={s.pendingMediaName} numberOfLines={1}>
+                    ✎ {m.name}
+                  </Text>
+                </TouchableOpacity>
               </View>
             ))}
             <TouchableOpacity style={[s.pendingMediaThumb, s.pendingMediaFile]} onPress={onAttach}>
@@ -411,6 +427,9 @@ const s = StyleSheet.create({
     backgroundColor: '#f87171', alignItems: 'center', justifyContent: 'center',
   },
   pendingMediaRemoveText: { color: '#fff', fontSize: 10, fontWeight: '700', lineHeight: 12 },
+  pendingMediaName: {
+    width: 54, marginTop: 3, fontSize: 9, color: C.muted, textAlign: 'center',
+  },
   inputBar: { flexDirection: 'row', alignItems: 'flex-end', padding: 10, backgroundColor: C.header, borderTopWidth: 1, borderTopColor: C.border, gap: 6 },
   input: { flex: 1, backgroundColor: C.inputBg, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 10, color: C.text, fontSize: 15, borderWidth: 1, borderColor: C.border, maxHeight: 120, textAlign: isRTL ? 'right' : 'left' },
   sendBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },

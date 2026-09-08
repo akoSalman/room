@@ -2927,6 +2927,25 @@ async function compressForSend(file, quality) {
 // only the wiring.
 
 /** Stage files that arrived by paste, drop, or the file picker. */
+/**
+ * Rename a staged file before it is sent.
+ *
+ * A File's name is read-only, so the file is rebuilt around the same bytes.
+ * The rule for what the new name may be — and that the extension survives
+ * unless the typed name brings its own — is shared with the app in
+ * js/fileName.js.
+ */
+function renamePendingFile(i) {
+  const p = pendingFiles[i];
+  if (!p) return;
+  const typed = prompt('File name', FileName.editableStem(p.file.name));
+  if (typed === null) return;                       // dismissed: leave it alone
+  const next = FileName.renamed(p.file.name, typed);
+  if (next === p.file.name) return;
+  pendingFiles[i] = { ...p, file: new File([p.file], next, { type: p.file.type }) };
+  renderPendingFiles();
+}
+
 function stageFiles(files, opts) {
   if (!currentRoomId) return false;
   const { accepted, tooLarge, folders } = PasteDrop.partitionDropped(files);
@@ -3086,6 +3105,14 @@ function renderPendingFiles() {
     x.textContent = '✕';
     x.onclick = () => { URL.revokeObjectURL(p.url); pendingFiles.splice(i, 1); renderPendingFiles(); };
     item.appendChild(x);
+    // The name, and the way to change it before sending. Asked for on the app;
+    // the web stages files the same way, so it gets the same thing.
+    const nameBtn = document.createElement('button');
+    nameBtn.className = 'pending-name';
+    nameBtn.textContent = '✎ ' + p.file.name;
+    nameBtn.title = p.file.name;
+    nameBtn.onclick = () => renamePendingFile(i);
+    item.appendChild(nameBtn);
     bar.appendChild(item);
   });
   const add = document.createElement('button');
