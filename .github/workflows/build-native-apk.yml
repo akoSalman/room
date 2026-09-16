@@ -91,7 +91,7 @@ jobs:
       # re-fetches at the version this project actually pins.
       - name: Setup Android SDK
         if: steps.want.outputs.build == 'yes'
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Apply brand config (name, package, API server)
         if: steps.want.outputs.build == 'yes'
