@@ -7,7 +7,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { recipientsFor } = require('./notify');
+const { recipientsFor, tokenIsDead } = require('./notify');
 const credentials = require('./credentials');
 const cors = require('cors');
 const db = require('./db');
@@ -834,12 +834,18 @@ async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
           },
         }),
       }).then(async r => {
-        if (r.status === 404 || r.status === 400) {
+        if (r.ok) return;
+        const body = await r.text().catch(() => '');
+        // Only when Firebase has actually said the token is gone. Deleting it
+        // means this device gets nothing until the app is next opened, so a
+        // malformed payload — which is what a bare 400 usually is — must not
+        // cost a phone its notifications. See tokenIsDead in notify.js.
+        if (tokenIsDead(r.status, body)) {
           db.prepare('DELETE FROM push_tokens WHERE token = ?').run(t);
-          console.warn(`[FCM] Removed invalid token (status ${r.status})`);
-        } else if (!r.ok) {
-          console.error(`[FCM] Send failed (status ${r.status}):`, await r.text());
+          console.warn(`[FCM] Removed a token Firebase no longer knows (status ${r.status})`);
+          return;
         }
+        console.error(`[FCM] Send failed (status ${r.status}):`, body);
       }).catch(err => console.error('[FCM] Send request error:', err.message))
     ));
   } catch (err) {
@@ -1082,6 +1088,9 @@ function unreadCountFor(userId, roomId) {
         AND m.id > COALESCE(
           (SELECT rc.cleared_upto_id FROM room_clears rc
             WHERE rc.room_id = m.room_id AND rc.user_id = ?), 0)
+        -- A message deleted for me is not an unread message, or the badge
+        -- counts something the user cannot open.
+        ${notHiddenSql(userId)}
     `).get(userId, userId, roomId, userId, userId);
     return row ? row.cnt : 0;
   } catch { return 0; }
@@ -1107,6 +1116,7 @@ app.get('/comment-unread/:roomId', authMiddleware, (req, res) => {
       AND m.id > COALESCE(
         (SELECT rc.cleared_upto_id FROM room_clears rc
           WHERE rc.room_id = m.room_id AND rc.user_id = ?), 0)
+      ${notHiddenSql(req.user.id)}
     GROUP BY m.parent_id
   `).all(req.user.id, room.id, req.user.id, req.user.id);
   const out = {};
@@ -1148,6 +1158,7 @@ app.get('/unread-counts', authMiddleware, (req, res) => {
       AND m.id > COALESCE(
         (SELECT rc.cleared_upto_id FROM room_clears rc
           WHERE rc.room_id = m.room_id AND rc.user_id = ?), 0)
+      ${notHiddenSql(req.user.id)}
       AND (
         EXISTS (SELECT 1 FROM room_members rm WHERE rm.room_id = m.room_id AND rm.user_id = ?)
         -- DMs carry no membership rows; they are identified by their name,
@@ -1463,7 +1474,27 @@ function visibleMessagesSql(userId, roomId, alias = 'm', opts = {}) {
   // search results, the media tabs and the unread counts. Doing it per query
   // would mean remembering it in nine places and forgetting it in one.
   const own = opts.includeComments ? '' : ` AND ${alias}.parent_id IS NULL`;
-  return `AND ${alias}.id > ${floor} AND (${alias}.blocked_delivery = 0 OR ${alias}.user_id = ${me})${own}`;
+  // "Delete for me", applied in the same one place and for the same reason.
+  //
+  // A message somebody else sent can be removed from THIS user's copy of the
+  // chat without touching anybody else's — see the hidden_messages table. It
+  // has to disappear from every list, not just the message list: leaving it in
+  // the media tab, the search results or the unread count would be a message
+  // the user deleted still telling them about itself.
+  const hidden =
+    ` AND ${alias}.id NOT IN (SELECT message_id FROM hidden_messages WHERE user_id = ${me})`;
+  return `AND ${alias}.id > ${floor} AND (${alias}.blocked_delivery = 0 OR ${alias}.user_id = ${me})${own}${hidden}`;
+}
+
+/**
+ * The same rule as a bare condition, for the three unread counts that build
+ * their SQL by hand rather than going through visibleMessagesSql.
+ *
+ * `alias` is the messages table's alias in the query it is pasted into.
+ */
+function notHiddenSql(userId, alias = 'm') {
+  const me = Number(userId) || 0;
+  return `AND ${alias}.id NOT IN (SELECT message_id FROM hidden_messages WHERE user_id = ${me})`;
 }
 
 /**
@@ -3395,6 +3426,44 @@ io.on('connection', (socket) => {
     if (!msg) return;
     if (msg.user_id !== socket.user.id) return; // ownership check
     destroyMessage(msg);
+  });
+
+  /**
+   * "Delete for me": hide one message from this user, and nobody else.
+   *
+   * Asked for as a Delete on the other side's message that is just for the
+   * person doing it. Deliberately NOT a variant of delete_message, which
+   * removes the message from the conversation — that one keeps its ownership
+   * check, and this one is what the other side's messages get instead.
+   *
+   * Access is checked but ownership is not, because hiding somebody else's
+   * message is the entire point. Hiding your own is allowed too and means what
+   * it says: it disappears from your copy and the people you sent it to keep
+   * it.
+   *
+   * Acknowledged, so the client can remove the message once it is actually
+   * stored rather than optimistically and then have it reappear on reload.
+   */
+  socket.on('hide_message', ({ messageId }, ack) => {
+    const done = typeof ack === 'function' ? ack : () => {};
+    const msg = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
+    if (!msg) { done({ ok: true }); return; } // already gone: the goal is met
+    const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(msg.room_id);
+    if (!canAccessRoom(socket.user.id, room)) { done({ error: 'No access' }); return; }
+    try {
+      db.prepare('INSERT OR IGNORE INTO hidden_messages (user_id, message_id) VALUES (?, ?)')
+        .run(socket.user.id, msg.id);
+    } catch (e) {
+      done({ error: 'Could not delete' });
+      return;
+    }
+    // Every device this user is signed in on, so the message does not linger
+    // on the tablet after being deleted on the phone. Nobody else is told:
+    // for them nothing has happened.
+    io.to('user:' + socket.user.id).emit('message_hidden', {
+      messageId: msg.id, roomId: msg.room_id,
+    });
+    done({ ok: true });
   });
 
   // A recipient opened a one-time message: start its self-destruct timer.

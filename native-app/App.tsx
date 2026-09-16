@@ -31,6 +31,7 @@ import Toast, { toast } from './src/components/Toast';
 import { disconnectSocket, getSocket, getUsername, apiFetch, ensureSocketAlive, setSessionExpiredHandler, resetSessionExpiry } from './src/api';
 import { audioManager } from './src/audioManager';
 import * as outbox from './src/outbox';
+import * as pushReg from './src/pushRegistration';
 import { C } from './src/theme';
 
 // Keep the app layout LTR even on RTL locales (Persian/Arabic): mirroring the
@@ -407,19 +408,94 @@ export default function App() {
   // Register the device FCM token so the server can push notifications that
   // arrive even when the app is closed. Silently no-ops until the build
   // includes google-services.json (Firebase config).
+  //
+  // Reported as: in the latest APK, push notifications are not received at the
+  // time — they turn up when the app is opened, which means the socket is
+  // delivering them and the push never happened.
+  //
+  // This used to be one attempt, made the moment the sign-in screen went away,
+  // and it asked `getPermissionsAsync()` first. On a fresh install the system
+  // permission dialog is still on screen at that point and the honest answer is
+  // "not granted", so it returned — and because its dependency was
+  // `[screen === 'auth']`, which never changes again, it never ran a second
+  // time. The user granted permission a second later to an app that had
+  // already given up, and the server was never told this device's token.
+  //
+  // It is now a state rather than an event: while the server has not been told
+  // the CURRENT token, keep trying — on a backoff, on every return to the
+  // foreground, and whenever Firebase reissues the token. See
+  // src/pushRegistration.ts.
   useEffect(() => {
     if (screen === 'auth') return;
-    (async () => {
+    let alive = true;
+    let timer: any = null;
+    let attempt = 0;
+
+    const attemptRegister = async (): Promise<void> => {
+      if (!alive) return;
+      // Any pending retry is superseded by this attempt. Without this, coming
+      // back to the app while one is scheduled leaves both running and the
+      // backoff stops meaning anything.
+      clearTimeout(timer);
       try {
         const perm = await Notifications.getPermissionsAsync();
-        if (!perm.granted) return;
-        const tok = await Notifications.getDevicePushTokenAsync();
-        if (tok?.data) {
-          const res = await apiFetch('/push-token', 'POST', { token: String(tok.data), platform: 'android' });
-          if (res?.ok) pushRegisteredRef.current = true;
+        // Not answered yet, or refused. Either way there is nothing to send —
+        // but this is the case that used to end registration for good, so it
+        // falls through to the retry rather than returning.
+        if (perm.granted) {
+          const tok = await Notifications.getDevicePushTokenAsync();
+          const token = tok?.data ? String(tok.data) : '';
+          const sent = await AsyncStorage.getItem(pushReg.SENT_TOKEN_KEY).catch(() => null);
+          if (!pushReg.needsSend({ granted: true, token, sentToken: sent })) {
+            // Already registered with this exact token: nothing to do, and
+            // nothing to retry.
+            if (token) pushRegisteredRef.current = true;
+            return;
+          }
+          const res = await apiFetch('/push-token', 'POST', { token, platform: 'android' });
+          if (res?.ok) {
+            pushRegisteredRef.current = true;
+            // Remembered only AFTER the server accepted it, so a failed POST
+            // is retried rather than recorded as done.
+            AsyncStorage.setItem(pushReg.SENT_TOKEN_KEY, token).catch(() => {});
+            return;
+          }
         }
       } catch {}
-    })();
+      if (!alive) return;
+      attempt += 1;
+      if (!pushReg.shouldRetry({ attempt, registered: pushRegisteredRef.current })) return;
+      timer = setTimeout(attemptRegister, pushReg.retryDelay(attempt));
+    };
+
+    attemptRegister();
+
+    // Coming back to the app is a second chance, and the one that catches the
+    // user who granted permission from Settings after refusing the dialog.
+    const appSub = AppState.addEventListener('change', st => {
+      if (st !== 'active' || pushRegisteredRef.current) return;
+      attempt = 0;
+      attemptRegister();
+    });
+    // Firebase reissues tokens — on reinstall, on restore to a new device,
+    // after a long idle. Without this the server keeps pushing to a token that
+    // has stopped existing, and the phone stays quiet with nothing to show for
+    // it on either side.
+    let tokSub: any = null;
+    try {
+      tokSub = Notifications.addPushTokenListener(() => {
+        pushRegisteredRef.current = false;
+        attempt = 0;
+        attemptRegister();
+      });
+    } catch {}
+
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+      appSub.remove();
+      try { tokSub?.remove?.(); } catch {}
+    };
   }, [screen === 'auth']);
 
   // Global notifications: any message from someone else, in any room except
@@ -433,7 +509,10 @@ export default function App() {
       const uname = await getUsername();
       sock = await getSocket();
       handler = (msg: any) => {
-        if (pushRegisteredRef.current) return; // FCM push covers notifications
+        // Only while the server genuinely has no way to reach this device. Once
+        // the token is registered FCM covers this, and raising it here as well
+        // would show every message twice.
+        if (!pushReg.socketFallbackAllowed({ registered: pushRegisteredRef.current })) return;
         if (msg.username === uname) return;
         if (AppState.currentState === 'active') return; // in-app badges cover it
         if (screen === 'chat' && room && msg.room_id === room.id) return;
@@ -481,7 +560,15 @@ export default function App() {
   }, [screen]);
 
   async function logout() {
-    await AsyncStorage.multiRemove(['token', 'username', 'avatar']);
+    // SENT_TOKEN_KEY goes with the account, not with the device.
+    //
+    // It records "the server has been told this token", and the server stores
+    // that token against whoever was signed in at the time. Left behind, the
+    // next person to sign in on this phone has the same device token, so
+    // registration would decide there is nothing to send — and they would get
+    // no push notifications at all, with everything appearing to work.
+    await AsyncStorage.multiRemove(['token', 'username', 'avatar', pushReg.SENT_TOKEN_KEY]);
+    pushRegisteredRef.current = false;
     // Signing out must not leave the previous account's chats readable on the
     // device — the offline copy is real message content.
     await offlineStore.clearAll();

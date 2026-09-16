@@ -6,7 +6,7 @@
 // function was unreachable — and a mutation that inverted it, notifying ONLY
 // the people who had asked not to be notified, passed the entire suite.
 const assert = require('assert');
-const { recipientsFor } = require('../notify');
+const { recipientsFor, tokenIsDead } = require('../notify');
 
 const tests = [];
 const test = (n, f) => tests.push({ n, f });
@@ -63,6 +63,63 @@ test('the caller\'s list is never modified', () => {
   // array it was handed.
   const same = [1, 2];
   assert.notStrictEqual(recipientsFor(same, null, isMuted), same);
+});
+
+// ── When a device token is thrown away ──────────────────────────────────────
+//
+// Deleting a push token is not a small thing: the device then gets no push
+// notifications at all until the app is next opened and registers again, which
+// from the outside looks exactly like "notifications are not received at the
+// time".
+//
+// The old rule was `status === 404 || status === 400`, and the 400 was wrong.
+// FCM answers 400 INVALID_ARGUMENT for a malformed MESSAGE — a field it does
+// not like, a value too long, a bad channel id — which says nothing about the
+// token. One such payload deleted the token of every device it was sent to.
+
+test('THE BUG: a malformed message does not cost a phone its notifications', () => {
+  const invalidArgument = JSON.stringify({
+    error: { code: 400, status: 'INVALID_ARGUMENT', message: 'Invalid value at message.android' },
+  });
+  assert.strictEqual(tokenIsDead(400, invalidArgument), false,
+    'a payload Firebase disliked deleted a perfectly good token');
+  // …and a 500 from Google, or a proxy's HTML error page, is not a verdict on
+  // the token either.
+  assert.strictEqual(tokenIsDead(500, '<html>502 Bad Gateway</html>'), false);
+  assert.strictEqual(tokenIsDead(503, ''), false);
+  assert.strictEqual(tokenIsDead(401, JSON.stringify({ error: { status: 'UNAUTHENTICATED' } })), false);
+});
+
+test('a token Firebase no longer knows IS thrown away', () => {
+  // Otherwise the table fills with tokens for uninstalled apps and every send
+  // pays for them.
+  assert.strictEqual(tokenIsDead(404, ''), true);
+  assert.strictEqual(tokenIsDead(404, JSON.stringify({
+    error: { details: [{ errorCode: 'UNREGISTERED' }] },
+  })), true);
+  assert.strictEqual(tokenIsDead(200, JSON.stringify({
+    error: { details: [{ errorCode: 'UNREGISTERED' }] },
+  })), true, 'an UNREGISTERED token is kept because the status was not 404');
+});
+
+test('a token belonging to another Firebase project is thrown away too', () => {
+  // This server can never deliver to it, so keeping it is just a failing send
+  // on every message for ever.
+  assert.strictEqual(tokenIsDead(403, JSON.stringify({
+    error: { details: [{ errorCode: 'SENDER_ID_MISMATCH' }] },
+  })), true);
+  // But not every 403 — a credentials problem on this side must not delete
+  // everybody's tokens.
+  assert.strictEqual(tokenIsDead(403, JSON.stringify({
+    error: { status: 'PERMISSION_DENIED' },
+  })), false);
+});
+
+test('an unparseable body is not read as a verdict', () => {
+  assert.strictEqual(tokenIsDead(400, undefined), false);
+  assert.strictEqual(tokenIsDead(400, null), false);
+  assert.strictEqual(tokenIsDead(400, '{'), false);
+  assert.strictEqual(tokenIsDead(400, '{"error":null}'), false);
 });
 
 let passed = 0, failed = 0;
