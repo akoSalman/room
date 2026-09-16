@@ -67,6 +67,16 @@ type Props = {
   onRemoveMedia: (index: number) => void;
   /** Opens the staged item for a look — and for editing. */
   onPreviewMedia: (uri: string, index: number) => void;
+  /**
+   * What is currently typed, so the chat screen can keep it.
+   *
+   * The text deliberately lives in THIS component's state and nowhere else —
+   * that is what stops a keystroke re-rendering a list of two thousand
+   * messages — which also means it dies with this component when the chat is
+   * left. This hands the value out without handing over ownership: the parent
+   * writes it to storage from a ref and never renders from it.
+   */
+  onDraftChange?: (text: string) => void;
 };
 
 function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
@@ -76,6 +86,7 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
     sendQuality, onQuality, disappearing,
     clipboard, onPaste,
     onToggleQuickEmoji, onRemoveMedia, onRenameMedia, onPreviewMedia, mentionables,
+    onDraftChange,
   } = props;
 
   const [text, setText] = useState('');
@@ -116,7 +127,10 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
     caretRef.current = next.caret;
     suggestAt.current = null;
     setSuggest([]);
-  }, []);
+    // Picking a name out of the list is typing by another route, and a draft
+    // that stops at "@ali" when the user picked "@alireza" is the wrong draft.
+    onDraftChange && onDraftChange(next.text);
+  }, [onDraftChange]);
 
   useImperativeHandle(ref, () => ({
     setText: set,
@@ -314,6 +328,11 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
           value={text}
           onChangeText={(v: string) => {
             textRef.current = v; setText(v); onTyping();
+            // Typing is the one thing that makes a draft worth keeping, so the
+            // report goes here rather than in `set` — which is also how the
+            // composer is filled for an EDIT, and a half-finished edit left
+            // behind as a draft would be sent as a new message on return.
+            onDraftChange && onDraftChange(v);
             // The caret has not been reported yet for this keystroke, so
             // assume it followed the edit — true for ordinary typing.
             updateSuggestions(v, Math.min(caretRef.current + 1, v.length));

@@ -167,35 +167,75 @@ test('the shade\'s timer starts when the call connects, not when it was placed',
 // framing, or showing somebody what is behind you, wants them the other way
 // round.
 
-test('THE DEFAULT: the other person fills the screen, you are the corner', () => {
+test('THE DEFAULT: you fill the screen, the other side is the corner', () => {
+  // Asked for in those words: "it should show me on the big window and the
+  // other side on the small window".
   assert.deepStrictEqual(
     W.videoPanes({ swapped: false, hasRemote: true, hasLocal: true }),
-    { big: 'remote', small: 'local' });
-});
-
-test('THE POINT: swapped, your own camera fills the screen', () => {
-  assert.deepStrictEqual(
-    W.videoPanes({ swapped: true, hasRemote: true, hasLocal: true }),
     { big: 'local', small: 'remote' });
 });
 
+test('THE BUG: connecting does not rearrange the screen', () => {
+  // Reported as "it changes instantly". A call begins with one video — yours —
+  // and one video belongs on the screen rather than in the corner of a black
+  // rectangle. If the arrangement AFTER the other side arrives disagrees with
+  // that, every video call starts by throwing the picture across the screen.
+  //
+  // So the two must name the same big pane. This is the whole fix, and it is
+  // the assertion that fails if the default is ever put back the other way.
+  const before = W.videoPanes({ swapped: false, hasRemote: false, hasLocal: true });
+  const after = W.videoPanes({ swapped: false, hasRemote: true, hasLocal: true });
+  assert.strictEqual(before.big, after.big,
+    'the big pane changes the moment the other side connects');
+  assert.strictEqual(before.big, 'local');
+  // Nothing moved: the corner was empty and now has them in it.
+  assert.strictEqual(before.small, null);
+  assert.strictEqual(after.small, 'remote');
+});
+
+test('THE POINT: swapped, the other person fills the screen', () => {
+  assert.deepStrictEqual(
+    W.videoPanes({ swapped: true, hasRemote: true, hasLocal: true }),
+    { big: 'remote', small: 'local' });
+});
+
 test('before the other side\'s video arrives there is one video, full screen', () => {
-  // Not you in the corner of a black rectangle, which is what a fixed layout
-  // gives during the seconds before the call connects.
   assert.deepStrictEqual(
     W.videoPanes({ swapped: false, hasRemote: false, hasLocal: true }),
     { big: 'local', small: null });
-  // And a swap asked for earlier cannot strand them there either.
+  // And a swap asked for earlier cannot strand them in the corner of nothing.
   assert.deepStrictEqual(
     W.videoPanes({ swapped: true, hasRemote: false, hasLocal: true }),
     { big: 'local', small: null });
 });
 
-test('THE TRAP: turning your camera off while swapped puts them back', () => {
-  // Otherwise the screen fills with black and the person talking disappears.
+test('THE TRAP: turning your camera off puts the other person on the screen', () => {
+  // Otherwise the screen fills with black and the person talking disappears —
+  // and with you as the default big pane this is now the ordinary case rather
+  // than an odd one, so it is checked both ways round.
+  assert.deepStrictEqual(
+    W.videoPanes({ swapped: false, hasRemote: true, hasLocal: true, cameraOff: true }),
+    { big: 'remote', small: null });
   assert.deepStrictEqual(
     W.videoPanes({ swapped: true, hasRemote: true, hasLocal: true, cameraOff: true }),
     { big: 'remote', small: null });
+});
+
+test('the two panes are NEVER the same side', () => {
+  // Reported as "sometimes on both windows there is one side video". Whatever
+  // else the rule says, it must never name one stream twice — two copies of
+  // one person hides that the other has not arrived.
+  for (const swapped of [true, false]) {
+    for (const hasRemote of [true, false]) {
+      for (const hasLocal of [true, false]) {
+        for (const cameraOff of [true, false]) {
+          const p = W.videoPanes({ swapped, hasRemote, hasLocal, cameraOff });
+          assert.ok(p.small === null || p.small !== p.big,
+            `both panes are ${p.big} for ${JSON.stringify({ swapped, hasRemote, hasLocal, cameraOff })}`);
+        }
+      }
+    }
+  }
 });
 
 test('the swap gesture is only offered when it would do something', () => {
@@ -372,6 +412,40 @@ test('the web swap is wired up too', () => {
     assert.ok(calls.slice(i, i + 700).includes('applyVideoPanes()'),
       `${anchor} does not re-lay the videos, so the panes go stale`);
   }
+});
+
+test('the app never draws the same stream in both panes', () => {
+  // "Sometimes on both windows there is one side video." The rule cannot
+  // produce it, but two panes resolving to one stream object can — and the
+  // corner is the one to drop.
+  const at = overlay.indexOf('const bigStream =');
+  assert.ok(at > 0, 'the overlay no longer picks the streams here');
+  const slice = overlay.slice(at, at + 700);
+  assert.ok(/wantSmall !== bigStream/.test(slice),
+    'the corner is rendered even when it holds the same stream as the big pane');
+});
+
+test('the web puts the two videos where the rule says, and hides the empty one', () => {
+  const calls = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'calls.js'), 'utf8');
+  const css = fs.readFileSync(path.join(__dirname, '..', 'public', 'css', 'style.css'), 'utf8');
+  const at = calls.indexOf('function applyVideoPanes()');
+  assert.ok(at > 0, 'applyVideoPanes moved');
+  const fn = calls.slice(at, at + 1200);
+  // The class must be driven by the rule's answer, not by a hardcoded guess.
+  assert.ok(/classList\.toggle\('swapped', panes\.big === 'remote'\)/.test(fn),
+    'the swapped class no longer follows the rule');
+  assert.ok(/pane-empty/.test(fn), 'a pane with no stream is left on screen as a black box');
+  assert.ok(/#call-overlay \.pane-empty \{[^}]*display: none/.test(css),
+    'pane-empty does not actually hide anything');
+  // Without the class, YOU are the big one — so the panel is already right in
+  // the moment before any JavaScript runs, which is the flash this avoids.
+  const local = css.indexOf('#call-local-video {');
+  const remote = css.indexOf('#call-remote-video {');
+  assert.ok(local > 0 && remote > 0, 'the pane rules are gone');
+  assert.ok(/width: 100%/.test(css.slice(local, css.indexOf('}', local))),
+    'your own video is not the big pane by default');
+  assert.ok(/position: absolute/.test(css.slice(remote, css.indexOf('}', remote))),
+    "the other side's video is not the corner by default");
 });
 
 let passed = 0, failed = 0;

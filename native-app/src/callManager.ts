@@ -8,7 +8,7 @@ import { mediaDevices, RTCPeerConnection, MediaStream } from 'react-native-webrt
 import { apiFetch, getSocket } from './api';
 import { stopRinging } from './incomingCall';
 import { routeFor, outgoingStatus, CallMode, CallPhase, OutgoingState } from './callAudio';
-import { toneFor, toneVolume, toneLoops } from './callTones';
+import { toneFor, toneVolume, toneLoops, toneStillWanted } from './callTones';
 import { canMinimize, canSwapVideos, CallPhase as WindowPhase } from './callWindow';
 import * as ongoing from './ongoingCall';
 import { audioManager } from './audioManager';
@@ -85,8 +85,18 @@ class CallManager {
    */
   private async startTone(role: 'caller' | 'callee') {
     this.stopRing();
-    const tone = toneFor({ role });
+    // `connected` is passed, and it was the missing half of the rule: without
+    // it toneFor was being asked "which tone does a caller get" rather than
+    // "should this device be making a noise at all", and a call that was
+    // already up could still start ringing.
+    const tone = toneFor({ role, connected: !!this.connectedAt });
     if (!tone) return;
+    // The ring this sound belongs to, captured BEFORE the load. Loading is
+    // asynchronous and the sound comes back already playing, so a stop that
+    // happens while it loads cannot silence it — there is nothing loaded yet
+    // to silence. Storing it afterwards is what left a ringtone looping over a
+    // connected call. See toneStillWanted in callTones.ts.
+    const generation = this.ringGeneration;
     try {
       const { sound } = await Audio.Sound.createAsync(
         tone === 'ringtone'
@@ -94,10 +104,19 @@ class CallManager {
           : require('../assets/ringback.wav'),
         { isLooping: toneLoops(tone), shouldPlay: true, volume: toneVolume(tone) },
       );
+      if (!toneStillWanted(generation, this.ringGeneration)) {
+        // Stopped while it was loading. This is the only moment anything can
+        // still silence it, because stopRing has already been and gone.
+        sound.unloadAsync().catch(() => {});
+        return;
+      }
       this.ringSound = sound;
     } catch {}
   }
+  /** Bumped by every stop, so a tone still loading knows it is obsolete. */
+  private ringGeneration = 0;
   private stopRing() {
+    this.ringGeneration++;
     const snd = this.ringSound;
     this.ringSound = null;
     if (snd) snd.unloadAsync().catch(() => {});

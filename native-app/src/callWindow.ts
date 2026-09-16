@@ -136,20 +136,33 @@ export function showsChronometer(connected: boolean): boolean {
 
 // ── Which video fills the screen ─────────────────────────────────────────────
 //
-// Asked for as: on a video call the user should be able to swap between their
-// own minimized video and the other side's maximized one.
+// Asked for first as: on a video call the user should be able to swap between
+// their own minimized video and the other side's maximized one.
 //
-// The two panes were fixed: the other person always filled the screen and you
-// were always the thumbnail in the corner. That is the right default and the
-// wrong rule — checking your own framing, showing something behind you, or
-// simply looking at yourself properly all want the sizes the other way round,
-// and every other video app lets you tap the small one to swap.
+// Then reported as: sometimes both windows show one side's video, or it changes
+// instantly — it should show ME on the big window and the other side on the
+// small one.
 //
-// Two things have to be got right, and both are about NOT stranding the user
-// with a blank screen:
-//   • there is nothing to swap with until the other side's video arrives;
+// The second report is about the moment a video call connects, and the cause
+// was the default. A call starts with only one video in existence, your own,
+// and one video belongs on the screen rather than in the corner of a black
+// rectangle — so for the first second or two you filled the screen. Then the
+// other side's stream arrived and the old default put THEM on the screen and
+// you in the corner. Nothing was wrong with either state; the fault was that
+// they disagreed, so every video call began by throwing the picture across the
+// screen the instant it connected. "It changes instantly" is exactly that.
+//
+// So the default is now the one the user asked for and the one the call
+// already starts in: you on the screen, the other side in the corner. The flip
+// does not need to be suppressed, because there is no longer anything to flip
+// — the remote stream arriving fills the corner that was empty and moves
+// nothing. Tapping the corner still swaps, which is the original request.
+//
+// The rest is about NOT stranding somebody with a blank screen:
+//   • there is nothing to put in the corner until the other side's video
+//     arrives;
 //   • turning your own camera off while you are the big pane must put the
-//     other person back, not leave a black rectangle with a name on it.
+//     other person there, not leave a black rectangle with a name on it.
 
 export type VideoPanes = {
   /** Whose stream fills the screen. */
@@ -161,21 +174,29 @@ export type VideoPanes = {
 /**
  * Where the two video streams go.
  *
- * `swapped` is the user's choice, and it is respected only while it means
- * something: with no remote stream yet there is one video and it belongs on
- * the screen, not in the corner of a black rectangle.
+ * You are the big pane and the other side is the corner, which is both what
+ * was asked for and what the call already looks like before the other side's
+ * video arrives — so connecting no longer rearranges the screen.
+ *
+ * `swapped` is the user's own choice, made by tapping the corner, and it is
+ * respected only while it means something. The two cases below come first
+ * because both of them are somebody looking at black if they are got wrong.
  */
 export function videoPanes(o: {
   swapped: boolean; hasRemote: boolean; hasLocal: boolean; cameraOff?: boolean;
 }): VideoPanes {
-  // Your own camera off means your pane has nothing in it. Being swapped in
-  // that state would fill the screen with black and hide the person talking.
-  const localShowable = o.hasLocal && !o.cameraOff;
-  if (!o.hasRemote) return { big: 'local', small: null };
+  // Your own camera off means your pane has nothing in it, so you cannot be
+  // the big one whatever anybody chose: that fills the screen with black and
+  // hides the person talking.
+  const localShowable = !!o.hasLocal && !o.cameraOff;
   if (!localShowable) return { big: 'remote', small: null };
+  // Nothing from the other side yet. One video, and it goes on the screen
+  // rather than into the corner of a black rectangle — which is also why this
+  // is the default arrangement rather than a special case of it.
+  if (!o.hasRemote) return { big: 'local', small: null };
   return o.swapped
-    ? { big: 'local', small: 'remote' }
-    : { big: 'remote', small: 'local' };
+    ? { big: 'remote', small: 'local' }
+    : { big: 'local', small: 'remote' };
 }
 
 /**

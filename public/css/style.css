@@ -689,20 +689,31 @@ body.kb-open #install-hint { display: none; }
 }
 /* The two panes. Which element is which is decided by the `swapped` class on
    the panel, so the swap is one class flip rather than moving DOM nodes —
-   moving a <video> re-attaches its stream and blinks it black. */
-#call-remote-video { width: 100%; border-radius: 10px; background: #000; max-height: 200px; }
-#call-local-video {
+   moving a <video> re-attaches its stream and blinks it black.
+
+   YOU are the big pane by default and the other side is the corner. That is
+   what was asked for, and it is also what the panel already shows in the
+   seconds before their video arrives — so a call that connects no longer
+   throws the picture across the panel. `swapped` is then exactly what its name
+   says and what js/callStatus.js means by it: the user has asked to see the
+   other side big. */
+#call-local-video { width: 100%; border-radius: 10px; background: #000; max-height: 200px; }
+#call-remote-video {
   position: absolute; top: 18px; right: 18px; width: 72px; border-radius: 8px;
   background: #000; border: 1px solid rgba(255,255,255,0.4);
 }
-#call-overlay.swapped #call-local-video {
+#call-overlay.swapped #call-remote-video {
   position: static; top: auto; right: auto; width: 100%;
   border-radius: 10px; max-height: 200px; border: none;
 }
-#call-overlay.swapped #call-remote-video {
+#call-overlay.swapped #call-local-video {
   position: absolute; top: 18px; right: 18px; width: 72px;
   border-radius: 8px; max-height: none; border: 1px solid rgba(255,255,255,0.4);
 }
+/* A pane with nothing in it. Left visible it is a black rectangle sitting in
+   the corner of a live call — which is the other half of "both windows show
+   one side's video". */
+#call-overlay .pane-empty { display: none; }
 /* Only a pointer when the tap does something. */
 #call-overlay.swappable #call-remote-video,
 #call-overlay.swappable #call-local-video { cursor: pointer; }

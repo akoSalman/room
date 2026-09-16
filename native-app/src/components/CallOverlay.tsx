@@ -158,7 +158,14 @@ export default function CallOverlay() {
         });
         const streamOf = (p: 'remote' | 'local') => (p === 'remote' ? cm.remoteStream : cm.localStream);
         const bigStream = streamOf(panes.big);
-        const smallStream = panes.small ? streamOf(panes.small) : null;
+        const wantSmall = panes.small ? streamOf(panes.small) : null;
+        // Reported as: sometimes both windows show one side's video. Whatever
+        // lets the two panes resolve to the same stream — a renegotiation
+        // handing back the local stream as the remote one, the same object
+        // arriving on both — the corner is the one to drop. Two copies of one
+        // person is strictly worse than one, and it hides that the other side
+        // has not actually arrived yet.
+        const smallStream = wantSmall && wantSmall !== bigStream ? wantSmall : null;
         const swappable = canSwapVideos({
           hasRemote: !!cm.remoteStream, hasLocal: !!cm.localStream, cameraOff: cm.cameraOff,
         });

@@ -570,7 +570,10 @@
   <button id="ctx-comment-btn" onclick="ctxComments()">💬 &nbsp;Comments</button>
   <button id="ctx-edit-btn" onclick="ctxEdit()">✏️ &nbsp;Edit</button>
   <hr/>
-  <button class="danger" onclick="ctxDelete()">🗑 &nbsp;Delete</button>
+  <!-- The label is written by js/messageDelete.js, because it is not the same
+       delete on both sides: your own message goes for everyone, somebody
+       else's disappears from your copy only. -->
+  <button id="ctx-delete-btn" class="danger" onclick="ctxDelete()">🗑 &nbsp;Delete</button>
 </div>
 
 <!-- ── Emoji Picker ───────────────────────────────── -->
@@ -660,6 +663,8 @@
 <script src="/js/scrollFab.js"></script>
 <script src="/js/bidi.js"></script>
 <script src="/js/messageMenu.js"></script>
+<script src="/js/messageDelete.js"></script>
+<script src="/js/textDraft.js"></script>
 <script src="/js/scrollAnchor.js"></script>
 <script src="/js/saveMedia.js"></script>
 <script src="/js/presence.js"></script>

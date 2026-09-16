@@ -175,6 +175,35 @@ db.exec(`
     UNIQUE(user_id, room_id)
   );
 `);
+// One message, hidden from one person.
+//
+// Asked for as: add delete to the other side's message, but the delete is just
+// for me.
+//
+// Deleting a message you did not write cannot mean what Delete has always
+// meant here — `delete_message` removes it from the conversation for everyone,
+// and one person quietly deleting another person's words out of a chat is not
+// a feature. So it means this instead: the message stays exactly where it is
+// for the person who sent it, and disappears from the asker's copy.
+//
+// Server-side rather than a list kept on the phone, for the same reason
+// room_clears is: these users reinstall the app often and sign in on more than
+// one device, and a message they deliberately got rid of coming back on the
+// next install is precisely the kind of thing that gets reported as a bug.
+//
+// A row per message rather than room_clears' high-water mark, because this is
+// not "everything up to here" — it is one message out of the middle, with the
+// ones around it untouched.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS hidden_messages (
+    user_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    UNIQUE(user_id, message_id)
+  );
+`);
+// Every message query filters on this, so it has to be a lookup rather than a
+// scan of everything anybody has ever hidden.
+db.exec('CREATE INDEX IF NOT EXISTS idx_hidden_user ON hidden_messages(user_id, message_id)');
 db.exec(`
   CREATE TABLE IF NOT EXISTS room_reads (
     user_id INTEGER NOT NULL,

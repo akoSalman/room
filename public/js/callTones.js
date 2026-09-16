@@ -29,11 +29,19 @@
     return tone === 'ringtone' || tone === 'ringback';
   }
 
+  // A tone that finishes loading after the ring was stopped belongs to a ring
+  // that is over, and must be thrown away rather than played over a connected
+  // call. See native-app/src/callTones.ts for why that gap exists at all.
+  function toneStillWanted(startedGeneration, currentGeneration) {
+    return Number(startedGeneration) === Number(currentGeneration);
+  }
+
   global.CallTones = {
     toneFor: toneFor,
     toneFile: toneFile,
     toneVolume: toneVolume,
     toneLoops: toneLoops,
+    toneStillWanted: toneStillWanted,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
 

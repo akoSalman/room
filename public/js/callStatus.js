@@ -47,18 +47,20 @@
   /**
    * Which video fills the panel, and which sits in the corner.
    *
-   * Mirrors callWindow.ts on the app. The two cases that matter are the ones
-   * that would strand somebody looking at black: no remote stream yet, and
-   * your own camera turned off while you are the big pane.
+   * Mirrors callWindow.ts on the app: you are the big pane and the other side
+   * is the corner, which is also what the call looks like before their video
+   * arrives — so connecting no longer throws the picture across the panel.
+   * The two cases handled first are the ones that would otherwise strand
+   * somebody looking at black.
    */
   function videoPanes(o) {
     o = o || {};
     var localShowable = !!o.hasLocal && !o.cameraOff;
-    if (!o.hasRemote) return { big: 'local', small: null };
     if (!localShowable) return { big: 'remote', small: null };
+    if (!o.hasRemote) return { big: 'local', small: null };
     return o.swapped
-      ? { big: 'local', small: 'remote' }
-      : { big: 'remote', small: 'local' };
+      ? { big: 'remote', small: 'local' }
+      : { big: 'local', small: 'remote' };
   }
 
   /** Is there anything a tap on the small pane would achieve? */

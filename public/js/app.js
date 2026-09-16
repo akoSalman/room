@@ -830,6 +830,9 @@ function connectSocket() {
       applyEdit(messageId, content);
     });
     socket.on('message_deleted', ({ messageId }) => applyDelete(messageId));
+    // "Delete for me", done here or on another device this user is signed in
+    // on. Nobody else is told, because for them nothing has happened.
+    socket.on('message_hidden', ({ messageId }) => applyDelete(messageId));
     // Cleared — by me on another device, or by the other person for both of
     // us. Showing messages the server has already dropped would be showing a
     // lie until the next reload.
@@ -1053,9 +1056,89 @@ function clearUnread(roomId) {
 }
 
 // ─── Typing ───────────────────────────────────────────────────────────────────
+// ── Keeping a half-written message ──────────────────────────────────────────
+//
+// Asked for as: keep the draft when typing anything into the composer, or
+// adding media, and exiting the chat.
+//
+// The web had the worse half of this. Switching chats left whatever was typed
+// sitting in the composer, so the sentence did not vanish — it followed you
+// into the next conversation, one Enter away from being sent to the wrong
+// person. And a reload, which iOS performs on a backgrounded tab without being
+// asked, lost it outright.
+//
+// So the draft is filed under the chat it was written in, restored when that
+// chat is opened, and the composer is emptied in between. See js/textDraft.js.
+let draftSaveTimer = null;
+let draftWritten = '';
+
+function draftInput() { return document.getElementById('msg-input'); }
+
+/** Write one chat's draft. `roomId` is passed because "current" changes. */
+function writeDraft(roomId, text) {
+  if (roomId == null) return;
+  try {
+    const key = TextDraft.draftKey(roomId);
+    const raw = TextDraft.serialize(text, Date.now());
+    if (raw) localStorage.setItem(key, raw);
+    else localStorage.removeItem(key);
+  } catch (e) {}
+  draftWritten = String(text || '');
+}
+
+/** Write it now rather than when the debounce next fires. */
+function flushDraft(roomId) {
+  clearTimeout(draftSaveTimer);
+  const el = draftInput();
+  const text = el ? el.value : '';
+  const id = roomId === undefined ? currentRoomId : roomId;
+  // Not while editing an existing message: that text belongs to the message
+  // being edited, and finding it in the composer later — with the edit no
+  // longer in progress — would send somebody's edit as a new message.
+  if (editingMsgId) return;
+  if (!TextDraft.changed(text, draftWritten)) return;
+  writeDraft(id, text);
+}
+
+/** Put this chat's draft back, and nothing else's. */
+function restoreDraft(roomId) {
+  const el = draftInput();
+  if (!el) return;
+  let saved = '';
+  try { saved = TextDraft.parse(localStorage.getItem(TextDraft.draftKey(roomId)), Date.now()); }
+  catch (e) { saved = ''; }
+  // The composer is emptied by the caller before this runs, so `current` is
+  // only non-empty when something deliberately put text there.
+  el.value = TextDraft.restoredText(saved, el.value);
+  draftWritten = el.value;
+  Bidi.applyDirection(el, el.value);
+  updateComposerButtons();
+}
+
+/** Nothing left to keep: the message went. */
+function clearDraft(roomId) {
+  clearTimeout(draftSaveTimer);
+  draftWritten = '';
+  try { localStorage.removeItem(TextDraft.draftKey(roomId === undefined ? currentRoomId : roomId)); }
+  catch (e) {}
+}
+
+// A reload — which iOS performs on a backgrounded tab by itself — must not
+// lose what was typed. `pagehide` rather than `unload`, which Safari does not
+// reliably fire for a tab it is discarding.
+window.addEventListener('pagehide', () => flushDraft());
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') flushDraft();
+});
+
 function onTypingInput() {
   updateComposerButtons();
   refreshMentionSuggestions();
+  // Typing is the one thing that makes a draft worth keeping. Debounced, so
+  // this is not a storage write on every keystroke.
+  clearTimeout(draftSaveTimer);
+  const roomAtKeystroke = currentRoomId;
+  draftSaveTimer = setTimeout(() => flushDraft(roomAtKeystroke), TextDraft.SAVE_DEBOUNCE_MS);
   if (!currentRoomId || !socketReady) return;
   if (!isTyping) { isTyping = true; socket.emit('typing_start', { roomId: currentRoomId }); }
   clearTimeout(typingTimer);
@@ -2015,11 +2098,18 @@ async function openDM(otherUsername) {
 
 async function joinRoom(roomId, roomName, li, isDM = false) {
   if (currentRoomId === roomId) return;
+  // The chat being LEFT keeps what was typed in it, filed under its own id.
+  // Without this the sentence followed you into the next conversation, one
+  // Enter away from being sent to the wrong person.
+  flushDraft(currentRoomId);
   cancelEdit(); stopTypingSignal();
   if (isRecording) stopRecording();
   typingUsers.clear(); recordingUsers.clear(); renderTypingBar();
   currentRoomId = roomId;
   currentRoomIsDM = isDM;
+  // …and the chat being ENTERED gets its own back. cancelEdit() above has
+  // already emptied the composer, so this cannot inherit the last chat's text.
+  restoreDraft(roomId);
   // Said FIRST, before anything that waits on the network. The server routes
   // typing and recording by the room each socket is currently looking at, and
   // this is how it is told — so saying it after the DM key fetch (a round trip
@@ -2360,6 +2450,8 @@ function sendText() {
   const oneTimeSeconds = pendingOneTimeSeconds || undefined;
   clearOneTime();
   input.value = '';
+  // The message is on its way, so there is no longer a draft of it.
+  clearDraft(roomId);
   updateComposerButtons();
   cancelReply();
   dispatchText(plain, roomId, replyToId, oneTimeSeconds, sendingParentId());
@@ -2717,9 +2809,24 @@ function applyDelete(messageId) {
   // If a notification for this message is still on screen, close it too.
   if (openNotifications[messageId]) { try { openNotifications[messageId].close(); } catch {} delete openNotifications[messageId]; }
 }
-function confirmDelete(messageId) {
-  if (!confirm('Delete this message?')) return;
-  socket.emit('delete_message', { messageId });
+/**
+ * Delete one message — whichever of the two deletes applies to it.
+ *
+ * `mine` is passed in rather than worked out here: the menu already knows, and
+ * the one thing that must never happen is `delete_message` going out for a
+ * message somebody else wrote. That is not a failed delete — it is one person
+ * removing another person's words from the conversation. See
+ * js/messageDelete.js.
+ */
+function confirmDelete(messageId, mine) {
+  const kind = MessageDelete.deleteKind({ mine: mine });
+  const { title, body } = MessageDelete.deleteConfirm(kind);
+  if (!confirm(title + '\n\n' + body)) return;
+  socket.emit(MessageDelete.deleteEvent(kind), { messageId });
+  // Off the screen straight away for a hide: unlike a delete for everyone,
+  // nothing comes back to say it happened, and waiting on a round trip to make
+  // a message go away looks like the click did not register.
+  if (kind === 'me') applyDelete(messageId);
 }
 
 // ─── File / Audio ─────────────────────────────────────────────────────────────
@@ -4690,8 +4797,15 @@ function openCtxMenu(messageId, type, isMine, wrapperEl, msg) {
   document.getElementById('ctx-edit-btn').style.display = (isMine && type === 'text') ? '' : 'none';
   document.getElementById('ctx-forward-btn').style.display = (type !== 'invite' && !msg?.one_time_seconds) ? '' : 'none';
   document.getElementById('ctx-download-btn').style.display = (msg?.file_path && !msg?.one_time_seconds) ? '' : 'none';
-  menu.querySelector('button.danger').style.display = isMine ? '' : 'none';
-  menu.querySelector('hr').style.display = isMine ? '' : 'none';
+  // Delete is offered on BOTH sides now, and it is not the same delete on
+  // each. The label says which, because "Delete" over somebody else's message
+  // reads as unsending theirs, which it very deliberately does not do.
+  const delBtn = document.getElementById('ctx-delete-btn');
+  if (delBtn) {
+    delBtn.style.display = '';
+    delBtn.textContent = '🗑  ' + MessageDelete.deleteLabel(MessageDelete.deleteKind({ mine: isMine }));
+  }
+  menu.querySelector('hr').style.display = '';
   menu.classList.remove('hidden');
   const rect = wrapperEl.getBoundingClientRect();
   // Measure the menu's real size now that it's visible, and keep it above the
@@ -5136,7 +5250,16 @@ function ctxReact() {
   if (btn && wrapper) showEmojiPicker(ctxTarget.messageId, btn, wrapper);
 }
 function ctxEdit() { if (!ctxTarget) return; const id = ctxTarget.messageId; closeCtxMenu(); startEdit(id); }
-function ctxDelete() { if (!ctxTarget) return; const id = ctxTarget.messageId; closeCtxMenu(); confirmDelete(id); }
+function ctxDelete() {
+  if (!ctxTarget) return;
+  const id = ctxTarget.messageId;
+  // Read before closeCtxMenu(), which clears ctxTarget — without it every
+  // delete would look like somebody else's and hide your own messages instead
+  // of deleting them.
+  const mine = !!ctxTarget.isMine;
+  closeCtxMenu();
+  confirmDelete(id, mine);
+}
 
 function addLongPress(el, cb) {
   let t;

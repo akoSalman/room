@@ -145,9 +145,18 @@ test('every message on the web carries its own direction', () => {
   const edit = app.slice(app.indexOf('function applyEdit('), app.indexOf('// ─── Delete'));
   assert.ok(/Bidi\.applyDirection\(textSpan, content\)/.test(edit),
     'an edited message loses its direction');
-  // …and the quote above it, and the reply bar, and the comments heading.
-  assert.strictEqual((app.match(/Bidi\.applyDirection\(/g) || []).length, 5,
+  // …and the quote above it, the reply bar, the comments heading, and a draft
+  // put back into the composer — a Persian sentence restored with no direction
+  // reads backwards in the box it was typed in.
+  //
+  // An exact count rather than "at least": a new place that draws somebody's
+  // words should fail here until somebody has decided whether it needs a
+  // direction, which is the only way this stays true as the file grows.
+  assert.strictEqual((app.match(/Bidi\.applyDirection\(/g) || []).length, 6,
     'some of the places that draw somebody\'s words still do not set a direction');
+  const restore = app.slice(app.indexOf('function restoreDraft('), app.indexOf('function clearDraft('));
+  assert.ok(/Bidi\.applyDirection\(el, el\.value\)/.test(restore),
+    'a restored draft loses the direction it was typed in');
   assert.ok(/src="\/js\/bidi\.js"/.test(html),
     'bidi.js is never loaded, so Bidi is undefined and drawing a message throws');
 });

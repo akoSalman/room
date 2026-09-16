@@ -44,12 +44,16 @@ import SaveOverlay from '../components/SaveOverlay';
 import * as save from '../saveProgress';
 import { parseDataUri, pastedName, fileUriFromText, extensionFor, shouldReadText, clipboardOffer } from '../pasteDrop';
 import * as pending from '../pendingMedia';
+import * as textDraft from '../textDraft';
 import * as Contacts from 'expo-contacts';
 import {
   AttachAction, OPENS_IN, opensCamera, contactMessage, contactWorthSending,
 } from '../attachActions';
 import { dropExpired, msUntilNextExpiry } from '../expiryRing';
 import { isMine, markMine } from '../messageSide';
+import {
+  deleteKind, deleteEvent, deleteLabel, deleteConfirm, splitForDeletion, splitConfirm,
+} from '../messageDelete';
 import LocationPicker from '../components/LocationPicker';
 import PeerSheet from '../components/PeerSheet';
 import { PeerView, ClearScope, vanishedStyle } from '../peerActions';
@@ -214,6 +218,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   const [recordingUsers, setRecordingUsers] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<number | string | null>(null);
+  // Read from callbacks that must not be rebuilt on every edit — the draft
+  // writer in particular, which has to know whether what is in the composer is
+  // a new message or somebody's edit of an old one.
+  const editingIdRef = useRef<number | string | null>(null);
+  editingIdRef.current = editingId;
   // Reaction picker: rendered in a Modal at the tap position so ANY outside tap closes it
   const [emojiPicker, setEmojiPicker] = useState<{ id: number | string; x: number; y: number } | null>(null);
   const [recording, setRecording] = useState(false);
@@ -416,6 +425,90 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     const raw = pending.serialize(pendingMedia, Date.now());
     (raw ? AsyncStorage.setItem(key, raw) : AsyncStorage.removeItem(key)).catch(() => {});
   }, [pendingMedia, room.id]);
+
+  /**
+   * …and the other half of a half-written message: the TEXT.
+   *
+   * Reported alongside the photos: typing anything into the composer and
+   * leaving the chat lost it. The staged photos above already survived, and
+   * the sentence did not, because the text lives inside the composer's own
+   * state — deliberately, so a keystroke re-renders one small component
+   * instead of every message on screen — and that component is unmounted the
+   * moment you go back to the list.
+   *
+   * So the composer reports what is typed, it is held in a ref (rendering from
+   * it here would undo the whole reason it lives down there), and it is
+   * written on a short debounce and flushed on the way out. See
+   * src/textDraft.ts.
+   */
+  const draftRef = useRef('');
+  const draftWritten = useRef('');
+  const draftTimer = useRef<any>(null);
+
+  const writeDraft = useCallback((text: string) => {
+    if (!textDraft.changed(text, draftWritten.current)) return;
+    draftWritten.current = text;
+    const key = textDraft.draftKey(room.id);
+    const raw = textDraft.serialize(text, Date.now());
+    (raw ? AsyncStorage.setItem(key, raw) : AsyncStorage.removeItem(key)).catch(() => {});
+  }, [room.id]);
+
+  const onDraftChange = useCallback((text: string) => {
+    draftRef.current = text;
+    // Not while editing an existing message: that text belongs to the message
+    // being edited, and coming back to find it in the composer with the edit
+    // no longer in progress would send somebody's edit as a new message.
+    if (editingIdRef.current != null) return;
+    clearTimeout(draftTimer.current);
+    draftTimer.current = setTimeout(() => writeDraft(draftRef.current), textDraft.SAVE_DEBOUNCE_MS);
+  }, [writeDraft]);
+
+  // Restore on open, and flush on the way out. The flush is what catches the
+  // common case: the last keystroke before tapping back is still inside the
+  // debounce window when this screen goes away.
+  useEffect(() => {
+    let alive = true;
+    draftRef.current = '';
+    draftWritten.current = '';
+    (async () => {
+      let saved = '';
+      try {
+        saved = textDraft.parse(
+          await AsyncStorage.getItem(textDraft.draftKey(room.id)), Date.now());
+      } catch { saved = ''; }
+      if (!alive || !saved) return;
+      // Anything already in the composer wins: text shared in from another app
+      // or a forward got there because the user just did something, and a
+      // week-old draft must not land on top of it.
+      const next = textDraft.restoredText(saved, composerRef.current?.getText());
+      if (next === composerRef.current?.getText()) return;
+      composerRef.current?.setText(next);
+      draftRef.current = next;
+      draftWritten.current = next;
+    })();
+    const roomAtOpen = room.id;
+    return () => {
+      alive = false;
+      clearTimeout(draftTimer.current);
+      // Written against the room this effect belongs to, not whatever room is
+      // current by the time the cleanup runs — otherwise leaving chat A for
+      // chat B files A's draft under B.
+      if (editingIdRef.current != null) return;
+      const text = draftRef.current;
+      if (!textDraft.changed(text, draftWritten.current)) return;
+      const key = textDraft.draftKey(roomAtOpen);
+      const raw = textDraft.serialize(text, Date.now());
+      (raw ? AsyncStorage.setItem(key, raw) : AsyncStorage.removeItem(key)).catch(() => {});
+    };
+  }, [room.id]);
+
+  /** Nothing left to keep: the message went. */
+  const clearDraft = useCallback(() => {
+    clearTimeout(draftTimer.current);
+    draftRef.current = '';
+    draftWritten.current = '';
+    AsyncStorage.removeItem(textDraft.draftKey(room.id)).catch(() => {});
+  }, [room.id]);
   // Photos are sent re-encoded by default — a phone camera's 8 MB original is
   // what makes sending "take a couple of seconds". HD sends the file untouched.
   const [sendQuality, setSendQuality] = useState<Quality>('standard');
@@ -1778,6 +1871,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         if (gone) forgetCachedMedia(gone);
         setMessages(prev => prev.filter(m => m.id !== messageId));
       });
+      // "Delete for me", done on another device this user is signed in on.
+      // Nobody else is told, because for them nothing has happened.
+      sock.on('message_hidden', ({ messageId, roomId }: any) => {
+        if (roomId != null && roomId !== room.id) return;
+        const gone = messagesRef.current.find(m => String(m.id) === String(messageId));
+        if (gone && lightboxBelongsTo(gone)) closeViewer();
+        // The copy on this device goes with it: a photo deleted from the chat
+        // living on in the cache is the thing the user asked to be rid of.
+        if (gone) forgetCachedMedia(gone);
+        hideLocally(messageId);
+      });
       sock.on('reactions_updated', ({ messageId, roomId, reactions: r }: any) => {
         // These now also arrive on our personal channel (so they reach us even
         // when backgrounded), which means updates for OTHER rooms land here too.
@@ -1835,6 +1939,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       socketRef.current?.off('removed_from_room');
       socketRef.current?.off('message_edited');
       socketRef.current?.off('message_deleted');
+      socketRef.current?.off('message_hidden');
       socketRef.current?.off('reactions_updated');
       socketRef.current?.off('room_online');
       socketRef.current?.off('user_typing');
@@ -2041,6 +2146,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
 
   // Receives the composer's text (already cleared locally by the Composer).
   function sendText(raw: string) {
+    // The message is on its way, so there is no longer a draft of it. Done
+    // here rather than in each of the branches below, all of which end in the
+    // composer being emptied one way or another.
+    clearDraft();
     if (pendingMedia.length && !editingId) {
       const items = pendingMedia;
       let caption: string | null = raw.trim() || null;
@@ -2882,11 +2991,41 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     setEmojiPicker(null);
   }
 
-  function deleteMsg(id: number | string) {
-    Alert.alert('Delete message?', '', [
+  /**
+   * Delete one message — whichever of the two deletes applies to it.
+   *
+   * `mine` is passed in rather than worked out here: the caller already knows,
+   * and the one thing that must never happen is `delete_message` going out for
+   * a message somebody else wrote. That is not a failed delete, it is one
+   * person removing another person's words from the conversation.
+   */
+  function deleteMsg(id: number | string, mineMsg: boolean) {
+    const kind = deleteKind({ mine: mineMsg });
+    const { title, body } = deleteConfirm(kind);
+    Alert.alert(title, body, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: () => socketRef.current?.emit('delete_message', { messageId: id }) },
+      {
+        text: deleteLabel(kind), style: 'destructive',
+        onPress: () => {
+          socketRef.current?.emit(deleteEvent(kind), { messageId: id });
+          // Taken off the screen straight away for a hide. Unlike a delete for
+          // everyone, nothing comes back to say it happened except the ack, and
+          // waiting on a socket round-trip to make a message go away looks like
+          // the tap did not register.
+          if (kind === 'me') hideLocally(id);
+        },
+      },
     ]);
+  }
+
+  /**
+   * Drop a hidden message out of this screen's copy of the chat.
+   *
+   * Also used when another device of the same user hides one, which arrives as
+   * `message_hidden`.
+   */
+  function hideLocally(id: number | string) {
+    setMessages(prev => prev.filter(m => String(m.id) !== String(id)));
   }
 
   function fmtTime(iso: string) {
@@ -3048,22 +3187,38 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     setForwardOpen(true);
   }
 
+  /**
+   * Delete a multi-selection, which is very often a mix of both sides.
+   *
+   * This used to send `delete_message` for every id in the selection. The
+   * server refused the ones that were not the user's own, so a selection
+   * spanning a conversation half-vanished and nothing said why. Now each id
+   * gets the delete that applies to it, and the confirmation says what will
+   * happen to each half.
+   */
   function deleteSelected() {
     const ids = selection.all();
     if (!ids.length) return;
-    Alert.alert(
-      `Delete ${ids.length} message${ids.length > 1 ? 's' : ''}?`, '',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete', style: 'destructive',
-          onPress: () => {
-            ids.forEach(id => socketRef.current?.emit('delete_message', { messageId: id }));
-            exitSelectMode();
-          },
+    const byId = new Map(messages.map(m => [String(m.id), m]));
+    const split = splitForDeletion(ids, id => {
+      const m = byId.get(String(id));
+      return !!m && isMine(m, me);
+    });
+    const { title, body } = splitConfirm(split);
+    Alert.alert(title, body, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete', style: 'destructive',
+        onPress: () => {
+          split.forEveryone.forEach(id => socketRef.current?.emit('delete_message', { messageId: id }));
+          split.forMe.forEach(id => {
+            socketRef.current?.emit('hide_message', { messageId: id });
+            hideLocally(id);
+          });
+          exitSelectMode();
         },
-      ],
-    );
+      },
+    ]);
   }
 
   // Become a member of the room already on screen (the Join bar above the
@@ -4013,7 +4168,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
             selectionEvent({ type: 'swipe', id: msg.id });
           }}
           onSwipeRight={() => { setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type }); composerRef.current?.focus(); }}
-          onSwipeLeft={mine ? () => deleteMsg(msg.id) : undefined}
+          onSwipeLeft={mine ? () => deleteMsg(msg.id, true) : undefined}
         >
         {(() => {
         const textual = isTextual(msg);
@@ -5338,9 +5493,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
                     composerRef.current?.setText(m.content || ''); setEditingId(m.id);
                   }} />
                 )}
-                {mineMsg && (
-                  <Row icon="trash-outline" label="Delete" danger onPress={() => { close(); deleteMsg(m.id); }} />
-                )}
+                {/* Delete is offered on BOTH sides now, and it is not the same
+                    delete on each: yours goes for everyone, theirs disappears
+                    from your copy only. The label says which, because the two
+                    are not interchangeable. See src/messageDelete.ts. */}
+                <Row
+                  icon="trash-outline"
+                  label={deleteLabel(deleteKind({ mine: mineMsg }))}
+                  danger
+                  onPress={() => { close(); deleteMsg(m.id, mineMsg); }}
+                />
                 <TouchableOpacity style={s.sheetCancel} onPress={close}>
                   <Text style={s.sheetCancelText}>Cancel</Text>
                 </TouchableOpacity>
@@ -5940,6 +6102,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
           quickEmoji={quickEmoji}
           editing={!!editingId}
           onTyping={emitTyping}
+          // Typing anything and leaving the chat keeps it. The text lives in
+          // the composer's own state so that a keystroke does not re-render
+          // this list; this is how it reaches storage without moving.
+          onDraftChange={onDraftChange}
           onSend={sendText}
           clipboard={clipboardHas}
           onPaste={pasteFromClipboard}

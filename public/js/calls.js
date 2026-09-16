@@ -226,14 +226,24 @@ const Calls = (() => {
     if (!el) return;
     const st = videoState();
     const panes = CallStatus.videoPanes(st);
-    el.classList.toggle('swapped', panes.big === 'local' && panes.small === 'remote');
+    // `swapped` means the OTHER side is the big pane, which is the same thing
+    // it means in js/callStatus.js. Without the class you are the big one.
+    el.classList.toggle('swapped', panes.big === 'remote');
+    // Whichever pane the rule did not name has no stream in it. Left on screen
+    // it is a black rectangle in the corner of a live call — and before the
+    // other side's video arrived, that is what the corner was.
+    const used = { remote: false, local: false };
+    if (panes.big) used[panes.big] = true;
+    if (panes.small) used[panes.small] = true;
     // Nothing to swap with: the class would put a live video in the corner of
     // an empty box.
     const swappable = CallStatus.canSwapVideos(st);
     el.classList.toggle('swappable', swappable);
-    ['call-remote-video', 'call-local-video'].forEach(id => {
+    [['call-remote-video', 'remote'], ['call-local-video', 'local']].forEach(([id, pane]) => {
       const v = $(id);
-      if (v) v.title = swappable ? 'Tap to swap the videos' : '';
+      if (!v) return;
+      v.classList.toggle('pane-empty', !used[pane]);
+      v.title = swappable ? 'Tap to swap the videos' : '';
     });
   }
 
@@ -259,6 +269,8 @@ const Calls = (() => {
 
   // ── Ring sound + connected timer ──
   let ringAudio = null;
+  /** Bumped by every stop, so a tone still starting knows it is obsolete. */
+  let ringGeneration = 0;
   /**
    * Make the noise this END of the call should make.
    *
@@ -270,16 +282,32 @@ const Calls = (() => {
    */
   function startTone(role) {
     stopRing();
-    const tone = CallTones.toneFor({ role });
+    // `connected` is passed, and it was the missing half of the rule: toneFor
+    // was being asked which tone a caller gets rather than whether this device
+    // should be making a noise at all, so a call that was already up could
+    // still start ringing.
+    const tone = CallTones.toneFor({ role, connected: !!connectedAt });
     if (!tone) return;
+    // The ring this sound belongs to, captured before play() is called.
+    // play() resolves asynchronously; a stop in that window leaves a promise
+    // still in flight, and acting on it afterwards is what puts a ringtone
+    // over a connected call. See toneStillWanted in js/callTones.js.
+    const generation = ringGeneration;
     try {
-      ringAudio = new Audio('/' + CallTones.toneFile(tone));
-      ringAudio.loop = CallTones.toneLoops(tone);
-      ringAudio.volume = CallTones.toneVolume(tone);
-      ringAudio.play().catch(() => {});
+      const el = new Audio('/' + CallTones.toneFile(tone));
+      el.loop = CallTones.toneLoops(tone);
+      el.volume = CallTones.toneVolume(tone);
+      ringAudio = el;
+      el.play().then(() => {
+        if (CallTones.toneStillWanted(generation, ringGeneration)) return;
+        // Stopped while it was starting: silence it now, because the stop that
+        // would have done it has already run.
+        try { el.pause(); } catch {}
+      }).catch(() => {});
     } catch {}
   }
   function stopRing() {
+    ringGeneration++;
     if (ringAudio) { try { ringAudio.pause(); } catch {} ringAudio = null; }
   }
   let connectedAt = null, timerInterval = null;
@@ -344,7 +372,12 @@ const Calls = (() => {
     out = {};
     setStatus(CallStatus.outgoingStatus(out));
     startTone('caller');
-    if (kind === 'video') { $('call-local-video').srcObject = localStream; $('call-local-video').muted = true; }
+    if (kind === 'video') {
+      $('call-local-video').srcObject = localStream; $('call-local-video').muted = true;
+      // Re-laid now the local stream is really attached: you are the big
+      // pane, so an overlay drawn before it arrived had nothing in it.
+      applyVideoPanes();
+    }
     await makeOffer(dmPeer.userId);
   }
 
@@ -391,7 +424,10 @@ const Calls = (() => {
     mode = offer.kind === 'video' ? 'dm-video' : 'dm-voice';
     showOverlay((offer.kind === 'video' ? '🎥 ' : '📞 ') + offer.fromUsername, offer.kind === 'video');
     setStatus('Connecting…');
-    if (offer.kind === 'video') { $('call-local-video').srcObject = localStream; $('call-local-video').muted = true; }
+    if (offer.kind === 'video') {
+      $('call-local-video').srcObject = localStream; $('call-local-video').muted = true;
+      applyVideoPanes();
+    }
     const pc = newPc(offer.fromUserId);
     await pc.setRemoteDescription(offer.sdp);
     flushIce(offer.fromUserId);

@@ -3066,6 +3066,143 @@ test('a resumed download works, or a 40MB update restarts from zero', async () =
   assert.strictEqual(part.length, 4);
 });
 
+// ── "Delete for me" ─────────────────────────────────────────────────────────
+//
+// Asked for as: add delete to the other side's message, but the delete is just
+// for me. Two deletes that must never be confused — `delete_message` removes
+// the message from the conversation for everybody, and this one removes it
+// from one person's copy and touches nobody else's.
+//
+// Driven over a real socket against a real database, because the part that
+// matters is the SQL: a message hidden for one user has to vanish from every
+// list that user reads and stay put for everyone else.
+
+test('THE FEATURE: hiding the other side\'s message removes it only for me', async () => {
+  const sender = await signUp('hidesender1');
+  const reader = await signUp('hidereader1');
+  const senderSock = await connect(sender.token);
+  const readerSock = await connect(reader.token);
+  const room = await api('/rooms', 'POST', { name: 'hide-room-1' }, sender.token);
+  await emit(readerSock, 'accept_invite', { roomId: room.id });
+  await emit(senderSock, 'send_message', { roomId: room.id, type: 'text', content: 'keep me' });
+  await emit(senderSock, 'send_message', { roomId: room.id, type: 'text', content: 'hide me' });
+
+  const before = await api(`/messages/${room.id}`, 'GET', null, reader.token);
+  const target = before.find(m => m.content === 'hide me');
+  assert.ok(target, 'the message under test never arrived');
+
+  const ack = await emit(readerSock, 'hide_message', { messageId: target.id });
+  assert.ok(ack && ack.ok, `hide_message refused: ${JSON.stringify(ack)}`);
+
+  const mine = await api(`/messages/${room.id}`, 'GET', null, reader.token);
+  assert.ok(!mine.some(m => m.id === target.id), 'the hidden message is still in my chat');
+  assert.ok(mine.some(m => m.content === 'keep me'),
+    'hiding one message took the others with it');
+
+  // THE POINT: the sender is untouched. If this fails, one person is deleting
+  // another person's words out of the conversation.
+  const theirs = await api(`/messages/${room.id}`, 'GET', null, sender.token);
+  assert.ok(theirs.some(m => m.id === target.id),
+    "the sender's own message disappeared — this is delete_message, not a hide");
+});
+
+test('a hidden message stays hidden across a reconnect', async () => {
+  // A list kept on the phone would come back on the next install. This is the
+  // reason it is stored server-side.
+  const sender = await signUp('hidesender2');
+  const reader = await signUp('hidereader2');
+  const senderSock = await connect(sender.token);
+  const readerSock = await connect(reader.token);
+  const room = await api('/rooms', 'POST', { name: 'hide-room-2' }, sender.token);
+  await emit(readerSock, 'accept_invite', { roomId: room.id });
+  await emit(senderSock, 'send_message', { roomId: room.id, type: 'text', content: 'gone tomorrow' });
+  const list = await api(`/messages/${room.id}`, 'GET', null, reader.token);
+  const target = list.find(m => m.content === 'gone tomorrow');
+  await emit(readerSock, 'hide_message', { messageId: target.id });
+
+  const fresh = await connect(reader.token);
+  await emit(fresh, 'join_room', { roomId: room.id }).catch(() => {});
+  const after = await api(`/messages/${room.id}`, 'GET', null, reader.token);
+  assert.ok(!after.some(m => m.id === target.id), 'the hide did not survive a new session');
+});
+
+test('a hidden message stops counting towards the unread badge', async () => {
+  // Otherwise the chat list shows a number for a message the user cannot open.
+  const sender = await signUp('hidesender3');
+  const reader = await signUp('hidereader3');
+  const senderSock = await connect(sender.token);
+  const readerSock = await connect(reader.token);
+  const room = await api('/rooms', 'POST', { name: 'hide-room-3' }, sender.token);
+  await emit(readerSock, 'accept_invite', { roomId: room.id });
+  await emit(senderSock, 'send_message', { roomId: room.id, type: 'text', content: 'unread one' });
+  await emit(senderSock, 'send_message', { roomId: room.id, type: 'text', content: 'unread two' });
+
+  const counts = await api('/unread-counts', 'GET', null, reader.token);
+  const before = counts[String(room.id)] || 0;
+  assert.ok(before >= 2, `expected at least 2 unread, got ${before}`);
+
+  const list = await api(`/messages/${room.id}`, 'GET', null, reader.token);
+  const target = list.find(m => m.content === 'unread two');
+  await emit(readerSock, 'hide_message', { messageId: target.id });
+
+  const after = await api('/unread-counts', 'GET', null, reader.token);
+  assert.strictEqual((after[String(room.id)] || 0), before - 1,
+    'a message deleted for me is still counted as unread');
+});
+
+test('hiding is told to my other devices, and to nobody else', async () => {
+  const sender = await signUp('hidesender4');
+  const reader = await signUp('hidereader4');
+  const senderSock = await connect(sender.token);
+  const readerSock = await connect(reader.token);
+  const readerTablet = await connect(reader.token);
+  const room = await api('/rooms', 'POST', { name: 'hide-room-4' }, sender.token);
+  await emit(readerSock, 'accept_invite', { roomId: room.id });
+  await emit(senderSock, 'send_message', { roomId: room.id, type: 'text', content: 'two devices' });
+  const list = await api(`/messages/${room.id}`, 'GET', null, reader.token);
+  const target = list.find(m => m.content === 'two devices');
+
+  // The sender must hear nothing at all: a message_hidden reaching them would
+  // take their own message off their screen.
+  let senderTold = false;
+  senderSock.on('message_hidden', () => { senderTold = true; });
+  senderSock.on('message_deleted', () => { senderTold = true; });
+
+  const onTablet = waitFor(readerTablet, 'message_hidden', p => String(p.messageId) === String(target.id));
+  await emit(readerSock, 'hide_message', { messageId: target.id });
+  await onTablet;
+  await new Promise(r => setTimeout(r, 300));
+  assert.strictEqual(senderTold, false, "the sender was told their message had been deleted");
+});
+
+test('hiding a message in a room you cannot see is refused', async () => {
+  const owner = await signUp('hideowner5');
+  const outsider = await signUp('hideout5');
+  const ownerSock = await connect(owner.token);
+  const outSock = await connect(outsider.token);
+  const room = await api('/rooms', 'POST', { name: 'hide-room-5', isPrivate: true }, owner.token);
+  await emit(ownerSock, 'send_message', { roomId: room.id, type: 'text', content: 'private' });
+  const list = await api(`/messages/${room.id}`, 'GET', null, owner.token);
+  const target = list.find(m => m.content === 'private');
+  const ack = await emit(outSock, 'hide_message', { messageId: target.id });
+  assert.ok(ack && ack.error, 'hiding worked in a private room the user cannot access');
+});
+
+test('hiding the same message twice is not an error', async () => {
+  const sender = await signUp('hidesender6');
+  const reader = await signUp('hidereader6');
+  const senderSock = await connect(sender.token);
+  const readerSock = await connect(reader.token);
+  const room = await api('/rooms', 'POST', { name: 'hide-room-6' }, sender.token);
+  await emit(readerSock, 'accept_invite', { roomId: room.id });
+  await emit(senderSock, 'send_message', { roomId: room.id, type: 'text', content: 'twice' });
+  const list = await api(`/messages/${room.id}`, 'GET', null, reader.token);
+  const target = list.find(m => m.content === 'twice');
+  assert.ok((await emit(readerSock, 'hide_message', { messageId: target.id })).ok);
+  assert.ok((await emit(readerSock, 'hide_message', { messageId: target.id })).ok,
+    'hiding an already-hidden message reported a failure');
+});
+
 test('a zero-byte APK is not advertised as a build either', async () => {
   // A truncated or half-copied file passes "does it exist" and fails every
   // install. The check is on the SIZE, not merely on the stat succeeding.
