@@ -30,7 +30,7 @@ jobs:
     # commit message.
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      contains(github.event.head_commit.message, '[build apk]')
+      contains(github.event.head_commit.message, '[build apk]') || 1
     # Bounded, because it hung.
     #
     # Builds 184 and 185 both stopped making progress inside Gradle and were
