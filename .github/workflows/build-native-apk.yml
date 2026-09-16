@@ -89,9 +89,37 @@ jobs:
       # Installed AFTER the cleanup below would be wrong — this is where the
       # SDK arrives, and the cleanup only removes the bundled NDK that Gradle
       # re-fetches at the version this project actually pins.
+      #
+      # `packages:` is set EXPLICITLY, and that is the whole reason builds
+      # stopped working. The action's own default is
+      #
+      #     packages: 'tools platform-tools'
+      #
+      # and `tools` — the long-deprecated "SDK Tools" package — has now been
+      # withdrawn from Google's repository. sdkmanager cannot install what is
+      # no longer published, so it prints
+      #
+      #     Warning: Failed to find package 'tools'
+      #     Error: The process '…/cmdline-tools/16.0/bin/sdkmanager' failed
+      #            with exit code 1
+      #
+      # and the job dies at step six, before a single line of this project is
+      # compiled. Nothing in the app was involved, which is why going back
+      # eleven commits and rebuilding failed in exactly the same way: the
+      # break is outside the repository and every commit hits it.
+      #
+      # Moving to @v4 does NOT help — v4 ships the identical default. The
+      # version was never the problem, so this stays on @v3, which is the
+      # version that last produced a working APK (build 252).
+      #
+      # `platform-tools` is all this build actually needs from the action; the
+      # platform and build-tools come from the image, and Gradle fetches the
+      # NDK itself.
       - name: Setup Android SDK
         if: steps.want.outputs.build == 'yes'
-        uses: android-actions/setup-android@v4
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
 
       - name: Apply brand config (name, package, API server)
         if: steps.want.outputs.build == 'yes'
