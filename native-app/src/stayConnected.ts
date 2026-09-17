@@ -49,29 +49,33 @@
 // 2. KEEP THAT SOCKET ALIVE. Half one is worthless if the connection is dead,
 //    and in the background it is: Doze suspends network access for any app
 //    Android is restricting. Exempting the app from battery optimisation fixes
-//    that — but it is four taps through a settings list, and asking every user
-//    to find their way there is not a fix, it is a workaround with a drop-out
-//    rate. So the app holds the connection open itself, with a foreground
-//    service, and the exemption becomes a bonus rather than the mechanism.
+//    that, and the prompt for it is one tap.
 //
-// ── The foreground service, and why this one is allowed to exist ────────────
+// ── The foreground service, which is switched OFF ───────────────────────────
 //
-// ongoingCall.ts turned foreground services off after one crashed the app at
-// the first ring, twice, and wrote beside it:
+// Half two was going to be a foreground service holding the connection open,
+// so that nothing was asked of the user at all. It shipped, and it crashed the
+// app: "on tapping media and opening camera the app crashes and closes".
 //
-//   "it cannot be caught here: the service starts natively after
-//    displayNotification() returns, so the try/catch around it is decoration.
-//    Nothing in JavaScript can turn that into a handled error."
+// Tapping media opens the SYSTEM picker, so the app leaves the foreground,
+// AppState fires 'background', and the service was started in response to
+// exactly that. Android 12 and later forbid starting a foreground service from
+// the background, and refuse it with an exception thrown natively after
+// displayNotification() returns — which is the thing ongoingCall.ts had
+// already written down about this same mechanism, after it cost a release.
 //
-// That is true, and it is only true WITHIN one run of the app. The process
-// dies; the phone does not. So the crash is catchable across launches, and the
-// canary further down this file is how — see CANARY_KEY. A device this fails
-// on disables it permanently after exactly one bad launch, instead of crashing
-// at every ring for ever, which is what forced the wholesale switch-off.
+// The canary in this file was built to survive precisely that, and it does:
+// the next launch disables the service for good. But a design whose safety net
+// is "one crash per install" is not one to leave running, so
+// KEEP_ALIVE_FOREGROUND_SERVICE in keepAlive.ts is false. The rules below are
+// kept, and so is the canary, because the fix is to start the service while
+// the app is still in the FOREGROUND — where Android allows it — and that
+// brings a permanent notification during use, which is a product decision
+// rather than a bug fix.
 //
-// It also asks for none of the service types that were implicated: no
-// PHONE_CALL, no MICROPHONE, no CAMERA, and so none of the runtime permission
-// checks Android makes when those start.
+// Nothing that was working is lost by switching it off. Half one is the
+// regression fix and the larger part of the gain; it needs the connection
+// alive, which is what the battery prompt is for.
 //
 // App-side only: the web keeps its socket for as long as the tab is open.
 

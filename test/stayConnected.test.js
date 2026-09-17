@@ -295,6 +295,45 @@ test('…and firing it disables the service permanently', () => {
     'the flag is left set, so one death is read as a death every launch');
 });
 
+test('THE CRASH: the background service is switched OFF', () => {
+  // "On tapping media and opening camera the app crashes and closes",
+  // reported on the first build that shipped the service.
+  //
+  // Tapping media opens the SYSTEM picker, so the app leaves the foreground
+  // and AppState fires 'background' — and the service was started in answer to
+  // exactly that. Android 12+ forbid starting a foreground service from the
+  // background and refuse it natively, after displayNotification() returns,
+  // where no try/catch in JavaScript can see it. The canary does catch it on
+  // the following launch, but a safety net of "one crash per install" is not
+  // something to leave switched on.
+  //
+  // This goes back to true only alongside a start that happens while the app
+  // is still in the FOREGROUND, which is where Android permits it.
+  const ka = fs.readFileSync(path.join(NAT, 'src', 'keepAlive.ts'), 'utf8');
+  assert.ok(/export const KEEP_ALIVE_FOREGROUND_SERVICE = false;/.test(ka),
+    'the background service is switched on again, and it crashes on the media picker');
+  // The guard has to be the FIRST thing start() does, or the switch is
+  // decoration and the storage and notifee calls still run.
+  const fn = ka.slice(ka.indexOf('export async function start('),
+    ka.indexOf('export async function stop('));
+  const first = fn.split('\n').map(l => l.trim())
+    .filter(l => l && !l.startsWith('//') && !l.startsWith('*') && !l.startsWith('export async'))[0];
+  assert.ok(/KEEP_ALIVE_FOREGROUND_SERVICE/.test(first),
+    `start() does something before checking the switch: ${first}`);
+});
+
+test('a notification left by the build that had it on can still be cleared', () => {
+  // `running` is false on a fresh launch, so a stop() guarded on it would
+  // leave a stale "Connected" line in the shade with nothing behind it.
+  const ka = fs.readFileSync(path.join(NAT, 'src', 'keepAlive.ts'), 'utf8');
+  const fn = ka.slice(ka.indexOf('export async function stop('),
+    ka.indexOf('export function watchAppState('));
+  assert.ok(!/if \(!running\) return;/.test(fn),
+    'stop() returns early on a fresh launch, stranding a notification from the previous build');
+  assert.ok(/stopForegroundService\(\)/.test(fn) && /cancelNotification\(/.test(fn),
+    'nothing actually clears it');
+});
+
 test('the service asks for none of the types implicated in the crash', () => {
   // PHONE_CALL, MICROPHONE and CAMERA each require a permission Android checks
   // as the service starts, and they are what ongoingCall.ts was asking for.

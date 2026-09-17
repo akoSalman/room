@@ -17,6 +17,45 @@ import notifee, {
 } from '@notifee/react-native';
 import * as stay from './stayConnected';
 
+/**
+ * Whether the background service may start at all. Currently: no.
+ *
+ * "On tapping media and opening camera the app crashes and closes" — reported
+ * on the first build that shipped this, and it is this.
+ *
+ * Tapping media calls ImagePicker.launchImageLibraryAsync, which opens the
+ * SYSTEM picker; a permission dialog does the same thing. Either way this app
+ * leaves the foreground, AppState fires 'background' or 'inactive', and
+ * watchAppState below answered that by starting a foreground service.
+ *
+ * Android 12 and later forbid exactly that. A foreground service may not be
+ * started while the app is in the background, and the refusal is
+ * ForegroundServiceStartNotAllowedException thrown natively after
+ * displayNotification() returns — process death, not an exception any
+ * try/catch in this file can see. Which is what ongoingCall.ts had already
+ * written down, about the same mechanism, after it cost a release:
+ *
+ *   "the service starts natively after displayNotification() returns, so the
+ *    try/catch around it is decoration."
+ *
+ * I built the canary to survive precisely this and then put the start in the
+ * one place Android guarantees to refuse it. The canary does fire — the second
+ * launch disables the service for good — but a design whose safety net is "one
+ * crash per install" is not one to leave switched on while a fix is guessed
+ * at, and guessing is what has cost this app releases before.
+ *
+ * WHAT IS LOST: nothing that was working. The socket still raises notifications
+ * the moment a message arrives, which is the regression fix and the larger half
+ * of the gain; it simply needs the connection to be alive, which is what the
+ * battery-optimisation prompt is for.
+ *
+ * WHAT THE FIX LOOKS LIKE: start the service while the app is still in the
+ * FOREGROUND, which is when Android permits it, rather than on the way out.
+ * That means a permanent notification during use as well, which is a product
+ * decision rather than a bug fix, so it is not being made here and now.
+ */
+export const KEEP_ALIVE_FOREGROUND_SERVICE = false;
+
 let running = false;
 let allowed: boolean | null = null;
 
@@ -83,6 +122,9 @@ async function isAllowed(): Promise<boolean> {
  * giving JavaScript a chance to react.
  */
 export async function start(): Promise<void> {
+  // The switch above. First, before anything else touches storage or notifee,
+  // so turning it back on is the only thing that can reach the rest of this.
+  if (!KEEP_ALIVE_FOREGROUND_SERVICE) return;
   if (running || Platform.OS !== 'android') return;
   if (!(await isAllowed())) return;
   running = true;
@@ -123,9 +165,15 @@ export async function start(): Promise<void> {
   }
 }
 
-/** Take the service down. Safe to call when it is not running. */
+/**
+ * Take the service down. Safe to call when it is not running.
+ *
+ * Deliberately NOT guarded on `running`: a build that had the service switched
+ * on may have left a notification in the shade, and `running` is false on a
+ * fresh launch, so guarding would leave that line there with nothing behind it
+ * and no way to clear it. Both calls are idempotent and both are caught.
+ */
 export async function stop(): Promise<void> {
-  if (!running) return;
   running = false;
   try { await notifee.stopForegroundService(); } catch {}
   try { await notifee.cancelNotification(stay.SERVICE_ID); } catch {}
