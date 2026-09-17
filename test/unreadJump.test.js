@@ -245,17 +245,41 @@ test('an anchor that is not in the list counts nothing rather than everything', 
 
 test('the app and the web count the same way', () => {
   if (!A) return;
-  const msgs = [
-    { id: 10, username: 'ako' }, { id: 11, username: 'soran' },
-    { id: 12, username: 'ako' }, { id: 13, username: 'soran' },
+  // The lists here are deliberately NOT all sorted by id. A sorted list is the
+  // one case where counting by id comparison and counting by list order agree,
+  // so a drift check built only on sorted data passes against the very bug
+  // being fixed — which is what the first version of this test did.
+  const lists = [
+    [{ id: 10, username: 'ako' }, { id: 11, username: 'soran' },
+     { id: 12, username: 'ako' }, { id: 13, username: 'soran' }],
+    // Out of id order: the shape that put a counted message above the line.
+    [{ id: 9, username: 'soran' }, { id: 4, username: 'soran' },
+     { id: 10, username: 'soran' }],
+    // An optimistic send with a temporary string id in the middle.
+    [{ id: 5, username: 'soran' }, { id: 'tmp-9', username: 'ako' },
+     { id: 6, username: 'soran' }],
   ];
   let checked = 0;
-  for (const anchor of [10, 11, 12, 13, 99, null]) {
-    assert.strictEqual(W.unreadBelow(msgs, anchor, 'ako'), A.unreadBelow(msgs, anchor, 'ako'),
-      `unreadBelow diverges at ${anchor}`);
-    checked++;
+  for (const msgs of lists) {
+    for (const anchor of [...msgs.map(m => m.id), 99, null, '10']) {
+      assert.strictEqual(W.unreadBelow(msgs, anchor, 'ako'), A.unreadBelow(msgs, anchor, 'ako'),
+        `unreadBelow diverges at ${anchor} in ${JSON.stringify(msgs)}`);
+      checked++;
+    }
   }
-  assert.strictEqual(checked, 6, 'the drift check did not actually run');
+  assert.ok(checked >= 18, `the drift check only ran ${checked} times`);
+});
+
+test('the APP copy holds the invariant too, not just the web one', () => {
+  // The tests above all drive W, the web copy. Without this the app could be
+  // reverted on its own and every one of them would still pass.
+  if (!A) return;
+  const list = [{ id: 9, username: 'soran' }, { id: 4, username: 'soran' }];
+  assert.strictEqual(A.unreadBelow(list, 4, 'ako'), 1,
+    'the app counts a message that is drawn above the divider');
+  assert.strictEqual(A.unreadBelow(list, 9, 'ako'), 2);
+  assert.strictEqual(A.unreadBelow([{ id: 7, username: 'soran' }], '7', 'ako'), 1,
+    'the app fails to match a string id against a number one');
 });
 
 test('both clients label the divider from that count', () => {
@@ -269,6 +293,90 @@ test('both clients label the divider from that count', () => {
     'the web still labels the line with the room badge');
   assert.ok(/unreadCountOnEntry\.current = unreadBelow\(msgs, target\.id/.test(chat),
     'the app still labels the line with a count taken from somewhere else');
+});
+
+// ── The divider must not contradict itself, a second time ───────────────────
+//
+// Reported twice from the same screenshot: "2 NEW MESSAGES" with one message
+// ABOVE the line and one below.
+//
+// The first fix counted from the anchor down by comparing ids. But the anchor
+// is chosen by walking the list in array order, and the list is drawn in array
+// order — so id comparison agrees with the drawing only while the array
+// happens to be sorted by id. An optimistic send carries a temporary string id,
+// a page merged from the offline cache is concatenated rather than merged in
+// order, a forward can arrive with a lower id. The moment they disagree, a
+// message counted as "after the anchor" is drawn BEFORE it.
+
+/** What the screen actually shows: rows from the divider to the end. */
+function rowsBelow(list, anchorId, me) {
+  const at = list.findIndex(m => String(m.id) === String(anchorId));
+  if (at < 0) return 0;
+  return list.slice(at).filter(m => m.username !== me).length;
+}
+
+test('THE INVARIANT: the label equals the rows drawn beneath the line', () => {
+  // Whatever else is true, these two must agree — that is the whole bug.
+  const cases = [
+    // Sorted, the easy case.
+    [{ id: 1, username: 'me' }, { id: 2, username: 'them' }, { id: 3, username: 'them' }],
+    // An optimistic send sitting in the middle with a temporary string id.
+    [{ id: 5, username: 'them' }, { id: 'tmp-9', username: 'me' }, { id: 6, username: 'them' }],
+    // Out of id order, which is what made the label and the line disagree.
+    [{ id: 9, username: 'them' }, { id: 4, username: 'them' }, { id: 10, username: 'them' }],
+    // Every row is the user's own after the anchor.
+    [{ id: 2, username: 'them' }, { id: 3, username: 'me' }, { id: 4, username: 'me' }],
+  ];
+  let checked = 0;
+  for (const list of cases) {
+    for (const m of list) {
+      assert.strictEqual(
+        W.unreadBelow(list, m.id, 'me'), rowsBelow(list, m.id, 'me'),
+        `label disagrees with the rows drawn, anchored at ${m.id} in ${JSON.stringify(list)}`);
+      checked++;
+    }
+  }
+  assert.ok(checked >= 12, 'the invariant check did not actually run');
+});
+
+test('THE REPORTED CASE: two from them, anchored at the first', () => {
+  // The screenshot. Anchored at the first of the two, the label must say 2 and
+  // both must be below. Anchored at the second, it must say 1 — not 2 with one
+  // message stranded above the line.
+  const list = [
+    { id: 100, username: 'me' },
+    { id: 101, username: 'them' },
+    { id: 102, username: 'them' },
+  ];
+  assert.strictEqual(W.unreadBelow(list, 101, 'me'), 2);
+  assert.strictEqual(W.unreadBelow(list, 102, 'me'), 1,
+    'the line sits above the last message while claiming to count two');
+});
+
+test('ids out of order no longer count a message drawn ABOVE the line', () => {
+  // The exact shape of the failure: id 4 is drawn before id 9, so anchoring at
+  // 9 must not count it — even though 4 is not "less than" it in list order.
+  const list = [{ id: 9, username: 'them' }, { id: 4, username: 'them' }];
+  assert.strictEqual(W.unreadBelow(list, 4, 'me'), 1,
+    'a message drawn above the divider is counted below it');
+  assert.strictEqual(W.unreadBelow(list, 9, 'me'), 2);
+});
+
+test('an anchor that is no longer in the list labels nothing', () => {
+  // It expired, or was deleted between being chosen and being drawn. There is
+  // no line, so a count would be a label with no divider under it.
+  const list = [{ id: 1, username: 'them' }, { id: 2, username: 'them' }];
+  assert.strictEqual(W.unreadBelow(list, 99, 'me'), 0);
+  assert.strictEqual(W.unreadBelow(list, null, 'me'), 0);
+  assert.strictEqual(W.unreadBelow(null, 1, 'me'), 0);
+});
+
+test('a string id and a number id are the same anchor', () => {
+  // The id arrives as a number over the socket and as a string from a
+  // notification payload. Comparing them strictly would find no anchor at all.
+  const list = [{ id: 7, username: 'them' }, { id: 8, username: 'them' }];
+  assert.strictEqual(W.unreadBelow(list, '7', 'me'), 2);
+  assert.strictEqual(W.unreadBelow(list, 7, 'me'), 2);
 });
 
 let passed = 0, failed = 0;

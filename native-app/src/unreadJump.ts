@@ -69,31 +69,44 @@ export function unreadLabel(count: number): string {
  * contradicts its own label is worse than no divider, because the reader
  * cannot tell which of the two answers to believe.
  *
- * It happened because the count and the position came from two different
- * lists: the count from every message newer than the read mark, the position
- * from the list actually on screen — which is not the same list once expired
- * one-time and disappearing messages have been dropped from it, or once a
- * message has been deleted for everyone. Anything counted but not drawn shows
- * up as a label one too high, and the line lands one message too low.
+ * Reported a SECOND time, from the same screenshot: "2 NEW MESSAGES" with one
+ * message above the line and one below. So the first fix was not enough, and
+ * this is why.
  *
- * So the label is counted from the ANCHOR down, over the same messages that
- * are rendered: whatever number this returns, that many rows follow the line.
+ * It counted by comparing ids — every message whose id was at or after the
+ * anchor's. But the anchor is chosen by walking the list in ARRAY order, and
+ * the list is drawn in array order too. Those two agree only while the array
+ * happens to be sorted by id, and it is not always: a message sent optimistically
+ * carries a temporary string id until the server answers, a page merged in from
+ * the offline cache is concatenated rather than merged in id order, and a
+ * forward arrives with an id below the one before it. The moment they disagree,
+ * a message counted as "after the anchor" is DRAWN BEFORE IT — the label says
+ * two, the line has one beneath it, and both halves believe they are right.
+ *
+ * So it no longer compares ids at all. It finds the anchor in the list and
+ * counts the rows from there to the end, which is the same traversal that put
+ * the line where it is. Whatever this returns, that many rows follow the line —
+ * by construction rather than by coincidence.
  */
 export function unreadBelow(
   messages: Msg[] | null | undefined,
   anchorId: number | string | null | undefined,
   me: string | null | undefined,
 ): number {
-  // null is Number 0, and an anchor of 0 would count the whole chat as new —
-  // a label of "148 new messages" over a line at the top of the screen.
   if (anchorId === null || anchorId === undefined || anchorId === '') return 0;
-  const anchor = Number(anchorId);
-  if (!Number.isFinite(anchor)) return 0;
+  const list = messages || [];
+  // Compared as strings: an id arrives as a number from the socket and as a
+  // string from a notification payload or an optimistic send, and `5 !== '5'`
+  // would find no anchor and label the divider with nothing.
+  const at = list.findIndex(m => m && String(m.id) === String(anchorId));
+  // The anchor is not in the list being drawn — it expired, or was deleted
+  // between being chosen and being rendered. There is no line, so there is
+  // nothing to label.
+  if (at < 0) return 0;
   let n = 0;
-  for (const m of messages || []) {
-    const id = Number(m?.id);
-    if (!Number.isFinite(id) || id < anchor) continue;
-    if (me && m.username === me) continue;
+  for (let i = at; i < list.length; i++) {
+    const m = list[i];
+    if (me && m && m.username === me) continue;
     n++;
   }
   return n;

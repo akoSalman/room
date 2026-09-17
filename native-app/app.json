@@ -40,9 +40,7 @@
         "android.permission.FOREGROUND_SERVICE_MICROPHONE",
         "android.permission.FOREGROUND_SERVICE_CAMERA",
         "android.permission.WAKE_LOCK",
-        "android.permission.DISABLE_KEYGUARD",
-        "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
-        "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
+        "android.permission.DISABLE_KEYGUARD"
       ]
     },
     "plugins": [

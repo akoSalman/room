@@ -84,14 +84,24 @@ export function shouldRetry(o: { attempt: number; registered: boolean }): boolea
   return (Number(o.attempt) || 0) < MAX_ATTEMPTS;
 }
 
-// `socketFallbackAllowed` used to live here: "raise the notification from the
-// socket only while no push token is registered".
-//
-// It is gone because the premise turned out to be backwards. It treated the
-// socket as a stand-in for a push that had not arrived, so once registration
-// succeeded the app went quiet and waited for FCM — which, measured, is the
-// slow path for these users by minutes. The socket is the FAST one.
-//
-// The decision now lives in stayConnected.ts as `shouldRaiseLocally`, which
-// does not ask about registration at all; the two notifications share a tag so
-// both arriving shows one.
+/**
+ * May the app raise a notification from the socket itself?
+ *
+ * Only while the server genuinely has no way to reach this device. Once a
+ * token is registered, Firebase owns notifications and raising one here as
+ * well would show the same message twice.
+ *
+ * This briefly did the opposite — raise it from the socket regardless, because
+ * the socket is faster than FCM for these users, with the two de-duplicated by
+ * tag. Asked for since: put notifications back on Firebase. So this is the
+ * original rule, restored, and the socket is a fallback again rather than the
+ * fast path.
+ *
+ * The registration fix above still matters, and matters more under this rule
+ * than under the other one: if registration fails, Firebase never gets a token
+ * and the only thing left IS this fallback, on a socket the OS may have
+ * suspended.
+ */
+export function socketFallbackAllowed(o: { registered: boolean }): boolean {
+  return !(o && o.registered);
+}

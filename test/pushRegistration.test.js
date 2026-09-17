@@ -105,15 +105,14 @@ test('the whole retry sequence covers a human tapping Allow', () => {
     `registration gives up after ${Math.round(total / 1000)}s, before a slow tap on Allow`);
 });
 
-test('the socket is no longer gated on registration at all', () => {
-  // socketFallbackAllowed used to live here and answered "raise it from the
-  // socket only while no push token is registered". The premise was backwards:
-  // it treated the socket as a stand-in for a push that had not arrived, so a
-  // successful registration made the app go quiet and wait for FCM — measured,
-  // the slow path for these users by minutes. The rule moved to
-  // stayConnected.ts and stopped asking about registration.
-  assert.strictEqual(typeof P.socketFallbackAllowed, 'undefined',
-    'the old rule is back, and it makes every notification wait for Google');
+test('the socket is a FALLBACK, not the notification path', () => {
+  // This briefly ran regardless of registration, because the socket is faster
+  // than FCM for these users. Asked for since: put notifications back on
+  // Firebase — so the socket raises one only when the server has no token to
+  // push to, and Firebase owns the rest.
+  assert.strictEqual(P.socketFallbackAllowed({ registered: false }), true);
+  assert.strictEqual(P.socketFallbackAllowed({ registered: true }), false,
+    'the socket raises a notification Firebase is also sending — every message twice');
 });
 
 // ── The wiring ──────────────────────────────────────────────────────────────
@@ -161,9 +160,27 @@ test('the token is remembered only after the server accepts it', () => {
     'the token is recorded before the server accepted it');
 });
 
-test('…and App.tsx does not consult it either', () => {
-  assert.ok(!/socketFallbackAllowed/.test(app),
-    'the local notification still waits for push to be unregistered');
+test('…and App.tsx asks it before raising one', () => {
+  assert.ok(/pushReg\.socketFallbackAllowed\(\{ registered: pushRegisteredRef\.current \}\)/.test(app),
+    'the socket handler decides for itself whether Firebase is covering this');
+  // The scaffolding that made the socket the fast path is gone with it, so a
+  // half-revert leaving a foreground service behind cannot hide here.
+  assert.ok(!/stayConnected|keepAlive/.test(app),
+    'the socket-first notification scaffolding is still wired in');
+});
+
+test('and nothing is left starting a foreground service', () => {
+  // It crashed the app on the media picker, and reverting to Firebase removes
+  // the reason it existed at all.
+  assert.ok(!fs.existsSync(path.join(NAT, 'src', 'keepAlive.ts')),
+    'keepAlive.ts is back, and with it the crash on opening media');
+  assert.ok(!fs.existsSync(path.join(NAT, 'src', 'stayConnected.ts')));
+  const appJson = JSON.parse(fs.readFileSync(path.join(NAT, 'app.json'), 'utf8'));
+  for (const gone of ['android.permission.FOREGROUND_SERVICE_DATA_SYNC',
+                      'android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS']) {
+    assert.ok(!appJson.expo.android.permissions.includes(gone),
+      `${gone} is still declared for a feature that no longer exists`);
+  }
 });
 
 test('THE TRAP THIS INTRODUCES: signing out forgets the registered token', () => {

@@ -1606,6 +1606,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
           setTimeout(() => jumpToMessage(Number(target.id)), 350);
         } else {
           setUnreadFrom(null);
+          // Cleared with it. This is a ref, so it outlives the room change that
+          // clears the divider — leaving the next chat's line, if it draws one
+          // before the count is recomputed, labelled with the last one's total.
+          unreadCountOnEntry.current = 0;
         }
         offline.saveMessages(room.id, msgs);
         // Emoji effect received while we were away: if the newest message is a

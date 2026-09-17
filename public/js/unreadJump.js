@@ -22,17 +22,25 @@
   }
 
 
+  // Counts the rows from the anchor to the end of the list, in the order they
+  // are drawn — NOT by comparing ids. The anchor is chosen by walking the list,
+  // and the list is drawn in that same order; comparing ids agrees with that
+  // only while the array happens to be sorted by id, and an optimistic send, a
+  // page merged from cache or a forward can each break that. When they
+  // disagree, a message counted as after the anchor is drawn before it: the
+  // label says two and the line has one beneath it. See unreadJump.ts.
   function unreadBelow(messages, anchorId, me) {
     if (anchorId === null || anchorId === undefined || anchorId === '') return 0;
-    var anchor = Number(anchorId);
-    if (!isFinite(anchor)) return 0;
     var list = messages || [];
-    var n = 0;
+    var at = -1;
     for (var i = 0; i < list.length; i++) {
-      var m = list[i];
-      var id = Number(m && m.id);
-      if (!isFinite(id) || id < anchor) continue;
-      if (me && m.username === me) continue;
+      if (list[i] && String(list[i].id) === String(anchorId)) { at = i; break; }
+    }
+    if (at < 0) return 0;
+    var n = 0;
+    for (var j = at; j < list.length; j++) {
+      var m = list[j];
+      if (me && m && m.username === me) continue;
       n++;
     }
     return n;

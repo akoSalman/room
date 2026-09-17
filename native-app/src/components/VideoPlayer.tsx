@@ -22,6 +22,9 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import { C } from '../theme';
 import { fmtBytes } from '../download';
+import {
+  msFromTouch, fraction, clampSeek, nextSpeed, speedLabel, canChangeSpeed,
+} from '../videoControls';
 
 export type VideoItem = { id: number | string; url: string; name: string };
 
@@ -120,9 +123,26 @@ export default function VideoPlayer({
     else videoRef.current?.playAsync().catch(() => {});
   }, [playing]);
 
+  // Read through a ref, never from the closure. Everything below that touches
+  // the duration runs inside a PanResponder built once on the first render,
+  // where the video has not loaded and the duration is 0 — see
+  // src/videoControls.ts for why that made the bar do nothing.
+  const durationRef = useRef(0);
+  durationRef.current = duration;
+
   function seekTo(ms: number) {
-    videoRef.current?.setPositionAsync(Math.max(0, Math.min(ms, duration || 0))).catch(() => {});
+    videoRef.current?.setPositionAsync(clampSeek(ms, durationRef.current)).catch(() => {});
   }
+
+  // ── Playback speed ────────────────────────────────────────────────────────
+  const [rate, setRate] = useState(1);
+  const cycleSpeed = useCallback(() => {
+    const next = nextSpeed(rate);
+    setRate(next);
+    // `true` keeps the pitch corrected: at 1.5x without it everybody sounds
+    // like a chipmunk, which is not what a speed control is for.
+    videoRef.current?.setRateAsync(next, true).catch(() => {});
+  }, [rate]);
 
   // ── Pinch zoom (fullscreen only) ──────────────────────────────────────────
   const [zoom, setZoom] = useState(1);
@@ -146,8 +166,8 @@ export default function VideoPlayer({
     }),
   ).current;
 
-  const progressFrac = duration ? (scrubbing ? scrubMs : position) / duration : 0;
-  const bufferedFrac = duration ? Math.min(1, playableMs / duration) : 0;
+  const progressFrac = fraction(scrubbing ? scrubMs : position, duration);
+  const bufferedFrac = fraction(playableMs, duration);
   // Bytes are inferred from how much of the DURATION is buffered — expo-av
   // does not report bytes. Honest approximation, not a real byte counter.
   const downloadedBytes = totalBytes ? Math.round(totalBytes * bufferedFrac) : 0;
@@ -165,13 +185,11 @@ export default function VideoPlayer({
       onPanResponderGrant: (e) => {
         setScrubbing(true);
         setControls(true);
-        const f = barW.current ? e.nativeEvent.locationX / barW.current : 0;
-        setScrubMs(Math.max(0, Math.min(1, f)) * (duration || 0));
+        setScrubMs(msFromTouch(e.nativeEvent.locationX, barW.current, durationRef.current));
       },
       onPanResponderMove: (e, g) => {
         const x = e.nativeEvent.locationX ?? g.moveX;
-        const f = barW.current ? x / barW.current : 0;
-        setScrubMs(Math.max(0, Math.min(1, f)) * (duration || 0));
+        setScrubMs(msFromTouch(x, barW.current, durationRef.current));
       },
       onPanResponderRelease: () => {
         seekTo(scrubMsRef.current);
@@ -314,6 +332,17 @@ export default function VideoPlayer({
 
             <View style={s.timeRow}>
               <Text style={s.time}>{fmtTime(scrubbing ? scrubMs : position)}</Text>
+              {/* Asked for: the video player should have speed control. On the
+                  time row rather than in the transport, which is already five
+                  buttons wide — and beside the duration, which is what the
+                  speed is changing. Hidden until the video has a duration: a
+                  rate cannot be applied to something still loading, and a
+                  control that does nothing teaches people it does nothing. */}
+              {canChangeSpeed(duration) && (
+                <TouchableOpacity onPress={cycleSpeed} style={s.speedBtn} hitSlop={hit8}>
+                  <Text style={[s.time, rate !== 1 && s.speedOn]}>{speedLabel(rate)}</Text>
+                </TouchableOpacity>
+              )}
               <Text style={s.time}>{fmtTime(duration)}</Text>
             </View>
 
@@ -397,7 +426,11 @@ const s = StyleSheet.create({
     position: 'absolute', width: 13, height: 13, borderRadius: 7,
     backgroundColor: '#fff', marginLeft: -6,
   },
-  timeRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 2 },
+  timeRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 },
+  // Padded rather than sized: the label swaps between "1×" and "1.25×", and a
+  // fixed width would either clip the long one or leave a hole beside the short.
+  speedBtn: { paddingHorizontal: 10, paddingVertical: 2 },
+  speedOn: { color: C.accent ?? '#38bdf8', fontWeight: '700' },
   time: { color: '#cbd5e1', fontSize: 11.5, fontVariant: ['tabular-nums'] },
   transport: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',

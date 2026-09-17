@@ -56,18 +56,57 @@ export function get(): SaveState | null {
 /** Starting: shown immediately, so the tap is visibly acknowledged. */
 export function begin(total = 1) {
   current = { index: 0, total, written: 0, bytes: 0 };
+  lastEmitAt = 0;
   emit();
 }
 
 export function advance(index: number) {
   if (!current) return;
   current = { ...current, index, written: 0, bytes: 0 };
+  // Each file starts its own throttle, so the first chunk of the second video
+  // is not held back by the last chunk of the first.
+  lastEmitAt = 0;
   emit();
 }
 
-export function report(written: number, bytes: number) {
+/**
+ * How often progress may reach the screen, in milliseconds.
+ *
+ * Reported as: while downloading a video, every other action in the app is
+ * blocked.
+ *
+ * It was not the download. `createDownloadResumable` calls its progress
+ * callback once per network chunk — hundreds of times a second on a large file
+ * over a decent connection — and every one of those built a new state object
+ * and re-rendered every subscriber. The JavaScript thread spent all its time
+ * redrawing a progress bar and had none left for the taps, which is why the
+ * app looked frozen while the bytes arrived perfectly.
+ *
+ * Eight updates a second is smooth to the eye and leaves the thread alone. The
+ * state itself is still updated on every callback, so `get()` is never stale —
+ * it is only the redraw that is rationed.
+ */
+export const PROGRESS_EMIT_MS = 120;
+
+let lastEmitAt = 0;
+
+/** Is enough time past to redraw? Exported so the interval can be tested. */
+export function dueForEmit(lastAt: number, now: number): boolean {
+  // A clock that has gone backwards (or a first call, where lastAt is 0) must
+  // redraw rather than wait out a negative interval.
+  if (!lastAt || now < lastAt) return true;
+  return now - lastAt >= PROGRESS_EMIT_MS;
+}
+
+export function report(written: number, bytes: number, now: number = Date.now()) {
   if (!current || current.done) return;
+  // Always kept current: only the redraw is throttled, never the truth.
   current = { ...current, written, bytes };
+  // The last chunk always draws, whatever the clock says. Without this the bar
+  // can stop at 97% and sit there until the next file starts.
+  const complete = bytes > 0 && written >= bytes;
+  if (!complete && !dueForEmit(lastEmitAt, now)) return;
+  lastEmitAt = now;
   emit();
 }
 
@@ -105,7 +144,7 @@ export function canCancel(s: SaveState | null): boolean {
 }
 
 /** Only for tests. */
-export function _reset() { current = null; listeners.clear(); }
+export function _reset() { current = null; lastEmitAt = 0; listeners.clear(); }
 
 // ── What the overlay shows ──────────────────────────────────────────────────
 
