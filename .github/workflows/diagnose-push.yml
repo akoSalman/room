@@ -39,9 +39,11 @@ jobs:
           - name: akosalman
             host_secret: DEPLOY_HOST_AKOSALMAN
             dir_secret: DEPLOY_DIR_AKOSALMAN
+            service_secret: DEPLOY_SERVICE_AKOSALMAN
           - name: bistbarg
             host_secret: DEPLOY_HOST_BISTBARG
             dir_secret: DEPLOY_DIR_BISTBARG
+            service_secret: DEPLOY_SERVICE_BISTBARG
 
     steps:
       - name: Probe ${{ matrix.name }}
@@ -49,6 +51,7 @@ jobs:
           SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           HOST: ${{ secrets[matrix.host_secret] }}
           APP_DIR: ${{ secrets[matrix.dir_secret] }}
+          SERVICE: ${{ secrets[matrix.service_secret] }}
           ROUNDS: ${{ inputs.rounds || '5' }}
         run: |
           if [ -z "$HOST" ] || [ -z "$SSH_KEY" ]; then
@@ -60,7 +63,7 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
               -o ConnectTimeout=30 "root@$HOST" \
-            APP_DIR="$APP_DIR" ROUNDS="$ROUNDS" bash -s <<'EOF'
+            APP_DIR="$APP_DIR" ROUNDS="$ROUNDS" SERVICE="$SERVICE" bash -s <<'EOF'
           set +e
           cd "$APP_DIR" || exit 1
 
@@ -70,6 +73,22 @@ jobs:
           # throttled or blocked from some of it.
           curl -s --max-time 15 https://ipinfo.io/json 2>/dev/null \
             | tr ',' '\n' | grep -E '"(country|region|org|city)"' || echo "(ipinfo unreachable — itself a finding)"
+          echo ""
+
+          echo "===== what the server did with recent pushes ====="
+          # The evidence that closes this out. Each line says when a push left
+          # here and how long it took; compare it with the moment the phone
+          # actually buzzed. If the send reads ~140ms and the notification
+          # arrived two minutes later, the delay is past this machine and
+          # nothing in server.js will shorten it.
+          #
+          # `|| true` throughout: journalctl is not present on every host, and
+          # a diagnostic that fails the job tells you less than one that says
+          # it found nothing.
+          journalctl -u "${SERVICE:-$(systemctl list-units --type=service --no-legend 2>/dev/null | grep -io '[a-z0-9_.-]*chat[a-z0-9_.-]*\.service' | head -1)}" \
+            --since "-6 hours" --no-pager 2>/dev/null \
+            | grep -F '[push]' | tail -25 || true
+          echo "  (nothing above means no message has been sent since the logging was deployed)"
           echo ""
 
           echo "===== raw reachability, per stage ====="
