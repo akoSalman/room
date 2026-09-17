@@ -33,6 +33,7 @@ import { audioManager } from './src/audioManager';
 import * as outbox from './src/outbox';
 import * as pushReg from './src/pushRegistration';
 import * as stay from './src/stayConnected';
+import * as keepAlive from './src/keepAlive';
 import * as IntentLauncher from 'expo-intent-launcher';
 
 /**
@@ -46,6 +47,17 @@ import * as IntentLauncher from 'expo-intent-launcher';
 const APP_NAME = (require('./app.json')?.expo?.name) || 'this app';
 
 /**
+ * This build's Android package id.
+ *
+ * Read from the bundled app.json, which CI has already rewritten for this
+ * brand by the time the bundle is built — so it says com.bistbarg.chatroom in
+ * the BistbargChat build and com.akosalman.chatroom in the other. That is what
+ * makes the one-tap battery dialog possible: it needs `package:<id>` and I had
+ * wrongly written the id off as unknowable at runtime.
+ */
+const APP_PACKAGE = (require('./app.json')?.expo?.android?.package) || '';
+
+/**
  * Send the user to the battery-optimisation list.
  *
  * Every failure here is caught and falls through to the next option, because
@@ -57,8 +69,12 @@ const APP_NAME = (require('./app.json')?.expo?.name) || 'this app';
  */
 async function openBatterySettings(): Promise<void> {
   for (const action of stay.EXEMPTION_INTENTS) {
+    const data = stay.intentData(action as string, APP_PACKAGE);
+    // An intent that needs data and has none is skipped rather than fired:
+    // asking Android to exempt "package:" opens nothing useful.
+    if (data === null && action.endsWith('REQUEST_IGNORE_BATTERY_OPTIMIZATIONS')) continue;
     try {
-      await IntentLauncher.startActivityAsync(action as string);
+      await IntentLauncher.startActivityAsync(action as string, data ? { data } : undefined);
       return;
     } catch {}
   }
@@ -528,6 +544,21 @@ export default function App() {
       appSub.remove();
       try { tokSub?.remove?.(); } catch {}
     };
+  }, [screen === 'auth']);
+
+  /**
+   * Hold the chat connection open while the app is in the background.
+   *
+   * This is what makes the notification above fast: raising it off the socket
+   * is worth nothing if Android has suspended that socket, which in the
+   * background it does. A foreground service stops it — and unlike the manual
+   * battery setting, it asks nothing of the user, which is the point. See
+   * src/keepAlive.ts for the canary that makes starting one safe on a handset
+   * where Android may refuse.
+   */
+  useEffect(() => {
+    if (screen === 'auth') return;
+    return keepAlive.watchAppState(() => true);
   }, [screen === 'auth']);
 
   /**
