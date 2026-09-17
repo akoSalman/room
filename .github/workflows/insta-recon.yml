@@ -1,0 +1,104 @@
+name: Recon for insta.akosalman.com
+
+# READ-ONLY. Changes nothing on the server. Gathers the facts needed to
+# provision insta.akosalman.com alongside the existing chat app.
+#
+# DISARMED ON PURPOSE. This job SSHes into the production box that also serves
+# the live chat app, so it must not fire merely because the branch was pushed.
+# It is committed here so the work is saved and reviewable, not so it runs.
+#
+# To arm it, pick one:
+#   a) merge this file to the default branch, then run it from
+#      Actions > Recon for insta.akosalman.com > Run workflow; or
+#   b) add the auto-trigger back and push:
+#        on:
+#          push:
+#            branches: ['claude/**']
+#            paths: ['.github/workflows/insta-recon.yml']
+#          workflow_dispatch:
+#      (workflow_dispatch alone is not selectable until the file reaches the
+#      default branch, which is why the push trigger existed at all.)
+on:
+  workflow_dispatch:
+
+jobs:
+  recon:
+    runs-on: ubuntu-latest
+    steps:
+      - name: DNS + external reachability
+        run: |
+          echo "== DNS =="
+          python3 - <<'PY'
+          import socket
+          for h in ['insta.akosalman.com', 'chat.akosalman.com', 'akosalman.com']:
+              try: print(h, '->', socket.gethostbyname(h))
+              except Exception as e: print(h, 'DNS FAIL:', e)
+          PY
+          echo "== HTTP =="
+          for u in http://insta.akosalman.com/ https://insta.akosalman.com/; do
+            echo -n "$u -> "
+            curl -sS -m 12 -o /dev/null -w "HTTP %{http_code}\n" "$u" || echo "FAILED"
+          done
+
+      - name: Inspect server (read-only)
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.DEPLOY_HOST_AKOSALMAN }}
+        run: |
+          if [ -z "$SSH_KEY" ] || [ -z "$HOST" ]; then
+            echo "::error::DEPLOY_SSH_KEY / DEPLOY_HOST_AKOSALMAN not configured in this repo."
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keygen -y -f ~/.ssh/deploy_key > ~/.ssh/deploy_key.pub
+          echo "Deploy key fingerprint: $(ssh-keygen -lf ~/.ssh/deploy_key.pub)"
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=15 "root@$HOST" bash -s <<'EOF'
+          set +e
+          echo "===== identity ====="
+          hostname -f; cat /etc/redhat-release 2>/dev/null || lsb_release -d 2>/dev/null
+          echo "arch: $(uname -m)   cpus: $(nproc)"
+          echo ""
+          echo "===== node / npm ====="
+          echo "node: $(node -v 2>/dev/null || echo MISSING)"
+          echo "npm:  $(npm -v 2>/dev/null || echo MISSING)"
+          echo ""
+          echo "===== memory / disk (a Next.js build needs ~1GB free) ====="
+          free -m | head -3
+          df -h / /home 2>/dev/null
+          echo ""
+          echo "===== DirectAdmin users + existing domains ====="
+          ls /usr/local/directadmin/data/users/ 2>/dev/null
+          for u in $(ls /usr/local/directadmin/data/users/ 2>/dev/null); do
+            echo "-- $u:"; ls /home/$u/domains/ 2>/dev/null
+          done
+          echo ""
+          echo "===== does insta.akosalman.com exist yet? ====="
+          find /home/*/domains -maxdepth 1 -name "insta.akosalman.com" 2>/dev/null || echo "not found"
+          grep -ril "insta.akosalman.com" /etc/httpd/conf/extra/ /usr/local/directadmin/data/users/ 2>/dev/null | head -5
+          echo ""
+          echo "===== is port 3002 free? ====="
+          ss -ltnp | grep -E ':3002\b' && echo "3002 IN USE" || echo "3002 free"
+          echo "-- currently listening --"
+          ss -ltnp | grep -E ':(80|443|3000|3001|3002)\b'
+          echo ""
+          echo "===== web server ====="
+          for svc in httpd apache2 nginx litespeed; do echo -n "$svc: "; systemctl is-active $svc 2>/dev/null || echo inactive; done
+          echo ""
+          echo "===== existing chat service (the pattern to copy) ====="
+          systemctl list-units --type=service --no-pager 2>/dev/null | grep -i chatroom
+          echo ""
+          echo "===== apache proxy modules ====="
+          httpd -M 2>/dev/null | grep -E "proxy|headers|rewrite" || apache2ctl -M 2>/dev/null | grep -E "proxy|headers|rewrite"
+          echo ""
+          echo "===== outbound reachability from the server ====="
+          for h in https://registry.npmjs.org https://github.com https://graph.instagram.com; do
+            echo -n "$h -> "
+            curl -sS -m 15 -o /dev/null -w "HTTP %{http_code} in %{time_total}s\n" "$h" 2>&1 || echo FAILED
+          done
+          echo ""
+          echo "===== CSF firewall ====="
+          grep -E '^(TCP_IN|TCP_OUT) = ' /etc/csf/csf.conf 2>/dev/null || echo "no csf"
+          EOF
