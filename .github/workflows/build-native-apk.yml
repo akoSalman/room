@@ -7,11 +7,14 @@ on:
   workflow_dispatch:
     inputs:
       brand:
-        description: 'Which app to build (both, bistbarg, akosalman)'
+        # Defaults to bistbarg, not both: akosalman is paused until asked for.
+        # Picking it from this list IS the asking — that is the whole escape
+        # hatch, and it needs no edit to this file.
+        description: 'Which app to build (akosalman is paused — pick it here to build one)'
         required: false
-        default: 'both'
+        default: 'bistbarg'
         type: choice
-        options: [both, bistbarg, akosalman]
+        options: [bistbarg, both, akosalman]
 
 jobs:
   build:
@@ -62,7 +65,24 @@ jobs:
         # told to run from the workspace root or it cannot start at all.
         working-directory: ${{ github.workspace }}
         run: |
-          WANTED="${{ inputs.brand || 'both' }}"
+          # ── Which brands build when nobody says ──────────────────────────
+          #
+          # Asked for: skip the akosalman APK in all future builds until told
+          # otherwise. So the default for a PUSH is bistbarg alone, rather than
+          # 'both'.
+          #
+          # This is one word, deliberately. Turning akosalman back on is
+          # changing 'bistbarg' to 'both' on the line below and nothing else —
+          # no matrix to edit, no step to re-add, nothing that can be half
+          # done. Everything underneath still works exactly as it did.
+          #
+          # It applies only when no brand was named. Actions → Build Native APK
+          # → Run workflow still offers all three choices, so an akosalman
+          # build is available on demand today without touching this file:
+          # choose 'akosalman', or 'both'.
+          DEFAULT_BRAND='bistbarg'
+          WANTED="${{ inputs.brand || '' }}"
+          [ -z "$WANTED" ] && WANTED="$DEFAULT_BRAND"
           if [ "$WANTED" != "both" ] && [ "$WANTED" != "${{ matrix.brand }}" ]; then
             echo "Only $WANTED was requested — skipping ${{ matrix.brand }}."
             echo "build=no" >> "$GITHUB_OUTPUT"
