@@ -175,9 +175,15 @@ test('the app lifts the button and the mention button with the same rule', () =>
     `${lifts} controls are placed by the rule but only ${busy} of them move for the typing line`);
   // The same condition decides whether the line is drawn AND whether the
   // button moves, so the two cannot disagree.
-  assert.ok(/const someoneIsBusy = recordingUsers\.filter/.test(chat)
-    && /typing\.filter\(u => u !== me\)\.length > 0/.test(chat),
-    'the lift is decided by a different test from the one that draws the line');
+  // The lift and the line are now decided by ONE function, activityBar, so
+  // check both call sites ask it the same question — a hand-written copy of
+  // the condition is exactly what went stale when "is sending" was added.
+  const calls = (chat.match(/activityBar\(\{[^}]*\}/g) || [])
+    .map(c => c.replace(/\s+/g, ' ').replace(/,\s*\}/, ' }').trim());
+  assert.ok(calls.length >= 2,
+    `the lift and the line should both come from activityBar; found ${calls.length} call(s)`);
+  assert.strictEqual(new Set(calls).size, 1,
+    `the lift asks activityBar a different question from the line:\n  ${calls.join('\n  ')}`);
   assert.ok(!/scrollFabRaised/.test(chat), 'the old fixed raise is still in use somewhere');
 });
 

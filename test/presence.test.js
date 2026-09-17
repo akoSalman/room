@@ -90,7 +90,9 @@ const chat = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'),
 const server = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
 
 test('THE FIX: the web says which room it is in BEFORE it waits on anything', () => {
-  const fn = app.slice(app.indexOf('  typingUsers.clear(); recordingUsers.clear(); renderTypingBar();'),
+  // Anchored on the first clear rather than the whole line: adding a fourth
+  // activity to it should not make this test claim openRoom vanished.
+  const fn = app.slice(app.indexOf('  typingUsers.clear();'),
     app.indexOf('  const waiting = unreadCounts[roomId] || 0;'));
   assert.ok(fn.length > 200, 'openRoom moved');
   const joined = fn.indexOf("socket.emit('join_room', roomId)");
@@ -103,7 +105,8 @@ test('THE FIX: the web says which room it is in BEFORE it waits on anything', ()
 });
 
 test('every presence event carries the room it happened in', () => {
-  for (const evt of ['user_typing', 'user_stopped_typing', 'user_recording', 'user_stopped_recording']) {
+  for (const evt of ['user_typing', 'user_stopped_typing', 'user_recording', 'user_stopped_recording',
+    'user_sending', 'user_stopped_sending']) {
     const re = new RegExp(`'${evt}',\\s*\\n?\\s*\\{[^}]*roomId: String\\(`, 'm');
     assert.ok(re.test(server), `${evt} is sent without naming a room`);
   }
@@ -133,7 +136,8 @@ test('both clients refuse what is not about the chat on screen', () => {
     const next = src.indexOf(`${open}(`, at + 10);
     return src.slice(at, next === -1 ? at + 400 : next);
   };
-  for (const evt of ['user_typing', 'user_stopped_typing', 'user_recording', 'user_stopped_recording']) {
+  for (const evt of ['user_typing', 'user_stopped_typing', 'user_recording', 'user_stopped_recording',
+    'user_sending', 'user_stopped_sending']) {
     const web = body(app, evt, 'socket.on');
     assert.ok(web, `the web no longer listens for ${evt}`);
     assert.ok(/Presence\.isForRoom\(roomId, currentRoomId\)/.test(web),

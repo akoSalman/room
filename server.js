@@ -2312,11 +2312,23 @@ const onlineUsers = new Map(); // socketId -> { userId, username, roomId, focuse
  * would leave the blocked person watching the blocker live through a different
  * hole.
  */
+/**
+ * A live activity — typing, recording, sending — to everyone else in the room.
+ *
+ * BOTH directions of a block are checked, and only one of them used to be.
+ * `hasBlocked(a, b)` reads "a has blocked b", and this tested
+ * `hasBlocked(fromUserId, u.userId)` alone: the sender having blocked the
+ * viewer. The far more common case — the VIEWER having blocked the sender —
+ * fell straight through, so blocking somebody stopped their messages and left
+ * you watching them type. Found by a test for "is sending", which inherits
+ * this routing; typing and recording have had it the whole time.
+ */
 function emitToRoomUnblocked(roomId, fromUserId, event, payload) {
   const key = String(roomId);
   for (const [sid, u] of onlineUsers.entries()) {
     if (u.roomId !== key || u.userId === fromUserId) continue;
-    if (hasBlocked(fromUserId, u.userId)) continue;
+    if (hasBlocked(fromUserId, u.userId)) continue;   // sender blocked them
+    if (hasBlocked(u.userId, fromUserId)) continue;   // they blocked the sender
     io.to(sid).emit(event, payload);
   }
 }
@@ -3018,6 +3030,11 @@ io.on('connection', (socket) => {
     }
   });
 
+  // The kinds a client may announce. Anything else becomes 'file': this word
+  // is chosen by a client and ends up in a sentence on everybody else's
+  // screen, so it is whitelisted rather than relayed.
+  const SEND_KINDS = new Set(['photo', 'photos', 'video', 'voice', 'audio', 'file']);
+
   socket.on('recording_start', ({ roomId }) => {
     emitToRoomUnblocked(roomId, socket.user.id, 'user_recording',
       { username: socket.user.username, roomId: String(roomId) });
@@ -3025,6 +3042,28 @@ io.on('connection', (socket) => {
 
   socket.on('recording_stop', ({ roomId }) => {
     emitToRoomUnblocked(roomId, socket.user.id, 'user_stopped_recording',
+      { username: socket.user.username, roomId: String(roomId) });
+  });
+
+  // Asked for: just like "is typing", sending an image or a file should be
+  // reported. Routed exactly like typing and recording — through
+  // emitToRoomUnblocked, so somebody who blocked this user is not told what
+  // they are uploading, and so a "stopped" reaches the same people the "start"
+  // did. Sending them to the socket.io room instead is a bug this file has
+  // already had: a stop could land on somebody who never got the start, and
+  // the indicator it was meant to clear was somewhere else entirely.
+  socket.on('sending_start', ({ roomId, kind }) => {
+    emitToRoomUnblocked(roomId, socket.user.id, 'user_sending', {
+      username: socket.user.username,
+      roomId: String(roomId),
+      // Whitelisted rather than passed through: this string is chosen by a
+      // client and ends up in a sentence on everybody else's screen.
+      kind: SEND_KINDS.has(String(kind)) ? String(kind) : 'file',
+    });
+  });
+
+  socket.on('sending_stop', ({ roomId }) => {
+    emitToRoomUnblocked(roomId, socket.user.id, 'user_stopped_sending',
       { username: socket.user.username, roomId: String(roomId) });
   });
 

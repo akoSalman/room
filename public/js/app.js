@@ -90,6 +90,29 @@ let typingTimer = null;
 let isTyping = false;
 const typingUsers = new Set();
 const recordingUsers = new Set();
+/** Who is uploading something to this chat, and what: username -> kind. */
+const sendingUsers = new Map();
+
+/**
+ * Tell the chat that a file is on its way.
+ *
+ * Asked for: just like "is typing", sending an image or a file should be
+ * reported.
+ *
+ * Counted rather than paired. Announcing on each upload's start and end breaks
+ * the moment there are two — the first to finish clears the indicator while
+ * the second is still going — so the announcement follows the count crossing
+ * zero. See announceOnChange in js/activityBar.js.
+ */
+let sendingInFlight = 0;
+function announceSending(kind, delta) {
+  const before = sendingInFlight;
+  sendingInFlight = ActivityBar.nextInFlight(before, delta);
+  const what = ActivityBar.announceOnChange(before, sendingInFlight);
+  if (!what || !currentRoomId || !socket) return;
+  socket.emit(what === 'start' ? 'sending_start' : 'sending_stop',
+    { roomId: currentRoomId, kind });
+}
 let replyTo = null; // { id, username, content, type }
 
 let onlineUsers = [];
@@ -933,6 +956,19 @@ function connectSocket() {
     socket.on('user_stopped_recording', ({ username: u, roomId }) => {
       if (Presence.isForRoom(roomId, currentRoomId)) hideRecordingUser(u);
     });
+    // "is sending a photo", the same way "is typing" works. Guarded by
+    // isForRoom like the rest: these also arrive on the personal channel, so
+    // without it a file being sent in another chat shows up in this one.
+    socket.on('user_sending', ({ username: u, roomId, kind }) => {
+      if (!Presence.isForRoom(roomId, currentRoomId)) return;
+      sendingUsers.set(u, kind || 'file');
+      renderTypingBar();
+    });
+    socket.on('user_stopped_sending', ({ username: u, roomId }) => {
+      if (!Presence.isForRoom(roomId, currentRoomId)) return;
+      sendingUsers.delete(u);
+      renderTypingBar();
+    });
     socket.on('dm_activity', ({ room }) => ensureDMInSidebar(room));
     socket.on('one_time_viewed', ({ messageId, viewedAt, seconds }) => {
       oneTimeExpiry[messageId] = (viewedAt || Date.now()) + seconds * 1000;
@@ -1154,23 +1190,21 @@ function showRecordingUser(user) { recordingUsers.add(user); renderTypingBar(); 
 function hideRecordingUser(user) { recordingUsers.delete(user); renderTypingBar(); }
 function renderTypingBar() {
   const bar = document.getElementById('typing-bar');
-  if (typingUsers.size === 0 && recordingUsers.size === 0) {
+  // The wording and the priority live in js/activityBar.js so this line and
+  // the app's cannot drift — they already had, before "is sending" was added
+  // to both.
+  const line = ActivityBar.activityBar({
+    typing: [...typingUsers],
+    recording: [...recordingUsers],
+    sending: [...sendingUsers].map(([username, kind]) => ({ username, kind })),
+    me: username,
+  });
+  if (!line) {
     bar.classList.add('hidden');
     liftScrollFab();
     return;
   }
-  // Recording takes priority over typing in the indicator
-  let text;
-  if (recordingUsers.size > 0) {
-    const names = [...recordingUsers];
-    text = names.length === 1 ? `🎙 ${names[0]} is recording`
-      : `🎙 ${names[0]} and ${names.length - 1} others are recording`;
-  } else {
-    const names = [...typingUsers];
-    text = names.length === 1 ? `${names[0]} is typing`
-      : names.length === 2 ? `${names[0]} and ${names[1]} are typing`
-      : `${names[0]} and ${names.length - 1} others are typing`;
-  }
+  const text = (line.icon ? line.icon + ' ' : '') + line.text;
   bar.innerHTML = `<span>${text}</span><span class="typing-dots"><span></span><span></span><span></span></span>`;
   bar.classList.remove('hidden');
   // This line adds a row above the composer, so the buttons pinned near that
@@ -2104,7 +2138,7 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   flushDraft(currentRoomId);
   cancelEdit(); stopTypingSignal();
   if (isRecording) stopRecording();
-  typingUsers.clear(); recordingUsers.clear(); renderTypingBar();
+  typingUsers.clear(); recordingUsers.clear(); sendingUsers.clear(); renderTypingBar();
   currentRoomId = roomId;
   currentRoomIsDM = isDM;
   // …and the chat being ENTERED gets its own back. cancelEdit() above has
@@ -2901,6 +2935,13 @@ const uploadControls = {};   // clientId -> { handle, paused }
  * offering a retry nobody asked for.
  */
 function resumableUpload(file, filename, clientId, wrapper) {
+  // Announced around the whole transfer, and taken back down whichever way it
+  // ends — resolved, rejected or cancelled. A line saying somebody is sending
+  // a file for ever is worse than no line.
+  const kind = ActivityBar.sendKindForMime(file && file.type);
+  announceSending(kind, 1);
+  let settled = false;
+  const done = () => { if (settled) return; settled = true; announceSending(kind, -1); };
   return new Promise((resolve, reject) => {
     let sentAt = [];
     const handle = window.Resumable.upload(file, filename, {
@@ -2915,10 +2956,15 @@ function resumableUpload(file, filename, clientId, wrapper) {
         setUploadStatus(wrapper, uploadLine(sent, total, sentAt));
       },
       onPaused() { setUploadStatus(wrapper, 'Paused · ' + window.Resumable.fmtBytes(0)); },
-      onDone: resolve,
-      onFailed: reject,
+      onDone: (r) => { done(); resolve(r); },
+      onFailed: (e) => { done(); reject(e); },
     });
-    uploadControls[clientId] = { handle, paused: false, resolve };
+    // Cancelling resolves through this stored handle rather than through
+    // onDone, so it needs the same teardown or the line outlives the upload.
+    uploadControls[clientId] = {
+      handle, paused: false,
+      resolve: (r) => { done(); resolve(r); },
+    };
   });
 }
 

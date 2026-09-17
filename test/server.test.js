@@ -3203,6 +3203,102 @@ test('hiding the same message twice is not an error', async () => {
     'hiding an already-hidden message reported a failure');
 });
 
+// ── "is sending a photo" ────────────────────────────────────────────────────
+//
+// Asked for: just like "is typing", sending an image or a file should be
+// reported. Routed exactly like typing and recording, which means it inherits
+// their rules — and those rules are the reason this is worth driving over a
+// real socket rather than trusting the handler to look right.
+
+test('THE FEATURE: sending is relayed to the other side, with its kind', async () => {
+  const sender = await signUp('sendfrom1');
+  const reader = await signUp('sendto1');
+  const senderSock = await connect(sender.token);
+  const readerSock = await connect(reader.token);
+  const room = await api('/rooms', 'POST', { name: 'sending-room-1' }, sender.token);
+  await emit(readerSock, 'accept_invite', { roomId: room.id });
+  readerSock.emit('join_room', room.id);
+  senderSock.emit('join_room', room.id);
+  await new Promise(r => setTimeout(r, 150));
+
+  const heard = waitFor(readerSock, 'user_sending', p => p.username === 'sendfrom1');
+  senderSock.emit('sending_start', { roomId: room.id, kind: 'photo' });
+  const evt = await heard;
+  assert.strictEqual(evt.kind, 'photo');
+  assert.strictEqual(String(evt.roomId), String(room.id));
+
+  const stopped = waitFor(readerSock, 'user_stopped_sending', p => p.username === 'sendfrom1');
+  senderSock.emit('sending_stop', { roomId: room.id });
+  await stopped;
+});
+
+test('a made-up kind cannot be put into somebody else\'s chat', async () => {
+  // The kind is chosen by a client and ends up in a sentence on everybody
+  // else's screen, so it is whitelisted rather than relayed.
+  const sender = await signUp('sendfrom2');
+  const reader = await signUp('sendto2');
+  const senderSock = await connect(sender.token);
+  const readerSock = await connect(reader.token);
+  const room = await api('/rooms', 'POST', { name: 'sending-room-2' }, sender.token);
+  await emit(readerSock, 'accept_invite', { roomId: room.id });
+  readerSock.emit('join_room', room.id);
+  senderSock.emit('join_room', room.id);
+  await new Promise(r => setTimeout(r, 150));
+
+  const heard = waitFor(readerSock, 'user_sending', p => p.username === 'sendfrom2');
+  senderSock.emit('sending_start', { roomId: room.id, kind: '<script>alert(1)</script>' });
+  const evt = await heard;
+  assert.strictEqual(evt.kind, 'file', `a client's own string was relayed: ${evt.kind}`);
+});
+
+test('the sender is not told about their own upload', async () => {
+  // They can see the progress on the bubble; a line saying they are sending it
+  // too is noise. emitToRoomUnblocked already excludes the actor — this is the
+  // check that it still does.
+  const sender = await signUp('sendfrom3');
+  const reader = await signUp('sendto3');
+  const senderSock = await connect(sender.token);
+  const readerSock = await connect(reader.token);
+  const room = await api('/rooms', 'POST', { name: 'sending-room-3' }, sender.token);
+  await emit(readerSock, 'accept_invite', { roomId: room.id });
+  readerSock.emit('join_room', room.id);
+  senderSock.emit('join_room', room.id);
+  await new Promise(r => setTimeout(r, 150));
+
+  let echoed = false;
+  senderSock.on('user_sending', () => { echoed = true; });
+  const heard = waitFor(readerSock, 'user_sending', p => p.username === 'sendfrom3');
+  senderSock.emit('sending_start', { roomId: room.id, kind: 'video' });
+  await heard;
+  await new Promise(r => setTimeout(r, 200));
+  assert.strictEqual(echoed, false, 'the sender was told about their own upload');
+});
+
+test('somebody who blocked the sender is not told what they are uploading', async () => {
+  // The same rule typing and recording follow. If this ever regresses, a
+  // blocked user gets a live feed of the blocker's activity.
+  const sender = await signUp('sendfrom4');
+  const blocker = await signUp('sendto4');
+  const senderSock = await connect(sender.token);
+  const blockerSock = await connect(blocker.token);
+  const room = await api('/rooms', 'POST', { name: 'sending-room-4' }, sender.token);
+  await emit(blockerSock, 'accept_invite', { roomId: room.id });
+  blockerSock.emit('join_room', room.id);
+  senderSock.emit('join_room', room.id);
+  // /block takes the user id in the path, not a username in the body — the
+  // first version of this test posted to an endpoint that does not exist,
+  // blocked nobody, and passed for the wrong reason until it did not.
+  const senderId = (await api('/search?q=sendfrom4', 'GET', null, blocker.token)).users[0].id;
+  await api(`/block/${senderId}`, 'POST', null, blocker.token);
+  await new Promise(r => setTimeout(r, 200));
+
+  let told = false;
+  blockerSock.on('user_sending', () => { told = true; });
+  senderSock.emit('sending_start', { roomId: room.id, kind: 'photo' });
+  await new Promise(r => setTimeout(r, 400));
+  assert.strictEqual(told, false, 'a blocked sender\'s uploads are announced to the blocker');
+});
+
 test('a zero-byte APK is not advertised as a build either', async () => {
   // A truncated or half-copied file passes "does it exist" and fails every
   // install. The check is on the SIZE, not merely on the stat succeeding.

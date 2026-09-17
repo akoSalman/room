@@ -45,6 +45,9 @@ import * as save from '../saveProgress';
 import { parseDataUri, pastedName, fileUriFromText, extensionFor, shouldReadText, clipboardOffer } from '../pasteDrop';
 import * as pending from '../pendingMedia';
 import * as textDraft from '../textDraft';
+import {
+  activityBar, sendKindFor, announceOnChange, nextInFlight, SendKind, Sender,
+} from '../activityBar';
 import * as Contacts from 'expo-contacts';
 import {
   AttachAction, OPENS_IN, opensCamera, contactMessage, contactWorthSending,
@@ -216,6 +219,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   const [online, setOnline] = useState<string[]>([]);
   const [typing, setTyping] = useState<string[]>([]);
   const [recordingUsers, setRecordingUsers] = useState<string[]>([]);
+  /** Who is uploading something to this chat, and what. */
+  const [sendingUsers, setSendingUsers] = useState<Sender[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<number | string | null>(null);
   // Read from callbacks that must not be rebuilt on every edit — the draft
@@ -1342,8 +1347,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   });
   const fabVisible = currentFabMode !== 'hidden';
   /** Is a typing or recording line being drawn under the buttons? */
-  const someoneIsBusy = recordingUsers.filter(u => u !== me).length > 0
-    || typing.filter(u => u !== me).length > 0;
+  // Derived from the SAME rule that draws the line, so the button's lift and
+  // the line's presence cannot disagree — including for the new "is sending",
+  // which a hand-written copy of this condition would have missed.
+  const someoneIsBusy = !!activityBar({
+    typing, recording: recordingUsers, sending: sendingUsers, me,
+  });
 
   // When a voice message finishes, auto-play the next voice message in this chat
   useEffect(() => {
@@ -1912,6 +1921,20 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         if (!isForRoom(roomId, room.id)) return;
         setRecordingUsers(prev => prev.filter(x => x !== u));
       });
+      // "is sending a photo", the same way "is typing" works. Guarded by
+      // isForRoom like the rest: these arrive on the personal channel too, so
+      // without it a file being sent in another chat shows up in this one.
+      sock.on('user_sending', ({ username: u, roomId, kind }: any) => {
+        if (!isForRoom(roomId, room.id)) return;
+        setSendingUsers(prev => {
+          const rest = prev.filter(x => x.username !== u);
+          return [...rest, { username: u, kind: (kind || 'file') as SendKind }];
+        });
+      });
+      sock.on('user_stopped_sending', ({ username: u, roomId }: any) => {
+        if (!isForRoom(roomId, room.id)) return;
+        setSendingUsers(prev => prev.filter(x => x.username !== u));
+      });
       sock.on('one_time_viewed', ({ messageId, roomId, viewedAt, seconds }: any) => {
         // Also delivered on our personal channel now, so ignore other rooms.
         if (roomId != null && roomId !== room.id) return;
@@ -1950,6 +1973,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       socketRef.current?.off('user_stopped_typing');
       socketRef.current?.off('user_recording');
       socketRef.current?.off('user_stopped_recording');
+      socketRef.current?.off('user_sending');
+      socketRef.current?.off('user_stopped_sending');
       socketRef.current?.off('messages_read');
       socketRef.current?.off('one_time_viewed');
       socketRef.current?.off('voice_played');
@@ -2608,6 +2633,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     const hasProcessing = type === 'video' && !!videoPrep;
     up.begin(clientId, hasProcessing);
     setReplyTo(null);
+    // From here to the end of this function a file is on the wire, including
+    // the transcode and the compression in front of it — which is the part
+    // that takes longest and is exactly when the other side is wondering why
+    // nothing has arrived.
+    const sendKind = sendKindFor(type);
+    announceSending(sendKind, 1);
+    try {
 
     if (type === 'image') {
       const c = await compressForSend(uri, name, mime, quality);
@@ -2638,6 +2670,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     } catch (err) {
       settleUpload(clientId, err);
     }
+    } finally {
+      // Every exit, including the cancelled returns above: a line that says
+      // somebody is sending a file for ever is worse than no line.
+      announceSending(sendKind, -1);
+    }
   }
 
   // Uploads several images and sends them as ONE gallery message.
@@ -2657,6 +2694,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     setReplyTo(null);
     up.begin(clientId, false);
     outbox.markStart(clientId, room.id);
+    announceSending('photos', 1);
     try {
       // One bar for the whole album: each picture is a slice of it, and the
       // byte counts are summed so the line underneath is about the album
@@ -2682,6 +2720,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       });
     } catch (err) {
       settleUpload(clientId, err);
+    } finally {
+      announceSending('photos', -1);
     }
   }
 
@@ -2980,6 +3020,29 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     recordingRef.current = true;
     setRecording(true);
     socketRef.current?.emit('recording_start', { roomId: room.id });
+  }
+
+  /**
+   * Tell the chat that a file is on its way.
+   *
+   * Asked for: just like "is typing", sending an image or a file should be
+   * reported.
+   *
+   * Counted rather than paired. Announcing on each upload's start and end
+   * breaks the moment there are two: the first to finish clears the indicator
+   * while the second is still going, and the other side sees the line vanish
+   * with a file still on the way. So the announcement follows the count
+   * crossing zero — see announceOnChange in src/activityBar.ts.
+   */
+  const sendingCount = useRef(0);
+  function announceSending(kind: SendKind, delta: 1 | -1) {
+    const before = sendingCount.current;
+    const after = nextInFlight(before, delta);
+    sendingCount.current = after;
+    const what = announceOnChange(before, after);
+    if (!what) return;
+    socketRef.current?.emit(what === 'start' ? 'sending_start' : 'sending_stop',
+      { roomId: room.id, kind });
   }
 
   function stopRecordingUI() {
@@ -5269,14 +5332,20 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         </TouchableOpacity>
       )}
 
-      {/* Recording / typing indicator (recording takes priority) */}
-      {/* someoneIsBusy above is the same condition, so the button's lift and
-          the line's presence cannot disagree. */}
-      {recordingUsers.filter(u => u !== me).length > 0 ? (
-        <Text style={s.recordingBar}>🎙 {recordingUsers.filter(u => u !== me).join(', ')} is recording…</Text>
-      ) : typing.filter(u => u !== me).length > 0 ? (
-        <Text style={s.typingBar}>{typing.filter(u => u !== me).join(', ')} is typing…</Text>
-      ) : null}
+      {/* Recording / sending / typing, in that order of priority. The wording
+          and the priority live in src/activityBar.ts so this line and the
+          web's cannot drift — they already had, before "is sending" was added
+          to both. someoneIsBusy above is derived from the same rule, so the
+          button's lift and the line's presence cannot disagree. */}
+      {(() => {
+        const bar = activityBar({ typing, recording: recordingUsers, sending: sendingUsers, me });
+        if (!bar) return null;
+        return (
+          <Text style={bar.kind === 'typing' ? s.typingBar : s.recordingBar}>
+            {bar.icon ? `${bar.icon} ` : ''}{bar.text}…
+          </Text>
+        );
+      })()}
 
       {/* Edit banner */}
       {editingId && (
