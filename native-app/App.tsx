@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   StatusBar, View, Text, I18nManager, BackHandler, AppState,
-  Modal, TouchableOpacity, FlatList, StyleSheet, Linking, Alert, ActivityIndicator,
+  Modal, TouchableOpacity, FlatList, StyleSheet, Linking, Alert, ActivityIndicator, Platform,
 } from 'react-native';
 import { useShareIntent } from 'expo-share-intent';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -32,6 +32,38 @@ import { disconnectSocket, getSocket, getUsername, apiFetch, ensureSocketAlive, 
 import { audioManager } from './src/audioManager';
 import * as outbox from './src/outbox';
 import * as pushReg from './src/pushRegistration';
+import * as stay from './src/stayConnected';
+import * as IntentLauncher from 'expo-intent-launcher';
+
+/**
+ * What this build calls itself, for the sentence that sends somebody into a
+ * list of every app on their phone to find it.
+ *
+ * Taken from the brand's own name rather than hardcoded: CI rewrites app.json
+ * per brand, and telling a BistbargChat user to look for "ChatRoom" would send
+ * them hunting for something that is not there.
+ */
+const APP_NAME = (require('./app.json')?.expo?.name) || 'this app';
+
+/**
+ * Send the user to the battery-optimisation list.
+ *
+ * Every failure here is caught and falls through to the next option, because
+ * this runs on a thousand OEM ROMs and some of them have removed the screen.
+ * Ending up on the app's own settings page is a worse outcome than the battery
+ * list and a much better one than a crash — which is the whole reason this
+ * uses intents that take no permission and no package name. See
+ * src/stayConnected.ts.
+ */
+async function openBatterySettings(): Promise<void> {
+  for (const action of stay.EXEMPTION_INTENTS) {
+    try {
+      await IntentLauncher.startActivityAsync(action as string);
+      return;
+    } catch {}
+  }
+  try { await Linking.openSettings(); } catch {}
+}
 import { C } from './src/theme';
 
 // Keep the app layout LTR even on RTL locales (Persian/Arabic): mirroring the
@@ -498,6 +530,43 @@ export default function App() {
     };
   }, [screen === 'auth']);
 
+  /**
+   * Ask Android to stop pausing this app in the background.
+   *
+   * This is what actually shortens the delay. The socket above can only beat
+   * FCM if it is still connected, and Doze suspends network access for any app
+   * Android is restricting — which is every app the user has not exempted. An
+   * exempt app keeps its connection, with no foreground service and nothing
+   * for Android to refuse. (A foreground service would be the stronger answer
+   * and this app cannot use one: see CALL_FOREGROUND_SERVICE in
+   * src/ongoingCall.ts, which is off because starting one crashed the app
+   * twice, natively, where no JavaScript can catch it.)
+   *
+   * Asked once, after sign-in. Whether it was granted cannot be read back
+   * without native code, so only the asking is recorded — asking again every
+   * launch would be nagging, and somebody who declined meant it.
+   */
+  useEffect(() => {
+    if (screen === 'auth') return;
+    let alive = true;
+    (async () => {
+      const asked = await AsyncStorage.getItem(stay.ASKED_KEY).catch(() => null);
+      if (!alive) return;
+      if (!stay.shouldAskExemption({
+        signedIn: true, alreadyAsked: !!asked, platform: Platform.OS,
+      })) return;
+      // Written BEFORE the prompt, not after: if the user dismisses it by
+      // leaving the app, recording it afterwards never happens and they are
+      // asked again on every single launch.
+      AsyncStorage.setItem(stay.ASKED_KEY, '1').catch(() => {});
+      Alert.alert(stay.EXEMPTION_TITLE, stay.exemptionBody(APP_NAME), [
+        { text: 'Not now', style: 'cancel' },
+        { text: 'Open settings', onPress: () => { openBatterySettings(); } },
+      ]);
+    })();
+    return () => { alive = false; };
+  }, [screen === 'auth']);
+
   // Global notifications: any message from someone else, in any room except
   // the one currently open, raises a local notification.
   useEffect(() => {
@@ -509,13 +578,19 @@ export default function App() {
       const uname = await getUsername();
       sock = await getSocket();
       handler = (msg: any) => {
-        // Only while the server genuinely has no way to reach this device. Once
-        // the token is registered FCM covers this, and raising it here as well
-        // would show every message twice.
-        if (!pushReg.socketFallbackAllowed({ registered: pushRegisteredRef.current })) return;
-        if (msg.username === uname) return;
-        if (AppState.currentState === 'active') return; // in-app badges cover it
-        if (screen === 'chat' && room && msg.room_id === room.id) return;
+        // Raised whenever the socket beats FCM, which on these connections is
+        // most of the time. This used to run only when no push token was
+        // registered — the socket standing in for a push that never came — and
+        // that is the rule that made every notification wait for Google. It is
+        // now the fast path, and the two are de-duplicated by tag below, so
+        // both firing shows one notification rather than two. See
+        // src/stayConnected.ts.
+        if (!stay.shouldRaiseLocally({
+          fromMe: msg.username === uname,
+          appState: AppState.currentState,
+          openRoomId: screen === 'chat' && room ? room.id : null,
+          msgRoomId: msg.room_id,
+        })) return;
         // Never preview content — only the kind of message received
         const body = msg.type === 'text' ? '💬 New message'
           : msg.type === 'audio' ? '🎙 Voice message'
@@ -527,7 +602,11 @@ export default function App() {
         // Tie the notification to the message id so it can be pulled from the
         // tray if the sender deletes the message.
         Notifications.scheduleNotificationAsync({
-          identifier: `msg-${msg.id}`,
+          // The SAME tag the server puts on its FCM notification. Android
+          // replaces a notification sharing a tag, so when both arrive the
+          // second takes the place of the first instead of showing twice —
+          // which is what makes raising this one early safe.
+          identifier: stay.dedupeTag(msg.id),
           content: { title: msg.username, body, sound: 'notify.wav' },
           trigger: null,
         }).catch(() => {});

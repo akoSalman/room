@@ -84,16 +84,14 @@ export function shouldRetry(o: { attempt: number; registered: boolean }): boolea
   return (Number(o.attempt) || 0) < MAX_ATTEMPTS;
 }
 
-/**
- * May the app fall back to raising notifications from the socket itself?
- *
- * Only while the server genuinely cannot reach this device. The old code asked
- * a different question — "did registration ever succeed" — and answered it
- * with a flag that was false whenever the above race had been lost, so the
- * fallback was carrying the whole feature on a socket that is asleep in the
- * background. Being explicit about it means the fallback covers the gap while
- * registration is still being retried, rather than pretending to be push.
- */
-export function socketFallbackAllowed(o: { registered: boolean }): boolean {
-  return !(o && o.registered);
-}
+// `socketFallbackAllowed` used to live here: "raise the notification from the
+// socket only while no push token is registered".
+//
+// It is gone because the premise turned out to be backwards. It treated the
+// socket as a stand-in for a push that had not arrived, so once registration
+// succeeded the app went quiet and waited for FCM — which, measured, is the
+// slow path for these users by minutes. The socket is the FAST one.
+//
+// The decision now lives in stayConnected.ts as `shouldRaiseLocally`, which
+// does not ask about registration at all; the two notifications share a tag so
+// both arriving shows one.

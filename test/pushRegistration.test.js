@@ -105,11 +105,15 @@ test('the whole retry sequence covers a human tapping Allow', () => {
     `registration gives up after ${Math.round(total / 1000)}s, before a slow tap on Allow`);
 });
 
-test('the socket fallback covers exactly the gap and no more', () => {
-  // Raising notifications from the socket while FCM is also delivering them
-  // shows every message twice.
-  assert.strictEqual(P.socketFallbackAllowed({ registered: false }), true);
-  assert.strictEqual(P.socketFallbackAllowed({ registered: true }), false);
+test('the socket is no longer gated on registration at all', () => {
+  // socketFallbackAllowed used to live here and answered "raise it from the
+  // socket only while no push token is registered". The premise was backwards:
+  // it treated the socket as a stand-in for a push that had not arrived, so a
+  // successful registration made the app go quiet and wait for FCM — measured,
+  // the slow path for these users by minutes. The rule moved to
+  // stayConnected.ts and stopped asking about registration.
+  assert.strictEqual(typeof P.socketFallbackAllowed, 'undefined',
+    'the old rule is back, and it makes every notification wait for Google');
 });
 
 // ── The wiring ──────────────────────────────────────────────────────────────
@@ -157,9 +161,9 @@ test('the token is remembered only after the server accepts it', () => {
     'the token is recorded before the server accepted it');
 });
 
-test('the socket fallback asks the rule rather than a bare flag', () => {
-  assert.ok(/pushReg\.socketFallbackAllowed\(\{ registered: pushRegisteredRef\.current \}\)/.test(app),
-    'the fallback decides for itself whether push is covering notifications');
+test('…and App.tsx does not consult it either', () => {
+  assert.ok(!/socketFallbackAllowed/.test(app),
+    'the local notification still waits for push to be unregistered');
 });
 
 test('THE TRAP THIS INTRODUCES: signing out forgets the registered token', () => {
