@@ -137,12 +137,17 @@ jobs:
               // Narrowed to people who actually use the app: someone who
               // signed up once a year ago having no token is not a fault.
               try {
+                // The cutoff is computed here and bound, rather than written
+                // as datetime(...) in the SQL: this whole script is passed to
+                // node inside single quotes, so a single quote in a string
+                // literal ends the script instead of the string.
+                const cutoff = new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 19).replace("T", " ");
                 const active = db.prepare(
-                  "SELECT COUNT(DISTINCT user_id) c FROM messages WHERE created_at > datetime('now','-7 days')").get().c;
+                  "SELECT COUNT(DISTINCT user_id) c FROM messages WHERE created_at > ?").get(cutoff).c;
                 const activeWith = db.prepare(
                   "SELECT COUNT(DISTINCT m.user_id) c FROM messages m " +
-                  "WHERE m.created_at > datetime('now','-7 days') " +
-                  "AND EXISTS (SELECT 1 FROM push_tokens p WHERE p.user_id = m.user_id)").get().c;
+                  "WHERE m.created_at > ? " +
+                  "AND EXISTS (SELECT 1 FROM push_tokens p WHERE p.user_id = m.user_id)").get(cutoff).c;
                 console.log("  active in the last 7 days: " + active
                             + "   of those, with a device token: " + activeWith);
                 if (active > 0 && activeWith < active) {
