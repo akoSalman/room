@@ -98,14 +98,64 @@ jobs:
 
             // A real device token out of the live database, so the request is
             // the same shape as a real one. Nothing is sent to it.
+            //
+            // The database is found rather than assumed: the two servers do
+            // not keep it in the same place, and "no such table" was this
+            // probe reading an empty file it had just created.
             let token = null;
             try {
               const Database = require("better-sqlite3");
-              const db = new Database(process.env.DB_PATH || "chat.db", { readonly: true });
+              const candidates = [
+                process.env.DB_PATH,
+                path.join(process.cwd(), "chat.db"),
+                path.join(process.cwd(), "data", "chat.db"),
+                path.join(process.cwd(), "db", "chat.db"),
+              ].filter(Boolean);
+              let db = null, used = null;
+              for (const p of candidates) {
+                if (!fs.existsSync(p)) continue;
+                try {
+                  const cand = new Database(p, { readonly: true, fileMustExist: true });
+                  cand.prepare("SELECT 1 FROM push_tokens LIMIT 1").get();
+                  db = cand; used = p; break;
+                } catch (e) { /* not this one */ }
+              }
+              if (!db) { console.log("  could not find a database with a push_tokens table"); process.exit(0); }
+              console.log("  database: " + used);
+
+              // THE NUMBER THAT MATTERS. A user with no token cannot be
+              // pushed to at all — so the notification they eventually see is
+              // the app raising it itself when its socket reconnects, which
+              // is whenever Android next lets the app run. That is late by
+              // minutes, and it looks exactly like a slow push.
+              const users = db.prepare("SELECT COUNT(*) c FROM users").get().c;
+              const withTok = db.prepare("SELECT COUNT(DISTINCT user_id) c FROM push_tokens").get().c;
+              const rows = db.prepare("SELECT COUNT(*) c FROM push_tokens").get().c;
+              console.log("  users: " + users + "   users with a device token: " + withTok
+                          + "   token rows: " + rows);
+
+              // Narrowed to people who actually use the app: someone who
+              // signed up once a year ago having no token is not a fault.
+              try {
+                const active = db.prepare(
+                  "SELECT COUNT(DISTINCT user_id) c FROM messages WHERE created_at > datetime('now','-7 days')").get().c;
+                const activeWith = db.prepare(
+                  "SELECT COUNT(DISTINCT m.user_id) c FROM messages m " +
+                  "WHERE m.created_at > datetime('now','-7 days') " +
+                  "AND EXISTS (SELECT 1 FROM push_tokens p WHERE p.user_id = m.user_id)").get().c;
+                console.log("  active in the last 7 days: " + active
+                            + "   of those, with a device token: " + activeWith);
+                if (active > 0 && activeWith < active) {
+                  console.log("");
+                  console.log("  >>> " + (active - activeWith) + " of " + active + " active users CANNOT be pushed to.");
+                  console.log("  >>> For them no push is ever sent. What they see is the app raising the");
+                  console.log("  >>> notification itself once its socket reconnects — minutes late.");
+                  console.log("");
+                }
+              } catch (e) { console.log("  (could not measure active users: " + e.message + ")"); }
+
               const row = db.prepare("SELECT token FROM push_tokens ORDER BY rowid DESC LIMIT 1").get();
               token = row && row.token;
-              const n = db.prepare("SELECT COUNT(*) c FROM push_tokens").get().c;
-              console.log("  registered device tokens: " + n);
             } catch (e) { console.log("  could not read push_tokens: " + e.message); }
             if (!token) { console.log("  no device token to test with"); process.exit(0); }
 
