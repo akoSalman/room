@@ -1,0 +1,182 @@
+name: Diagnose Push Latency
+
+# How long does it actually take this server to send one push?
+#
+# Reported as: the message appears instantly but the notification arrives a
+# couple of minutes later. That shape is the clue. The message travels over
+# this server's own socket — same machine, same country, milliseconds. The
+# notification travels to fcm.googleapis.com and back. If the second path is
+# slow, the two arrive minutes apart while nothing is broken in either the app
+# or the server, and nothing in the logs says so, because nothing times it.
+#
+# sendPushToUsers is deliberately not awaited, so a slow FCM never delays the
+# message — it only delays the notification. That is exactly the symptom.
+#
+# So: measure, before changing anything else. Every send goes through two
+# Google endpoints:
+#
+#   • oauth2.googleapis.com — the service-account token, cached for 50 minutes
+#   • fcm.googleapis.com    — one request per device token, every message
+#
+# Nothing is delivered to anybody: the send uses FCM's `validate_only` dry run,
+# which exercises authentication, connection and the full round trip and then
+# throws the message away.
+on:
+  workflow_dispatch:
+    inputs:
+      rounds:
+        description: 'How many timed sends per server'
+        required: false
+        default: '5'
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: akosalman
+            host_secret: DEPLOY_HOST_AKOSALMAN
+            dir_secret: DEPLOY_DIR_AKOSALMAN
+          - name: bistbarg
+            host_secret: DEPLOY_HOST_BISTBARG
+            dir_secret: DEPLOY_DIR_BISTBARG
+
+    steps:
+      - name: Probe ${{ matrix.name }}
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets[matrix.host_secret] }}
+          APP_DIR: ${{ secrets[matrix.dir_secret] }}
+          ROUNDS: ${{ inputs.rounds || '5' }}
+        run: |
+          if [ -z "$HOST" ] || [ -z "$SSH_KEY" ]; then
+            echo "Secrets for ${{ matrix.name }} not configured — skipping."
+            exit 0
+          fi
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+              -o ConnectTimeout=30 "root@$HOST" \
+            APP_DIR="$APP_DIR" ROUNDS="$ROUNDS" bash -s <<'EOF'
+          set +e
+          cd "$APP_DIR" || exit 1
+
+          echo "===== where is this server ====="
+          # Which country the server sits in decides everything below: Google
+          # is reachable from most of the world in tens of milliseconds and
+          # throttled or blocked from some of it.
+          curl -s --max-time 15 https://ipinfo.io/json 2>/dev/null \
+            | tr ',' '\n' | grep -E '"(country|region|org|city)"' || echo "(ipinfo unreachable — itself a finding)"
+          echo ""
+
+          echo "===== raw reachability, per stage ====="
+          # Split out so a slow TLS handshake is not confused with a slow
+          # response: the first says the path to Google is being interfered
+          # with, the second says Google itself is slow.
+          for HOSTNAME in oauth2.googleapis.com fcm.googleapis.com; do
+            echo "--- $HOSTNAME ---"
+            for i in 1 2 3; do
+              curl -s -o /dev/null --max-time 60 \
+                -w "  dns=%{time_namelookup}s connect=%{time_connect}s tls=%{time_appconnect}s total=%{time_total}s code=%{http_code}\n" \
+                "https://$HOSTNAME/" 2>&1 || echo "  (failed)"
+            done
+          done
+          echo ""
+
+          echo "===== a real, timed send (dry run — nothing is delivered) ====="
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const jwt = require("jsonwebtoken");
+
+            const credPath = path.join(process.cwd(), "firebase-service-account.json");
+            if (!fs.existsSync(credPath)) { console.log("no firebase-service-account.json — push is disabled here"); process.exit(0); }
+            const creds = JSON.parse(fs.readFileSync(credPath, "utf8"));
+
+            // A real device token out of the live database, so the request is
+            // the same shape as a real one. Nothing is sent to it.
+            let token = null;
+            try {
+              const Database = require("better-sqlite3");
+              const db = new Database(process.env.DB_PATH || "chat.db", { readonly: true });
+              const row = db.prepare("SELECT token FROM push_tokens ORDER BY rowid DESC LIMIT 1").get();
+              token = row && row.token;
+              const n = db.prepare("SELECT COUNT(*) c FROM push_tokens").get().c;
+              console.log("  registered device tokens: " + n);
+            } catch (e) { console.log("  could not read push_tokens: " + e.message); }
+            if (!token) { console.log("  no device token to test with"); process.exit(0); }
+
+            const rounds = parseInt(process.env.ROUNDS || "5", 10);
+
+            async function timeIt(label, fn) {
+              const t0 = Date.now();
+              try { const r = await fn(); console.log(`  ${label}: ${Date.now() - t0}ms ${r}`); return Date.now() - t0; }
+              catch (e) { console.log(`  ${label}: FAILED after ${Date.now() - t0}ms — ${e.message}`); return -1; }
+            }
+
+            (async () => {
+              const now = Math.floor(Date.now() / 1000);
+              const assertion = jwt.sign({
+                iss: creds.client_email,
+                scope: "https://www.googleapis.com/auth/firebase.messaging",
+                aud: creds.token_uri, iat: now, exp: now + 3600,
+              }, creds.private_key, { algorithm: "RS256" });
+
+              let access = null;
+              await timeIt("oauth token fetch", async () => {
+                const r = await fetch(creds.token_uri, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                  body: "grant_type=" + encodeURIComponent("urn:ietf:params:oauth:grant-type:jwt-bearer")
+                        + "&assertion=" + encodeURIComponent(assertion),
+                });
+                const j = await r.json();
+                access = j.access_token;
+                return "(status " + r.status + (access ? ", token ok)" : ", NO TOKEN)");
+              });
+              if (!access) { console.log("  cannot continue without an access token"); return; }
+
+              const times = [];
+              for (let i = 1; i <= rounds; i++) {
+                const ms = await timeIt("send #" + i, async () => {
+                  const r = await fetch(
+                    "https://fcm.googleapis.com/v1/projects/" + creds.project_id + "/messages:send", {
+                    method: "POST",
+                    headers: { Authorization: "Bearer " + access, "Content-Type": "application/json" },
+                    // validate_only: the full round trip, delivered to nobody.
+                    body: JSON.stringify({
+                      validate_only: true,
+                      message: {
+                        token,
+                        notification: { title: "probe", body: "probe" },
+                        android: { priority: "high", notification: { channel_id: "messages-v3" } },
+                      },
+                    }),
+                  });
+                  const body = await r.text();
+                  return "(status " + r.status + ")" + (r.ok ? "" : " " + body.slice(0, 160));
+                });
+                if (ms >= 0) times.push(ms);
+              }
+
+              if (times.length) {
+                times.sort((a, b) => a - b);
+                const sum = times.reduce((a, b) => a + b, 0);
+                console.log("");
+                console.log("  min " + times[0] + "ms   median " + times[Math.floor(times.length / 2)]
+                            + "ms   max " + times[times.length - 1] + "ms   mean " + Math.round(sum / times.length) + "ms");
+                console.log("");
+                if (times[Math.floor(times.length / 2)] > 5000) {
+                  console.log("  >>> A single push takes SECONDS from this server. With one request per");
+                  console.log("  >>> device this is the delay the users are reporting.");
+                } else {
+                  console.log("  >>> Sending is fast from this server, so the delay is NOT the path to");
+                  console.log("  >>> Google. Look at delivery on the phone instead.");
+                }
+              }
+            })();
+          ' 2>&1
+          EOF
