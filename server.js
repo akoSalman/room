@@ -785,9 +785,19 @@ async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
     const placeholders = userIds.map(() => '?').join(',');
     const tokens = db.prepare(`SELECT token FROM push_tokens WHERE user_id IN (${placeholders})`)
       .all(...userIds).map(r => r.token);
-    if (!tokens.length) return;
+    // A recipient with no device token cannot be pushed to at all. The
+    // notification they eventually see is the app raising it itself when its
+    // socket reconnects — late by however long Android takes to let the app
+    // run, which is the other way a notification arrives minutes afterwards.
+    if (!tokens.length) {
+      console.log(`[push] ${userIds.length} recipient(s) [${userIds.join(',')}] have no device token`);
+      return;
+    }
+    const tAuth = Date.now();
     const access = await getFcmAccessToken();
+    const authMs = Date.now() - tAuth;
     if (!access) return;
+    const tSend = Date.now();
     await Promise.all(tokens.map(t =>
       fetch(`https://fcm.googleapis.com/v1/projects/${fcmCreds.project_id}/messages:send`, {
         method: 'POST',
@@ -848,6 +858,13 @@ async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
         console.error(`[FCM] Send failed (status ${r.status}):`, body);
       }).catch(err => console.error('[FCM] Send request error:', err.message))
     ));
+    // The one line that says whether the server is the slow part. Everything
+    // after this is Google's to deliver, and nothing here can see that — so if
+    // this reads 150ms and the phone buzzes two minutes later, the delay is on
+    // the path from Google to the handset, and no amount of work in this file
+    // will shorten it.
+    console.log(`[push] ${tokens.length} device(s) for ${userIds.length} user(s) `
+      + `[${userIds.join(',')}] — auth ${authMs}ms, send ${Date.now() - tSend}ms`);
   } catch (err) {
     console.error('[FCM] sendPushToUsers error:', err.message);
   }
@@ -2630,6 +2647,23 @@ io.on('connection', (socket) => {
       );
     }
 
+    // ── Why a notification was late, in one line ────────────────────────────
+    //
+    // Reported as: the message appears instantly, the notification arrives a
+    // couple of minutes later. Nothing in this file could answer that, because
+    // nothing recorded what it did — so every explanation was a theory.
+    //
+    // Two facts settle it between them, and neither was being written down:
+    // who was left out of the push and why (a recipient the server believes is
+    // reading the chat gets no push at all, which is not a late notification
+    // but a missing one), and how long the send itself took. Compare the
+    // timestamp here with the moment the notification appeared on the phone
+    // and the answer is no longer a matter of opinion.
+    const suppressed = memberIds.filter(id => id !== socket.user.id && viewingUserIds.has(id));
+    if (suppressed.length) {
+      console.log(`[push] msg ${msg.id} room ${roomId}: suppressed for `
+        + `${suppressed.length} viewer(s) [${suppressed.join(',')}]`);
+    }
     sendPushToUsers(
       memberIds.filter(id => id !== socket.user.id && !viewingUserIds.has(id)),
       (msg.avatar ? msg.avatar + ' ' : '') + msg.username + roomLabel,
