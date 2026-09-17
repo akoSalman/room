@@ -3,12 +3,27 @@
 // Reported, repeatedly: the message appears instantly and the notification
 // arrives a couple of minutes later.
 //
-// Everything on this side has now been measured rather than guessed at. The
-// chat server is in Frankfurt; it reaches Google in 33ms of TLS; it hands each
-// push to FCM in about 139ms; every active user holds a valid device token;
-// the Android channel is MAX importance and every message is sent
-// `priority: high`. The registration bug that could have explained it is fixed
-// and installed, and the notifications are still late.
+// Everything on this side has now been measured rather than guessed at, on
+// BOTH servers, because they are not alike and an average of the two would
+// have hidden it:
+//
+//                            akosalman        bistbarg
+//   ipinfo.io                Frankfurt, DE    unreachable
+//   TLS to Google            33ms             270ms
+//   real FCM send (median)   —                138ms
+//   active users with a token —               3 of 3
+//
+// bistbarg sits on the more restricted network of the two: it cannot reach
+// ipinfo.io at all and is eight times further from Google. It still hands each
+// push to FCM in 138ms, with every one returning 200 and every active user
+// holding a valid device token. The Android channel is MAX importance and
+// every message is sent `priority: high`. The registration bug that could have
+// explained the delay is fixed and installed, and the notifications are still
+// late.
+//
+// So the server is not slow on either brand — and on the brand where the
+// report came from, it was measured directly rather than inferred from the
+// other one.
 //
 // That leaves one link: Google to the handset. An Android phone receives push
 // over a persistent connection to mtalk.google.com — a foreign Google service,

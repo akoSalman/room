@@ -87,6 +87,15 @@ jobs:
           echo ""
 
           echo "===== a real, timed send (dry run — nothing is delivered) ====="
+          # The two servers do not keep the database in the same place, and a
+          # guessed list of paths found it on one and not the other — so the
+          # brand the report actually came from was the one measured by
+          # inference from its twin. Look for it instead.
+          if [ -z "$DB_PATH" ]; then
+            FOUND=$(find "$APP_DIR" -maxdepth 3 -name '*.db' -size +1k 2>/dev/null | head -5)
+            echo "  candidate databases:"; echo "$FOUND" | sed 's/^/    /'
+            export DB_PATH=$(echo "$FOUND" | head -1)
+          fi
           node -e '
             const fs = require("fs");
             const path = require("path");
