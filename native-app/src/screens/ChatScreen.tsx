@@ -138,7 +138,7 @@ import {
   noteComment, clearFor, countFor, chooseJump, jumpLabel,
   badgeLabel as commentBadgeLabel, jumpArrow, Jump,
 } from '../commentUnread';
-import { firstUnread, worthJumping, unreadLabel, unreadBelow } from '../unreadJump';
+import { firstUnread, worthJumping, unreadLabel, unreadDivider } from '../unreadJump';
 import { isForRoom } from '../presence';
 import { safeName, cacheName, renamed, editableStem } from '../fileName';
 
@@ -595,7 +595,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   /** A thread was closed; this message is where the reader should land. */
   const [pendingParentJump, setPendingParentJump] = useState<number | null>(null);
   /** How many were waiting when this chat was opened — the divider's number. */
-  const unreadCountOnEntry = useRef(0);
   const commentParentRef = useRef<Message | null>(null); commentParentRef.current = commentParent;
 
   /**
@@ -954,6 +953,24 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   // The FlatList is inverted (index 0 renders at the visual bottom), so the
   // latest message is on screen from the first frame with no scroll jump.
   const invertedMessages = React.useMemo(() => [...messages].reverse(), [messages]);
+
+  /**
+   * Where the unread line goes and what it says.
+   *
+   * Recomputed from `messages` whenever the list changes, rather than counted
+   * once while the chat was loading and remembered. A remembered count keeps
+   * describing the list it was taken from: delete a message under the line,
+   * merge in an older page, or let one arrive mid-load, and the label and the
+   * rows beneath it stop matching — which is the "3 NEW MESSAGES" sitting
+   * above two of them.
+   *
+   * `messages` is chat order and the list is drawn inverted from a reversed
+   * copy, so "after the anchor" here is "below the line" there.
+   */
+  const unreadInfo = React.useMemo(
+    () => unreadDivider(messages, unreadFrom, me),
+    [messages, unreadFrom, me],
+  );
   const keyExtractor = useCallback((m: Message) => String(m.id), []);
   // Only the things a row actually reads. Anything else changing must NOT
   // invalidate the rows.
@@ -997,8 +1014,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     // and the rows have to be told.
     // unreadFrom too: it is drawn INSIDE a row, so a row that never re-renders
     // never grows the divider.
-    () => ({ maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode, e2ePhase, unreadFrom }),
-    [maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode, e2ePhase, unreadFrom],
+    () => ({ maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode, e2ePhase, unreadInfo }),
+    [maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode, e2ePhase, unreadInfo],
   );
 
   const scrollBottom = useCallback(() => {
@@ -1607,18 +1624,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         const waiting = msgs.filter((m: any) =>
           Number(m.id) > lastRead && m.username !== (u || '')).length;
         if (target && worthJumping(waiting)) {
-          // Counted from the divider DOWN, over the messages actually in the
-          // list: reported with a screenshot of "2 NEW MESSAGES" sitting
-          // between the two messages it was counting.
-          unreadCountOnEntry.current = unreadBelow(msgs, target.id, u || '');
+          // Only the POSITION is stored. The label is worked out from the
+          // rows below it on every render — see unreadInfo — because a count
+          // taken here describes the list as it was while the chat was still
+          // loading, and then keeps saying so.
           setUnreadFrom(Number(target.id));
           setTimeout(() => jumpToMessage(Number(target.id)), 350);
         } else {
           setUnreadFrom(null);
-          // Cleared with it. This is a ref, so it outlives the room change that
-          // clears the divider — leaving the next chat's line, if it draws one
-          // before the count is recomputed, labelled with the last one's total.
-          unreadCountOnEntry.current = 0;
         }
         offline.saveMessages(room.id, msgs);
         // Emoji effect received while we were away: if the newest message is a
@@ -4175,10 +4188,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
           than as a list item of its own: the list is inverted and its data is
           the messages, so an injected item would have to be kept out of every
           index calculation in this file. */}
-      {unreadFrom === Number(msg.id) && (
+      {!!unreadInfo && unreadInfo.anchorId === String(msg.id) && (
         <View style={s.unreadDivider}>
           <View style={s.unreadDividerLine} />
-          <Text style={s.unreadDividerText}>{unreadLabel(unreadCountOnEntry.current)}</Text>
+          <Text style={s.unreadDividerText}>{unreadLabel(unreadInfo.count)}</Text>
           <View style={s.unreadDividerLine} />
         </View>
       )}

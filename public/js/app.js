@@ -1033,19 +1033,48 @@ function showUnreadFrom(msgs, lastReadId, waiting) {
   const divider = document.createElement('div');
   divider.className = 'unread-divider';
   divider.id = 'unread-divider';
-  // Counted from the line down, not from the room badge: reported with a
-  // screenshot of "2 NEW MESSAGES" sitting BETWEEN the two messages it was
-  // counting. Anything counted but not drawn — an expired one-time message, a
-  // message deleted for everyone, a comment the badge includes and the chat
-  // does not — made the label one too high and the line one message too low.
-  divider.textContent = UnreadJump.unreadLabel(
-    UnreadJump.unreadBelow(msgs, first.id, username));
+  const info = UnreadJump.unreadDivider(msgs, first.id, username);
+  if (!info) return;
+  divider.textContent = UnreadJump.unreadLabel(info.count);
   wrapper.parentNode.insertBefore(divider, wrapper);
+  // …and kept honest afterwards, because the label above was worked out from
+  // the message list and the thing it describes is the DOM. See
+  // refreshUnreadDivider.
+  refreshUnreadDivider();
   // After the images have had a moment to size themselves, or the position
   // measured now is one the layout is about to move.
   setTimeout(() => {
     divider.scrollIntoView({ block: 'center' });
   }, 60);
+}
+
+/**
+ * Re-count the messages under the unread line, from the rows themselves.
+ *
+ * The label was written once, when the line was inserted, and then described
+ * the list for the rest of the visit whether or not the list still looked like
+ * that. Delete a message under the line, or let one arrive, and the number
+ * stops matching what is under it — which is exactly how "3 NEW MESSAGES" ends
+ * up sitting above two of them.
+ *
+ * So it is recomputed from the rows that follow the divider in the DOM. Those
+ * rows ARE what the reader is counting, so the label cannot be wrong about
+ * them without being wrong about something it can see. When nothing is left
+ * below it, the line goes: a divider over an empty stretch is noise.
+ */
+function refreshUnreadDivider() {
+  const divider = document.getElementById('unread-divider');
+  if (!divider) return;
+  let n = 0;
+  for (let el = divider.nextElementSibling; el; el = el.nextElementSibling) {
+    if (!el.classList || !el.classList.contains('msg-wrapper')) continue;
+    // 'mine' is the class the row is built with, so this asks the row itself
+    // rather than a second record of who sent it.
+    if (el.classList.contains('mine')) continue;
+    n++;
+  }
+  if (n < 1) { divider.remove(); return; }
+  divider.textContent = UnreadJump.unreadLabel(n);
 }
 
 // No cleanup needed: the divider is a child of #messages, which is emptied
@@ -2840,6 +2869,8 @@ function applyDelete(messageId) {
     if (srcs.includes(lightboxSrc)) closeLightbox(true);
   }
   wrapper?.remove();
+  // The unread line may have just lost one of the messages it was counting.
+  refreshUnreadDivider();
   // If a notification for this message is still on screen, close it too.
   if (openNotifications[messageId]) { try { openNotifications[messageId].close(); } catch {} delete openNotifications[messageId]; }
 }

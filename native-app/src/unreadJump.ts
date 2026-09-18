@@ -61,53 +61,70 @@ export function unreadLabel(count: number): string {
   return n === 1 ? '1 new message' : `${n} new messages`;
 }
 
+// The two fixes before the one below, kept because they are the reason it is
+// shaped the way it is:
+//
+//   1. The label said "2 NEW MESSAGES" and sat BETWEEN the two messages it was
+//      counting. It counted by comparing ids.
+//   2. Reported again from the same screenshot. Comparing ids is wrong because
+//      the anchor is chosen by walking the list in ARRAY order and the list is
+//      DRAWN in array order, and the two agree only while the array happens to
+//      be sorted by id — which an optimistic send, a page merged in from the
+//      offline cache, or a forward all break. Counting moved to array order.
+//
+// Both were real, and neither was enough. See unreadDivider.
+
 /**
- * How many unread messages the divider is actually standing above.
+ * Where the divider goes and what it says, from ONE pass over the array that
+ * is actually being drawn.
  *
- * Reported with a screenshot: the line said "2 NEW MESSAGES" and sat BETWEEN
- * the two messages it was counting — one above it, one below. A divider that
- * contradicts its own label is worse than no divider, because the reader
- * cannot tell which of the two answers to believe.
+ * Reported a THIRD time, with a screenshot: "3 NEW MESSAGES" sitting after the
+ * first of the three. The two fixes before this one were both real and neither
+ * was enough, because both left the same shape in place — the position and the
+ * label were worked out separately, and only had to agree at the instant the
+ * chat opened.
  *
- * Reported a SECOND time, from the same screenshot: "2 NEW MESSAGES" with one
- * message above the line and one below. So the first fix was not enough, and
- * this is why.
+ * The label was computed once, into a ref, while the chat was loading. The row
+ * it labels then re-renders for the rest of the visit. Anything that changes
+ * the list afterwards — a message deleted or hidden, an older page merged in,
+ * a message that was still arriving when the count was taken — moves the rows
+ * without moving the number, and the line starts describing a list that no
+ * longer exists. No amount of care inside the counting rule can fix that,
+ * because by the time it is wrong the counting rule has long since run.
  *
- * It counted by comparing ids — every message whose id was at or after the
- * anchor's. But the anchor is chosen by walking the list in ARRAY order, and
- * the list is drawn in array order too. Those two agree only while the array
- * happens to be sorted by id, and it is not always: a message sent optimistically
- * carries a temporary string id until the server answers, a page merged in from
- * the offline cache is concatenated rather than merged in id order, and a
- * forward arrives with an id below the one before it. The moment they disagree,
- * a message counted as "after the anchor" is DRAWN BEFORE IT — the label says
- * two, the line has one beneath it, and both halves believe they are right.
+ * So there is no stored count. The anchor is a position, and this recomputes
+ * the label from the rows that follow it every time the list changes. The
+ * number is therefore a description of what is on screen rather than a memory
+ * of what was on screen, and "the label disagrees with the rows" stops being
+ * reachable — not because the arithmetic got better, but because there is
+ * nowhere left for the two to drift apart.
  *
- * So it no longer compares ids at all. It finds the anchor in the list and
- * counts the rows from there to the end, which is the same traversal that put
- * the line where it is. Whatever this returns, that many rows follow the line —
- * by construction rather than by coincidence.
+ * Returns null when there is no line to draw, so the caller has one thing to
+ * check instead of a position and a count that can each be absent separately.
  */
-export function unreadBelow(
-  messages: Msg[] | null | undefined,
+export function unreadDivider(
+  rendered: Msg[] | null | undefined,
   anchorId: number | string | null | undefined,
   me: string | null | undefined,
-): number {
-  if (anchorId === null || anchorId === undefined || anchorId === '') return 0;
-  const list = messages || [];
-  // Compared as strings: an id arrives as a number from the socket and as a
-  // string from a notification payload or an optimistic send, and `5 !== '5'`
-  // would find no anchor and label the divider with nothing.
-  const at = list.findIndex(m => m && String(m.id) === String(anchorId));
-  // The anchor is not in the list being drawn — it expired, or was deleted
-  // between being chosen and being rendered. There is no line, so there is
-  // nothing to label.
-  if (at < 0) return 0;
-  let n = 0;
+): { anchorId: string; count: number } | null {
+  if (anchorId === null || anchorId === undefined || anchorId === '') return null;
+  const list = rendered || [];
+  // As strings throughout: an id is a number from the socket, a string from an
+  // optimistic send or a notification payload, and `5 !== '5'` would silently
+  // draw no line at all.
+  const key = String(anchorId);
+  const at = list.findIndex(m => m && String(m.id) === key);
+  // The anchor is gone — deleted, or aged out of the page being drawn. There
+  // is no row to hang the line on, so there is no line.
+  if (at < 0) return null;
+  let count = 0;
   for (let i = at; i < list.length; i++) {
     const m = list[i];
     if (me && m && m.username === me) continue;
-    n++;
+    count++;
   }
-  return n;
+  // The line is drawn above the anchor, so the anchor is itself one of the
+  // messages below it. A line with nothing under it is only ever noise.
+  if (count < 1) return null;
+  return { anchorId: key, count };
 }

@@ -10,6 +10,7 @@
 // launch rather than restarted, because an APK is tens of megabytes and these
 // users are not on generous connections.
 import * as FileSystem from 'expo-file-system';
+import { dueForEmit } from './saveProgress';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { Platform } from 'react-native';
@@ -199,6 +200,7 @@ export async function start(url: string, version?: number, sizeBytes?: number | 
   emit();
 
   let lastNotifiedPct = -1;
+  let lastEmitAt = 0;
   const onProgress = (p: FileSystem.DownloadProgressData) => {
     // NOT gated on the response declaring a length. It was, and that is the
     // bug: with no Content-Length this callback fires all the way through the
@@ -214,7 +216,14 @@ export async function start(url: string, version?: number, sizeBytes?: number | 
       progress: frac === null ? state.progress : frac,
       knowsTotal: frac !== null,
     };
-    emit();
+    // Rationed, for the same reason the video download is: this callback fires
+    // once per network chunk, and redrawing every subscriber that often leaves
+    // the JavaScript thread nothing for the user's taps. The state above is
+    // written every time — only the redraw waits.
+    if (frac === 1 || dueForEmit(lastEmitAt, Date.now())) {
+      lastEmitAt = Date.now();
+      emit();
+    }
     // The shade is updated less often than the UI: a notification per frame is
     // throttled by Android anyway and just burns battery. Compared against the
     // last one SENT — the old test was "the percentage divides by 5", which

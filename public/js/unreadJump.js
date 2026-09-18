@@ -29,21 +29,28 @@
   // page merged from cache or a forward can each break that. When they
   // disagree, a message counted as after the anchor is drawn before it: the
   // label says two and the line has one beneath it. See unreadJump.ts.
-  function unreadBelow(messages, anchorId, me) {
-    if (anchorId === null || anchorId === undefined || anchorId === '') return 0;
-    var list = messages || [];
+  // Where the divider goes and what it says, from ONE pass over the array that
+  // is actually being drawn. There is no stored count: the label is recomputed
+  // from the rows that follow the anchor whenever the list changes, so it
+  // describes what is on screen rather than remembering what once was. The two
+  // earlier fixes and why neither was enough are in unreadJump.ts.
+  function unreadDivider(rendered, anchorId, me) {
+    if (anchorId === null || anchorId === undefined || anchorId === '') return null;
+    var list = rendered || [];
+    var key = String(anchorId);
     var at = -1;
     for (var i = 0; i < list.length; i++) {
-      if (list[i] && String(list[i].id) === String(anchorId)) { at = i; break; }
+      if (list[i] && String(list[i].id) === key) { at = i; break; }
     }
-    if (at < 0) return 0;
-    var n = 0;
+    if (at < 0) return null;
+    var count = 0;
     for (var j = at; j < list.length; j++) {
       var m = list[j];
       if (me && m && m.username === me) continue;
-      n++;
+      count++;
     }
-    return n;
+    if (count < 1) return null;
+    return { anchorId: key, count: count };
   }
 
   function worthJumping(unreadCount) {
@@ -59,7 +66,7 @@
   global.UnreadJump = {
     JUMP_MIN: JUMP_MIN,
     firstUnread: firstUnread,
-    unreadBelow: unreadBelow,
+    unreadDivider: unreadDivider,
     worthJumping: worthJumping,
     unreadLabel: unreadLabel,
   };

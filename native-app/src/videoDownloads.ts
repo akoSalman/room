@@ -5,6 +5,10 @@
 // Screens subscribe and read the state; they never own it.
 import * as FileSystem from 'expo-file-system';
 import { localNameFor } from './download';
+// The SAME throttle rule the gallery save uses, imported rather than copied:
+// the interval is a judgement about the JavaScript thread, not about either
+// feature, and two of them would drift.
+import { dueForEmit } from './saveProgress';
 
 export type DownloadState = {
   /** Bytes written so far. */
@@ -22,8 +26,37 @@ const listeners = new Set<() => void>();
 // Sizes are fetched at most once per file: a HEAD per bubble per render would
 // be a lot of requests for a number that never changes.
 const sizes = new Map<string, number>();
+// When each download last redrew. Per key, so two downloads at once do not
+// take turns being starved by each other's clock.
+const lastEmitAt = new Map<string, number>();
 
 function emit() { listeners.forEach(f => f()); }
+
+/**
+ * Progress reaching the screen, rationed.
+ *
+ * Reported as: while downloading a video, every other action in the app is
+ * blocked. It was fixed once — in saveProgress, which is the gallery save, and
+ * is not this. This is the path the play button uses, and it was still calling
+ * every subscriber on every chunk.
+ *
+ * createDownloadResumable fires its callback once per network chunk, hundreds
+ * of times a second on a large file. Each one re-rendered every video bubble
+ * subscribed to this module, so the JavaScript thread spent itself redrawing a
+ * progress bar and had nothing left for taps. The bytes arrived perfectly; the
+ * app just could not answer.
+ *
+ * The state is still written on every single callback — only the redraw is
+ * rationed — so get() is never stale and the value a screen reads is the truth
+ * at that instant.
+ */
+function emitProgress(key: string, complete: boolean) {
+  const now = Date.now();
+  // The last chunk always draws, or the bar can stop at 97% and stay there.
+  if (!complete && !dueForEmit(lastEmitAt.get(key) || 0, now)) return;
+  lastEmitAt.set(key, now);
+  emit();
+}
 
 export function subscribe(fn: () => void) {
   listeners.add(fn);
@@ -125,6 +158,7 @@ export async function start(url: string): Promise<string | null> {
   // The directory has to exist before the download names a file inside it.
   await ensureDir();
   state.set(key, { written: 0, total, status: 'downloading' });
+  lastEmitAt.delete(key);
   emit();
 
   const task = FileSystem.createDownloadResumable(
@@ -134,13 +168,10 @@ export async function start(url: string): Promise<string | null> {
     (p) => {
       const cur = state.get(key);
       if (!cur || cur.status !== 'downloading') return;
-      state.set(key, {
-        ...cur,
-        written: p.totalBytesWritten,
-        // The callback's total is authoritative when HEAD said nothing.
-        total: cur.total || p.totalBytesExpectedToWrite || 0,
-      });
-      emit();
+      // The callback's total is authoritative when HEAD said nothing.
+      const known = cur.total || p.totalBytesExpectedToWrite || 0;
+      state.set(key, { ...cur, written: p.totalBytesWritten, total: known });
+      emitProgress(key, known > 0 && p.totalBytesWritten >= known);
     },
   );
   tasks.set(key, task);
@@ -151,6 +182,7 @@ export async function start(url: string): Promise<string | null> {
     if (!res?.uri) throw new Error('no file');
     const cur = state.get(key);
     state.set(key, { written: cur?.written || 0, total: cur?.total || 0, status: 'done', uri: res.uri });
+    lastEmitAt.delete(key);
     emit();
     return res.uri;
   } catch {
@@ -170,6 +202,7 @@ export async function cancel(url: string) {
   const task = tasks.get(key);
   state.delete(key);
   tasks.delete(key);
+  lastEmitAt.delete(key);
   emit();
   try { await task?.cancelAsync(); } catch {}
   // Leave no half-written file behind to be mistaken for a finished download.

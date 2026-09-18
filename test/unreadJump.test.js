@@ -152,10 +152,16 @@ test('both clients jump through the rule, and mark the seam', () => {
   assert.ok(/firstUnread\(msgs, lastRead, u \|\| ''\)/.test(chatScreen), 'the app picks by hand');
   assert.ok(/worthJumping\(waiting\)/.test(chatScreen), 'the app jumps for a single message');
   assert.ok(/jumpToMessage\(Number\(target\.id\)\)/.test(chatScreen), 'the app never moves');
-  assert.ok(/unreadFrom === Number\(msg\.id\)/.test(chatScreen), 'the app draws no divider');
+  assert.ok(/unreadInfo && unreadInfo\.anchorId === String\(msg\.id\)/.test(chatScreen),
+    'the app draws no divider');
   // Drawn inside a row, so a row that never re-renders never grows one.
-  assert.ok(/selectMode, e2ePhase, unreadFrom \}\)/.test(chatScreen),
+  assert.ok(/selectMode, e2ePhase, unreadInfo \}\)/.test(chatScreen),
     'the app rows are not told where the seam is');
+  // The LABEL travels with it, not just the position: passing only the anchor
+  // means a row does not re-render when the count beneath it changes, which is
+  // the stale label with extra steps.
+  assert.ok(/e2ePhase, unreadInfo\],/.test(chatScreen),
+    'the rows are not redrawn when the count below the line changes');
 });
 
 test('MARK AS READ is offered by both lists, and only when it would do something', () => {
@@ -192,6 +198,12 @@ test('the badge is set from the SERVER\'s answer, not from an assumption', () =>
 // that contradicts its own position is worse than none: the reader cannot tell
 // which of the two answers is the truth.
 
+/** The label's number, from whichever copy is being driven. */
+function below(M, list, anchorId, me) {
+  const info = M.unreadDivider(list, anchorId, me);
+  return info ? info.count : 0;
+}
+
 test('THE BUG: the label counts what is below the line, not what a badge said', () => {
   const msgs = [
     { id: 10, username: 'ako' },
@@ -202,8 +214,8 @@ test('THE BUG: the label counts what is below the line, not what a badge said', 
   // says. One message below the line, and the line says one.
   const first = W.firstUnread(msgs, 11, 'ako');
   assert.strictEqual(Number(first.id), 12);
-  assert.strictEqual(W.unreadBelow(msgs, first.id, 'ako'), 1);
-  assert.strictEqual(W.unreadLabel(W.unreadBelow(msgs, first.id, 'ako')), '1 new message');
+  assert.strictEqual(below(W, msgs, first.id, 'ako'), 1);
+  assert.strictEqual(W.unreadLabel(below(W, msgs, first.id, 'ako')), '1 new message');
 });
 
 test('two below the line say two', () => {
@@ -214,7 +226,7 @@ test('two below the line say two', () => {
   ];
   const first = W.firstUnread(msgs, 10, 'ako');
   assert.strictEqual(Number(first.id), 11);
-  assert.strictEqual(W.unreadBelow(msgs, first.id, 'ako'), 2);
+  assert.strictEqual(below(W, msgs, first.id, 'ako'), 2);
 });
 
 test('my own replies underneath are not new messages to me', () => {
@@ -223,7 +235,7 @@ test('my own replies underneath are not new messages to me', () => {
     { id: 12, username: 'ako' },
     { id: 13, username: 'soran' },
   ];
-  assert.strictEqual(W.unreadBelow(msgs, 11, 'ako'), 2, 'the reader\'s own message was counted');
+  assert.strictEqual(below(W, msgs, 11, 'ako'), 2, 'the reader\'s own message was counted');
 });
 
 test('anything counted but NOT DRAWN cannot inflate the label', () => {
@@ -232,15 +244,15 @@ test('anything counted but NOT DRAWN cannot inflate the label', () => {
   // once expired one-time messages, disappearing messages and messages
   // deleted for everyone have been dropped from it.
   const onScreen = [{ id: 11, username: 'soran' }, { id: 14, username: 'soran' }];
-  assert.strictEqual(W.unreadBelow(onScreen, 11, 'ako'), 2,
+  assert.strictEqual(below(W, onScreen, 11, 'ako'), 2,
     'the label counts messages that are not in the list');
 });
 
 test('an anchor that is not in the list counts nothing rather than everything', () => {
   const msgs = [{ id: 11, username: 'soran' }];
-  assert.strictEqual(W.unreadBelow(msgs, null, 'ako'), 0);
-  assert.strictEqual(W.unreadBelow(msgs, undefined, 'ako'), 0);
-  assert.strictEqual(W.unreadBelow(null, 11, 'ako'), 0);
+  assert.strictEqual(below(W, msgs, null, 'ako'), 0);
+  assert.strictEqual(below(W, msgs, undefined, 'ako'), 0);
+  assert.strictEqual(below(W, null, 11, 'ako'), 0);
 });
 
 test('the app and the web count the same way', () => {
@@ -262,7 +274,7 @@ test('the app and the web count the same way', () => {
   let checked = 0;
   for (const msgs of lists) {
     for (const anchor of [...msgs.map(m => m.id), 99, null, '10']) {
-      assert.strictEqual(W.unreadBelow(msgs, anchor, 'ako'), A.unreadBelow(msgs, anchor, 'ako'),
+      assert.strictEqual(below(W, msgs, anchor, 'ako'), below(A, msgs, anchor, 'ako'),
         `unreadBelow diverges at ${anchor} in ${JSON.stringify(msgs)}`);
       checked++;
     }
@@ -275,10 +287,10 @@ test('the APP copy holds the invariant too, not just the web one', () => {
   // reverted on its own and every one of them would still pass.
   if (!A) return;
   const list = [{ id: 9, username: 'soran' }, { id: 4, username: 'soran' }];
-  assert.strictEqual(A.unreadBelow(list, 4, 'ako'), 1,
+  assert.strictEqual(below(A, list, 4, 'ako'), 1,
     'the app counts a message that is drawn above the divider');
-  assert.strictEqual(A.unreadBelow(list, 9, 'ako'), 2);
-  assert.strictEqual(A.unreadBelow([{ id: 7, username: 'soran' }], '7', 'ako'), 1,
+  assert.strictEqual(below(A, list, 9, 'ako'), 2);
+  assert.strictEqual(below(A, [{ id: 7, username: 'soran' }], '7', 'ako'), 1,
     'the app fails to match a string id against a number one');
 });
 
@@ -289,10 +301,23 @@ test('both clients label the divider from that count', () => {
     path.join(ROOT, 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
   const fn = app.slice(app.indexOf('function showUnreadFrom('),
     app.indexOf('function showUnreadFrom(') + 1400);
-  assert.ok(/UnreadJump\.unreadBelow\(msgs, first\.id, username\)/.test(fn),
+  assert.ok(/UnreadJump\.unreadDivider\(msgs, first\.id, username\)/.test(fn),
     'the web still labels the line with the room badge');
-  assert.ok(/unreadCountOnEntry\.current = unreadBelow\(msgs, target\.id/.test(chat),
-    'the app still labels the line with a count taken from somewhere else');
+  // THE THIRD REPORT: the app froze the count in a ref while the chat was
+  // loading, so the label described the list as it was then for the rest of
+  // the visit. It must be derived from the messages being drawn.
+  assert.ok(/unreadDivider\(messages, unreadFrom, me\)/.test(chat),
+    'the app labels the line with a count taken once, which goes stale');
+  assert.ok(!/unreadCountOnEntry/.test(chat),
+    'the remembered count is back, and with it a label that stops matching its rows');
+  // THE WHOLE POINT, and the one thing a reader would not think to check: the
+  // label is only live because `messages` is in the dependency list. Drop it
+  // and the call still looks right, still reads `messages`, and never runs
+  // again — the stale count exactly as before, with no ref to give it away.
+  assert.ok(/unreadDivider\(messages, unreadFrom, me\),\s*\n\s*\[messages, unreadFrom, me\]/.test(chat),
+    'the label is not recomputed when the message list changes, so it goes stale');
+  assert.ok(/unreadInfo\.anchorId === String\(msg\.id\)/.test(chat),
+    'the app matches the anchor with Number(), which no string id can equal');
 });
 
 // ── The divider must not contradict itself, a second time ───────────────────
@@ -331,7 +356,7 @@ test('THE INVARIANT: the label equals the rows drawn beneath the line', () => {
   for (const list of cases) {
     for (const m of list) {
       assert.strictEqual(
-        W.unreadBelow(list, m.id, 'me'), rowsBelow(list, m.id, 'me'),
+        below(W, list, m.id, 'me'), rowsBelow(list, m.id, 'me'),
         `label disagrees with the rows drawn, anchored at ${m.id} in ${JSON.stringify(list)}`);
       checked++;
     }
@@ -348,8 +373,8 @@ test('THE REPORTED CASE: two from them, anchored at the first', () => {
     { id: 101, username: 'them' },
     { id: 102, username: 'them' },
   ];
-  assert.strictEqual(W.unreadBelow(list, 101, 'me'), 2);
-  assert.strictEqual(W.unreadBelow(list, 102, 'me'), 1,
+  assert.strictEqual(below(W, list, 101, 'me'), 2);
+  assert.strictEqual(below(W, list, 102, 'me'), 1,
     'the line sits above the last message while claiming to count two');
 });
 
@@ -357,26 +382,111 @@ test('ids out of order no longer count a message drawn ABOVE the line', () => {
   // The exact shape of the failure: id 4 is drawn before id 9, so anchoring at
   // 9 must not count it — even though 4 is not "less than" it in list order.
   const list = [{ id: 9, username: 'them' }, { id: 4, username: 'them' }];
-  assert.strictEqual(W.unreadBelow(list, 4, 'me'), 1,
+  assert.strictEqual(below(W, list, 4, 'me'), 1,
     'a message drawn above the divider is counted below it');
-  assert.strictEqual(W.unreadBelow(list, 9, 'me'), 2);
+  assert.strictEqual(below(W, list, 9, 'me'), 2);
 });
 
 test('an anchor that is no longer in the list labels nothing', () => {
   // It expired, or was deleted between being chosen and being drawn. There is
   // no line, so a count would be a label with no divider under it.
   const list = [{ id: 1, username: 'them' }, { id: 2, username: 'them' }];
-  assert.strictEqual(W.unreadBelow(list, 99, 'me'), 0);
-  assert.strictEqual(W.unreadBelow(list, null, 'me'), 0);
-  assert.strictEqual(W.unreadBelow(null, 1, 'me'), 0);
+  assert.strictEqual(below(W, list, 99, 'me'), 0);
+  assert.strictEqual(below(W, list, null, 'me'), 0);
+  assert.strictEqual(below(W, null, 1, 'me'), 0);
 });
 
 test('a string id and a number id are the same anchor', () => {
   // The id arrives as a number over the socket and as a string from a
   // notification payload. Comparing them strictly would find no anchor at all.
   const list = [{ id: 7, username: 'them' }, { id: 8, username: 'them' }];
-  assert.strictEqual(W.unreadBelow(list, '7', 'me'), 2);
-  assert.strictEqual(W.unreadBelow(list, 7, 'me'), 2);
+  assert.strictEqual(below(W, list, '7', 'me'), 2);
+  assert.strictEqual(below(W, list, 7, 'me'), 2);
+});
+
+// ── The divider must not contradict itself, a THIRD time ────────────────────
+//
+// Reported with a screenshot: "3 NEW MESSAGES" sitting after the first of the
+// three. Both earlier fixes were real and neither was enough, because both
+// left the same shape alone — the count was taken once, into a ref, while the
+// chat was still loading, and the row it labelled went on re-rendering for the
+// rest of the visit.
+
+test('THE THIRD BUG: the label follows the list when it changes underneath', () => {
+  // A message under the line is deleted. A label worked out beforehand still
+  // says three; one worked out from the rows says two, because two is what is
+  // there. This is the case a stored count cannot get right, however careful
+  // the arithmetic that produced it.
+  const before = [
+    { id: 1, username: 'me' },
+    { id: 2, username: 'them' }, { id: 3, username: 'them' }, { id: 4, username: 'them' },
+  ];
+  assert.strictEqual(below(W, before, 2, 'me'), 3);
+  const after = before.filter(m => m.id !== 3);
+  assert.strictEqual(below(W, after, 2, 'me'), 2,
+    'the label still counts a message that is no longer drawn');
+});
+
+test('…and a message arriving after the line was drawn is counted too', () => {
+  const list = [{ id: 1, username: 'me' }, { id: 2, username: 'them' }, { id: 3, username: 'them' }];
+  assert.strictEqual(below(W, list, 2, 'me'), 2);
+  assert.strictEqual(below(W, [...list, { id: 4, username: 'them' }], 2, 'me'), 3,
+    'a message that arrived under the line is not in the label');
+});
+
+test('a line with nothing left below it is no line at all', () => {
+  // Everything under it was the reader's own, or was deleted. A divider over
+  // an empty stretch is worse than none.
+  assert.strictEqual(W.unreadDivider([{ id: 5, username: 'me' }], 5, 'me'), null);
+  assert.strictEqual(W.unreadDivider([{ id: 1, username: 'them' }], 99, 'me'), null,
+    'the anchor is gone but a line is still claimed');
+  assert.strictEqual(W.unreadDivider(null, 1, 'me'), null);
+  assert.strictEqual(W.unreadDivider([{ id: 1, username: 'them' }], null, 'me'), null);
+});
+
+test('the anchor comes back as a string, so a number id can still match it', () => {
+  // The app compares unreadInfo.anchorId with String(msg.id). If this returned
+  // the number it was given, that comparison would fail for every numeric id
+  // and the line would never be drawn at all.
+  const info = W.unreadDivider([{ id: 7, username: 'them' }], 7, 'me');
+  assert.strictEqual(info.anchorId, '7');
+  assert.strictEqual(W.unreadDivider([{ id: 7, username: 'them' }], '7', 'me').anchorId, '7');
+});
+
+test('the APP copy answers identically, object and all', () => {
+  if (!A) return;
+  const lists = [
+    [{ id: 1, username: 'me' }, { id: 2, username: 'them' }, { id: 3, username: 'them' }],
+    [{ id: 9, username: 'them' }, { id: 4, username: 'them' }, { id: 10, username: 'them' }],
+    [{ id: 5, username: 'them' }, { id: 'tmp-9', username: 'me' }, { id: 6, username: 'them' }],
+    [{ id: 2, username: 'me' }],
+  ];
+  let checked = 0;
+  for (const list of lists) {
+    for (const anchor of [...list.map(m => m.id), 99, null, '10', '']) {
+      assert.deepStrictEqual(
+        W.unreadDivider(list, anchor, 'me'), A.unreadDivider(list, anchor, 'me'),
+        `unreadDivider diverges at ${anchor} in ${JSON.stringify(list)}`);
+      checked++;
+    }
+  }
+  assert.ok(checked >= 20, `the drift check only ran ${checked} times`);
+});
+
+test('the web keeps its label honest from the rows themselves', () => {
+  // The web inserts the divider into the DOM once. Counting from the message
+  // list at that moment has the same staleness, so it recounts from the rows
+  // that follow the line — which ARE what the reader is counting.
+  const ROOT = path.join(__dirname, '..');
+  const web = fs.readFileSync(path.join(ROOT, 'public', 'js', 'app.js'), 'utf8');
+  const fn = web.slice(web.indexOf('function refreshUnreadDivider('),
+    web.indexOf('function refreshUnreadDivider(') + 900);
+  assert.ok(fn.length > 200, 'refreshUnreadDivider is gone');
+  assert.ok(/nextElementSibling/.test(fn), 'it does not walk the rows below the line');
+  assert.ok(/divider\.remove\(\)/.test(fn), 'a line with nothing under it is left on screen');
+  // …and it is actually called when a message disappears, or it is decoration.
+  assert.ok(/wrapper\?\.remove\(\);\n\s*\/\/[^\n]*\n\s*refreshUnreadDivider\(\)/.test(web),
+    'deleting a message leaves the label counting it');
 });
 
 let passed = 0, failed = 0;
