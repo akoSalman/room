@@ -105,14 +105,40 @@ test('the whole retry sequence covers a human tapping Allow', () => {
     `registration gives up after ${Math.round(total / 1000)}s, before a slow tap on Allow`);
 });
 
-test('the socket is a FALLBACK, not the notification path', () => {
-  // This briefly ran regardless of registration, because the socket is faster
-  // than FCM for these users. Asked for since: put notifications back on
-  // Firebase — so the socket raises one only when the server has no token to
-  // push to, and Firebase owns the rest.
-  assert.strictEqual(P.socketFallbackAllowed({ registered: false }), true);
-  assert.strictEqual(P.socketFallbackAllowed({ registered: true }), false,
-    'the socket raises a notification Firebase is also sending — every message twice');
+test('THE REGRESSION: a registered device may still raise from the socket', () => {
+  // This is the bug that was reported as "notifications arrive minutes late",
+  // three times. The rule used to be "only if the device is NOT registered
+  // with Firebase", which reads as caution but switched off the fast path for
+  // exactly the devices it was working for: before registration was fixed
+  // nothing was registered, so the socket was quietly doing the work, and
+  // fixing registration silenced it everywhere.
+  assert.strictEqual(P.socketRaiseAllowed({ msgId: 42 }), true);
+  assert.strictEqual(P.socketRaiseAllowed({ msgId: '42' }), true);
+});
+
+test('…but not for a message with no id, which is the one real duplicate', () => {
+  // No id means no tag, and without the tag Firebase's notification and this
+  // one are two different notifications — the double the old rule imagined.
+  assert.strictEqual(P.socketRaiseAllowed({ msgId: null }), false);
+  assert.strictEqual(P.socketRaiseAllowed({ msgId: undefined }), false);
+  assert.strictEqual(P.socketRaiseAllowed({ msgId: '' }), false);
+  assert.strictEqual(P.socketRaiseAllowed({}), false);
+  assert.strictEqual(P.socketRaiseAllowed(null), false);
+});
+
+test('THE PROPERTY IT ALL RESTS ON: server and app name a message identically', () => {
+  // Both paths now run. They do not stack ONLY because Android sees one tag
+  // and replaces. If these two ever drift, every message arrives twice —
+  // which is worse than the late notification this fixes, so it is pinned
+  // here rather than left to the two files agreeing by habit.
+  const N = require(path.join(ROOT, 'notify.js'));
+  for (const id of [1, 42, '42', 'tmp-abc', 0, '0', 999999]) {
+    assert.strictEqual(N.notificationTag(id), P.notificationTag(id),
+      `the server and the app disagree about what to call message ${id}`);
+  }
+  assert.strictEqual(N.notificationTag(42), 'msg-42');
+  assert.strictEqual(N.notificationTag(null), '');
+  assert.strictEqual(P.notificationTag(null), '');
 });
 
 // ── The wiring ──────────────────────────────────────────────────────────────
@@ -161,8 +187,20 @@ test('the token is remembered only after the server accepts it', () => {
 });
 
 test('…and App.tsx asks it before raising one', () => {
-  assert.ok(/pushReg\.socketFallbackAllowed\(\{ registered: pushRegisteredRef\.current \}\)/.test(app),
-    'the socket handler decides for itself whether Firebase is covering this');
+  assert.ok(/pushReg\.socketRaiseAllowed\(\{ msgId: msg\.id \}\)/.test(app),
+    'the socket handler decides for itself whether it may raise a notification');
+  // Gating on registration is what caused the late notifications. It must not
+  // come back by someone "restoring" it while editing this file.
+  const handler = app.slice(app.indexOf('// Global notifications:'),
+    app.indexOf('// When a message is deleted, dismiss its notification'));
+  assert.ok(handler.length > 400, 'the notification handler moved');
+  assert.ok(!/socketFallbackAllowed|pushRegistered/.test(handler),
+    'the socket is gated on registration again, which silences it once FCM works');
+  // The identifier comes from the shared helper, not a second copy of the
+  // format — a hand-written `msg-${id}` here is how the two drift apart and
+  // every message starts arriving twice.
+  assert.ok(/identifier: pushReg\.notificationTag\(msg\.id\)/.test(app),
+    'the notification is named by hand rather than by the shared rule');
   // The scaffolding that made the socket the fast path is gone with it, so a
   // half-revert leaving a foreground service behind cannot hide here.
   assert.ok(!/stayConnected|keepAlive/.test(app),

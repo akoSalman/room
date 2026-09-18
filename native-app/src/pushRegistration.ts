@@ -85,23 +85,47 @@ export function shouldRetry(o: { attempt: number; registered: boolean }): boolea
 }
 
 /**
+ * The one name a notification for a message goes by.
+ *
+ * The server puts this on its FCM notification as `tag` and the app puts it on
+ * its own as `identifier`. Android treats a matching tag as the SAME
+ * notification and replaces it, so the two paths cannot stack — whichever
+ * arrives first is the one that is seen, and the other quietly takes its
+ * place. That property is the whole reason both are allowed to run, and it
+ * lives or dies on the two strings being identical, so there is one of them.
+ */
+export function notificationTag(msgId: string | number | null | undefined): string {
+  const id = String(msgId ?? '');
+  return id ? `msg-${id}` : '';
+}
+
+/**
  * May the app raise a notification from the socket itself?
  *
- * Only while the server genuinely has no way to reach this device. Once a
- * token is registered, Firebase owns notifications and raising one here as
- * well would show the same message twice.
+ * Yes — whenever it can carry the shared tag above.
  *
- * This briefly did the opposite — raise it from the socket regardless, because
- * the socket is faster than FCM for these users, with the two de-duplicated by
- * tag. Asked for since: put notifications back on Firebase. So this is the
- * original rule, restored, and the socket is a fallback again rather than the
- * fast path.
+ * This used to answer "only if the device is not registered with Firebase",
+ * and that was my mistake, twice over. It reads as caution — do not show the
+ * same message twice — but the duplicate it prevents cannot happen: the tag
+ * makes the second arrival replace the first. All it actually did was switch
+ * off the faster of the two paths.
  *
- * The registration fix above still matters, and matters more under this rule
- * than under the other one: if registration fails, Firebase never gets a token
- * and the only thing left IS this fallback, on a socket the OS may have
- * suspended.
+ * And it switched it off for exactly the users it was working for. Before the
+ * registration race was fixed, no device was registered, so this returned true
+ * and the socket was quietly doing the work. Fixing registration made it
+ * return false everywhere, and every notification went back to waiting for
+ * Firebase. That is the regression that was reported as "notifications arrive
+ * minutes late", and it is this line.
+ *
+ * Firebase is not being undone. It remains how a message reaches a phone whose
+ * app is not running, which is most of the time and is not something a socket
+ * can do. This only stops it being made to wait when the app IS running and
+ * already has the message in hand: the server hands a push to Google in about
+ * 400ms, and on these connections Google then takes as long as it takes.
+ *
+ * Fails closed for a message with no id, because without one there is no tag,
+ * and without the tag this WOULD be the duplicate the old rule imagined.
  */
-export function socketFallbackAllowed(o: { registered: boolean }): boolean {
-  return !(o && o.registered);
+export function socketRaiseAllowed(o: { msgId: string | number | null | undefined }): boolean {
+  return !!notificationTag(o && o.msgId);
 }

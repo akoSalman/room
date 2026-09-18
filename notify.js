@@ -67,4 +67,22 @@ function tokenIsDead(status, body) {
   return false;
 }
 
-module.exports = { recipientsFor, tokenIsDead };
+/**
+ * The one name a notification for a message goes by.
+ *
+ * The server puts this on its FCM notification as `tag`; the app puts the same
+ * string on the notification it raises from its own socket, as `identifier`.
+ * Android treats a matching tag as the SAME notification and replaces it, so
+ * the two paths cannot stack — whichever arrives first is the one that is
+ * seen, and the other quietly takes its place.
+ *
+ * That is what lets both run at once, and it holds only while the two strings
+ * are identical. Mirrored by notificationTag in
+ * native-app/src/pushRegistration.ts, compared in test/pushRegistration.test.js.
+ */
+function notificationTag(msgId) {
+  const id = String(msgId === null || msgId === undefined ? '' : msgId);
+  return id ? `msg-${id}` : '';
+}
+
+module.exports = { recipientsFor, tokenIsDead, notificationTag };

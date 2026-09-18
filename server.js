@@ -7,7 +7,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { recipientsFor, tokenIsDead } = require('./notify');
+const { recipientsFor, tokenIsDead, notificationTag } = require('./notify');
 const credentials = require('./credentials');
 const cors = require('cors');
 const db = require('./db');
@@ -835,7 +835,7 @@ async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
                 ...(android.priorityMax ? { notification_priority: 'PRIORITY_MAX' } : {}),
                 // Tag the tray notification with the message id so a later
                 // delete can replace/collapse it on the recipient's device.
-                ...(data.msgId ? { tag: `msg-${data.msgId}` } : {}),
+                ...(data.msgId ? { tag: notificationTag(data.msgId) } : {}),
                 ...(android.tag ? { tag: android.tag } : {}),
               },
               // Calls must not be held back by Doze or app-standby buckets.

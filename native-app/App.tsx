@@ -509,14 +509,13 @@ export default function App() {
       const uname = await getUsername();
       sock = await getSocket();
       handler = (msg: any) => {
-        // Only while the server genuinely has no way to reach this device.
-        // Once a token is registered Firebase owns notifications, and raising
-        // one here as well would show every message twice.
+        // Raised from the app's OWN socket, the moment the message lands.
         //
-        // This briefly ran regardless of registration, because the socket is
-        // faster than FCM for these users. Asked for since: put notifications
-        // back on Firebase. So it is a fallback again, not the fast path.
-        if (!pushReg.socketFallbackAllowed({ registered: pushRegisteredRef.current })) return;
+        // This runs alongside Firebase rather than instead of it. Both carry
+        // the same tag, so Android shows ONE notification — whichever path
+        // arrives first. On these connections that is almost always this one.
+        // See socketRaiseAllowed for why gating it on registration was wrong.
+        if (!pushReg.socketRaiseAllowed({ msgId: msg.id })) return;
         if (msg.username === uname) return;
         if (AppState.currentState === 'active') return; // in-app badges cover it
         if (screen === 'chat' && room && msg.room_id === room.id) return;
@@ -533,7 +532,7 @@ export default function App() {
         Notifications.scheduleNotificationAsync({
           // Matches the tag the server puts on its own FCM notification, so if
           // both ever arrive Android replaces rather than stacks them.
-          identifier: `msg-${msg.id}`,
+          identifier: pushReg.notificationTag(msg.id),
           content: { title: msg.username, body, sound: 'notify.wav' },
           trigger: null,
         }).catch(() => {});
