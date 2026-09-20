@@ -35,6 +35,7 @@
         "android.permission.USE_FULL_SCREEN_INTENT",
         "android.permission.VIBRATE",
         "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
         "android.permission.FOREGROUND_SERVICE_PHONE_CALL",
         "android.permission.MANAGE_OWN_CALLS",
         "android.permission.FOREGROUND_SERVICE_MICROPHONE",

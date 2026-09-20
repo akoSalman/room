@@ -311,24 +311,37 @@ test('…and App.tsx asks it before raising one', () => {
   // every message starts arriving twice.
   assert.ok(/identifier: pushReg\.notificationTag\(msg\.id\)/.test(app),
     'the notification is named by hand rather than by the shared rule');
-  // The scaffolding that made the socket the fast path is gone with it, so a
-  // half-revert leaving a foreground service behind cannot hide here.
-  assert.ok(!/stayConnected|keepAlive/.test(app),
-    'the socket-first notification scaffolding is still wired in');
+  // stayConnected was the abandoned half of the first socket-first attempt and
+  // must stay gone. keepAlive is NOT: it was asked for once the phone's own
+  // numbers came back — 2 delivered by Firebase against 11 raised by the
+  // socket — and the rules that stop it crashing live in keepAlive.test.js.
+  assert.ok(!/stayConnected/.test(app),
+    'the abandoned socket-first scaffolding is wired in again');
 });
 
-test('and nothing is left starting a foreground service', () => {
-  // It crashed the app on the media picker, and reverting to Firebase removes
-  // the reason it existed at all.
-  assert.ok(!fs.existsSync(path.join(NAT, 'src', 'keepAlive.ts')),
-    'keepAlive.ts is back, and with it the crash on opening media');
-  assert.ok(!fs.existsSync(path.join(NAT, 'src', 'stayConnected.ts')));
+test('the foreground service is back, but only on the terms that make it safe', () => {
+  // This test used to assert the opposite — that no foreground service
+  // existed anywhere — written when reverting to Firebase removed the reason
+  // for one. The phone's own counters then showed Firebase delivering 2 to
+  // the socket's 11, the service was asked for, and that assertion became a
+  // record of a decision that had been reversed.
+  //
+  // It is not deleted, because the thing it was guarding is still real: the
+  // service crashed the app by starting from the BACKGROUND. So it now pins
+  // the constraint rather than the absence.
+  assert.ok(fs.existsSync(path.join(NAT, 'src', 'keepAlive.ts')));
   const appJson = JSON.parse(fs.readFileSync(path.join(NAT, 'app.json'), 'utf8'));
-  for (const gone of ['android.permission.FOREGROUND_SERVICE_DATA_SYNC',
-                      'android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS']) {
-    assert.ok(!appJson.expo.android.permissions.includes(gone),
-      `${gone} is still declared for a feature that no longer exists`);
-  }
+  assert.ok(appJson.expo.android.permissions.includes('android.permission.FOREGROUND_SERVICE_DATA_SYNC'),
+    'the service declares a type the app cannot back up, which Android answers by killing it');
+  // The battery prompt was a separate idea and is still not one of these.
+  assert.ok(!appJson.expo.android.permissions.includes('android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS'),
+    'a permission is declared for a prompt nobody asked to bring back');
+  // stayConnected really is gone for good.
+  assert.ok(!fs.existsSync(path.join(NAT, 'src', 'stayConnected.ts')));
+  // …and the rule that cost a release is enforced where it can be tested.
+  const ka = fs.readFileSync(path.join(NAT, 'src', 'keepAlive.ts'), 'utf8');
+  assert.ok(/export function mayStart/.test(ka) && /appState === 'active'/.test(ka),
+    'the start rule is not a testable function, which is how it went wrong before');
 });
 
 test('THE TRAP THIS INTRODUCES: signing out forgets the registered token', () => {

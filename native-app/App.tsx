@@ -33,6 +33,7 @@ import { audioManager } from './src/audioManager';
 import * as outbox from './src/outbox';
 import * as pushReg from './src/pushRegistration';
 import * as notifyDiag from './src/notifyDiag';
+import * as keepAlive from './src/keepAlive';
 import { C } from './src/theme';
 
 // Keep the app layout LTR even on RTL locales (Persian/Arabic): mirroring the
@@ -291,6 +292,14 @@ export default function App() {
     // App-wide ack listener: clears pending-send copies even when the chat
     // that created them is closed.
     outbox.init().catch(() => {});
+    // The socket is what actually delivers notifications on these networks —
+    // measured 11 to Firebase's 2 — and Android freezes it with the process.
+    // init() reads the crash canary first, so a handset the service killed
+    // last time never tries again. Only then may a start be attempted, and
+    // only from the foreground, which is the one place Android permits it.
+    keepAlive.init()
+      .then(() => keepAlive.start(AppState.currentState))
+      .catch(() => {});
     Notifications.requestPermissionsAsync().catch(() => {});
     // Old notifications lingering in the tray are stale the moment the app
     // is opened — clear them on launch and every return to the foreground.
@@ -316,6 +325,11 @@ export default function App() {
       if (st === 'active') {
         Notifications.dismissAllNotificationsAsync().catch(() => {});
         ensureSocketAlive(); // recover fast after SIM calls / network switches
+        // Only here. A start from 'background' is what Android refuses, by
+        // killing the process — which is how this crashed the media picker
+        // the first time. keepAlive.mayStart enforces it too; this is the
+        // call site agreeing with it rather than relying on it alone.
+        keepAlive.start('active').catch(() => {});
         return;
       }
       // Leaving the app with a voice message loaded but NOT playing leaves its
@@ -651,6 +665,7 @@ export default function App() {
     // next person to sign in on this phone has the same device token, so
     // registration would decide there is nothing to send — and they would get
     // no push notifications at all, with everything appearing to work.
+    await keepAlive.stop().catch(() => {});
     await AsyncStorage.multiRemove(['token', 'username', 'avatar', pushReg.SENT_TOKEN_KEY, pushReg.SENT_AT_KEY]);
     pushRegisteredRef.current = false;
     // Signing out must not leave the previous account's chats readable on the
