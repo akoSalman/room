@@ -833,7 +833,11 @@ function connectSocket() {
         }
       } else {
         appendMessage(msg);
-        socket.emit('mark_read', { roomId: msg.room_id, lastMsgId: msg.id });
+        // A message arriving is not a message read: the tab may be in the
+        // background, or the reader scrolled back through history.
+        if (ReadPosition.marksRead(readContextNow(msg.username === username))) {
+          socket.emit('mark_read', { roomId: msg.room_id, lastMsgId: msg.id });
+        }
         if (msg.type === 'text' && msg.username !== username) {
           let c = msg.content;
           if (E2E.isEncrypted(c)) c = E2E.decrypt(c, currentDMPeerPk);
@@ -1046,6 +1050,24 @@ function showUnreadFrom(msgs, lastReadId, waiting) {
   setTimeout(() => {
     divider.scrollIntoView({ block: 'center' });
   }, 60);
+}
+
+/**
+ * Is this chat actually in front of the reader, at the end where new messages
+ * land? The answer both mark_read sites ask before moving the read position.
+ *
+ * The tab being open is not the same as being looked at, and being in the chat
+ * is not the same as being at the bottom of it. See public/js/readPosition.js.
+ */
+function readContextNow(fromMe) {
+  const container = document.getElementById('messages');
+  const atBottom = !container
+    || container.scrollHeight - container.scrollTop - container.clientHeight < 60;
+  return {
+    appActive: document.visibilityState === 'visible',
+    atBottom: atBottom,
+    fromMe: !!fromMe,
+  };
 }
 
 /**
@@ -2273,7 +2295,10 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
     msgs.forEach(appendMessage);
     if (msgs.length) {
       oldestLoadedMsgId = msgs[0].id;
-      socket.emit('mark_read', { roomId, lastMsgId: msgs[msgs.length - 1].id });
+      // Opening a chat is reading it — unless the tab is not being looked at.
+      if (ReadPosition.opensAsRead({ appActive: document.visibilityState === 'visible' })) {
+        socket.emit('mark_read', { roomId, lastMsgId: msgs[msgs.length - 1].id });
+      }
     }
     hasMoreOlderMsgs = msgs.length >= MESSAGES_PAGE_SIZE;
     showUnreadFrom(msgs, lastReadId, waiting);
@@ -5756,7 +5781,11 @@ async function refreshLatestMessages() {
     });
     if (appended) {
       scrollBottom();
-      socket?.emit('mark_read', { roomId: currentRoomId, lastMsgId: msgs[msgs.length - 1].id });
+      // Same rule: this runs on reconnect, which happens while the tab is
+      // hidden as readily as while it is being read.
+      if (ReadPosition.marksRead(readContextNow(false))) {
+        socket?.emit('mark_read', { roomId: currentRoomId, lastMsgId: msgs[msgs.length - 1].id });
+      }
     }
   } catch {}
 }

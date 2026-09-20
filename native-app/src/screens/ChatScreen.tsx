@@ -139,6 +139,7 @@ import {
   badgeLabel as commentBadgeLabel, jumpArrow, Jump,
 } from '../commentUnread';
 import { firstUnread, worthJumping, unreadLabel, unreadDivider } from '../unreadJump';
+import { marksRead, opensAsRead } from '../readPosition';
 import { isForRoom } from '../presence';
 import { safeName, cacheName, renamed, editableStem } from '../fileName';
 
@@ -1515,7 +1516,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         const merged = [...numeric, ...fresh].sort((a: any, b: any) => a.id - b.id);
         return [...merged, ...temp];
       });
-      socketRef.current?.emit('mark_read', { roomId: room.id, lastMsgId: msgs[msgs.length - 1].id });
+      // Same rule. This refresh also runs on coming back to the foreground and
+      // on a delayed retry, so an unguarded mark_read here wipes out the
+      // position the reader was returning to before they have seen a word.
+      if (marksRead({
+        appActive: AppState.currentState === 'active',
+        atBottom: isNearBottomRef.current,
+      })) {
+        socketRef.current?.emit('mark_read', { roomId: room.id, lastMsgId: msgs[msgs.length - 1].id });
+      }
       if (isNearBottomRef.current) setTimeout(scrollBottom, 100);
     } catch {}
   }
@@ -1615,7 +1624,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         messagesRef.current = msgs;
         hasMoreOlderRef.current = msgs.length >= MESSAGES_PAGE_SIZE;
         setHasMoreNewer(false);
-        if (msgs.length) sock.emit('mark_read', { roomId: room.id, lastMsgId: msgs[msgs.length - 1].id });
+        // Opening a chat IS reading it — that is the one place marking the
+        // whole page read is the point. Still refused when the app is not in
+        // front of the user, because this path also runs from a refresh.
+        if (msgs.length && opensAsRead({ appActive: AppState.currentState === 'active' })) {
+          sock.emit('mark_read', { roomId: room.id, lastMsgId: msgs[msgs.length - 1].id });
+        }
         // …and open where the unread messages START, not at the bottom with
         // everything new above the fold. Asked for as: take me to where those
         // messages are.
@@ -1857,7 +1871,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         })) {
           followNewMessage();
         } else if (msg.username !== meRef.current) bumpMissed();
-        sock.emit('mark_read', { roomId: room.id, lastMsgId: msg.id });
+        // NOT unconditional. A message arriving is not a message read: the
+        // phone may be locked with this screen still mounted, or the reader
+        // may be scrolled back through history. Marking those read is what
+        // moved the unread line below messages nobody had seen.
+        if (marksRead({
+          appActive: AppState.currentState === 'active',
+          atBottom: isNearBottomRef.current,
+          fromMe: msg.username === meRef.current,
+        })) {
+          sock.emit('mark_read', { roomId: room.id, lastMsgId: msg.id });
+        }
       });
       // The owner removed us: leave the chat immediately.
       // The other side cleared the conversation for both of us. Their decision
