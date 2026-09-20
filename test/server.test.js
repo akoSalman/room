@@ -710,6 +710,26 @@ test('a message is flagged seenElsewhere when another device is reading it', asy
     'a user with no device on the room was told it had been seen elsewhere');
 });
 
+test('THE SILENCE: a phone that never says "unfocused" is suppressed for ever', () => {
+  // Production log, bistbarg:
+  //   [push] msg 7181 room 9: suppressed for 1 viewer(s) [1]
+  //
+  // The server stops suppressing when a device says app_focus false OR sends
+  // leave_room. leave_room needs the app's JavaScript to run as the screen
+  // goes off; under Doze or a swiped-away app it does not run, and the server
+  // keeps believing the phone is reading the chat.
+  //
+  // app_focus is the safety net for exactly that, and the native app never
+  // sent it — only the web did. This pins the app half; the socket behaviour
+  // it depends on is the test directly below.
+  const fs2 = require('fs');
+  const p2 = require('path');
+  const nativeApp = fs2.readFileSync(
+    p2.join(__dirname, '..', 'native-app', 'App.tsx'), 'utf8');
+  assert.ok(/emit\('app_focus'/.test(nativeApp),
+    'the app never reports focus, so a phone whose leave_room did not fire gets no push at all');
+});
+
 test('a backgrounded device stops counting as reading the chat', async () => {
   // A laptop left on the chat overnight must not suppress notifications
   // forever — sitting on a room is not the same as looking at it.

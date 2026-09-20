@@ -85,6 +85,8 @@ test('the web and the app decide the same way', () => {
 // ── The wiring ──────────────────────────────────────────────────────────────
 
 const app = fs.readFileSync(path.join(ROOT, 'public', 'js', 'app.js'), 'utf8');
+// The NATIVE app's root — distinct from `app` above, which is the web client.
+const nativeApp = fs.readFileSync(path.join(NAT, 'App.tsx'), 'utf8');
 const html = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
 const chat = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
 const server = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
@@ -102,6 +104,34 @@ test('THE FIX: the web says which room it is in BEFORE it waits on anything', ()
     'join_room is sent after something that waits on the network, which is the window the bug lives in');
   // …and only once: two joins for one chat is a second presence broadcast.
   assert.strictEqual((fn.match(/socket\.emit\('join_room', roomId\)/g) || []).length, 1);
+});
+
+test('THE SILENCE: the app tells the server when it is not in front of the user', () => {
+  // Found in production: the server suppresses push for anyone it believes is
+  // viewing the room, and logs it —
+  //
+  //   [push] msg 7181 room 9: suppressed for 1 viewer(s) [1]
+  //
+  // It has two ways to learn a device is no longer looking: leave_room, which
+  // the chat screen sends, and app_focus, which the WEB has always sent and
+  // the APP never sent at all.
+  //
+  // leave_room is not enough on its own: it needs the app's JavaScript to run
+  // at the moment the screen goes off, and under Doze, a frozen process, or an
+  // app swiped away, it does not. The server then goes on believing the phone
+  // is reading the chat and sends no push for it — silence rather than
+  // lateness, with nothing on either side saying why.
+  assert.ok(/emit\('app_focus', st === 'active'\)/.test(nativeApp),
+    'the app never tells the server whether it is in the foreground');
+  // …and the web, which has always had it, keeps it.
+  assert.ok(/emit\('app_focus'/.test(app), 'the web stopped reporting focus');
+  // On EVERY transition, not only when going to the background: a device that
+  // says "not focused" and never takes it back gets push for a chat it IS
+  // reading, which is the same bug pointing the other way.
+  const at = nativeApp.indexOf("emit('app_focus'");
+  const effect = nativeApp.slice(Math.max(0, at - 400), at);
+  assert.ok(!/if \(st === 'active'\) \{[^}]*$/.test(effect),
+    'app_focus is sent from inside a branch, so one direction is never reported');
 });
 
 test('every presence event carries the room it happened in', () => {

@@ -219,7 +219,13 @@ test('…but a playlist keeps its session, which is the point of one', () => {
 });
 
 test('leaving the app with a voice message paused clears it too', () => {
-  const fn = appTsx.slice(appTsx.indexOf("AppState.addEventListener('change'"), appTsx.indexOf("AppState.addEventListener('change'") + 1200);
+  // Bounded by what FOLLOWS the listener, not by a character count. A fixed
+  // window is a guess about how long the code is, and it broke the moment a
+  // comment was added above this check — reporting a bug that did not exist.
+  const from = appTsx.indexOf("AppState.addEventListener('change'");
+  const to = appTsx.indexOf('// Tapping a message notification opens its chat', from);
+  const fn = appTsx.slice(from, to > from ? to : from + 3000);
+  assert.ok(fn.length > 200 && fn.length < 6000, `the AppState effect window is ${fn.length} chars`);
   assert.ok(/st === 'background' && !audioManager\.playing && !audioManager\.queue\?\.length/.test(fn),
     'a notification is left behind when the app goes to the background');
   assert.ok(/audioManager\.stop\(\)/.test(fn), 'nothing stops it');

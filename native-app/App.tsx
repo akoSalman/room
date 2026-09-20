@@ -259,6 +259,23 @@ export default function App() {
     // is opened — clear them on launch and every return to the foreground.
     Notifications.dismissAllNotificationsAsync().catch(() => {});
     const sub = AppState.addEventListener('change', st => {
+      // TELL THE SERVER whether this device is actually in front of the user.
+      //
+      // The server suppresses push for anyone it believes is looking at the
+      // room — "a device sitting on a room is not reading it" — and it has two
+      // ways to learn otherwise: leave_room, which the chat screen sends, and
+      // app_focus, which nothing in this app has ever sent. The web has sent
+      // it since it was added.
+      //
+      // leave_room alone is not enough, because it needs this app's JavaScript
+      // to run at the moment the screen goes off. When it does not — Doze, a
+      // process frozen mid-transition, the app swiped away — the server goes
+      // on believing the phone is reading the chat and sends NO PUSH AT ALL
+      // for it. Silence, not lateness, and nothing on either side says why.
+      //
+      // Cheap enough to send on every transition, so the two never disagree
+      // for longer than one event.
+      getSocket().then(sk => sk?.emit('app_focus', st === 'active')).catch(() => {});
       if (st === 'active') {
         Notifications.dismissAllNotificationsAsync().catch(() => {});
         ensureSocketAlive(); // recover fast after SIM calls / network switches
