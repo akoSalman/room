@@ -212,6 +212,30 @@ test('THE OTHER HALF: a bare 404 no longer deletes a working token', () => {
   assert.strictEqual(N.tokenIsDead(500, ''), false);
 });
 
+test('THE SUPPRESSION: a notification is shown when the app is NOT in front', () => {
+  // This returned false for everything, on the belief that the handler only
+  // runs in the foreground. server.js records the opposite, learned from a
+  // call that would not ring with the app CLOSED: expo-notifications
+  // intercepts every FCM message and builds the notification itself — which
+  // means it asks this handler, and the answer was always no.
+  //
+  // Matches the report exactly: nothing at all, then occasionally one twenty
+  // minutes late. Alive-but-backgrounded goes through expo and is suppressed;
+  // process killed outright has no expo to intercept, so the tray draws it.
+  const fn = app.slice(app.indexOf('setNotificationHandler'),
+    app.indexOf('setNotificationChannelAsync'));
+  assert.ok(fn.length > 100, 'the notification handler moved');
+  assert.ok(/AppState\.currentState === 'active'/.test(fn),
+    'the handler does not ask whether the user is actually in the app');
+  assert.ok(/shouldShowAlert: !inApp/.test(fn),
+    'the handler still refuses to show notifications while the app is in the background');
+  assert.ok(/shouldPlaySound: !inApp/.test(fn),
+    'a background notification is shown silently, which reads as not arriving');
+  // The literal that caused it must not come back.
+  assert.ok(!/shouldShowAlert: false/.test(fn),
+    'shouldShowAlert is hardcoded false again, which suppresses every notification');
+});
+
 // ── The wiring ──────────────────────────────────────────────────────────────
 
 const app = fs.readFileSync(path.join(NAT, 'App.tsx'), 'utf8');

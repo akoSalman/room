@@ -39,15 +39,47 @@ import { C } from './src/theme';
 I18nManager.allowRTL(false);
 I18nManager.forceRTL(false);
 
-// Notifications are for when the user is OUT of the app. This handler only
-// runs while the app is foregrounded, so suppress the popup entirely there —
-// in-app unread badges do the signalling. Background pushes are shown by the
-// system tray as usual.
+// Notifications are for when the user is OUT of the app.
+//
+// THIS RETURNED false UNCONDITIONALLY, on the belief written above it for
+// months: "this handler only runs while the app is foregrounded, so background
+// pushes are shown by the system tray as usual."
+//
+// server.js says the opposite, and says it from a production failure — a call
+// that would not ring with the app CLOSED:
+//
+//   "expo-notifications intercepts every FCM message and builds the
+//    notification ITSELF rather than letting Firebase present it"
+//
+// Both cannot be true, and the one learned from a phone that did not ring is
+// the one to believe. If expo builds the notification, it asks this handler
+// whether to show it — and the answer was no, for every message, whether or
+// not anybody was looking at the app.
+//
+// Which matches the report exactly: nothing at all, and then sometimes one
+// arrives twenty minutes later. A message that lands while the process is
+// ALIVE but backgrounded goes through expo, through here, and is suppressed.
+// One that lands after Android has killed the process entirely has no expo
+// running to intercept it, so the system tray draws it — late, but drawn.
+//
+// So it now answers the question it was actually asked: is the user looking at
+// this app right now? Silence in the foreground, where in-app badges do the
+// signalling and a popup over the conversation you are already reading is
+// noise; a notification everywhere else.
+//
+// Safe in either direction. If expo really does not consult this in the
+// background, nothing changes — the system tray was already drawing them.
 Notifications.setNotificationHandler({
   // Playback controls are no longer a notification we draw — the media session
   // owns that now — so nothing here needs an exception.
-  handleNotification: async () =>
-    ({ shouldShowAlert: false, shouldPlaySound: false, shouldSetBadge: false }),
+  handleNotification: async () => {
+    const inApp = AppState.currentState === 'active';
+    return {
+      shouldShowAlert: !inApp,
+      shouldPlaySound: !inApp,
+      shouldSetBadge: false,
+    };
+  },
 });
 // 'messages-v2': Android caches channel settings forever, so shipping the new
 // custom sound requires a fresh channel id.
