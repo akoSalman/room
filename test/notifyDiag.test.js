@@ -180,11 +180,22 @@ test('the screen shows it, and names the key rather than respelling it', () => {
   assert.ok(!/'push-token-sent'/.test(rooms));
 });
 
-test('a silenced channel counts as off', () => {
-  // Importance NONE(0) and MIN(1) draw nothing a user notices. Treating them
-  // as "on" would report a healthy channel to somebody seeing nothing.
-  assert.ok(/imp >= 2/.test(rooms),
-    'a channel silenced to MIN or NONE is reported as enabled');
+test('a silenced channel counts as off, on EXPO\'s scale not Android\'s', () => {
+  // expo-notifications numbers importance differently from the Android
+  // constants: NONE=2, MIN=3, LOW=4, DEFAULT=5, HIGH=6, MAX=7. The first
+  // version of this check used Android's 0-5 scale and so reported a fully
+  // silenced channel (expo NONE = 2) as enabled — the precise false
+  // reassurance this screen exists to prevent.
+  assert.ok(/imp >= 4/.test(rooms),
+    'the channel check uses the wrong scale, so a silenced channel reads as on');
+  assert.ok(!/imp >= 2\b/.test(rooms), 'the Android-scale threshold is back');
+  // Pinned against the library itself, so a version that renumbers the enum
+  // fails here instead of quietly lying on somebody's phone.
+  const enumSrc = fs.readFileSync(path.join(
+    NAT, 'node_modules', 'expo-notifications', 'build',
+    'NotificationChannelManager.types.d.ts'), 'utf8');
+  assert.ok(/NONE = 2/.test(enumSrc) && /LOW = 4/.test(enumSrc) && /MAX = 7/.test(enumSrc),
+    'expo renumbered AndroidImportance; the threshold in RoomsScreen must be rechecked');
 });
 
 let passed = 0, failed = 0;

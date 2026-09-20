@@ -231,9 +231,15 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
         setDiag({
           d,
           permissionGranted: !!(perm as any)?.granted,
-          // NONE (0) and MIN (1) draw nothing a user would notice, so they are
-          // "off" for the purpose this screen exists for.
-          channelEnabled: imp >= 2,
+          // expo's scale is NOT Android's: NONE=2, MIN=3, LOW=4, DEFAULT=5,
+          // HIGH=6, MAX=7. Written as `>= 2` first, against Android's 0-5
+          // scale, which called a completely silenced channel "on" — the exact
+          // false reassurance this screen exists to prevent.
+          //
+          // LOW is the floor: NONE draws nothing at all and MIN is collapsed
+          // in the shade with no sound and no status-bar icon, which to
+          // somebody waiting for a message is indistinguishable from nothing.
+          channelEnabled: imp >= 4,
           channelImportance: ch ? String(imp) : 'missing',
           tokenRegistered: !!sent,
         });
