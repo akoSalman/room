@@ -124,8 +124,21 @@ export function verdict(d: Diag | null | undefined, o: {
   if (received === 0) {
     return 'No push message has ever reached this app. The server is sending them, so they are being lost on the way — this is delivery, not the app.';
   }
-  if (d?.lastHandlerShowed === false) {
+  // The handler's verdict only describes the LAST ARRIVAL if it happened
+  // after it. Reported from a real screenshot: two pushes 23 seconds ago, a
+  // handler decision twelve minutes older, and this line blaming the app for
+  // hiding something it was never asked about. A diagnostic that accuses the
+  // wrong component is worse than one that says nothing.
+  const recv = Number(d?.lastReceivedAt) || 0;
+  const handled = Number(d?.lastHandlerAt) || 0;
+  if (d?.lastHandlerShowed === false && handled >= recv) {
     return 'Push messages are arriving but the app decided not to show the last one.';
+  }
+  if (handled < recv) {
+    // They arrived without the handler being consulted, which is what happens
+    // when Android draws them itself — so they were shown, and the stale
+    // handler decision below is about something else entirely.
+    return 'Push messages are arriving and being shown by Android directly.';
   }
   return 'Push messages are arriving and being shown.';
 }

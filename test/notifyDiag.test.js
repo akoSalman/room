@@ -73,6 +73,33 @@ test('arriving and shown says so plainly', () => {
   assert.ok(/arriving and being shown/i.test(D.verdict(d, ok)));
 });
 
+test('THE STALE ACCUSATION: an old handler decision does not blame the app', () => {
+  // From a real screenshot: 2 pushes 23 seconds ago, and a handler decision
+  // from 12 MINUTES earlier saying "hidden, app was open". The verdict read
+  // that as "the app decided not to show the last one" — blaming the app for
+  // hiding a notification it was never asked about.
+  //
+  // A diagnostic that accuses the wrong component is worse than one that says
+  // nothing: it is exactly how the previous six rounds went wrong.
+  let d = D.apply(D.empty(), { kind: 'handler', at: 1_000, showed: false });
+  d = D.apply(d, { kind: 'received', at: 800_000 });   // arrived LATER
+  const v = D.verdict(d, ok);
+  assert.ok(!/decided not to show/i.test(v),
+    `a stale handler decision is still blaming the app: ${v}`);
+  assert.ok(/arriving/i.test(v), v);
+});
+
+test('…but a CURRENT refusal still does blame the app', () => {
+  // The guard must not silence the real case, which is the one worth finding.
+  let d = D.apply(D.empty(), { kind: 'received', at: 1_000 });
+  d = D.apply(d, { kind: 'handler', at: 1_001, showed: false });
+  assert.ok(/decided not to show/i.test(D.verdict(d, ok)));
+  // Same instant counts as current — the handler runs microseconds after.
+  let e = D.apply(D.empty(), { kind: 'received', at: 5_000 });
+  e = D.apply(e, { kind: 'handler', at: 5_000, showed: false });
+  assert.ok(/decided not to show/i.test(D.verdict(e, ok)));
+});
+
 test('the blocking settings are reported BEFORE anything else', () => {
   // A phone with notifications switched off will never receive anything, so
   // "no push has ever arrived" would be true and utterly misleading.
