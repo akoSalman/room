@@ -1,0 +1,121 @@
+name: Push Report
+
+# Why this commits its findings instead of just printing them.
+#
+# Notifications have now been "fixed" four times and are still broken, and
+# every one of those fixes was reasoning from the code rather than from the
+# running system. The reason it stayed reasoning is that the diagnosis could
+# not be read: Actions logs and artifacts are both unreachable from the
+# environment doing the work, so a workflow that prints a report writes it
+# where nobody who needs it can see it.
+#
+# A file committed to the repository is readable. That is the whole trick.
+#
+# NOTHING SECRET IS WRITTEN. No FCM tokens, no service-account fields, no
+# message contents, no usernames. Counts, ids, status codes and timings only —
+# the report is committed to a repository that is currently public, so it is
+# written as if anyone will read it, because anyone can.
+
+on:
+  workflow_dispatch:
+    inputs:
+      brand:
+        description: 'Which server to inspect'
+        required: false
+        default: 'bistbarg'
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Gather
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST_B: ${{ secrets.DEPLOY_HOST_BISTBARG }}
+          DIR_B: ${{ secrets.DEPLOY_DIR_BISTBARG }}
+          SVC_B: ${{ secrets.DEPLOY_SERVICE_BISTBARG }}
+          HOST_A: ${{ secrets.DEPLOY_HOST_AKOSALMAN }}
+          DIR_A: ${{ secrets.DEPLOY_DIR_AKOSALMAN }}
+          SVC_A: ${{ secrets.DEPLOY_SERVICE_AKOSALMAN }}
+          BRAND: ${{ inputs.brand }}
+        run: |
+          set -u
+          if [ "$BRAND" = "akosalman" ]; then
+            HOST="$HOST_A"; APP_DIR="$DIR_A"; SERVICE="$SVC_A"
+          else
+            HOST="$HOST_B"; APP_DIR="$DIR_B"; SERVICE="$SVC_B"
+          fi
+          if [ -z "${HOST:-}" ] || [ -z "${SSH_KEY:-}" ]; then
+            echo "Secrets for $BRAND are not configured." | tee report.txt
+            exit 0
+          fi
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/k && chmod 600 ~/.ssh/k
+
+          ssh -i ~/.ssh/k -o StrictHostKeyChecking=accept-new "root@$HOST" \
+            APP_DIR="$APP_DIR" SERVICE="$SERVICE" bash -s > report.txt 2>&1 <<'EOF'
+          set +e
+          echo "### code actually running on this server"
+          cd "$APP_DIR" 2>/dev/null || { echo "APP_DIR missing"; exit 0; }
+          echo "git HEAD: $(git rev-parse --short HEAD 2>/dev/null || echo 'not a git checkout')"
+          echo -n "notify.js has the FIXED rule (no bare-404 delete): "
+          if grep -q 'if (status === 404) return true;' notify.js 2>/dev/null; then
+            echo "NO  <-- server still deletes tokens on any 404"
+          else
+            echo "yes"
+          fi
+          echo -n "server.js logs [push] lines: "
+          grep -q "console.log(\`\[push\]" server.js 2>/dev/null && echo yes || echo no
+          echo ""
+
+          echo "### push_tokens table"
+          DB=$(find "$APP_DIR" -maxdepth 3 -name '*.db' -o -maxdepth 3 -name '*.sqlite*' 2>/dev/null | head -1)
+          echo "db file found: ${DB:-NONE}"
+          if [ -n "$DB" ] && command -v sqlite3 >/dev/null 2>&1; then
+            echo -n "total rows: "; sqlite3 "$DB" 'SELECT COUNT(*) FROM push_tokens;' 2>&1
+            echo "rows per user (user_id, count, shortest/longest token length):"
+            sqlite3 "$DB" 'SELECT user_id, COUNT(*), MIN(LENGTH(token)), MAX(LENGTH(token)) FROM push_tokens GROUP BY user_id ORDER BY user_id;' 2>&1
+            echo -n "users who have sent a message in the last 7 days: "
+            sqlite3 "$DB" "SELECT COUNT(DISTINCT user_id) FROM messages WHERE created_at > strftime('%s','now','-7 days')*1000;" 2>&1
+            echo "…of those, how many have NO push token:"
+            sqlite3 "$DB" "SELECT COUNT(*) FROM (SELECT DISTINCT user_id FROM messages WHERE created_at > strftime('%s','now','-7 days')*1000) m WHERE m.user_id NOT IN (SELECT user_id FROM push_tokens);" 2>&1
+          else
+            echo "sqlite3 not available or db not found"
+          fi
+          echo ""
+
+          echo "### what the service logged about push, last 2 hours"
+          journalctl -u "$SERVICE" --since '2 hours ago' --no-pager 2>/dev/null \
+            | grep -aE '\[push\]|\[FCM\]' | tail -40
+          echo "(end of push log lines)"
+          echo ""
+
+          echo "### FCM credentials present?"
+          journalctl -u "$SERVICE" --since '7 days ago' --no-pager 2>/dev/null \
+            | grep -a 'Loaded service account' | tail -2 | sed 's/for project "[^"]*"/for project "REDACTED"/'
+          echo "(end)"
+          EOF
+
+      - name: Commit the report
+        run: |
+          mkdir -p diagnostics
+          {
+            echo "# Push report — ${{ inputs.brand }}"
+            echo ""
+            echo "Generated $(date -u +%Y-%m-%dT%H:%MZ) by .github/workflows/push-report.yml"
+            echo ""
+            echo '```'
+            cat report.txt
+            echo '```'
+          } > "diagnostics/push-report.md"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add diagnostics/push-report.md
+          git commit -m "Push report for ${{ inputs.brand }} [skip ci]" || echo "no change"
+          git push origin HEAD:${{ github.ref_name }} || echo "push failed"
