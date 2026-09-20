@@ -32,6 +32,7 @@ import { disconnectSocket, getSocket, getUsername, apiFetch, ensureSocketAlive, 
 import { audioManager } from './src/audioManager';
 import * as outbox from './src/outbox';
 import * as pushReg from './src/pushRegistration';
+import * as notifyDiag from './src/notifyDiag';
 import { C } from './src/theme';
 
 // Keep the app layout LTR even on RTL locales (Persian/Arabic): mirroring the
@@ -74,6 +75,10 @@ Notifications.setNotificationHandler({
   // owns that now — so nothing here needs an exception.
   handleNotification: async () => {
     const inApp = AppState.currentState === 'active';
+    // Recorded so the diagnostics screen can say whether messages are arriving
+    // and being refused, rather than not arriving at all. Those two look
+    // identical from outside and need opposite fixes.
+    notifyDiag.record('handler', !inApp);
     return {
       shouldShowAlert: !inApp,
       shouldPlaySound: !inApp,
@@ -321,6 +326,16 @@ export default function App() {
         audioManager.stop().catch(() => {});
       }
     });
+    // THE ONE FACT THAT SPLITS THE PROBLEM IN HALF: did a push message reach
+    // this app at all? If they arrive and nothing is drawn, the fault is here.
+    // If none ever arrives, they are being lost between Google and the phone,
+    // and no change in this repository can reach that. Those two look
+    // identical from the outside — "no notification" — and need opposite
+    // fixes, which is why six diagnoses in a row picked the wrong one.
+    const recvSub = Notifications.addNotificationReceivedListener(() => {
+      notifyDiag.record('received');
+    });
+
     // Tapping a message notification opens its chat; tapping a call
     // notification just needs the app open — the server re-delivers the
     // still-ringing call over the fresh socket.
@@ -346,7 +361,7 @@ export default function App() {
     Notifications.getLastNotificationResponseAsync().then(resp => {
       openChatFromPush(resp?.notification?.request?.content?.data);
     }).catch(() => {});
-    return () => { sub.remove(); respSub.remove(); };
+    return () => { sub.remove(); respSub.remove(); recvSub.remove(); };
   }, []);
 
   /**
@@ -520,6 +535,7 @@ export default function App() {
             // is retried rather than recorded as done.
             AsyncStorage.setItem(pushReg.SENT_TOKEN_KEY, token).catch(() => {});
             AsyncStorage.setItem(pushReg.SENT_AT_KEY, String(Date.now())).catch(() => {});
+            notifyDiag.record('token-accepted');
             return;
           }
         }
@@ -598,6 +614,7 @@ export default function App() {
           content: { title: msg.username, body, sound: 'notify.wav' },
           trigger: null,
         }).catch(() => {});
+        notifyDiag.record('socket-raised');
       };
       // When a message is deleted, dismiss its notification on this device too.
       delHandler = ({ messageId }: any) => {

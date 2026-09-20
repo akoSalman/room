@@ -7,6 +7,10 @@ import * as FileSystem from 'expo-file-system';
 import * as appUpdate from '../appUpdate';
 import * as mediaCache from '../mediaCache';
 import * as offline from '../offlineStore';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as pushReg from '../pushRegistration';
+import * as notifyDiag from '../notifyDiag';
+import * as Notifications from 'expo-notifications';
 import { fmtBytes } from '../download';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { Ionicons } from '@expo/vector-icons';
@@ -52,6 +56,12 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   const [myId, setMyId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [showProfile, setShowProfile] = useState(false);
+  // Notification diagnostics: gathered when the sheet opens, so it always
+  // reflects the phone right now rather than whenever the app started.
+  const [diag, setDiag] = useState<null | {
+    d: notifyDiag.Diag; permissionGranted: boolean; channelEnabled: boolean;
+    channelImportance: string; tokenRegistered: boolean;
+  }>(null);
   const [renamingRoom, setRenamingRoom] = useState<Room | null>(null);
   const [renameText, setRenameText] = useState('');
   const [newUsername, setNewUsername] = useState('');
@@ -209,6 +219,26 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   // would be pointless work.
   useEffect(() => {
     if (!showProfile) return;
+    (async () => {
+      try {
+        const [d, perm, ch, sent] = await Promise.all([
+          notifyDiag.read(),
+          Notifications.getPermissionsAsync().catch(() => ({ granted: false } as any)),
+          Notifications.getNotificationChannelAsync('messages-v3').catch(() => null),
+          AsyncStorage.getItem(pushReg.SENT_TOKEN_KEY).catch(() => null),
+        ]);
+        const imp = ch ? Number((ch as any).importance) : -1;
+        setDiag({
+          d,
+          permissionGranted: !!(perm as any)?.granted,
+          // NONE (0) and MIN (1) draw nothing a user would notice, so they are
+          // "off" for the purpose this screen exists for.
+          channelEnabled: imp >= 2,
+          channelImportance: ch ? String(imp) : 'missing',
+          tokenRegistered: !!sent,
+        });
+      } catch { setDiag(null); }
+    })();
     let alive = true;
     mediaCache.usage().then(b => { if (alive) setCacheBytes(b); }).catch(() => {});
     return () => { alive = false; };
@@ -806,6 +836,45 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
               )}
             </View>
 
+            {/* Why notifications are or are not arriving, on THIS phone.
+                Every fact here is one that cannot be read from the source, and
+                each of them was guessed wrongly at least once. */}
+            <View style={s.section}>
+              <Text style={s.sectionTitle}>Notifications</Text>
+              {!diag ? (
+                <Text style={s.diagLine}>Checking…</Text>
+              ) : (
+                <>
+                  <Text style={s.diagVerdict}>
+                    {notifyDiag.verdict(diag.d, diag)}
+                  </Text>
+                  <Text style={s.diagLine}>
+                    Allowed by Android: {diag.permissionGranted ? 'yes' : 'NO'}
+                  </Text>
+                  <Text style={s.diagLine}>
+                    "Messages" channel: {diag.channelEnabled ? 'on' : 'OFF'} (importance {diag.channelImportance})
+                  </Text>
+                  <Text style={s.diagLine}>
+                    Registered for push: {diag.tokenRegistered ? 'yes' : 'NO'}
+                    {'  ·  '}server accepted {notifyDiag.ago(diag.d.lastTokenAcceptedAt)}
+                  </Text>
+                  <Text style={s.diagLine}>
+                    Push messages received: {diag.d.receivedCount}
+                    {'  ·  '}last {notifyDiag.ago(diag.d.lastReceivedAt)}
+                  </Text>
+                  <Text style={s.diagLine}>
+                    Shown by the app itself: {diag.d.socketRaisedCount}
+                    {'  ·  '}last {notifyDiag.ago(diag.d.lastSocketRaisedAt)}
+                  </Text>
+                  <Text style={s.diagLine}>
+                    Last one was {diag.d.lastHandlerShowed === null ? 'not seen yet'
+                      : diag.d.lastHandlerShowed ? 'shown' : 'hidden (app was open)'}
+                    {'  ·  '}{notifyDiag.ago(diag.d.lastHandlerAt)}
+                  </Text>
+                </>
+              )}
+            </View>
+
             {/* Logout */}
             <View style={s.section}>
               <TouchableOpacity style={s.logoutBtn} onPress={() => { setShowProfile(false); onLogout(); }}>
@@ -1007,6 +1076,8 @@ const s = StyleSheet.create({
   myRoomName: { flex: 1, color: C.text, fontSize: 15 },
   roomActionBtn: { padding: 6 },
   roomActionIcon: { fontSize: 18 },
+  diagVerdict: { color: C.text, fontSize: 14, fontWeight: '700', marginBottom: 8, lineHeight: 19 },
+  diagLine: { color: C.textDim, fontSize: 13, marginBottom: 4 },
   logoutBtn: { backgroundColor: C.danger, borderRadius: 10, padding: 13, alignItems: 'center' },
   logoutBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
   updateHint: { color: C.muted, fontSize: 13, marginBottom: 10 },
