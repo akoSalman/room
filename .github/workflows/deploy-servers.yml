@@ -6,9 +6,20 @@ on:
     paths:
       - 'server.js'
       - 'db.js'
-      # Required by server.js at startup — a change to it alone used to make
-      # no deploy at all, leaving the servers on old credential rules.
+      # EVERY local module server.js requires. Listing only some of them is a
+      # bug that hides itself: the change is committed, the tests pass, the
+      # push succeeds, no deploy runs, and the servers quietly keep running the
+      # old code. It happened with credentials.js, and then again with
+      # notify.js — which holds the rule deciding whether a device's push token
+      # is thrown away, so the fix for "notifications stopped working" sat in
+      # the repository and never reached a server.
+      #
+      # test/deployPaths.test.js now reads server.js's own requires and fails
+      # if any of them is missing from this list.
       - 'credentials.js'
+      - 'notify.js'
+      - 'webPush.js'
+      - 'linkMeta.js'
       - 'package.json'
       - 'package-lock.json'
       - 'public/**'
