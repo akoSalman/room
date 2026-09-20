@@ -156,6 +156,9 @@ export default function App() {
   const [pendingJoinRoomId, setPendingJoinRoomId] = useState<number | null>(null);
 
   const pushRegisteredRef = React.useRef(false);
+  // True until this launch has sent its token once. Not state: nothing renders
+  // from it, and it must not reset when the effect re-runs.
+  const coldStartRef = React.useRef(true);
 
   // "Share to ChatRoom" from other apps: pick a chat, then the shared
   // files/text land staged in that chat's composer.
@@ -446,18 +449,28 @@ export default function App() {
           const tok = await Notifications.getDevicePushTokenAsync();
           const token = tok?.data ? String(tok.data) : '';
           const sent = await AsyncStorage.getItem(pushReg.SENT_TOKEN_KEY).catch(() => null);
-          if (!pushReg.needsSend({ granted: true, token, sentToken: sent })) {
-            // Already registered with this exact token: nothing to do, and
-            // nothing to retry.
+          const sentAt = Number(await AsyncStorage.getItem(pushReg.SENT_AT_KEY).catch(() => null)) || 0;
+          // coldStart is what build 255 did implicitly and what build 256
+          // stopped doing: send the token once per launch whatever the app
+          // remembers, because the SERVER's copy can be gone without the token
+          // having changed. See needsSend.
+          if (!pushReg.needsSend({
+            granted: true, token, sentToken: sent, sentAt, coldStart: coldStartRef.current,
+          })) {
+            // Already registered with this exact token, recently enough to
+            // trust: nothing to do, and nothing to retry.
             if (token) pushRegisteredRef.current = true;
             return;
           }
           const res = await apiFetch('/push-token', 'POST', { token, platform: 'android' });
           if (res?.ok) {
             pushRegisteredRef.current = true;
+            // The launch has now had its unconditional send.
+            coldStartRef.current = false;
             // Remembered only AFTER the server accepted it, so a failed POST
             // is retried rather than recorded as done.
             AsyncStorage.setItem(pushReg.SENT_TOKEN_KEY, token).catch(() => {});
+            AsyncStorage.setItem(pushReg.SENT_AT_KEY, String(Date.now())).catch(() => {});
             return;
           }
         }
@@ -572,7 +585,7 @@ export default function App() {
     // next person to sign in on this phone has the same device token, so
     // registration would decide there is nothing to send — and they would get
     // no push notifications at all, with everything appearing to work.
-    await AsyncStorage.multiRemove(['token', 'username', 'avatar', pushReg.SENT_TOKEN_KEY]);
+    await AsyncStorage.multiRemove(['token', 'username', 'avatar', pushReg.SENT_TOKEN_KEY, pushReg.SENT_AT_KEY]);
     pushRegisteredRef.current = false;
     // Signing out must not leave the previous account's chats readable on the
     // device — the offline copy is real message content.

@@ -63,9 +63,56 @@ test('…and there IS a second chance, which is the whole fix', () => {
   assert.ok(P.MAX_ATTEMPTS >= 3, 'one or two tries is the bug with extra steps');
 });
 
-test('a token the server already has is not sent again', () => {
+test('a token the server already has is not sent again DURING a session', () => {
   // Otherwise every return to the foreground is a POST that changes nothing.
-  assert.strictEqual(P.needsSend({ granted: true, token: 'abc', sentToken: 'abc' }), false);
+  // This is the part of build 256's change that was worth keeping.
+  assert.strictEqual(P.needsSend({
+    granted: true, token: 'abc', sentToken: 'abc',
+    coldStart: false, sentAt: 1000, now: 1000,
+  }), false);
+});
+
+test('THE 255 REGRESSION: a cold start re-sends the token anyway', () => {
+  // Reported: push notifications worked until build 255 and not since.
+  //
+  // Build 255 sent the token on every launch, with no memory. Build 256 made
+  // it remember, and stay quiet unless the token changed. But the SERVER's
+  // copy can vanish without the token changing — it deletes the row whenever
+  // a send looks like a rejection, and on a filtered network a middlebox 404
+  // looked exactly like one. After that the device got nothing, for ever,
+  // because it believed it had already registered.
+  //
+  // Build 255 healed from that on the next launch. This is that behaviour,
+  // put back.
+  assert.strictEqual(P.needsSend({
+    granted: true, token: 'abc', sentToken: 'abc',
+    coldStart: true, sentAt: Date.now(),
+  }), true, 'a launch does not re-register, so a deleted row is never noticed');
+});
+
+test('…and a registration older than a day is redone without one', () => {
+  // The other way back, for an app that is left running for days.
+  assert.strictEqual(P.needsSend({
+    granted: true, token: 'abc', sentToken: 'abc',
+    coldStart: false, sentAt: 1, now: P.REREGISTER_AFTER_MS + 2,
+  }), true);
+  assert.ok(P.REREGISTER_AFTER_MS <= 7 * 24 * 60 * 60 * 1000,
+    'a device that has lost its row waits a week to find out');
+});
+
+test('a registration with no recorded time is treated as due', () => {
+  // Upgrading from a build that stored the token but not the moment. Assuming
+  // it is fresh is assuming exactly the thing that caused this.
+  assert.strictEqual(P.needsSend({
+    granted: true, token: 'abc', sentToken: 'abc', coldStart: false, sentAt: 0, now: 5000,
+  }), true);
+});
+
+test('a clock that jumped backwards does not postpone it for a day', () => {
+  assert.strictEqual(P.needsSend({
+    granted: true, token: 'abc', sentToken: 'abc',
+    coldStart: false, sentAt: 9000, now: 1000,
+  }), true);
 });
 
 test('THE OTHER SILENCE: a reissued token is noticed on its own', () => {
@@ -141,11 +188,50 @@ test('THE PROPERTY IT ALL RESTS ON: server and app name a message identically', 
   assert.strictEqual(P.notificationTag(null), '');
 });
 
+test('THE OTHER HALF: a bare 404 no longer deletes a working token', () => {
+  // These servers reach fcm.googleapis.com across a network that filters it.
+  // A middlebox answering 404 with an HTML page is indistinguishable from
+  // Firebase answering 404 UNREGISTERED — except by the body, which the old
+  // check ignored. So a filtered request deleted a live token and silenced
+  // that phone.
+  const N = require(path.join(ROOT, 'notify.js'));
+  assert.strictEqual(N.tokenIsDead(404, '<html>404 Not Found</html>'), false,
+    'a proxy error page still costs a device its notifications');
+  assert.strictEqual(N.tokenIsDead(404, ''), false,
+    'a 404 with no body is treated as proof the token is gone');
+  assert.strictEqual(N.tokenIsDead(404, 'null'), false);
+  // …while Firebase actually saying so is still believed.
+  assert.strictEqual(N.tokenIsDead(404, JSON.stringify(
+    { error: { status: 'NOT_FOUND', details: [{ errorCode: 'UNREGISTERED' }] } })), true);
+  assert.strictEqual(N.tokenIsDead(200, JSON.stringify(
+    { error: { status: 'UNREGISTERED' } })), true);
+  assert.strictEqual(N.tokenIsDead(403, JSON.stringify(
+    { error: { details: [{ errorCode: 'SENDER_ID_MISMATCH' }] } })), true);
+  // A transient network failure is not a dead token either.
+  assert.strictEqual(N.tokenIsDead(502, 'Bad Gateway'), false);
+  assert.strictEqual(N.tokenIsDead(500, ''), false);
+});
+
 // ── The wiring ──────────────────────────────────────────────────────────────
 
 const app = fs.readFileSync(path.join(NAT, 'App.tsx'), 'utf8');
 const at = app.indexOf('// Register the device FCM token');
 const effect = at > 0 ? app.slice(at, app.indexOf('// Global notifications:')) : '';
+
+test('the cold-start send is WIRED, not just available', () => {
+  // A rule nothing calls is a rule that does nothing. The flag must be read by
+  // needsSend and cleared only after the server has accepted the token.
+  assert.ok(/coldStart: coldStartRef\.current/.test(app),
+    'needsSend is never told whether this is a fresh launch');
+  assert.ok(/coldStartRef\.current = false;/.test(app),
+    'the launch flag is never cleared, so every foreground re-POSTs');
+  const at = app.indexOf('coldStartRef.current = false;');
+  const before = app.slice(Math.max(0, at - 300), at);
+  assert.ok(/if \(res\?\.ok\) \{/.test(before),
+    'the launch flag is cleared before the server accepted the token');
+  assert.ok(/AsyncStorage\.setItem\(pushReg\.SENT_AT_KEY/.test(app),
+    'the moment of registration is never recorded, so it can never go stale');
+});
 
 test('THE FIX IS WIRED: registration retries instead of giving up', () => {
   assert.ok(effect.length > 400, 'the registration effect moved');

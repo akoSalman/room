@@ -72,10 +72,19 @@ test('the caller\'s list is never modified', () => {
 // from the outside looks exactly like "notifications are not received at the
 // time".
 //
-// The old rule was `status === 404 || status === 400`, and the 400 was wrong.
-// FCM answers 400 INVALID_ARGUMENT for a malformed MESSAGE — a field it does
-// not like, a value too long, a bad channel id — which says nothing about the
-// token. One such payload deleted the token of every device it was sent to.
+// The rule has been wrong twice, in the same way both times: reading a STATUS
+// CODE as a verdict about the token.
+//
+//   1. `status === 400` — FCM answers 400 INVALID_ARGUMENT for a malformed
+//      MESSAGE, which says nothing about the token. One such payload deleted
+//      the token of every device it was sent to.
+//   2. `status === 404` — which assumed a 404 could only have come from
+//      Firebase. These servers reach fcm.googleapis.com across a network that
+//      filters it, and a middlebox 404 is identical from here except in the
+//      body. That one silenced real devices, and is what "notifications worked
+//      until build 255" turned out to be.
+//
+// Only the BODY says a token is dead. The status alone never does.
 
 test('THE BUG: a malformed message does not cost a phone its notifications', () => {
   const invalidArgument = JSON.stringify({
@@ -92,14 +101,40 @@ test('THE BUG: a malformed message does not cost a phone its notifications', () 
 
 test('a token Firebase no longer knows IS thrown away', () => {
   // Otherwise the table fills with tokens for uninstalled apps and every send
-  // pays for them.
-  assert.strictEqual(tokenIsDead(404, ''), true);
+  // pays for them. But it has to be FIREBASE saying so — see the test below,
+  // which is the case this line used to get wrong.
+
   assert.strictEqual(tokenIsDead(404, JSON.stringify({
     error: { details: [{ errorCode: 'UNREGISTERED' }] },
   })), true);
   assert.strictEqual(tokenIsDead(200, JSON.stringify({
     error: { details: [{ errorCode: 'UNREGISTERED' }] },
   })), true, 'an UNREGISTERED token is kept because the status was not 404');
+});
+
+test('THE SILENCE: a bare 404 is not Firebase saying anything', () => {
+  // Reported as: push notifications worked until build 255 and not since.
+  //
+  // This asserted tokenIsDead(404, '') === true, which was the belief that a
+  // 404 could only have come from Firebase. These servers reach
+  // fcm.googleapis.com across a network that filters it, and a middlebox
+  // answering 404 with an HTML page looks identical from here — except in the
+  // body, which is exactly what was not being read.
+  //
+  // So a filtered request deleted a live token, and that phone got nothing
+  // afterwards. Until build 256 the app re-sent its token on every launch and
+  // the row came back unnoticed; from 256 it only spoke up when the token
+  // changed, and the deletion became permanent.
+  assert.strictEqual(tokenIsDead(404, '<html>404 Not Found</html>'), false,
+    'a proxy error page still costs a device every notification it will get');
+  assert.strictEqual(tokenIsDead(404, ''), false,
+    'a 404 with no body is still read as proof the token is gone');
+  assert.strictEqual(tokenIsDead(404, 'null'), false);
+  assert.strictEqual(tokenIsDead(404, '{}'), false);
+  // A transient failure was never a dead token, and still is not.
+  assert.strictEqual(tokenIsDead(502, 'Bad Gateway'), false);
+  assert.strictEqual(tokenIsDead(500, ''), false);
+  assert.strictEqual(tokenIsDead(429, ''), false);
 });
 
 test('a token belonging to another Firebase project is thrown away too', () => {

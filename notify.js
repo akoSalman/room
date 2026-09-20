@@ -56,7 +56,6 @@ function recipientsFor(userIds, fromUserId, isMuted) {
  * from a proxy is not the JSON this expects.
  */
 function tokenIsDead(status, body) {
-  if (status === 404) return true;
   let code = '';
   try {
     const j = JSON.parse(String(body || ''));
@@ -66,6 +65,28 @@ function tokenIsDead(status, body) {
   if (status === 403 && code === 'SENDER_ID_MISMATCH') return true;
   return false;
 }
+
+// A BARE 404 is no longer enough, and that is the point of this function now.
+//
+// Reported: push notifications worked until build 255 and not since. The app
+// half of that is in pushRegistration.ts. This is the other half.
+//
+// `if (status === 404) return true` treated any 404 as Google saying the token
+// is gone. It is not: these servers reach fcm.googleapis.com across a network
+// that filters it, and a middlebox answering 404 with an HTML error page is
+// indistinguishable here from Firebase answering 404 UNREGISTERED — except by
+// the body, which is the one thing that check ignored.
+//
+// So a filtered request deleted a perfectly good token, and the phone it
+// belonged to went silent. Before build 256 it healed itself, because the app
+// re-sent its token on every launch. Build 256 made the app remember having
+// sent it, and the two changes together turned a recoverable glitch into
+// permanent silence for that device.
+//
+// Now the body has to say so. Keeping a dead token costs one wasted request
+// per message until Firebase says UNREGISTERED with a body we can read;
+// deleting a live one costs that user every notification they were ever going
+// to get, and nothing on the server can tell it happened.
 
 /**
  * The one name a notification for a message goes by.

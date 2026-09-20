@@ -42,21 +42,70 @@
 /** Where the last token the server accepted is remembered. */
 export const SENT_TOKEN_KEY = 'push-token-sent';
 
+/** Where the moment the server last accepted a token is remembered. */
+export const SENT_AT_KEY = 'push-token-sent-at';
+
+/**
+ * How long a registration is trusted before it is simply redone.
+ *
+ * Not a retry — a refresh. Cheap enough to be unconditional, rare enough not
+ * to matter: one small POST a day per device.
+ */
+export const REREGISTER_AFTER_MS = 24 * 60 * 60 * 1000;
+
 /**
  * Is there anything to tell the server?
  *
- * The comparison against what was last sent is what keeps this from POSTing on
- * every foreground: the answer is normally no, and the work is a string
- * compare. When Firebase reissues the token the answer becomes yes on its own,
- * with nothing needing to notice the reissue.
+ * THIS IS THE REGRESSION, and it is the answer to "push notifications worked
+ * until build 255".
+ *
+ * Build 255 sent the token on every launch. No memory, no comparison — just a
+ * small idempotent POST each time the app started. That looked wasteful, so
+ * build 256 made it remember what it had already sent and stay quiet unless
+ * the token changed.
+ *
+ * What that overlooked is that the SERVER's copy can disappear without the
+ * token changing. It deletes a row whenever a send looks like Firebase
+ * rejecting the token — and on a network that filters fcm.googleapis.com, a
+ * middlebox 404 looked exactly like that (see tokenIsDead in notify.js, now
+ * fixed too). The moment the row went, the device stopped receiving anything,
+ * and the app never sent the token again because it remembered having sent
+ * it. Build 255 healed from this on the next launch without anybody noticing
+ * it had happened; build 256 turned it into permanent silence.
+ *
+ * So the memory stays — it is what keeps this quiet across foregrounds within
+ * a session — but it can no longer outlive a cold start or a day. Those are
+ * the two ways back from a server-side deletion, and neither of them can be
+ * reached by a device that only speaks up when Firebase reissues its token.
+ *
+ * The comparison is still what stops a POST on every foreground, which was
+ * the real thing worth fixing.
  */
 export function needsSend(o: {
-  granted: boolean; token: string | null | undefined; sentToken: string | null | undefined;
+  granted: boolean;
+  token: string | null | undefined;
+  sentToken: string | null | undefined;
+  /** First registration attempt of this process. */
+  coldStart?: boolean;
+  /** When the server last accepted it, as a timestamp. */
+  sentAt?: number | null;
+  now?: number;
 }): boolean {
   if (!o || !o.granted) return false;
   const token = String(o.token || '');
   if (!token) return false;
-  return token !== String(o.sentToken || '');
+  // A changed token must always be sent: the server cannot know the old one
+  // is useless until it tries it.
+  if (token !== String(o.sentToken || '')) return true;
+  // What build 255 did, and the reason it never suffered this.
+  if (o.coldStart) return true;
+  const at = Number(o.sentAt) || 0;
+  const now = Number(o.now) || Date.now();
+  // No record of WHEN is a record we cannot trust — treat it as due.
+  if (!at) return true;
+  // A clock that has gone backwards must not postpone this for a day.
+  if (now < at) return true;
+  return now - at >= REREGISTER_AFTER_MS;
 }
 
 /** How many times a failing registration is retried before it waits for the next foreground. */
