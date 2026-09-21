@@ -7,7 +7,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { recipientsFor, tokenIsDead, notificationTag } = require('./notify');
+const { recipientsFor, tokenIsDead, notificationTag, collapseKeyFor } = require('./notify');
 const credentials = require('./credentials');
 const cors = require('cors');
 const db = require('./db');
@@ -859,6 +859,11 @@ async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
             ),
             android: {
               priority: 'high',
+              // What Firebase drops when a burst exceeds its per-device rate
+              // limit — and it does drop, rather than queue. Thirteen pushes
+              // in three seconds to one device, all accepted here, produced
+              // one notification on the phone. See collapseKeyFor.
+              ...(collapseKeyFor(data) ? { collapse_key: collapseKeyFor(data) } : {}),
               notification: {
                 channel_id: android.channelId || 'messages-v3',
                 sound: android.sound || 'notify',

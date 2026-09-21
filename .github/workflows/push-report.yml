@@ -63,7 +63,21 @@ jobs:
           set +e
           echo "### code actually running on this server"
           cd "$APP_DIR" 2>/dev/null || { echo "APP_DIR missing"; exit 0; }
-          echo "git HEAD: $(git rev-parse --short HEAD 2>/dev/null || echo 'not a git checkout')"
+          # NOT the deployed version. deploy-servers.yml scp's individual
+          # files over this checkout and never touches git, so HEAD is
+          # whatever was last cloned — it read 74 commits behind while the
+          # running code was current, and was very nearly acted on. The file
+          # markers below are the real evidence; this is kept only so nobody
+          # goes looking for it again.
+          echo "git HEAD (STALE — deploy is scp, not git): $(git rev-parse --short HEAD 2>/dev/null || echo 'not a git checkout')"
+          echo -n "server.js sends the collapse key (burst fix): "
+          grep -q 'collapse_key: collapseKeyFor(data)' server.js 2>/dev/null && echo yes || echo "NO  <-- bursts are still dropped by FCM"
+          echo -n "server.js puts the tag in the DATA payload (expo reads only this): "
+          if awk '/data: Object.fromEntries\(/,/android: \{/' server.js 2>/dev/null | grep -q 'tag: notificationTag(data.msgId)'; then
+            echo yes
+          else
+            echo "NO  <-- expo falls back to messageId and the tag never matches"
+          fi
           echo -n "notify.js has the FIXED rule (no bare-404 delete): "
           if grep -q 'if (status === 404) return true;' notify.js 2>/dev/null; then
             echo "NO  <-- server still deletes tokens on any 404"

@@ -106,4 +106,41 @@ function notificationTag(msgId) {
   return id ? `msg-${id}` : '';
 }
 
-module.exports = { recipientsFor, tokenIsDead, notificationTag };
+/**
+ * The FCM collapse key for a push, or null to leave it uncollapsed.
+ *
+ * MEASURED, from the server's own log on the day this was written:
+ *
+ *   16:48:50  [push] 1 device(s) for 1 user(s) [1] — send 159ms
+ *   16:48:51  …×4
+ *   16:48:52  …×5
+ *   16:48:53  …×3
+ *
+ * Thirteen high-priority messages handed to Firebase for ONE device inside
+ * three seconds, every one accepted — no send failed, nothing suppressed —
+ * and the phone showed one notification. FCM applies a per-device rate limit
+ * to exactly this shape of traffic, and what it does when a burst exceeds it
+ * is drop messages, not queue them.
+ *
+ * A collapse key changes what gets dropped. Messages sharing a key are
+ * replaced rather than discarded arbitrarily, so a burst in one conversation
+ * arrives as its LATEST message instead of as whichever one survived. The
+ * limit is not raised — it cannot be from here — but the outcome stops being
+ * random, which is the difference between "a notification, late" and
+ * "sometimes nothing at all".
+ *
+ * Per ROOM, not per message: collapsing by message id would give every push
+ * its own key and change nothing at all.
+ *
+ * Calls are deliberately excluded. A missed call cannot be replaced by a
+ * later one, and they are already sent with a ttl and direct_boot_ok because
+ * they must not be held back. Anything without a roomId and msgId — a call,
+ * an invite — keeps its own delivery.
+ */
+function collapseKeyFor(data) {
+  if (!data || typeof data !== 'object') return null;
+  if (!data.roomId || !data.msgId) return null;
+  return `room-${data.roomId}`;
+}
+
+module.exports = { recipientsFor, tokenIsDead, notificationTag, collapseKeyFor };

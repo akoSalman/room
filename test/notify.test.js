@@ -6,7 +6,8 @@
 // function was unreachable — and a mutation that inverted it, notifying ONLY
 // the people who had asked not to be notified, passed the entire suite.
 const assert = require('assert');
-const { recipientsFor, tokenIsDead } = require('../notify');
+const N = require('../notify');
+const { recipientsFor, tokenIsDead } = N;
 
 const tests = [];
 const test = (n, f) => tests.push({ n, f });
@@ -155,6 +156,47 @@ test('an unparseable body is not read as a verdict', () => {
   assert.strictEqual(tokenIsDead(400, null), false);
   assert.strictEqual(tokenIsDead(400, '{'), false);
   assert.strictEqual(tokenIsDead(400, '{"error":null}'), false);
+});
+
+
+// ── The burst Firebase drops ────────────────────────────────────────────────
+
+test('THE BURST: messages in one room share a collapse key', () => {
+  // Measured, from the server's own log: thirteen high-priority pushes for
+  // ONE device inside three seconds, every one accepted by Firebase — nothing
+  // suppressed, no send failed — and the phone showed a single notification.
+  // FCM rate-limits per device and DROPS the excess rather than queueing it.
+  //
+  // A shared key does not raise the limit. It decides what survives: the
+  // latest message in the conversation, instead of whichever push happened to
+  // get through. That is the difference between "late" and "nothing".
+  assert.strictEqual(N.collapseKeyFor({ roomId: '7', msgId: '101' }), 'room-7');
+  assert.strictEqual(N.collapseKeyFor({ roomId: '7', msgId: '102' }), 'room-7',
+    'two messages in the same room got different keys, so nothing collapses');
+  assert.notStrictEqual(N.collapseKeyFor({ roomId: '8', msgId: '103' }), 'room-7',
+    'different conversations must not replace each other');
+});
+
+test('…but a CALL is never collapsed', () => {
+  // A missed call cannot be replaced by a later one. Calls are already sent
+  // with a ttl and direct_boot_ok precisely so nothing holds them back.
+  assert.strictEqual(N.collapseKeyFor({ callId: 'abc', roomId: '7' }), null,
+    'a call would be dropped in favour of a chat message in the same room');
+  assert.strictEqual(N.collapseKeyFor({ msgId: '1' }), null);
+  assert.strictEqual(N.collapseKeyFor({}), null);
+  assert.strictEqual(N.collapseKeyFor(null), null);
+  assert.strictEqual(N.collapseKeyFor(undefined), null);
+});
+
+test('the server actually sends the collapse key', () => {
+  const fs2 = require('fs'), path2 = require('path');
+  const src = fs2.readFileSync(path2.join(__dirname, '..', 'server.js'), 'utf8');
+  const code = src.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  const i = code.indexOf("priority: 'high',");
+  assert.ok(i > 0, 'the android block moved');
+  const block = code.slice(i, code.indexOf('notification: {', i));
+  assert.ok(/collapse_key: collapseKeyFor\(data\)/.test(block),
+    'collapseKeyFor exists but nothing sends its result, so bursts still drop');
 });
 
 let passed = 0, failed = 0;
