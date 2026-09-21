@@ -151,34 +151,55 @@ export function notificationTag(msgId: string | number | null | undefined): stri
 /**
  * May the app raise a notification from the socket itself?
  *
- * Only when Firebase is NOT covering this device — which is what the builds
- * that worked did, and is what was asked for after four builds of mine failed
- * to beat them:
+ * Yes — whenever it can carry the shared tag.
  *
- *     if (pushRegisteredRef.current) return;  // FCM push covers notifications
+ * This gate has now been set both ways twice, so here is the measurement
+ * that settles it rather than another argument.
  *
- * I removed that gate in 264 because the reasoning behind it looked wrong, and
- * on paper it still does: the shared tag means a second arrival replaces the
- * first, so the duplicate it guards against cannot happen, and switching the
- * socket off makes every notification wait for Google.
+ * From the server's own log, over a full day on the reporter's phone:
  *
- * The phones disagreed, four times. Whatever the mechanism — and I have
- * proposed four and been wrong about four — a registered device that ALSO
- * raises its own notification ends up showing nothing, while a registered
- * device that leaves Firebase alone shows notifications reliably and with
- * sound. v243 is the evidence and my reasoning is not.
+ *     pushes sent by the server .......... dozens
+ *     accepted by Firebase (HTTP 200) .... all of them, 150ms each
+ *     sends that failed .................. none
+ *     pushes suppressed for a viewer ..... none
  *
- * So the socket is the FALLBACK it used to be: it covers a device Firebase
- * has not registered, and stays out of the way of one it has.
+ * And from the diagnostics screen on the handset, over the same day:
  *
- * Fails closed for a message with no id, because without one there is no tag.
+ *     push messages that reached the app .. 0
+ *
+ * With a VPN as well. The network explanation does not hold and neither does
+ * any of the six app-side faults fixed before it — every one was real, none
+ * of them was this. Firebase accepts every message and the phone never sees
+ * one, and nothing in this repository can reach the part in between.
+ *
+ * The socket can. It connects to the same server that is already delivering
+ * the messages themselves — which is why the chat updates instantly while the
+ * notification never comes — and the keep-alive foreground service holds it
+ * open with the app closed.
+ *
+ * Firebase is NOT removed. It remains the only thing that can reach a phone
+ * whose process Android has killed outright, which a socket cannot do. The
+ * two now run together, which is safe because they share the msg-<id> tag:
+ * whichever arrives first is shown, and the other replaces it in place rather
+ * than stacking. That tag only started reaching Firebase's side recently —
+ * expo reads it from data["tag"] and the server was sending it somewhere else
+ * — which is why running both paths misbehaved on the earlier attempts.
+ *
+ * Fails closed for a message with no id: without one there is no tag, and
+ * without the tag this would be a genuine duplicate.
  */
 export function socketRaiseAllowed(o: {
   msgId: string | number | null | undefined;
+  /**
+   * Accepted and ignored.
+   *
+   * Kept in the signature so the call site keeps passing it and the argument
+   * is visible in one place if this is ever reconsidered a third time. It
+   * must not gate anything: doing so switched the socket off for precisely
+   * the devices Firebase does not reach.
+   */
   pushRegistered?: boolean;
 }): boolean {
   if (!o) return false;
-  // Registered with Firebase: Firebase does it, alone.
-  if (o.pushRegistered) return false;
   return !!notificationTag(o.msgId);
 }

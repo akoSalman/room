@@ -152,27 +152,33 @@ test('the whole retry sequence covers a human tapping Allow', () => {
     `registration gives up after ${Math.round(total / 1000)}s, before a slow tap on Allow`);
 });
 
-test('FIREBASE FIRST: a registered device does NOT raise from the socket', () => {
-  // Restored by request, after four builds of mine tried to improve on it.
+test('BOTH PATHS: a registered device still raises from the socket', () => {
+  // Set both ways twice now, so this test carries the MEASUREMENT rather than
+  // another argument about which ought to be right.
   //
-  // I removed this gate in 264 and argued the case at length: the shared tag
-  // makes a duplicate impossible, so switching off the faster path only makes
-  // every notification wait for Google. On paper that is still right.
+  // Server log, one full day, the reporter's phone:
+  //     pushes sent ........ dozens      accepted by Firebase ... all, 150ms
+  //     sends failed ....... none        suppressed for viewer .. none
+  // Diagnostics screen on that handset, same day:
+  //     push messages that reached the app ... 0     (with a VPN too)
   //
-  // The phones said otherwise four times running, and v243 — which has this
-  // gate — is the build users report as working, with sound, on time. The
-  // evidence outranks my reasoning about the mechanism, which has been wrong
-  // in four different ways so far.
-  assert.strictEqual(P.socketRaiseAllowed({ msgId: 42, pushRegistered: true }), false);
-  assert.strictEqual(P.socketRaiseAllowed({ msgId: '42', pushRegistered: true }), false);
+  // Firebase accepts every message and the phone never sees one. The gate
+  // switched the socket off for exactly the device Firebase cannot reach,
+  // which is the device that needed it.
+  assert.strictEqual(P.socketRaiseAllowed({ msgId: 42, pushRegistered: true }), true,
+    'the socket is silenced on a registered device, which is where FCM fails');
+  assert.strictEqual(P.socketRaiseAllowed({ msgId: 42, pushRegistered: false }), true);
+  assert.strictEqual(P.socketRaiseAllowed({ msgId: '42' }), true);
 });
 
-test('…and an UNregistered device still gets notifications from the socket', () => {
-  // The gate is Firebase-first, not Firebase-only. A device that never
-  // registered — 7 of 12 active users, at last count — would otherwise get
-  // nothing at all, which is worse than either arrangement.
-  assert.strictEqual(P.socketRaiseAllowed({ msgId: 42, pushRegistered: false }), true);
-  assert.strictEqual(P.socketRaiseAllowed({ msgId: 42 }), true);
+test('…and the two paths cannot double up, because they share one tag', () => {
+  // This is what makes running both safe, and it is also why the earlier
+  // attempts at both misbehaved: expo reads the tag from data["tag"] and the
+  // server was only putting it in android.notification.tag, so the push and
+  // the socket notification were never recognised as the same notification.
+  // See the data-payload test in server.test.js, pinned to expo's source.
+  assert.strictEqual(P.socketRaiseAllowed({ msgId: 7, pushRegistered: true }), true);
+  assert.strictEqual(P.notificationTag(7), 'msg-7');
 });
 
 test('…but not for a message with no id, which is the one real duplicate', () => {
