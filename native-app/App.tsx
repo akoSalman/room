@@ -109,6 +109,21 @@ Notifications.setNotificationChannelAsync(MESSAGES_CHANNEL, {
 notifee.createChannel({
   id: MESSAGES_CHANNEL,
   name: 'Messages',
+  // HIGH, and this is the ceiling despite the name.
+  //
+  // The diagnostics screen reads 6 on a fresh install where older builds read
+  // 7, because these two calls race and Android keeps whichever creates the
+  // channel FOREVER — importance cannot be changed afterwards. That looks
+  // like a downgrade I introduced and it is not:
+  //
+  //   notifee HIGH = 4 = NotificationManager.IMPORTANCE_HIGH
+  //   expo    MAX  = 7 = NotificationManager.IMPORTANCE_MAX = 5
+  //
+  // and IMPORTANCE_MAX is documented by Android as unused — IMPORTANCE_HIGH
+  // is the highest level the system acts on, and is what makes a sound and a
+  // heads-up. notifee exposes no MAX at all, for this reason. So 7 and 6 are
+  // the same channel behaviour written on two different scales, and chasing
+  // the 7 back would be changing a number on a screen and nothing else.
   importance: AndroidImportance.HIGH,
   sound: 'notify',
   vibration: true,
