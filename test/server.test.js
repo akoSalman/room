@@ -109,7 +109,38 @@ async function main() {
   await new Promise(r => (server.listening ? r() : server.once('listening', r)));
   baseUrl = `http://127.0.0.1:${server.address().port}`;
 
-  let passed = 0, failed = 0;
+  
+test('THE TAG EXPO ACTUALLY READS: it is in the data payload, not just android.notification', () => {
+  // Pinned against the library's own source, because this was got wrong once
+  // already for channelId and the failure is invisible from outside.
+  //
+  // expo-notifications, FirebaseMessagingDelegate.getNotificationIdentifier:
+  //     remoteMessage.data["tag"] ?: remoteMessage.messageId ?: UUID…
+  // and ExpoPresentationDelegate.getNotifyId returns ONE constant id for every
+  // notification it draws. So data["tag"] is the only thing that tells two
+  // notifications apart, and the only thing that can make the app's own
+  // notification and the server's push the SAME notification.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const code = src.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  const i = code.indexOf('data: Object.fromEntries(');
+  assert.ok(i > 0, 'the FCM payload moved');
+  const dataBlock = code.slice(i, code.indexOf('android: {', i));
+  assert.ok(/tag: notificationTag\(data\.msgId\)/.test(dataBlock),
+    'the tag is missing from the data payload, so expo falls back to messageId');
+  assert.ok(/android\.tag \? \{ tag: android\.tag \}/.test(dataBlock),
+    'an explicit tag (calls) cannot override the message tag on the expo path');
+  // And the delegate really does read data["tag"] — if a future expo version
+  // stops doing so, this fails here rather than on somebody's phone.
+  const delegate = path.join(__dirname, '..', 'native-app', 'node_modules',
+    'expo-notifications', 'android', 'src', 'main', 'java', 'expo', 'modules',
+    'notifications', 'service', 'delegates', 'FirebaseMessagingDelegate.kt');
+  if (fs.existsSync(delegate)) {
+    assert.ok(/remoteMessage\.data\["tag"\]/.test(fs.readFileSync(delegate, 'utf8')),
+      'expo no longer reads data["tag"]; the server payload must be rechecked');
+  }
+});
+
+let passed = 0, failed = 0;
   for (const { name, fn } of tests) {
     try {
       await fn();

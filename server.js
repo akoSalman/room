@@ -830,6 +830,31 @@ async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
               Object.entries({
                 ...data, title, body,
                 channelId: android.channelId || 'messages-v3',
+                // THE TAG BELONGS HERE TOO, for the same reason channelId does
+                // — and this is not inference, it is what the library reads.
+                // expo-notifications, FirebaseMessagingDelegate.kt:
+                //
+                //   return remoteMessage.data["tag"]
+                //       ?: remoteMessage.messageId
+                //       ?: UUID.randomUUID().toString()
+                //
+                // That string becomes the Android notification TAG, and the
+                // numeric id beside it is a constant for every notification
+                // expo draws (getNotifyId in ExpoPresentationDelegate.kt), so
+                // the tag is the ONLY thing distinguishing one notification
+                // from another on this path.
+                //
+                // android.notification.tag below never reaches it: that field
+                // is read only when the system draws the notification itself,
+                // which is not what happens while the app's process exists.
+                // So every push fell back to messageId — a value the app's own
+                // socket notification cannot possibly match. The two paths
+                // could never be recognised as the same notification, which is
+                // what the shared msg-<id> tag was introduced to guarantee,
+                // and a delete could not pull a pushed notification from the
+                // tray because it was not tagged with the message id at all.
+                ...(data.msgId ? { tag: notificationTag(data.msgId) } : {}),
+                ...(android.tag ? { tag: android.tag } : {}),
               }).map(([k, v]) => [k, String(v)]),
             ),
             android: {
