@@ -151,30 +151,34 @@ export function notificationTag(msgId: string | number | null | undefined): stri
 /**
  * May the app raise a notification from the socket itself?
  *
- * Yes — whenever it can carry the shared tag above.
+ * Only when Firebase is NOT covering this device — which is what the builds
+ * that worked did, and is what was asked for after four builds of mine failed
+ * to beat them:
  *
- * This used to answer "only if the device is not registered with Firebase",
- * and that was my mistake, twice over. It reads as caution — do not show the
- * same message twice — but the duplicate it prevents cannot happen: the tag
- * makes the second arrival replace the first. All it actually did was switch
- * off the faster of the two paths.
+ *     if (pushRegisteredRef.current) return;  // FCM push covers notifications
  *
- * And it switched it off for exactly the users it was working for. Before the
- * registration race was fixed, no device was registered, so this returned true
- * and the socket was quietly doing the work. Fixing registration made it
- * return false everywhere, and every notification went back to waiting for
- * Firebase. That is the regression that was reported as "notifications arrive
- * minutes late", and it is this line.
+ * I removed that gate in 264 because the reasoning behind it looked wrong, and
+ * on paper it still does: the shared tag means a second arrival replaces the
+ * first, so the duplicate it guards against cannot happen, and switching the
+ * socket off makes every notification wait for Google.
  *
- * Firebase is not being undone. It remains how a message reaches a phone whose
- * app is not running, which is most of the time and is not something a socket
- * can do. This only stops it being made to wait when the app IS running and
- * already has the message in hand: the server hands a push to Google in about
- * 400ms, and on these connections Google then takes as long as it takes.
+ * The phones disagreed, four times. Whatever the mechanism — and I have
+ * proposed four and been wrong about four — a registered device that ALSO
+ * raises its own notification ends up showing nothing, while a registered
+ * device that leaves Firebase alone shows notifications reliably and with
+ * sound. v243 is the evidence and my reasoning is not.
  *
- * Fails closed for a message with no id, because without one there is no tag,
- * and without the tag this WOULD be the duplicate the old rule imagined.
+ * So the socket is the FALLBACK it used to be: it covers a device Firebase
+ * has not registered, and stays out of the way of one it has.
+ *
+ * Fails closed for a message with no id, because without one there is no tag.
  */
-export function socketRaiseAllowed(o: { msgId: string | number | null | undefined }): boolean {
-  return !!notificationTag(o && o.msgId);
+export function socketRaiseAllowed(o: {
+  msgId: string | number | null | undefined;
+  pushRegistered?: boolean;
+}): boolean {
+  if (!o) return false;
+  // Registered with Firebase: Firebase does it, alone.
+  if (o.pushRegistered) return false;
+  return !!notificationTag(o.msgId);
 }

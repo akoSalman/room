@@ -622,11 +622,12 @@ export default function App() {
       handler = (msg: any) => {
         // Raised from the app's OWN socket, the moment the message lands.
         //
-        // This runs alongside Firebase rather than instead of it. Both carry
-        // the same tag, so Android shows ONE notification — whichever path
-        // arrives first. On these connections that is almost always this one.
-        // See socketRaiseAllowed for why gating it on registration was wrong.
-        if (!pushReg.socketRaiseAllowed({ msgId: msg.id })) return;
+        // A FALLBACK, not a parallel path. If this device is registered with
+        // Firebase, Firebase does the notifying and this stays silent — the
+        // arrangement every build up to 264 shipped, and the only one users
+        // have ever reported as working. Asked for by name after four of my
+        // builds failed to beat it. See socketRaiseAllowed.
+        if (!pushReg.socketRaiseAllowed({ msgId: msg.id, pushRegistered: pushRegisteredRef.current })) return;
         if (msg.username === uname) return;
         if (AppState.currentState === 'active') return; // in-app badges cover it
         if (screen === 'chat' && room && msg.room_id === room.id) return;

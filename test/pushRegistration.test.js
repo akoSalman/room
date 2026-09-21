@@ -152,15 +152,27 @@ test('the whole retry sequence covers a human tapping Allow', () => {
     `registration gives up after ${Math.round(total / 1000)}s, before a slow tap on Allow`);
 });
 
-test('THE REGRESSION: a registered device may still raise from the socket', () => {
-  // This is the bug that was reported as "notifications arrive minutes late",
-  // three times. The rule used to be "only if the device is NOT registered
-  // with Firebase", which reads as caution but switched off the fast path for
-  // exactly the devices it was working for: before registration was fixed
-  // nothing was registered, so the socket was quietly doing the work, and
-  // fixing registration silenced it everywhere.
+test('FIREBASE FIRST: a registered device does NOT raise from the socket', () => {
+  // Restored by request, after four builds of mine tried to improve on it.
+  //
+  // I removed this gate in 264 and argued the case at length: the shared tag
+  // makes a duplicate impossible, so switching off the faster path only makes
+  // every notification wait for Google. On paper that is still right.
+  //
+  // The phones said otherwise four times running, and v243 — which has this
+  // gate — is the build users report as working, with sound, on time. The
+  // evidence outranks my reasoning about the mechanism, which has been wrong
+  // in four different ways so far.
+  assert.strictEqual(P.socketRaiseAllowed({ msgId: 42, pushRegistered: true }), false);
+  assert.strictEqual(P.socketRaiseAllowed({ msgId: '42', pushRegistered: true }), false);
+});
+
+test('…and an UNregistered device still gets notifications from the socket', () => {
+  // The gate is Firebase-first, not Firebase-only. A device that never
+  // registered — 7 of 12 active users, at last count — would otherwise get
+  // nothing at all, which is worse than either arrangement.
+  assert.strictEqual(P.socketRaiseAllowed({ msgId: 42, pushRegistered: false }), true);
   assert.strictEqual(P.socketRaiseAllowed({ msgId: 42 }), true);
-  assert.strictEqual(P.socketRaiseAllowed({ msgId: '42' }), true);
 });
 
 test('…but not for a message with no id, which is the one real duplicate', () => {
@@ -342,16 +354,22 @@ test('the token is remembered only after the server accepts it', () => {
     'the token is recorded before the server accepted it');
 });
 
-test('…and App.tsx asks it before raising one', () => {
-  assert.ok(/pushReg\.socketRaiseAllowed\(\{ msgId: msg\.id \}\)/.test(app),
-    'the socket handler decides for itself whether it may raise a notification');
+test('…and App.tsx asks it before raising one, PASSING the registration state', () => {
+  assert.ok(/pushReg\.socketRaiseAllowed\(\{ msgId: msg\.id, pushRegistered: pushRegisteredRef\.current \}\)/.test(app),
+    'the gate cannot see whether Firebase is covering this device, so it never closes');
   // Gating on registration is what caused the late notifications. It must not
   // come back by someone "restoring" it while editing this file.
   const handler = app.slice(app.indexOf('// Global notifications:'),
     app.indexOf('// When a message is deleted, dismiss its notification'));
   assert.ok(handler.length > 400, 'the notification handler moved');
-  assert.ok(!/socketFallbackAllowed|pushRegistered/.test(handler),
-    'the socket is gated on registration again, which silences it once FCM works');
+  // Gating on registration is BACK, deliberately and by request. It was
+  // removed in 264 on reasoning that still looks right on paper — the shared
+  // tag makes a duplicate impossible, so why switch off the faster path — and
+  // four builds of mine failed against the builds that had it. v243 is the
+  // evidence; the reasoning is not. socketFallbackAllowed, the abandoned
+  // half-measure between the two, must stay gone.
+  assert.ok(!/socketFallbackAllowed/.test(handler),
+    'the abandoned socketFallbackAllowed gate is back');
   // The identifier comes from the shared helper, not a second copy of the
   // format — a hand-written `msg-${id}` here is how the two drift apart and
   // every message starts arriving twice.
