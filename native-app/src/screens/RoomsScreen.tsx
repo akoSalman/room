@@ -872,6 +872,13 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
                     Shown by the app itself: {diag.d.socketRaisedCount}
                     {'  ·  '}last {notifyDiag.ago(diag.d.lastSocketRaisedAt)}
                   </Text>
+                  {diag.d.socketFailedCount > 0 && (
+                    <Text style={s.diagLine}>
+                      Refused by Android: {diag.d.socketFailedCount}
+                      {'  ·  '}last {notifyDiag.ago(diag.d.lastSocketFailedAt)}
+                      {'\n'}{diag.d.lastSocketError}
+                    </Text>
+                  )}
                   <Text style={s.diagLine}>
                     Last one was {diag.d.lastHandlerShowed === null ? 'not seen yet'
                       : diag.d.lastHandlerShowed ? 'shown' : 'hidden (app was open)'}

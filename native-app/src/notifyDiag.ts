@@ -29,9 +29,22 @@ export type Diag = {
   /** An FCM/expo notification reached this app's JavaScript. */
   lastReceivedAt: number | null;
   receivedCount: number;
-  /** The app drew a notification itself, off its own socket. */
+  /**
+   * The app drew a notification itself, off its own socket — AND THE POST WAS
+   * ACCEPTED. Recorded after the call resolves, never before it.
+   *
+   * It used to be recorded on the line after the call, with the call's own
+   * rejection thrown away by a bare .catch(() => {}). A screenshot then read
+   * "shown by the app itself: 38, last 2s ago" while the phone had shown
+   * nothing at all, because all 38 had been refused. The counter was
+   * measuring attempts and claiming to measure notifications.
+   */
   lastSocketRaisedAt: number | null;
   socketRaisedCount: number;
+  /** …and the ones that were refused, with the reason. */
+  lastSocketFailedAt: number | null;
+  socketFailedCount: number;
+  lastSocketError: string | null;
   /** The notification handler was asked whether to show one, and its answer. */
   lastHandlerAt: number | null;
   lastHandlerShowed: boolean | null;
@@ -44,6 +57,9 @@ const EMPTY: Diag = {
   receivedCount: 0,
   lastSocketRaisedAt: null,
   socketRaisedCount: 0,
+  lastSocketFailedAt: null,
+  socketFailedCount: 0,
+  lastSocketError: null,
   lastHandlerAt: null,
   lastHandlerShowed: null,
   lastTokenAcceptedAt: null,
@@ -63,7 +79,10 @@ export function empty(): Diag {
  */
 export function apply(
   prev: Diag | null | undefined,
-  event: { kind: 'received' | 'socket-raised' | 'handler' | 'token-accepted'; at: number; showed?: boolean },
+  event: {
+    kind: 'received' | 'socket-raised' | 'socket-failed' | 'handler' | 'token-accepted';
+    at: number; showed?: boolean; error?: string;
+  },
 ): Diag {
   const d: Diag = { ...EMPTY, ...(prev || {}) };
   const at = Number(event?.at) || 0;
@@ -73,6 +92,15 @@ export function apply(
       return { ...d, lastReceivedAt: at, receivedCount: (Number(d.receivedCount) || 0) + 1 };
     case 'socket-raised':
       return { ...d, lastSocketRaisedAt: at, socketRaisedCount: (Number(d.socketRaisedCount) || 0) + 1 };
+    case 'socket-failed':
+      return {
+        ...d,
+        lastSocketFailedAt: at,
+        socketFailedCount: (Number(d.socketFailedCount) || 0) + 1,
+        // Truncated because this is read off a screenshot, and because a
+        // native stack in a chat message helps nobody.
+        lastSocketError: String(event.error || 'unknown').slice(0, 120),
+      };
     case 'handler':
       return { ...d, lastHandlerAt: at, lastHandlerShowed: !!event.showed };
     case 'token-accepted':
@@ -120,6 +148,17 @@ export function verdict(d: Diag | null | undefined, o: {
   if (!o.tokenRegistered) {
     return 'This device has not registered for push. Reopen the app while online.';
   }
+  // BEFORE anything about Firebase. The app's own socket is the fast path and
+  // covers almost every message; if its posts are being REFUSED then nothing
+  // appears no matter what Google does, and the reason is right here in the
+  // app. This went unseen for three builds because the rejection was thrown
+  // away by a bare .catch(() => {}) and the counter was bumped anyway.
+  const failed = Number(d?.socketFailedCount) || 0;
+  const failedAt = Number(d?.lastSocketFailedAt) || 0;
+  const raisedAt = Number(d?.lastSocketRaisedAt) || 0;
+  if (failed > 0 && failedAt >= raisedAt) {
+    return `The app is being refused when it tries to show a notification: ${d?.lastSocketError || 'unknown'}`;
+  }
   const received = Number(d?.receivedCount) || 0;
   if (received === 0) {
     return 'No push message has ever reached this app. The server is sending them, so they are being lost on the way — this is delivery, not the app.';
@@ -162,13 +201,14 @@ export async function read(): Promise<Diag> {
  * instrumentation that can break the thing it measures is worse than none.
  */
 export function record(
-  kind: 'received' | 'socket-raised' | 'handler' | 'token-accepted',
+  kind: 'received' | 'socket-raised' | 'socket-failed' | 'handler' | 'token-accepted',
   showed?: boolean,
+  error?: string,
 ): void {
   (async () => {
     try {
       const prev = await read();
-      const next = apply(prev, { kind, at: Date.now(), showed });
+      const next = apply(prev, { kind, at: Date.now(), showed, error });
       await AsyncStorage.setItem(KEY, JSON.stringify(next));
     } catch {}
   })();

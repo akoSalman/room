@@ -8,7 +8,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import * as Notifications from 'expo-notifications';
-import notifee, { EventType } from '@notifee/react-native';
+import notifee, { EventType, AndroidImportance } from '@notifee/react-native';
 import { registerCallPush } from './src/callPush';
 import { CALL_CHANNEL } from './src/incomingCall';
 import { registerCallService, onEndFromShade, handleNotifeeEvent } from './src/ongoingCall';
@@ -101,6 +101,18 @@ Notifications.setNotificationChannelAsync(MESSAGES_CHANNEL, {
   importance: Notifications.AndroidImportance.MAX,
   sound: 'notify.wav',
   vibrationPattern: [0, 250, 250, 250],
+}).catch(() => {});
+// The same channel again, through notifee, because notifee is what posts on
+// it and displayNotification REJECTS if the channel does not exist. Creating a
+// channel twice is a no-op in Android; creating it in only one of the two
+// libraries is a silent nothing-appears the first time the other one fails.
+notifee.createChannel({
+  id: MESSAGES_CHANNEL,
+  name: 'Messages',
+  importance: AndroidImportance.HIGH,
+  sound: 'notify',
+  vibration: true,
+  vibrationPattern: [250, 250],
 }).catch(() => {});
 // ── Incoming calls, with the app closed ─────────────────────────────────────
 //
@@ -628,31 +640,61 @@ export default function App() {
           : msg.type === 'invite' ? '🔒 Room invitation' : '📄 File';
         // Tie the notification to the message id so it can be pulled from the
         // tray if the sender deletes the message.
-        Notifications.scheduleNotificationAsync({
+        // ── Posted through notifee, not expo-notifications ──────────────────
+        //
+        // This is the third posting mechanism here, so the reasons, in order:
+        //
+        //   trigger: null        shown, but on the DEFAULT channel — no custom
+        //                        sound, no heads-up. And it carries the same
+        //                        tag as the server's FCM notification, so
+        //                        Android treated the sounded FCM one as an
+        //                        UPDATE of this silent one. An update makes no
+        //                        sound. That is where the sound went.
+        //
+        //   trigger: {channelId} named the right channel and showed NOTHING.
+        //                        In expo-notifications a non-null trigger
+        //                        SCHEDULES rather than presents, whatever
+        //                        ChannelAwareTriggerInput's docs imply. The
+        //                        screen read "shown by the app itself: 38,
+        //                        last 2s ago" against a phone that had shown
+        //                        none of them — see below for why nobody saw
+        //                        the rejections.
+        //
+        //   notifee              posts now, on a named channel, with no
+        //                        scheduler in the path. It is already how the
+        //                        call notification and the keep-alive service
+        //                        are posted, so it is the mechanism this app
+        //                        has actual evidence works.
+        //
+        // AND THE RESULT IS RECORDED FROM THE RESULT. The previous version ran
+        // .catch(() => {}) and then recorded 'socket-raised' on the next line
+        // unconditionally, so the counter said 38 whether Android had accepted
+        // 38 or refused 38. A counter that reports attempts under a label
+        // reading "shown" is how three builds went out believing this path
+        // worked.
+        notifee.displayNotification({
           // Matches the tag the server puts on its own FCM notification, so if
-          // both ever arrive Android replaces rather than stacks them.
-          identifier: pushReg.notificationTag(msg.id),
-          content: { title: msg.username, body, sound: 'notify.wav' },
-          // THE CHANNEL, and it has to be here. `trigger: null` means
-          // "immediately" AND "on the default channel" — which has no custom
-          // sound and no heads-up. That is where the missing notification
-          // sound went.
-          //
-          // Worse than silent: this notification carries the same tag as the
-          // server's FCM one, so Android treats the FCM notification as an
-          // UPDATE of this one rather than a new alert — and an update does
-          // not make a sound. A silent notification on the default channel
-          // was therefore swallowing the proper, sounded one behind it.
-          //
-          // { channelId } is itself the "deliver now" trigger; it is not a
-          // delay. See ChannelAwareTriggerInput in expo-notifications.
-          trigger: { channelId: MESSAGES_CHANNEL },
-        }).catch(() => {});
-        notifyDiag.record('socket-raised');
+          // both arrive Android replaces rather than stacks them.
+          id: pushReg.notificationTag(msg.id),
+          title: msg.username,
+          body,
+          android: {
+            channelId: MESSAGES_CHANNEL,
+            tag: pushReg.notificationTag(msg.id),
+            importance: AndroidImportance.HIGH,
+            pressAction: { id: 'default', launchActivity: 'default' },
+          },
+        }).then(
+          () => notifyDiag.record('socket-raised'),
+          (e: any) => notifyDiag.record('socket-failed', undefined, e?.message || String(e)),
+        );
       };
       // When a message is deleted, dismiss its notification on this device too.
       delHandler = ({ messageId }: any) => {
-        Notifications.dismissNotificationAsync(`msg-${messageId}`).catch(() => {});
+        // Both libraries: the notification may have been posted by notifee
+        // (socket) or drawn by Android from the server's FCM payload.
+        notifee.cancelNotification(pushReg.notificationTag(messageId)).catch(() => {});
+        Notifications.dismissNotificationAsync(pushReg.notificationTag(messageId)).catch(() => {});
       };
       sock.on('message_received', handler);
       sock.on('message_deleted', delHandler);

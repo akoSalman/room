@@ -134,6 +134,46 @@ test('counting is per event and never silently resets', () => {
   assert.strictEqual(d.socketRaisedCount, 1);
 });
 
+test('THE COUNTER THAT LIED: a refused post is not counted as one shown', () => {
+  // From a real screenshot: "shown by the app itself: 38 · last 2s ago" on a
+  // phone that had shown none of them. The call site ran
+  //
+  //     notifee/expo post(...).catch(() => {});
+  //     notifyDiag.record('socket-raised');
+  //
+  // so the record ran whether the post was accepted or refused, and the
+  // rejection that would have said why was thrown away. Three builds shipped
+  // believing this path worked because its own counter said so.
+  let d = D.apply(D.empty(), { kind: 'socket-failed', at: 1000, error: 'Channel not found' });
+  assert.strictEqual(d.socketRaisedCount, 0,
+    'a refused post was counted under the "shown" label');
+  assert.strictEqual(d.socketFailedCount, 1);
+  const v = D.verdict(d, ok);
+  assert.ok(/refused/i.test(v), v);
+  assert.ok(/Channel not found/.test(v),
+    'the reason Android gave is recorded but not reported, so it helps nobody');
+});
+
+test('…and refusals outrank everything the verdict says about Firebase', () => {
+  // If the app's own posts are being refused, nothing appears no matter what
+  // Google does — and "no push has ever reached this app / this is delivery,
+  // not the app" would send the work in exactly the wrong direction again.
+  let d = D.apply(D.empty(), { kind: 'socket-failed', at: 2000, error: 'boom' });
+  assert.ok(!/delivery, not the app/i.test(D.verdict(d, ok)));
+  // A refusal that has since been superseded by a successful post must NOT
+  // keep accusing the app — the same staleness trap as the handler verdict.
+  d = D.apply(d, { kind: 'socket-raised', at: 3000 });
+  assert.ok(!/refused/i.test(D.verdict(d, ok)),
+    'an old refusal still blames the app after posts started working again');
+});
+
+test('the failure reason is truncated and never null-crashes', () => {
+  const long = D.apply(D.empty(), { kind: 'socket-failed', at: 1, error: 'x'.repeat(500) });
+  assert.ok(long.lastSocketError.length <= 120);
+  const none = D.apply(D.empty(), { kind: 'socket-failed', at: 1 });
+  assert.strictEqual(none.lastSocketError, 'unknown');
+});
+
 test('the app drawing one itself is NOT counted as a push arriving', () => {
   // These are the two different channels, and confusing them would hide
   // exactly the failure this screen exists to find.
@@ -193,10 +233,55 @@ test('THE FACT IS ACTUALLY RECORDED: an arriving push is counted', () => {
   assert.ok(/recvSub\.remove\(\)/.test(app), 'the listener is never removed');
 });
 
-test('…and so are the other three', () => {
-  for (const k of ['handler', 'token-accepted', 'socket-raised']) {
+test('…and so are the other four', () => {
+  for (const k of ['handler', 'token-accepted', 'socket-raised', 'socket-failed']) {
     assert.ok(new RegExp(`notifyDiag\\.record\\('${k}'`).test(app), `${k} is never recorded`);
   }
+});
+
+test('THE POST IS NOT FIRE-AND-FORGET: its result decides what is recorded', () => {
+  // The bug this file exists to prevent, in its own call site. Read the socket
+  // handler's post and require that 'socket-raised' is recorded from the
+  // RESULT of the call, not on a line that runs regardless.
+  const code = app.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  const i = code.indexOf('notifee.displayNotification({');
+  assert.ok(i > 0, 'the socket notification is no longer posted through notifee');
+  // Bounded by what FOLLOWS the post, not by a character count: a fixed window
+  // breaks the moment a line is added, and then passes while checking nothing.
+  const end = code.indexOf('delHandler =', i);
+  assert.ok(end > i);
+  const post = code.slice(i, end);
+  assert.ok(/\.then\(/.test(post),
+    "the post's result is discarded, so the counter measures attempts again");
+  assert.ok(/notifyDiag\.record\('socket-failed'/.test(post),
+    'a refused notification is silently dropped — the exact 38-that-were-0 bug');
+  assert.ok(!/\.catch\(\(\) => \{\}\)/.test(post),
+    'the rejection is swallowed by a bare catch, hiding why nothing appears');
+});
+
+test('the socket post names the Messages channel, and notifee owns that channel', () => {
+  // Posting on the default channel is silent AND, sharing a tag with the
+  // server's FCM notification, turns the sounded one into a soundless update.
+  const code = app.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  const i = code.indexOf('notifee.displayNotification({');
+  const post = code.slice(i, code.indexOf('delHandler =', i));
+  assert.ok(/channelId: MESSAGES_CHANNEL/.test(post), 'the socket post has no channel');
+  assert.ok(/tag: pushReg\.notificationTag/.test(post),
+    'without the matching tag, FCM and the socket stack two notifications');
+  // notifee REJECTS on an unknown channel, so it must create it itself rather
+  // than trusting expo-notifications to have done it.
+  assert.ok(/notifee\.createChannel\(\{[\s\S]{0,200}id: MESSAGES_CHANNEL/.test(code),
+    'notifee posts on a channel it never creates; the first post rejects');
+});
+
+test('expo\'s scheduler is not in the path any more', () => {
+  // trigger: { channelId } named the right channel and displayed NOTHING: a
+  // non-null trigger SCHEDULES in expo-notifications, whatever
+  // ChannelAwareTriggerInput's documentation implies. Build 293 posted 38 of
+  // these and the phone showed none.
+  const code = app.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  assert.ok(!/trigger: \{ channelId: MESSAGES_CHANNEL \}/.test(code),
+    'the scheduling trigger is back; these notifications will not appear');
 });
 
 test('the screen shows it, and names the key rather than respelling it', () => {

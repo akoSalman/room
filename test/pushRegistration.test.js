@@ -249,7 +249,18 @@ test('THE SILENT ONE: the app\'s own notification names the message channel', ()
   // That is also why older builds were fine: the socket notification was
   // gated off, so the FCM one was the only notification and Android drew it
   // on messages-v3 with its sound.
-  assert.ok(/trigger: \{ channelId: MESSAGES_CHANNEL \}/.test(app),
+  //
+  // NAMING the channel was not enough, and this test asserted the wrong fix
+  // for three builds. `trigger: { channelId }` named messages-v3 and showed
+  // NOTHING: in expo-notifications a non-null trigger SCHEDULES rather than
+  // presents, whatever ChannelAwareTriggerInput's docs imply. So the post now
+  // goes through notifee, which has no scheduler in the path — and the check
+  // is for the channel on the notifee post. See notifyDiag.test.js for the
+  // counter that hid all of this by reporting attempts as notifications.
+  const post = app.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  const at = post.indexOf('notifee.displayNotification({');
+  assert.ok(at > 0, 'the socket notification is no longer posted through notifee');
+  assert.ok(/channelId: MESSAGES_CHANNEL/.test(post.slice(at, post.indexOf('delHandler =', at))),
     'the socket notification lands on the default channel, silent, and swallows the FCM one');
   // Comment lines stripped first. The explanation above this call contains
   // the words "trigger: null", and a check against the raw source matches the
@@ -344,7 +355,7 @@ test('…and App.tsx asks it before raising one', () => {
   // The identifier comes from the shared helper, not a second copy of the
   // format — a hand-written `msg-${id}` here is how the two drift apart and
   // every message starts arriving twice.
-  assert.ok(/identifier: pushReg\.notificationTag\(msg\.id\)/.test(app),
+  assert.ok(/id: pushReg\.notificationTag\(msg\.id\)/.test(app),
     'the notification is named by hand rather than by the shared rule');
   // stayConnected was the abandoned half of the first socket-first attempt and
   // must stay gone. keepAlive is NOT: it was asked for once the phone's own
