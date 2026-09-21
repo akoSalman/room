@@ -54,17 +54,105 @@ const test = (n, f) => tests.push({ n, f });
 
 const idle = { disabled: false, running: false };
 
+const PLUGIN = require(path.join(NAT, 'plugins', 'withNotifeeDataSync.js'));
+
+/** notifee's core AAR, which is where the service is really declared. */
+function findNotifeeAar() {
+  const base = path.join(NAT, 'node_modules', '@notifee', 'react-native', 'android', 'libs');
+  if (!fs.existsSync(base)) return null;
+  const out = [];
+  (function walk(d) {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const f = path.join(d, e.name);
+      if (e.isDirectory()) walk(f);
+      else if (e.name.endsWith('.aar')) out.push(f);
+    }
+  })(base);
+  return out[0] || null;
+}
+
+function extractManifest(aar) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aar-'));
+  try {
+    execFileSync('unzip', ['-o', '-q', aar, 'AndroidManifest.xml', '-d', dir], { stdio: 'pipe' });
+    return fs.readFileSync(path.join(dir, 'AndroidManifest.xml'), 'utf8');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // ── The rule that killed the app ────────────────────────────────────────────
 
-test('OFF, until a manifest change ships with it', () => {
-  // It crashed the app on launch. notifee's manifest declares no
-  // android:foregroundServiceType, and on Android 14 startForeground() with an
-  // undeclared type throws natively and kills the process. Declaring the
-  // PERMISSION is a different thing and does not satisfy it.
-  assert.strictEqual(K.KEEP_ALIVE_SERVICE, false,
-    'the service is on again without the manifest attribute that makes it legal');
-  assert.strictEqual(K.mayStart({ appState: 'active', ...idle }), false,
-    'the kill switch does not actually stop a start');
+test('THE CRASH: notifee declares shortService, and this asks for dataSync', () => {
+  // Read out of notifee's own AAR, because this single fact is what killed
+  // the app on launch and no amount of reading the JS would have shown it:
+  //
+  //   <service android:name="app.notifee.core.ForegroundService"
+  //            android:foregroundServiceType="shortService" />
+  //
+  // Asking for a type the manifest does not declare throws natively on
+  // Android 14. If a notifee upgrade changes that attribute, this fails here
+  // rather than on somebody's phone.
+  const aar = findNotifeeAar();
+  if (!aar) return;
+  const xml = extractManifest(aar);
+  assert.ok(/app\.notifee\.core\.ForegroundService/.test(xml),
+    'notifee no longer declares the service this feature depends on');
+  const m = xml.match(/ForegroundService[\s\S]{0,200}?foregroundServiceType="([^"]+)"/);
+  assert.ok(m, 'notifee no longer declares a foregroundServiceType at all');
+  assert.strictEqual(m[1], 'shortService',
+    `notifee now declares "${m[1]}" — the override in withNotifeeDataSync.js must be rechecked`);
+});
+
+test('…so the plugin overrides it, because shortService is capped at ~3 minutes', () => {
+  // Switching the code to shortService instead would compile and not crash,
+  // and then Android would kill the app after about three minutes. A socket
+  // that dies after three minutes is not a socket being kept alive.
+  assert.strictEqual(PLUGIN.TYPE, 'dataSync',
+    'the override asks for a type with a time limit, which defeats the point');
+  assert.strictEqual(PLUGIN.SERVICE, 'app.notifee.core.ForegroundService');
+});
+
+test('THE PLUGIN ACTUALLY REWRITES THE MANIFEST', () => {
+  // Driven with a manifest object rather than asserting the source contains
+  // the right words: a plugin that is registered but silently does nothing
+  // would pass every other check in this file and crash the app again.
+  // The shape expo's helper expects: it finds the application by name.
+  const manifest = { manifest: { $: {},
+    application: [{ $: { 'android:name': '.MainApplication' }, service: [] }] } };
+  const out = PLUGIN.applyToManifest(manifest);
+  const app = out.manifest.application[0];
+  const svc = (app.service || []).find(x => x.$['android:name'] === PLUGIN.SERVICE);
+  assert.ok(svc, 'the plugin did not add the service override');
+  assert.strictEqual(svc.$['android:foregroundServiceType'], 'dataSync');
+  assert.strictEqual(svc.$['tools:replace'], 'android:foregroundServiceType',
+    'without tools:replace the manifest merger fails on the conflicting value');
+  assert.strictEqual(out.manifest.$['xmlns:tools'], 'http://schemas.android.com/tools',
+    'tools: is used without declaring the namespace, which fails the merge');
+});
+
+test('…and it overwrites an existing entry rather than adding a second', () => {
+  // Two <service> elements for one name is a manifest error.
+  const manifest = { manifest: { $: {},
+    application: [{ $: { 'android:name': '.MainApplication' }, service: [
+      { $: { 'android:name': PLUGIN.SERVICE, 'android:foregroundServiceType': 'shortService' } },
+    ] }] } };
+  const out = PLUGIN.applyToManifest(manifest);
+  const svcs = out.manifest.application[0].service.filter(
+    x => x.$['android:name'] === PLUGIN.SERVICE);
+  assert.strictEqual(svcs.length, 1, 'the service is declared twice');
+  assert.strictEqual(svcs[0].$['android:foregroundServiceType'], 'dataSync');
+});
+
+test('the plugin is registered, or it never runs', () => {
+  const plugins = (appJson.expo.plugins || []).map(x => (Array.isArray(x) ? x[0] : x));
+  assert.ok(plugins.includes('./plugins/withNotifeeDataSync'),
+    'the plugin exists but is not in app.json, so the manifest is never changed');
+});
+
+test('the feature is on, now that the manifest agrees with it', () => {
+  assert.strictEqual(K.KEEP_ALIVE_SERVICE, true);
+  assert.strictEqual(K.mayStart({ appState: 'active', ...idle }), true);
 });
 
 test('THE CRASH: the state rule still refuses the background', () => {

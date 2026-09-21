@@ -63,30 +63,31 @@ export const NOTIFICATION_ID = 'keepalive';
 export const SURVIVED_AFTER_MS = 4000;
 
 /**
- * OFF, and it must stay off until a manifest change ships with it.
+ * On, and only because the manifest now agrees with it.
  *
- * It crashed the app on launch, instantly, on the first build that carried it.
- * The cause is the one ongoingCall.ts wrote down after the call service did
- * the same thing, and I read that note and still got it wrong:
+ * The first build carrying this crashed the app on launch. Unpacking
+ * notifee's own AAR showed why:
  *
- *   notifee's AndroidManifest declares NO android:foregroundServiceType for
- *   its service. On Android 14 startForeground() with a type the manifest
- *   does not declare throws MissingForegroundServiceTypeException, natively,
- *   and the process dies.
+ *   <service android:name="app.notifee.core.ForegroundService"
+ *            android:foregroundServiceType="shortService" />
  *
- * I added the PERMISSION android.permission.FOREGROUND_SERVICE_DATA_SYNC and
- * treated that as the fix. The permission and the service's manifest
- * attribute are different things: the permission says the app is allowed to
- * ask, the attribute says what the service IS. Without the attribute Android
- * refuses whatever the permission says.
+ * notifee declares shortService; this code asks for DATA_SYNC. On Android 14
+ * startForeground() with an undeclared type throws
+ * MissingForegroundServiceTypeException natively, after the JavaScript call
+ * has returned, and the process dies. I had added the PERMISSION
+ * FOREGROUND_SERVICE_DATA_SYNC and called that the fix — but the permission
+ * says the app may ask, and the manifest attribute says what the service IS.
  *
- * Making this work needs an expo config plugin that adds
- * android:foregroundServiceType="dataSync" to notifee's service in the merged
- * manifest. That is a real change to the native build, and it goes in with a
- * build that has been shown not to crash — not on top of one that already
- * has.
+ * Nor would switching this to shortService do: Android caps a shortService at
+ * roughly three minutes and then kills the app. A socket that dies after
+ * three minutes is not a socket being kept alive.
+ *
+ * So plugins/withNotifeeDataSync.js overrides the attribute in the merged
+ * manifest, with tools:replace to say the override is deliberate. This
+ * constant stays here so that one line switches the feature off again if the
+ * device disagrees — as CALL_FOREGROUND_SERVICE does next door.
  */
-export const KEEP_ALIVE_SERVICE = false;
+export const KEEP_ALIVE_SERVICE = true;
 
 /**
  * May the service be started right now?
