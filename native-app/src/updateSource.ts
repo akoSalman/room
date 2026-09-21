@@ -57,7 +57,14 @@ export function parseServerManifest(body: any): Manifest | null {
   if (!body || typeof body !== 'object') return null;
   const version = parseInt(body.version, 10);
   if (!Number.isInteger(version) || version <= 0) return null;
-  const url = typeof body.url === 'string' && body.url ? body.url : '/app/download';
+  // The version goes in the fallback too. snapshotMatches() compares
+  // downloads by URL alone, so a constant path makes the PREVIOUS build's
+  // interrupted partial look like this one and it gets resumed — installing
+  // the old version and leaving the update badge up. An older server that
+  // sends no url must not reintroduce that.
+  const url = typeof body.url === 'string' && body.url
+    ? body.url
+    : `/app/download?v=${version}`;
   return {
     version,
     url,
@@ -131,4 +138,38 @@ export function updateAvailable(o: {
   // as "older than everything" would nag every developer forever.
   if (!o.currentVersion) return false;
   return o.latestVersion > o.currentVersion;
+}
+
+/**
+ * Are the bytes on disk the build we were promised?
+ *
+ * The manifest has always carried an exact `size` (and a sha256), and nothing
+ * ever looked at either. They were parsed and dropped on the floor.
+ *
+ * What that cost: the download URL used to be the constant /app/download for
+ * every build, so an interrupted download of the previous version matched the
+ * new one — snapshotMatches() compares by URL — and was RESUMED. The app
+ * appended the new build's bytes to the old build's partial, called it done,
+ * and opened the installer on it. Android installed what it could, the user
+ * stayed on the previous version, and the update badge stayed up, which is
+ * precisely how it was reported.
+ *
+ * The URL now carries the version, so that particular mismatch cannot recur.
+ * This is the check that catches the next one, whatever it turns out to be: a
+ * truncated download, a proxy that returned an error page, an intermediary
+ * cache serving a stale body. A wrong file must fail HERE, loudly, rather
+ * than in Android's installer where it looks like "the update did nothing".
+ *
+ * Unknown declared size is not a failure — GitHub's fallback has none, and
+ * refusing every update from that source would be worse than not checking.
+ */
+export function bytesLookRight(o: {
+  actualBytes: number | null | undefined;
+  declaredBytes: number | null | undefined;
+}): boolean {
+  const declared = Number(o?.declaredBytes);
+  if (!Number.isFinite(declared) || declared <= 0) return true; // nothing to check against
+  const actual = Number(o?.actualBytes);
+  if (!Number.isFinite(actual) || actual <= 0) return false;
+  return actual === declared;
 }

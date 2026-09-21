@@ -94,8 +94,11 @@ test('a server manifest is read, and anything odd counts as no answer', () => {
   }
 });
 
-test('a manifest with no url still knows where the file is', () => {
-  assert.strictEqual(U.parseServerManifest({ version: 9 }).url, '/app/download');
+test('a manifest with no url still knows where the file is, VERSIONED', () => {
+  // This asserted the constant '/app/download', which is the bug: one path
+  // for every build means the previous build's interrupted partial matches
+  // the new one and gets resumed. See THE STALE PARTIAL below.
+  assert.strictEqual(U.parseServerManifest({ version: 9 }).url, '/app/download?v=9');
 });
 
 test('the GitHub release version is read from the notes or the title', () => {
@@ -233,6 +236,82 @@ test('the web page offers this server\'s build too', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
   assert.ok(/id="apk-banner" href="\/app\/download"/.test(html),
     'the download banner still points at GitHub before any script runs');
+});
+
+
+// ── The stale-partial bug ───────────────────────────────────────────────────
+
+test('THE STALE PARTIAL: the download URL carries the version', () => {
+  // Reported as: "while downloading and installing v297, after installation
+  // the update badge is still there and the update seems is just the previous
+  // version". Exactly what it says.
+  //
+  // Every build was served from the constant path /app/download.
+  // snapshotMatches() decides whether an interrupted download may be RESUMED
+  // by comparing URLs and nothing else — so the previous build's half-finished
+  // file matched the new build, was resumed, and the app appended new bytes to
+  // an old partial and opened the installer on the result. On connections
+  // where a 40 MB download is routinely interrupted, which is the whole reason
+  // the resume machinery exists, this is the common case, not a rare one.
+  const m = U.parseServerManifest({ version: 297, size: 1, sha256: 'x' });
+  assert.ok(/[?&]v=297\b/.test(m.url),
+    'the fallback URL is the same for every build, so a stale partial resumes');
+  // An explicit url from the server is still honoured — that is where the
+  // version-stamped URL normally comes from.
+  const given = U.parseServerManifest({ version: 297, url: '/app/download?v=297' });
+  assert.strictEqual(given.url, '/app/download?v=297');
+});
+
+test('…and the server stamps the version into the url it advertises', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const code = server.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  assert.ok(/url: `\/app\/download\?v=\$\{m\.version\}`/.test(code),
+    'the server advertises a constant download URL, so partials resume across builds');
+  // And nothing between the server and the phone may keep a copy of a path
+  // whose contents are replaced on every build.
+  assert.ok(/Cache-Control', 'no-store'/.test(code),
+    'the APK path is cacheable, so an intermediary can serve the previous build');
+});
+
+// ── Verifying what actually landed ──────────────────────────────────────────
+
+test('THE UNUSED FIELD: the declared size is finally checked', () => {
+  // The manifest has always carried an exact size and a sha256, and nothing
+  // ever read either. A short file therefore reached Android's installer,
+  // where a failure looks like "the update did nothing".
+  assert.strictEqual(U.bytesLookRight({ actualBytes: 100, declaredBytes: 100 }), true);
+  assert.strictEqual(U.bytesLookRight({ actualBytes: 99, declaredBytes: 100 }), false,
+    'a truncated download would still be handed to the installer');
+  assert.strictEqual(U.bytesLookRight({ actualBytes: 101, declaredBytes: 100 }), false,
+    'a resumed stale partial is LONGER than the build, and must not pass');
+});
+
+test('…but an unknown declared size does not block the update', () => {
+  // GitHub's fallback has no size. Refusing every update from that source
+  // would be worse than not checking at all.
+  assert.strictEqual(U.bytesLookRight({ actualBytes: 100, declaredBytes: null }), true);
+  assert.strictEqual(U.bytesLookRight({ actualBytes: 100, declaredBytes: 0 }), true);
+  assert.strictEqual(U.bytesLookRight({ actualBytes: 100, declaredBytes: undefined }), true);
+  // A declared size with nothing on disk is still a failure.
+  assert.strictEqual(U.bytesLookRight({ actualBytes: 0, declaredBytes: 100 }), false);
+  assert.strictEqual(U.bytesLookRight({ actualBytes: null, declaredBytes: 100 }), false);
+  assert.strictEqual(U.bytesLookRight(null), true);
+});
+
+test('THE CHECK IS WIRED, and a bad file is DELETED rather than kept', () => {
+  // Keeping it is the bug all over again: the next attempt would resume the
+  // bad file and arrive at the same place.
+  const up = fs.readFileSync(path.join(__dirname, '..', 'native-app', 'src', 'appUpdate.ts'), 'utf8');
+  const code = up.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  const i = code.indexOf("if (!res?.uri) throw new Error('no file');");
+  assert.ok(i > 0, 'the download completion path moved');
+  const done = code.slice(i, code.indexOf('await install(', i));
+  assert.ok(/bytesLookRight\(/.test(done),
+    'the downloaded file is installed without checking it is the build we asked for');
+  assert.ok(/deleteAsync/.test(done),
+    'a bad download is left on disk, so the next attempt resumes it');
+  assert.ok(done.indexOf('bytesLookRight') < done.indexOf('DOWNLOADED_KEY'),
+    'the file is recorded as a ready-to-install build before it has been checked');
 });
 
 let passed = 0, failed = 0;

@@ -3068,7 +3068,12 @@ test('THE POINT: a published build is announced and can be downloaded', async ()
   const meta = await (await raw('/app/latest.json')).json();
   assert.strictEqual(meta.version, 181);
   assert.strictEqual(meta.size, apk.length, 'the size is claimed rather than measured');
-  assert.strictEqual(meta.url, '/app/download');
+  // Versioned, and that is the point of it: one constant path for every build
+  // meant the app resumed the PREVIOUS build's interrupted partial and
+  // installed it, leaving the user on the old version with the badge still up.
+  assert.strictEqual(meta.url, `/app/download?v=${meta.version}`);
+  assert.strictEqual((await raw('/app/download')).headers.get('cache-control'), 'no-store',
+    'the APK path is cacheable, so an intermediary can serve the previous build');
 
   const dl = await raw('/app/download');
   assert.strictEqual(dl.status, 200);

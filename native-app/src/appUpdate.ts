@@ -20,6 +20,7 @@ import {
   DownloadPhase, phaseOnNetworkChange, shouldAutoResume, snapshotMatches, canContinue,
   fractionOf,
 } from './updateResume';
+import { bytesLookRight } from './updateSource';
 // Re-exported so callers have one place to look.
 export { installChoice, UpdateChoice } from './updateChoice';
 
@@ -258,6 +259,19 @@ export async function start(url: string, version?: number, sizeBytes?: number | 
     await clearNotification();
 
     if (!res?.uri) throw new Error('no file');
+    // The bytes are checked against the size the manifest declared BEFORE the
+    // installer is opened on them. A wrong file has to fail here, where it can
+    // say so and start again, rather than in Android's installer, where it
+    // looks like the update simply did nothing. See bytesLookRight.
+    if (Number.isFinite(Number(sizeBytes)) && Number(sizeBytes) > 0) {
+      const info: any = await FileSystem.getInfoAsync(res.uri).catch(() => null);
+      if (!bytesLookRight({ actualBytes: info?.size, declaredBytes: sizeBytes })) {
+        // Delete it: keeping it means the next attempt resumes the bad file.
+        await FileSystem.deleteAsync(res.uri, { idempotent: true }).catch(() => {});
+        await AsyncStorage.removeItem(DOWNLOADED_KEY).catch(() => {});
+        throw new Error('incomplete download');
+      }
+    }
     state = { progress: 1, status: 'done', uri: res.uri, written: state.written, knowsTotal: true };
     emit();
     // Remembered BEFORE the installer is opened, because the user may well

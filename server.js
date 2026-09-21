@@ -125,7 +125,14 @@ app.get('/app/latest.json', (req, res) => {
   // and a 500 would look like a server fault to whoever is reading the logs.
   if (!m) return res.status(404).json({ error: 'no-build', message: 'No build has been published to this server yet.' });
   res.set('Cache-Control', 'no-cache, must-revalidate');
-  res.json({ ...m, url: '/app/download' });
+  // THE VERSION IS IN THE URL, and it has to be. Every build was served from
+  // the constant path /app/download, which meant a half-finished download of
+  // the PREVIOUS build matched the new one by url and was resumed — the app
+  // appends to a stale partial, installs it, and the user is still on the old
+  // version with the update badge still showing. Reported exactly that way.
+  // It also stops an intermediary cache handing back a 40 MB body it kept for
+  // this path, which on these connections is not hypothetical.
+  res.json({ ...m, url: `/app/download?v=${m.version}` });
 });
 
 app.get('/app/download', (req, res) => {
@@ -134,6 +141,9 @@ app.get('/app/download', (req, res) => {
   // sendFile, so Range requests work: the app resumes a partly-finished
   // download rather than starting a forty-megabyte file again.
   res.set('Content-Type', 'application/vnd.android.package-archive');
+  // One file, one constant path, replaced in place on every build: nothing
+  // between here and the phone may keep a copy of it.
+  res.set('Cache-Control', 'no-store');
   res.set('Content-Disposition', `attachment; filename="${m.fileName.replace(/[^A-Za-z0-9._-]/g, '')}"`);
   // dotfiles: 'allow' is NOT optional here. The directory is `.app` — hidden,
   // like `.tiles` next door, so it stays out of any listing — and sendFile
