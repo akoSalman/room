@@ -236,6 +236,41 @@ test('THE SUPPRESSION: a notification is shown when the app is NOT in front', ()
     'shouldShowAlert is hardcoded false again, which suppresses every notification');
 });
 
+test('THE SILENT ONE: the app\'s own notification names the message channel', () => {
+  // Reported as "notification sound is not there", and it is worse than
+  // silence. `trigger: null` means "immediately" AND "on Android's default
+  // channel" — no custom sound, no heads-up.
+  //
+  // And this notification carries the SAME tag as the server's FCM one, so
+  // Android treats the FCM notification as an update of this silent one
+  // rather than as a new alert. An update does not make a sound. So the
+  // app's own notification was swallowing the proper, sounded push behind it.
+  //
+  // That is also why older builds were fine: the socket notification was
+  // gated off, so the FCM one was the only notification and Android drew it
+  // on messages-v3 with its sound.
+  assert.ok(/trigger: \{ channelId: MESSAGES_CHANNEL \}/.test(app),
+    'the socket notification lands on the default channel, silent, and swallows the FCM one');
+  // Comment lines stripped first. The explanation above this call contains
+  // the words "trigger: null", and a check against the raw source matches the
+  // prose rather than the code — which is how a test ends up agreeing with
+  // its own description instead of with the program.
+  const code = app.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  assert.ok(!/trigger: null/.test(code),
+    'a notification is still posted with trigger: null, onto the default channel');
+});
+
+test('…and the channel is named once, not spelled out twice', () => {
+  // The server names 'messages-v3' in every push. Two spellings in the app is
+  // how one of them quietly becomes a different channel.
+  assert.ok(/export const MESSAGES_CHANNEL = 'messages-v3'/.test(app));
+  assert.ok(/setNotificationChannelAsync\(MESSAGES_CHANNEL/.test(app),
+    'the channel is created under a different name from the one used to post');
+  const literals = (app.match(/'messages-v3'/g) || []).length;
+  assert.strictEqual(literals, 1,
+    `'messages-v3' is written ${literals} times; it should exist once, as the constant`);
+});
+
 // ── The wiring ──────────────────────────────────────────────────────────────
 
 const app = fs.readFileSync(path.join(NAT, 'App.tsx'), 'utf8');

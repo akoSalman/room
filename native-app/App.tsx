@@ -89,7 +89,14 @@ Notifications.setNotificationHandler({
 });
 // 'messages-v2': Android caches channel settings forever, so shipping the new
 // custom sound requires a fresh channel id.
-Notifications.setNotificationChannelAsync('messages-v3', {
+/**
+ * The channel the server names in every push, so the app's own notifications
+ * must name it too. Written once: a second spelling is how one of them ends up
+ * on Android's default channel, silent.
+ */
+export const MESSAGES_CHANNEL = 'messages-v3';
+
+Notifications.setNotificationChannelAsync(MESSAGES_CHANNEL, {
   name: 'Messages',
   importance: Notifications.AndroidImportance.MAX,
   sound: 'notify.wav',
@@ -626,7 +633,20 @@ export default function App() {
           // both ever arrive Android replaces rather than stacks them.
           identifier: pushReg.notificationTag(msg.id),
           content: { title: msg.username, body, sound: 'notify.wav' },
-          trigger: null,
+          // THE CHANNEL, and it has to be here. `trigger: null` means
+          // "immediately" AND "on the default channel" — which has no custom
+          // sound and no heads-up. That is where the missing notification
+          // sound went.
+          //
+          // Worse than silent: this notification carries the same tag as the
+          // server's FCM one, so Android treats the FCM notification as an
+          // UPDATE of this one rather than a new alert — and an update does
+          // not make a sound. A silent notification on the default channel
+          // was therefore swallowing the proper, sounded one behind it.
+          //
+          // { channelId } is itself the "deliver now" trigger; it is not a
+          // delay. See ChannelAwareTriggerInput in expo-notifications.
+          trigger: { channelId: MESSAGES_CHANNEL },
         }).catch(() => {});
         notifyDiag.record('socket-raised');
       };
