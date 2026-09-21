@@ -22,16 +22,20 @@
 // Tapping the media picker backgrounds the app, which is why it showed up as
 // "the camera crashes the app".
 //
-// Two things are different here:
+// Fixed here, and one thing NOT fixed, which is why this ships switched off:
 //
 //   1. IT ONLY STARTS IN THE FOREGROUND. That is the one state in which
 //      Android permits it. Going to the background does not start it — the
 //      service is already running by then, which is the entire point. See
-//      mayStart, which is a pure function precisely because this is the rule
+//      foregroundOnly, a pure function precisely because this is the rule
 //      that cost a release.
-//   2. FOREGROUND_SERVICE_DATA_SYNC is declared. Its absence was the other
-//      half of the original crash: a service with no permissible type is
-//      refused exactly as firmly as one started from the background.
+//   2. NOT FIXED: the service's manifest type. This file first said
+//      "FOREGROUND_SERVICE_DATA_SYNC is declared, so the other half is
+//      handled" — and shipped a build that crashed on launch. Declaring the
+//      PERMISSION is not declaring the TYPE. notifee's manifest carries no
+//      android:foregroundServiceType at all, and on Android 14
+//      startForeground() with an undeclared type throws natively and kills
+//      the process. See KEEP_ALIVE_SERVICE.
 //
 // And the canary stays: a flag is written before the start and cleared once
 // the process has demonstrably survived it. A flag still present at the next
