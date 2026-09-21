@@ -59,6 +59,32 @@ export const NOTIFICATION_ID = 'keepalive';
 export const SURVIVED_AFTER_MS = 4000;
 
 /**
+ * OFF, and it must stay off until a manifest change ships with it.
+ *
+ * It crashed the app on launch, instantly, on the first build that carried it.
+ * The cause is the one ongoingCall.ts wrote down after the call service did
+ * the same thing, and I read that note and still got it wrong:
+ *
+ *   notifee's AndroidManifest declares NO android:foregroundServiceType for
+ *   its service. On Android 14 startForeground() with a type the manifest
+ *   does not declare throws MissingForegroundServiceTypeException, natively,
+ *   and the process dies.
+ *
+ * I added the PERMISSION android.permission.FOREGROUND_SERVICE_DATA_SYNC and
+ * treated that as the fix. The permission and the service's manifest
+ * attribute are different things: the permission says the app is allowed to
+ * ask, the attribute says what the service IS. Without the attribute Android
+ * refuses whatever the permission says.
+ *
+ * Making this work needs an expo config plugin that adds
+ * android:foregroundServiceType="dataSync" to notifee's service in the merged
+ * manifest. That is a real change to the native build, and it goes in with a
+ * build that has been shown not to crash — not on top of one that already
+ * has.
+ */
+export const KEEP_ALIVE_SERVICE = false;
+
+/**
  * May the service be started right now?
  *
  * THE RULE THAT CRASHED THE APP LAST TIME, which is why it is a pure function
@@ -68,15 +94,28 @@ export const SURVIVED_AFTER_MS = 4000;
  * on the way out of the app it is followed by 'background', where a start is
  * refused. Not 'background' under any circumstances.
  */
+export function foregroundOnly(appState: string | null | undefined): boolean {
+  return appState === 'active';
+}
+
+/**
+ * …and everything else that has to be true as well.
+ *
+ * Kept separate from foregroundOnly so the state rule stays under test while
+ * the feature is switched off. A kill switch that also hides the rule it
+ * guards means nothing checks the rule until somebody re-enables it, which is
+ * the worst possible moment to discover it drifted.
+ */
 export function mayStart(o: {
   appState: string | null | undefined;
   disabled: boolean;
   running: boolean;
 }): boolean {
+  if (!KEEP_ALIVE_SERVICE) return false;
   if (!o) return false;
   if (o.disabled) return false;
   if (o.running) return false;
-  return o.appState === 'active';
+  return foregroundOnly(o.appState);
 }
 
 /**

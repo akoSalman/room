@@ -56,36 +56,44 @@ const idle = { disabled: false, running: false };
 
 // ── The rule that killed the app ────────────────────────────────────────────
 
-test('THE CRASH: a start is refused from the background, always', () => {
-  // This is the whole bug. Android kills the process for it, after
-  // displayNotification() has already returned, so nothing in JavaScript can
-  // catch it and nothing on screen says why.
-  assert.strictEqual(K.mayStart({ appState: 'background', ...idle }), false);
+test('OFF, until a manifest change ships with it', () => {
+  // It crashed the app on launch. notifee's manifest declares no
+  // android:foregroundServiceType, and on Android 14 startForeground() with an
+  // undeclared type throws natively and kills the process. Declaring the
+  // PERMISSION is a different thing and does not satisfy it.
+  assert.strictEqual(K.KEEP_ALIVE_SERVICE, false,
+    'the service is on again without the manifest attribute that makes it legal');
+  assert.strictEqual(K.mayStart({ appState: 'active', ...idle }), false,
+    'the kill switch does not actually stop a start');
 });
 
-test('…and from "inactive", which is the transition on the way out', () => {
-  // 'inactive' is the half-second between active and background — a permission
-  // dialog, the app switcher, the media picker opening. Treating it as "still
-  // in the foreground" is the same crash with a shorter fuse.
-  assert.strictEqual(K.mayStart({ appState: 'inactive', ...idle }), false);
+test('THE CRASH: the state rule still refuses the background', () => {
+  // Tested through foregroundOnly rather than mayStart, so it stays under test
+  // while the feature is off. A kill switch that also hides the rule it guards
+  // means nothing checks that rule until somebody re-enables it — which is the
+  // worst possible moment to find out it drifted.
+  assert.strictEqual(K.foregroundOnly('background'), false);
 });
 
-test('only "active" is allowed', () => {
-  assert.strictEqual(K.mayStart({ appState: 'active', ...idle }), true);
+test('…and "inactive", which is the transition on the way out', () => {
+  // The half-second between active and background — a permission dialog, the
+  // app switcher, the media picker opening. Treating it as "still in the
+  // foreground" is the same crash with a shorter fuse.
+  assert.strictEqual(K.foregroundOnly('inactive'), false);
+});
+
+test('only "active" passes the state rule', () => {
+  assert.strictEqual(K.foregroundOnly('active'), true);
   for (const st of ['unknown', 'extension', '', null, undefined]) {
-    assert.strictEqual(K.mayStart({ appState: st, ...idle }), false, `allowed from ${st}`);
+    assert.strictEqual(K.foregroundOnly(st), false, `allowed from ${st}`);
   }
-  assert.strictEqual(K.mayStart(null), false);
 });
 
 test('a device the service already killed never tries again', () => {
   // The canary's entire purpose: one crash per install, not one per launch.
   // The call version fired at every ring for ever, which is why it had to go.
+  // It is what saved this phone when the service crashed it on launch.
   assert.strictEqual(K.mayStart({ appState: 'active', disabled: true, running: false }), false);
-});
-
-test('it is not started twice', () => {
-  assert.strictEqual(K.mayStart({ appState: 'active', disabled: false, running: true }), false);
 });
 
 // ── The canary ──────────────────────────────────────────────────────────────
