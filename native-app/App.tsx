@@ -357,6 +357,13 @@ export default function App() {
       // Cheap enough to send on every transition, so the two never disagree
       // for longer than one event.
       getSocket().then(sk => sk?.emit('app_focus', st === 'active')).catch(() => {});
+      // Nothing is on screen once the app is not in front of the user, so the
+      // notifier must stop believing a room is being read. The rule in
+      // shouldRaise no longer depends on this being done — it only consults
+      // the open room while the app is active — but leaving a stale room here
+      // is what silenced that conversation for as long as the app was closed,
+      // and it should not be true in two places for it to be wrong in one.
+      if (st !== 'active') socketNotifier.setViewing(null);
       if (st === 'active') {
         Notifications.dismissAllNotificationsAsync().catch(() => {});
         ensureSocketAlive(); // recover fast after SIM calls / network switches

@@ -85,12 +85,43 @@ test('…but "background" and "inactive" both notify', () => {
   assert.strictEqual(S.shouldRaise({ ...base, appState: null }), true);
 });
 
+test('THE STALE ROOM: closing the app inside a chat does NOT silence it', () => {
+  // Reported as "notifications still do not work while the app is closed",
+  // and it was introduced by the fix that moved the listener out of React.
+  //
+  // viewingRoomId is set when a chat opens and nothing cleared it when the
+  // app went away, so closing the app from inside a conversation left that
+  // room marked "being read" — and every message in it was suppressed for as
+  // long as the app stayed closed. The one conversation you are most likely
+  // to be waiting on is the one it silenced.
+  //
+  // It could not happen before the listener survived the app closing: back
+  // then the listener was destroyed outright, a different bug that hid this
+  // one completely.
+  assert.strictEqual(S.shouldRaise({
+    ...base, appState: 'background', viewingRoomId: '7', msgRoomId: 7,
+  }), true, 'a chat left open when the app closed is still silenced');
+  // Same for the half-second transition on the way out.
+  assert.strictEqual(S.shouldRaise({
+    ...base, appState: 'inactive', viewingRoomId: '7', msgRoomId: 7,
+  }), true);
+});
+
 test('THE NUMBER/STRING TRAP: reading room 7 silences room 7', () => {
   // The socket delivers room_id as a NUMBER; navigation state holds it as a
   // string. 7 !== '7' would have notified somebody about the conversation
   // they were reading, every single message.
-  assert.strictEqual(S.shouldRaise({ ...base, viewingRoomId: '7', msgRoomId: 7 }), false);
-  assert.strictEqual(S.shouldRaise({ ...base, viewingRoomId: 7, msgRoomId: '7' }), false);
+  // Only while the app is ACTIVE — see the stale-room test above for why.
+  // shouldRaise returns false for 'active' anyway; this pins the room check
+  // itself, which is what stops a popup over the chat on screen if AppState
+  // is momentarily stale during a transition.
+  const V = require(path.join(OUT, 'socketNotifier.js'));
+  assert.strictEqual(V.shouldRaise({
+    ...base, appState: 'active', viewingRoomId: '7', msgRoomId: 7,
+  }), false);
+  assert.strictEqual(V.shouldRaise({
+    ...base, appState: 'active', viewingRoomId: 7, msgRoomId: '7',
+  }), false);
 });
 
 test('…and a DIFFERENT room still notifies', () => {
@@ -194,6 +225,13 @@ test('the attach effect does not depend on the open room', () => {
   const deps = code.slice(i, code.indexOf('}, [', i) + 40);
   assert.ok(!/\}, \[screen, room\?\.id\]/.test(deps),
     'the attach effect is keyed on the open room again');
+});
+
+test('…and App.tsx stops believing a room is open when the app leaves', () => {
+  // The rule above no longer depends on this, but a stale value should not be
+  // sitting there waiting to matter the next time somebody reads it.
+  assert.ok(/if \(st !== 'active'\) socketNotifier\.setViewing\(null\);/.test(code),
+    'the open room is never cleared when the app goes to the background');
 });
 
 test('sign-out releases it', () => {

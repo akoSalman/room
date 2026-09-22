@@ -59,13 +59,34 @@ export function shouldRaise(o: {
   // separate notifications rather than one replacing the other.
   if (!pushReg.socketRaiseAllowed({ msgId: o.msgId, pushRegistered: o.pushRegistered })) return false;
   if (o.msgUsername && o.me && o.msgUsername === o.me) return false;
-  // In front of the user: the in-app badges do the signalling, and a popup
-  // over the conversation being read is noise.
+  // ── THE ONE THAT MATTERS: is the app in front of the user RIGHT NOW? ──────
+  //
+  // In front of them, the in-app badges do the signalling and a popup over the
+  // conversation being read is noise. Everywhere else, notify.
   if (o.appState === 'active') return false;
-  // Reading this very room — checked as strings, because a room id arrives as
-  // a number from the socket and is held as a string in navigation state, and
-  // 7 !== '7' would have notified somebody about the chat they were reading.
-  if (o.viewingRoomId != null && o.msgRoomId != null
+
+  // …and the open room is checked ONLY while the app is active.
+  //
+  // This is the bug that was reported as "notifications still do not work
+  // while the app is closed", and it was mine. viewingRoomId is set when a
+  // chat opens and nothing clears it when the app goes away — so closing the
+  // app from inside a conversation left that room marked "being read", and
+  // every message in it was suppressed for as long as the app stayed closed.
+  // The one conversation you are most likely to be waiting on is the one it
+  // silenced.
+  //
+  // It did not show up before the listener was moved out of React, because
+  // back then closing the app destroyed the listener outright — a different
+  // bug that hid this one.
+  //
+  // Guarded rather than deleted: when the app IS active this is what stops a
+  // notification appearing over the chat already on screen, which the check
+  // above cannot distinguish on its own if AppState is momentarily stale
+  // during a transition. Compared as strings, because a room id arrives from
+  // the socket as a number and is held in navigation state as a string, and
+  // 7 !== '7' would notify somebody about the chat they are reading.
+  if (o.appState === 'active'
+      && o.viewingRoomId != null && o.msgRoomId != null
       && String(o.viewingRoomId) === String(o.msgRoomId)) return false;
   return true;
 }
