@@ -274,6 +274,48 @@ test('signing out takes the notification down', () => {
   assert.ok(/keepAlive\.stop\(\)/.test(app), 'the service outlives sign-out');
 });
 
+
+// ── Keeping it out of the way ───────────────────────────────────────────────
+
+test('OFF THE LOCK SCREEN: the service notification is SECRET', () => {
+  // Asked for from a photo of it sitting on the lock screen: "don't show that
+  // connected status but keep socket alive". It cannot be removed — Android
+  // kills a foreground service whose notification is gone — but it can be
+  // kept out of the place it was actually in the way.
+  //
+  // MIN importance does NOT do this. MIN governs sound and position in the
+  // shade; lock-screen visibility is a separate setting that defaults to
+  // PRIVATE, which is why MIN was already set and it showed anyway.
+  const src = fs.readFileSync(path.join(NAT, 'src', 'keepAlive.ts'), 'utf8');
+  const code = src.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  const ch = code.indexOf('notifee.createChannel({');
+  assert.ok(ch > 0, 'the channel is no longer created here');
+  assert.ok(/visibility: AndroidVisibility\.SECRET/.test(code.slice(ch, code.indexOf('}', ch) + 400)),
+    'the channel does not hide the notification from the lock screen');
+  // And on the notification too, for phones whose channel already exists.
+  const n = code.indexOf('notifee.displayNotification({');
+  assert.ok(n > 0);
+  assert.ok(/visibility: AndroidVisibility\.SECRET/.test(code.slice(n)),
+    'only the channel is SECRET, so existing installs still show it on the lock screen');
+  assert.ok(/AndroidVisibility/.test(code.slice(0, code.indexOf('export'))),
+    'AndroidVisibility is used but never imported');
+});
+
+test('…and the channel id was bumped, or none of that reaches a real phone', () => {
+  // Android caches a channel's settings forever: importance and lock-screen
+  // visibility cannot be changed once it exists. Editing v1's settings would
+  // change nothing on any handset that already has v1 — which is every
+  // handset that has ever run this. A new id is the only way to ship one.
+  assert.strictEqual(K.CHANNEL_ID, 'connection-v2',
+    'the channel id still names a channel that already exists with the old settings');
+  // Pinned against notifee's enum, so a renumbering fails here rather than
+  // quietly putting it back on somebody's lock screen.
+  const en = fs.readFileSync(path.join(
+    NAT, 'node_modules', '@notifee', 'react-native', 'dist', 'types',
+    'NotificationAndroid.d.ts'), 'utf8');
+  assert.ok(/SECRET = -1/.test(en), 'notifee renumbered AndroidVisibility; recheck keepAlive');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

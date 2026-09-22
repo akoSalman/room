@@ -43,14 +43,27 @@
 // handset permanently. Worst case for somebody it does not work on is one
 // crash, once — not one per launch, which is what took the call version out.
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import notifee, { AndroidImportance, AndroidForegroundServiceType } from '@notifee/react-native';
+import notifee, {
+  AndroidImportance, AndroidForegroundServiceType, AndroidVisibility,
+} from '@notifee/react-native';
 
 /** Written before a start attempt, cleared once the process has survived it. */
 export const CANARY_KEY = 'keepalive-starting';
 /** Set for good once a start has been shown to kill this device's app. */
 export const DISABLED_KEY = 'keepalive-disabled';
 
-export const CHANNEL_ID = 'connection-v1';
+/**
+ * 'connection-v2', and the suffix is load-bearing.
+ *
+ * Android caches a channel's settings FOREVER — importance and lock-screen
+ * visibility cannot be changed by the app once the channel exists. v1 was
+ * created without a visibility, so it defaulted to PRIVATE and the service
+ * notification appeared on the lock screen, which is where it was reported
+ * from. Setting SECRET on v1 would change nothing on any phone that already
+ * has it. A new id is the only way to ship a different channel, which is why
+ * MESSAGES_CHANNEL carries a version too.
+ */
+export const CHANNEL_ID = 'connection-v2';
 export const NOTIFICATION_ID = 'keepalive';
 
 /**
@@ -181,6 +194,14 @@ async function ensureChannel(): Promise<void> {
       // is a requirement Android imposes, not something anybody wants to see,
       // so it makes no sound and sits at the bottom of the shade.
       importance: AndroidImportance.MIN,
+      // OFF THE LOCK SCREEN. Asked for after a photo of it sitting on the
+      // lock screen: "don't show that connected status but keep socket
+      // alive". The app cannot remove it altogether — Android kills a
+      // foreground service that has no notification — but SECRET keeps it out
+      // of the one place it was actually in the way. MIN alone does not: it
+      // governs sound and position in the shade, not lock-screen visibility,
+      // which defaults to PRIVATE.
+      visibility: AndroidVisibility.SECRET,
     });
   } catch {}
 }
@@ -211,6 +232,10 @@ export async function start(appState: string | null | undefined): Promise<void> 
         // matching runtime permission — and a refused type is a dead process.
         foregroundServiceTypes: [AndroidForegroundServiceType.FOREGROUND_SERVICE_TYPE_DATA_SYNC],
         importance: AndroidImportance.MIN,
+        // Set on the notification as well as the channel. The channel's value
+        // is fixed at creation and applies to phones installing fresh; this
+        // one applies now, including to anyone whose channel already exists.
+        visibility: AndroidVisibility.SECRET,
         ongoing: true,
         autoCancel: false,
         pressAction: { id: 'default', launchActivity: 'default' },
