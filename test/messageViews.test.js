@@ -184,6 +184,92 @@ test('the limit has a value, and pruning is not silently a no-op', () => {
   assert.ok(V.marksToPrune({ rows }).length > 0, 'the default limit never prunes anything');
 });
 
+
+// ── The wiring, server and app ──────────────────────────────────────────────
+
+const fs = require('fs');
+const path = require('path');
+const ROOT = path.join(__dirname, '..');
+const server = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+const scode = server.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+
+test('view_one_time records the view PER MEMBER, not on the message', () => {
+  // The bug in one line: messages.viewed_at is one column, so the first
+  // opener destroyed it for everyone.
+  const h = scode.slice(scode.indexOf("socket.on('view_one_time'"),
+                        scode.indexOf("socket.on('message_info'"));
+  assert.ok(h.length > 200, 'the view_one_time handler moved');
+  assert.ok(/INSERT OR IGNORE INTO message_views/.test(h),
+    'the view is still recorded only on the message, so one opener hides it from everyone');
+  assert.ok(/allViewsExpired\(/.test(h),
+    'the message is destroyed on a timer rather than on everyone having seen it');
+  // And a second open must not restart that member's countdown.
+  assert.ok(/SELECT viewed_at FROM message_views WHERE message_id = \? AND user_id = \?/.test(h),
+    'reopening restarts the countdown, so the message lasts as long as somebody keeps reopening it');
+});
+
+test('…and the countdown starts only on the screen that opened it', () => {
+  // Emitting to the whole room started the animation on screens whose owner
+  // had not opened the message.
+  const h = scode.slice(scode.indexOf("socket.on('view_one_time'"),
+                        scode.indexOf("socket.on('message_info'"));
+  assert.ok(!/io\.to\(String\(msg\.room_id\)\)\.emit\('one_time_viewed'/.test(h),
+    "one_time_viewed is broadcast to the whole room again");
+  assert.ok(/io\.to\('user:' \+ socket\.user\.id\)\.emit\('one_time_viewed'/.test(h));
+});
+
+test('message_info answers from read-mark HISTORY', () => {
+  const h = scode.slice(scode.indexOf("socket.on('message_info'"));
+  assert.ok(/FROM read_marks WHERE room_id = \? AND upto_msg_id >= \?/.test(h),
+    'the info panel reads room_reads, which cannot say WHEN a message was passed');
+  assert.ok(/canAccessRoom\(socket\.user\.id, room\)/.test(h.slice(0, 900)),
+    'anyone can ask who has read a message in a room they are not in');
+});
+
+test('read marks are actually recorded, at BOTH places a mark advances', () => {
+  // Recorded at only one of them and the history has holes, which show up as
+  // "seen by nobody" on messages that were plainly read.
+  assert.ok(/INSERT INTO read_marks/.test(scode), 'marks are never recorded');
+  // Two CALL sites: mark_read, and the path that marks a room read on open.
+  // The definition is `const recordReadMark = (` and does not match this.
+  const calls = (scode.match(/recordReadMark\(/g) || []).length;
+  assert.ok(calls >= 2, `recordReadMark is called ${calls} time(s); both mark_read and the room-open path need it`);
+  assert.ok(/marksToPrune\(/.test(scode), 'the history grows without bound');
+});
+
+const chat = fs.readFileSync(path.join(ROOT, 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+const ccode = chat.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+
+test('THE MENU ITEM EXISTS AND DOES SOMETHING', () => {
+  // A row that is registered and silently does nothing passes every check
+  // that only reads for its label.
+  assert.ok(/label="Info"/.test(ccode), 'there is no Info row in the message menu');
+  assert.ok(/openMessageInfo\(m\)/.test(ccode), 'the Info row does not open anything');
+  assert.ok(/emit\('message_info'/.test(ccode), 'nothing ever asks the server');
+});
+
+test('…on ANY message, not only my own', () => {
+  // Knowing whether the person you are talking to has read you is the point.
+  const row = ccode.slice(ccode.indexOf('label="Info"') - 300, ccode.indexOf('label="Info"') + 200);
+  assert.ok(!/mineMsg/.test(row), 'Info is only offered on your own messages');
+});
+
+test('the panel distinguishes "still loading" from "nobody has seen it"', () => {
+  // An empty list shown while the answer is still in flight reads as a fact,
+  // and it is the opposite of one.
+  assert.ok(/msgInfo\?\.loading/.test(ccode), 'there is no loading state, so an empty list shows first');
+  assert.ok(/Nobody has seen this yet/.test(ccode));
+  assert.ok(/msgInfo\?\.error/.test(ccode), 'a failed request looks identical to nobody having read it');
+});
+
+test('the time shown includes the DATE', () => {
+  // A list of times with no dates cannot distinguish today from last month.
+  assert.ok(/function fullWhen/.test(chat), 'no date-aware formatter');
+  const f = chat.slice(chat.indexOf('function fullWhen'), chat.indexOf('function fmtTime'));
+  assert.ok(/day: '2-digit'/.test(f) && /month: 'short'/.test(f),
+    'the info panel shows a time with no date');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

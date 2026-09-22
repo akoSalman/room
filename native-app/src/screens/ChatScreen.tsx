@@ -850,6 +850,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   // so dismissing an image from the middle of a long gallery puts you back
   // where you were rather than at the top.
   const [mediaFocusIndex, setMediaFocusIndex] = useState(0);
+  // "Info": who has seen this message, and when. null = closed, and the panel
+  // shows a spinner while the answer is still coming back rather than an empty
+  // list, which reads as "nobody has seen it".
+  const [msgInfo, setMsgInfo] = useState<
+    { loading: boolean; error?: string; sentAt?: number;
+      seen?: any[]; notSeen?: any[] } | null>(null);
   const [forwardMsg, setForwardMsg] = useState<Message | null>(null);
   const [forwardTargets, setForwardTargets] = useState<any[]>([]);
   // Separate from forwardMsg: the picker is also opened for a multi-selection,
@@ -3132,6 +3138,26 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     setMessages(prev => prev.filter(m => String(m.id) !== String(id)));
   }
 
+  /**
+   * Date AND time, for the info panel.
+   *
+   * fmtTime below gives the time only, which is right on a bubble sitting
+   * under a date separator and useless in a list where a row could be from
+   * today or from last month. Accepts both shapes the server sends: read
+   * marks are epoch milliseconds, created_at is a UTC string.
+   */
+  function fullWhen(v: number | string | null | undefined) {
+    if (v == null || v === '') return '';
+    const d = typeof v === 'number'
+      ? new Date(v)
+      : new Date(String(v).includes('T') ? String(v) : String(v).replace(' ', 'T') + 'Z');
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toLocaleString([], {
+      day: '2-digit', month: 'short',
+      hour: '2-digit', minute: '2-digit',
+    });
+  }
+
   function fmtTime(iso: string) {
     // created_at is UTC ("YYYY-MM-DD HH:MM:SS"); mark it as such so it's
     // rendered in the device's local timezone
@@ -3236,6 +3262,32 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       return;
     }
     Linking.openURL(url).catch(() => {});
+  }
+
+  /**
+   * Ask the server who has seen a message.
+   *
+   * The panel opens immediately in a loading state. Waiting for the round
+   * trip before showing anything makes a long press look like it did nothing
+   * on exactly the connections this app runs on.
+   */
+  async function openMessageInfo(msg: Message) {
+    setMsgInfo({ loading: true });
+    try {
+      const sock = await getSocket();
+      sock.timeout(8000).emit('message_info', { messageId: msg.id }, (err: any, res: any) => {
+        if (err || !res || res.error) {
+          setMsgInfo({ loading: false, error: res?.error || 'Could not reach the server' });
+          return;
+        }
+        setMsgInfo({
+          loading: false, sentAt: res.sentAt,
+          seen: res.seen || [], notSeen: res.notSeen || [],
+        });
+      });
+    } catch {
+      setMsgInfo({ loading: false, error: 'Could not reach the server' });
+    }
   }
 
   async function openForwardPicker(msg: Message) {
@@ -5603,6 +5655,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
                     composerRef.current?.setText(m.content || ''); setEditingId(m.id);
                   }} />
                 )}
+                {/* Who has seen it, and when. Asked for on ANY message, so
+                    there is no `mineMsg` guard: knowing whether the person you
+                    are talking to has read you is the point, and it is the
+                    same question either way. Only a real, sent message has an
+                    id the server knows. */}
+                {Number(m.id) > 0 && (
+                  <Row icon="information-circle-outline" label="Info" onPress={() => {
+                    close();
+                    openMessageInfo(m);
+                  }} />
+                )}
                 {/* Delete is offered on BOTH sides now, and it is not the same
                     delete on each: yours goes for everyone, theirs disappears
                     from your copy only. The label says which, because the two
@@ -5620,6 +5683,63 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
             );
           })()}
         </View>
+      </Modal>
+
+      {/* ── Who has seen this message ──────────────────────────────────────
+          Names, not a count: "3 of 5" is not an answer to "who has seen it".
+          The time comes from read-mark history — the earliest mark that
+          passed this message — rather than from a single "last read"
+          timestamp, which would report the time of somebody's most recent
+          read and so be wrong for every message but the newest. */}
+      <Modal visible={!!msgInfo} transparent animationType="slide"
+             onRequestClose={() => setMsgInfo(null)}>
+        <TouchableOpacity style={s.sheetOverlay} activeOpacity={1} onPress={() => setMsgInfo(null)}>
+          <TouchableOpacity activeOpacity={1} style={s.actionSheet} onPress={() => {}}>
+            <View style={s.sheetGrip} />
+            <Text style={s.infoTitle}>Message info</Text>
+            {msgInfo?.loading ? (
+              <View style={s.infoBusy}>
+                <ActivityIndicator color={C.accent} />
+              </View>
+            ) : msgInfo?.error ? (
+              <Text style={s.infoEmpty}>{msgInfo.error}</Text>
+            ) : (
+              <ScrollView style={s.infoScroll}>
+                {!!msgInfo?.sentAt && (
+                  <Text style={s.infoSent}>Sent {fullWhen(msgInfo.sentAt)}</Text>
+                )}
+                <Text style={s.infoHeading}>
+                  {`Seen by ${(msgInfo?.seen || []).length}`}
+                </Text>
+                {(msgInfo?.seen || []).length === 0 ? (
+                  <Text style={s.infoEmpty}>Nobody has seen this yet.</Text>
+                ) : (msgInfo?.seen || []).map((p: any) => (
+                  <View key={`s${p.userId}`} style={s.infoRow}>
+                    <Text style={s.infoName}>{p.avatar ? `${p.avatar} ` : ''}{p.username}</Text>
+                    <Text style={s.infoWhen}>{fullWhen(p.at)}</Text>
+                  </View>
+                ))}
+                {(msgInfo?.notSeen || []).length > 0 && (
+                  <>
+                    <Text style={s.infoHeading}>
+                      {`Not seen yet ${(msgInfo?.notSeen || []).length}`}
+                    </Text>
+                    {(msgInfo?.notSeen || []).map((p: any) => (
+                      <View key={`n${p.userId}`} style={s.infoRow}>
+                        <Text style={[s.infoName, s.infoNameDim]}>
+                          {p.avatar ? `${p.avatar} ` : ''}{p.username}
+                        </Text>
+                      </View>
+                    ))}
+                  </>
+                )}
+              </ScrollView>
+            )}
+            <TouchableOpacity style={s.sheetCancel} onPress={() => setMsgInfo(null)}>
+              <Text style={s.sheetCancelText}>Close</Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
 
       {/* Shared media browser — fullscreen, and it keeps your place. */}
@@ -6472,6 +6592,16 @@ const s = StyleSheet.create({
   joinBarBtn: { backgroundColor: C.accent, borderRadius: 16, paddingHorizontal: 20, paddingVertical: 8 },
   joinBarBtnText: { color: '#fff', fontSize: 14, fontWeight: '700' },
   sheetOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  infoTitle: { color: C.text, fontSize: 16, fontWeight: '700', textAlign: 'center', paddingVertical: 10 },
+  infoScroll: { maxHeight: 360 },
+  infoBusy: { paddingVertical: 28, alignItems: 'center' },
+  infoSent: { color: C.muted, fontSize: 12, paddingHorizontal: 16, paddingBottom: 6 },
+  infoHeading: { color: C.muted, fontSize: 12, fontWeight: '700', paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 },
+  infoRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 9 },
+  infoName: { color: C.text, fontSize: 15, flexShrink: 1 },
+  infoNameDim: { color: C.muted },
+  infoWhen: { color: C.muted, fontSize: 12, marginLeft: 12 },
+  infoEmpty: { color: C.muted, fontSize: 13, paddingHorizontal: 16, paddingVertical: 12 },
   actionSheet: {
     backgroundColor: C.sidebar, borderTopLeftRadius: 20, borderTopRightRadius: 20,
     paddingBottom: 24, paddingTop: 8, maxHeight: '80%',
