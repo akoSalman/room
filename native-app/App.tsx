@@ -28,7 +28,7 @@ import { callManager } from './src/callManager';
 import ChatScreen from './src/screens/ChatScreen';
 import MiniPlayer from './src/components/MiniPlayer';
 import Toast, { toast } from './src/components/Toast';
-import { disconnectSocket, getSocket, getUsername, apiFetch, ensureSocketAlive, setSessionExpiredHandler, resetSessionExpiry } from './src/api';
+import { disconnectSocket, getSocket, onSocket, getUsername, apiFetch, ensureSocketAlive, setSessionExpiredHandler, resetSessionExpiry } from './src/api';
 import { audioManager } from './src/audioManager';
 import * as outbox from './src/outbox';
 import * as pushReg from './src/pushRegistration';
@@ -686,14 +686,29 @@ export default function App() {
   useEffect(() => {
     if (screen === 'auth') return;
     let cancelled = false;
+    // SUBSCRIBED, not handed one socket and left there.
+    //
+    // attach() used to be called once with whatever socket existed at that
+    // moment. A phone then reported "Socket: connected / Messages reaching
+    // the app: 0 · never" — the listener was on a socket that had since been
+    // replaced, while getSocket() and the diagnostics both reported the new
+    // one as healthy. The app looked fine and was deaf.
+    //
+    // onSocket fires for the socket that already exists AND for every one
+    // built afterwards, and attach() is idempotent per socket, so this cannot
+    // miss one and cannot double up.
+    const stop = onSocket(sock => {
+      if (cancelled) return;
+      socketNotifier.attach(sock, { pushRegistered: () => pushRegisteredRef.current });
+    });
     (async () => {
       const uname = await getUsername();
-      const sock = await getSocket();
       if (cancelled) return;
       socketNotifier.setMe(uname);
-      socketNotifier.attach(sock, { pushRegistered: () => pushRegisteredRef.current });
+      // Ensures one exists; the subscriber above does the attaching.
+      getSocket().catch(() => {});
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; stop(); };
   }, [screen === 'auth']);
 
   // Where the user is, pushed to the notifier so it can stay silent about the

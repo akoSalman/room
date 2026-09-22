@@ -275,6 +275,45 @@ test('…and App.tsx stops believing a room is open when the app leaves', () => 
     'the open room is never cleared when the app goes to the background');
 });
 
+test('THE DEAF APP: the notifier FOLLOWS the socket, it is not handed one', () => {
+  // Reported on v323, and it is the whole bug:
+  //
+  //     Socket to the server: connected
+  //     Messages reaching the app: 0 · last never
+  //
+  // The socket was up and not one message had ever reached the listener —
+  // never delivered, not refused. attach() was called once, from a React
+  // effect, against whatever socket existed at that instant; any socket built
+  // afterwards carried no listener, while getSocket() and the diagnostics
+  // line both reported the NEW one as connected. The app looked perfectly
+  // healthy and was deaf.
+  assert.ok(/onSocket\(sock =>/.test(code),
+    'the notifier is still handed one socket and left there');
+  assert.ok(/socketNotifier\.attach\(sock/.test(code));
+  // And the subscription is undone when the effect is, or a signed-out
+  // account's notifier keeps attaching to the next account's socket.
+  assert.ok(/return \(\) => \{ cancelled = true; stop\(\); \};/.test(code),
+    'the socket subscription is never removed');
+});
+
+test('…and api.ts tells subscribers about the socket that ALREADY exists', () => {
+  // Subscribing after one was built is the same failure with better timing:
+  // the listener would wait for a replacement that may never come.
+  const api = fs.readFileSync(path.join(NAT, 'src', 'api.ts'), 'utf8');
+  const a = api.split('\n').filter(l => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
+  assert.ok(/export function onSocket/.test(a), 'there is no way to follow the socket');
+  const fn = a.slice(a.indexOf('export function onSocket'), a.indexOf('async function createSocket'));
+  assert.ok(/if \(socket\) \{ try \{ cb\(socket\); \} catch \{\} \}/.test(fn),
+    'a subscriber is not told about the socket that already exists');
+  // …and about every new one, BEFORE getSocket() resolves, so an awaiting
+  // caller cannot race the subscribers.
+  const made = a.slice(a.indexOf('async function createSocket'));
+  const notify = made.indexOf('for (const cb of socketSubscribers)');
+  const ret = made.indexOf('return socket;');
+  assert.ok(notify > 0, 'new sockets are never announced');
+  assert.ok(notify < ret, 'the socket is returned before its subscribers are told');
+});
+
 test('sign-out releases it', () => {
   assert.ok(/socketNotifier\.detach\(\)/.test(code),
     'after sign-out the previous account\'s socket still raises notifications');

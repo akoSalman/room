@@ -144,6 +144,43 @@ export async function getSocket(): Promise<Socket> {
   return creating;
 }
 
+/**
+ * Everyone who wants to be told when a NEW socket exists.
+ *
+ * ── WHY THIS HAD TO EXIST ──────────────────────────────────────────────────
+ *
+ * A phone reported, on v323:
+ *
+ *     Socket to the server: connected
+ *     Messages reaching the app: 0 · last never
+ *
+ * The socket was up and not one message had ever reached the notification
+ * listener. Not refused — never delivered. The listener was attached ONCE,
+ * from a React effect, to whatever socket existed at that moment; every
+ * socket built afterwards had no listener on it, while getSocket() and the
+ * diagnostics line both reported the NEW one as connected. The app looked
+ * perfectly healthy and was deaf.
+ *
+ * Handing a socket out once and hoping nothing replaces it is the bug.
+ * Subscribers are told about every socket, including the one that already
+ * exists when they subscribe, so there is no window in which a listener can
+ * be attached to the wrong one — and no ordering to get right at startup.
+ */
+const socketSubscribers = new Set<(s: Socket) => void>();
+
+/**
+ * Be told about the socket: now if there is one, and again whenever a new one
+ * replaces it.
+ *
+ * Returns an unsubscribe, though callers that want notifications for the life
+ * of the process should simply never call it.
+ */
+export function onSocket(cb: (s: Socket) => void): () => void {
+  socketSubscribers.add(cb);
+  if (socket) { try { cb(socket); } catch {} }
+  return () => { socketSubscribers.delete(cb); };
+}
+
 async function createSocket(): Promise<Socket> {
   const token = await getToken();
   // Default transports: start on HTTP long-polling, upgrade to WebSocket when
@@ -171,6 +208,9 @@ async function createSocket(): Promise<Socket> {
     // 'io client disconnect' is us leaving on purpose (sign-out), not a fault.
     if (reason !== 'io client disconnect') connection.report(false);
   });
+  // Tell everyone who is listening for the socket, BEFORE returning it, so a
+  // caller that awaits getSocket() cannot race the subscribers.
+  for (const cb of socketSubscribers) { try { cb(socket); } catch {} }
   return socket;
 }
 
