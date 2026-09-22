@@ -19,6 +19,7 @@ on:
       - 'credentials.js'
       - 'notify.js'
       - 'najva.js'
+      - 'messageViews.js'
       - 'webPush.js'
       - 'linkMeta.js'
       - 'package.json'

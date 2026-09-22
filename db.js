@@ -216,6 +216,55 @@ db.exec(`
 // Every message query filters on this, so it has to be a lookup rather than a
 // scan of everything anybody has ever hidden.
 db.exec('CREATE INDEX IF NOT EXISTS idx_hidden_user ON hidden_messages(user_id, message_id)');
+
+// ── Who opened a one-time message, PER PERSON ───────────────────────────────
+//
+// Reported as: in a room, a one-time message disappears after the first
+// member opens it, and nobody else ever sees it.
+//
+// That is exactly what the old design did. messages.viewed_at is a single
+// column on the message, so the first person to open it started one global
+// timer and the message was destroyed for every other member — including the
+// ones it had never been shown to. Harmless in a DM, where there is only one
+// recipient. Wrong in every room with three people in it.
+//
+// So the view is recorded per member. Each person's countdown starts when
+// THEY open it, and the message is only destroyed once there is nobody left
+// who could still see it.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS message_views (
+    message_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    viewed_at INTEGER NOT NULL,
+    UNIQUE(message_id, user_id)
+  );
+`);
+db.exec('CREATE INDEX IF NOT EXISTS idx_views_msg ON message_views(message_id)');
+
+// ── When each read mark was set, so "seen by" can give a TIME ───────────────
+//
+// room_reads holds only how far each member has read — one row per member per
+// room, overwritten as they read on. That answers "who has seen this message"
+// but cannot answer "when", because by the time you ask, the row has moved on
+// to a later message and carries no history.
+//
+// This keeps the marks as they were set: one row each time a member's read
+// position advances. "When did X see message N" is then the earliest row for
+// X in that room whose upto_msg_id reached N — an actual answer rather than
+// the time of their most recent read, which is what a single timestamp column
+// would have given and would have been wrong for every older message.
+//
+// Pruned, because it grows with reading rather than with messages: see
+// pruneReadMarks in server.js.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS read_marks (
+    user_id INTEGER NOT NULL,
+    room_id INTEGER NOT NULL,
+    upto_msg_id INTEGER NOT NULL,
+    at INTEGER NOT NULL
+  );
+`);
+db.exec('CREATE INDEX IF NOT EXISTS idx_marks_room ON read_marks(room_id, upto_msg_id)');
 db.exec(`
   CREATE TABLE IF NOT EXISTS room_reads (
     user_id INTEGER NOT NULL,

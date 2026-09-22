@@ -9,6 +9,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { recipientsFor, tokenIsDead, notificationTag, collapseKeyFor, presenceLine } = require('./notify');
 const najva = require('./najva');
+const mviews = require('./messageViews');
 const credentials = require('./credentials');
 const cors = require('cors');
 const db = require('./db');
@@ -3069,6 +3070,34 @@ io.on('connection', (socket) => {
       { username: socket.user.username, roomId: String(roomId) });
   });
 
+  // Advancing a read mark is also RECORDED, with the time.
+  //
+  // room_reads keeps only where each member is up to now, overwritten as they
+  // read on, so by the time anybody asks "when did they see message N" the
+  // row has moved past it and carries no history. This keeps the marks as
+  // they were set, which is what lets the info panel give a time that is
+  // actually the time they saw that message rather than the time of their
+  // most recent read. See messageViews.seenBy.
+  const recordReadMark = (roomId, uptoId) => {
+    const upto = Number(uptoId);
+    if (!Number.isFinite(upto) || upto <= 0) return;
+    try {
+      db.prepare('INSERT INTO read_marks (user_id, room_id, upto_msg_id, at) VALUES (?, ?, ?, ?)')
+        .run(socket.user.id, roomId, upto, Date.now());
+      // Thinned rather than truncated: this table grows with READING, not
+      // with messages. Dropping the oldest would make old messages
+      // unanswerable; marksToPrune keeps a spread instead.
+      const rows = db.prepare(
+        'SELECT rowid, upto_msg_id FROM read_marks WHERE user_id = ? AND room_id = ?')
+        .all(socket.user.id, roomId);
+      const drop = mviews.marksToPrune({ rows });
+      if (drop.length) {
+        db.prepare(`DELETE FROM read_marks WHERE rowid IN (${drop.map(() => '?').join(',')})`)
+          .run(...drop);
+      }
+    } catch {}
+  };
+
   socket.on('mark_read', ({ roomId, lastMsgId }) => {
     if (!roomId || !lastMsgId) return;
     db.prepare(`
@@ -3076,6 +3105,7 @@ io.on('connection', (socket) => {
       ON CONFLICT(user_id, room_id) DO UPDATE SET
         last_read_msg_id = MAX(last_read_msg_id, excluded.last_read_msg_id)
     `).run(socket.user.id, roomId, lastMsgId);
+    recordReadMark(roomId, lastMsgId);
     const row = db.prepare('SELECT last_read_msg_id FROM room_reads WHERE user_id = ? AND room_id = ?')
       .get(socket.user.id, roomId);
     socket.to(String(roomId)).emit('messages_read', {
@@ -3139,6 +3169,7 @@ io.on('connection', (socket) => {
           ON CONFLICT(user_id, room_id) DO UPDATE SET
             last_read_msg_id = MAX(last_read_msg_id, excluded.last_read_msg_id)
         `).run(socket.user.id, room.id, upto);
+        recordReadMark(room.id, upto);
         // Every thread in the room, in one statement: doing it per parent from
         // the client would need the client to know which parents exist.
         db.prepare(`
@@ -3686,31 +3717,97 @@ io.on('connection', (socket) => {
     done({ ok: true });
   });
 
-  // A recipient opened a one-time message: start its self-destruct timer.
+  // A recipient opened a one-time message: start THEIR self-destruct timer.
+  //
+  // Reported as: in a room, a one-time message disappears after the first
+  // member opens it and nobody else ever sees it. That is what this did. It
+  // set messages.viewed_at — one column on the message — so the first person
+  // to open it started one global timer and the message was destroyed for
+  // every other member, including the ones it had never been shown to.
+  // Correct in a DM with a single recipient; wrong in every room.
+  //
+  // Each member's countdown is now their own, and the message is destroyed
+  // only once there is nobody left who could still see it. See
+  // messageViews.js for the rules, which are tested: every one of them
+  // decides whether a message is deleted, and a deleted one does not come
+  // back.
   socket.on('view_one_time', ({ messageId }) => {
     const msg = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
     if (!msg || !msg.one_time_seconds) return;
-    if (msg.user_id === socket.user.id) return; // sender's own view doesn't start the clock
+    if (msg.user_id === socket.user.id) return; // the sender's own view starts nothing
     const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(msg.room_id);
     if (!canAccessRoom(socket.user.id, room)) return;
+    const now = Date.now();
+    // First open by THIS member only. A second open must not restart their
+    // countdown — that would make a one-time message last as long as somebody
+    // kept reopening it.
+    const already = db.prepare('SELECT viewed_at FROM message_views WHERE message_id = ? AND user_id = ?')
+      .get(msg.id, socket.user.id);
+    if (already) return;
+    db.prepare('INSERT OR IGNORE INTO message_views (message_id, user_id, viewed_at) VALUES (?, ?, ?)')
+      .run(msg.id, socket.user.id, now);
+    // messages.viewed_at is still written, for the FIRST view only, so older
+    // clients and the existing expiry sweep keep working unchanged.
     if (!msg.viewed_at) {
-      const now = Date.now();
       db.prepare('UPDATE messages SET viewed_at = ? WHERE id = ?').run(now, msg.id);
       msg.viewed_at = now;
-      // Let everyone (including the sender) see the countdown has started
-      const viewed = { messageId: msg.id, roomId: msg.room_id, viewedAt: now, seconds: msg.one_time_seconds };
-      io.to(String(msg.room_id)).emit('one_time_viewed', viewed);
-      // …and to every member directly, so a backgrounded sender still sees the
-      // countdown start (and the destruction that follows).
-      getRoomMemberIds(room).forEach(id => io.to('user:' + id).emit('one_time_viewed', viewed));
-      setTimeout(() => {
-        const still = db.prepare('SELECT * FROM messages WHERE id = ?').get(msg.id);
-        if (still) destroyMessage(still);
-      }, msg.one_time_seconds * 1000);
-      // And through the shared scheduler as well, so a restart before that
-      // timer fires does not leave the message waiting for the next sweep.
-      scheduleNextExpiry();
     }
+    // Only this member's countdown has started, so only this member is told
+    // to run one. Telling the room would start the animation on screens whose
+    // owner has not opened it.
+    const viewed = {
+      messageId: msg.id, roomId: msg.room_id, viewedAt: now,
+      seconds: msg.one_time_seconds, userId: socket.user.id,
+    };
+    io.to('user:' + socket.user.id).emit('one_time_viewed', viewed);
+    // The SENDER is told too — they should see that it has been opened, and
+    // by whom — but their own copy is not hidden by it.
+    if (msg.user_id !== socket.user.id) {
+      io.to('user:' + msg.user_id).emit('one_time_viewed', viewed);
+    }
+    const destroyIfDone = () => {
+      const still = db.prepare('SELECT * FROM messages WHERE id = ?').get(msg.id);
+      if (!still) return;
+      const current = db.prepare('SELECT * FROM rooms WHERE id = ?').get(still.room_id);
+      if (!current) return;
+      const views = db.prepare('SELECT user_id, viewed_at FROM message_views WHERE message_id = ?')
+        .all(still.id);
+      if (mviews.allViewsExpired({
+        memberIds: getRoomMemberIds(current), senderId: still.user_id,
+        oneTimeSeconds: still.one_time_seconds, views, now: Date.now(),
+      })) destroyMessage(still);
+    };
+    setTimeout(destroyIfDone, msg.one_time_seconds * 1000 + 250);
+    scheduleNextExpiry();
+  });
+
+  // Who has seen a message, and when.
+  //
+  // Answered from read-mark HISTORY rather than from room_reads, which holds
+  // only each member's current position and so cannot say when they passed
+  // any particular message. See seenBy in messageViews.js.
+  socket.on('message_info', ({ messageId }, done) => {
+    const reply = typeof done === 'function' ? done : () => {};
+    const msg = db.prepare('SELECT id, room_id, user_id, created_at FROM messages WHERE id = ?').get(messageId);
+    if (!msg) return reply({ error: 'Message not found' });
+    const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(msg.room_id);
+    if (!canAccessRoom(socket.user.id, room)) return reply({ error: 'Not allowed' });
+    const memberIds = getRoomMemberIds(room);
+    const marks = db.prepare(
+      'SELECT user_id, upto_msg_id, at FROM read_marks WHERE room_id = ? AND upto_msg_id >= ?')
+      .all(msg.room_id, msg.id);
+    const seen = mviews.seenBy({ messageId: msg.id, senderId: msg.user_id, marks });
+    const notSeen = mviews.notSeenBy({ messageId: msg.id, senderId: msg.user_id, memberIds, marks });
+    const name = (id) => {
+      const u = db.prepare('SELECT username, avatar FROM users WHERE id = ?').get(id);
+      return { userId: id, username: u ? u.username : 'unknown', avatar: u ? u.avatar : null };
+    };
+    reply({
+      ok: true,
+      sentAt: msg.created_at,
+      seen: seen.map(s => ({ ...name(s.userId), at: s.at })),
+      notSeen: notSeen.map(name),
+    });
   });
 
   socket.on('toggle_reaction', ({ messageId, emoji }) => {
