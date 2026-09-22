@@ -194,11 +194,50 @@ test('a canary still present at launch means the start killed us', () => {
   assert.strictEqual(K.crashedOnLastStart(null), false);
 });
 
-test('the disabled flag is read as a flag, not as a truthy string', () => {
-  assert.strictEqual(K.isDisabled({ disabledFlag: '1' }), true);
+test('A DISABLE BELONGS TO THE BUILD THAT EARNED IT', () => {
+  // Reported as: notifications work on some phones and not on others. This is
+  // the only thing in the app that is per-DEVICE and permanent, so it is the
+  // only thing that can produce that.
+  //
+  // The flag used to be '1', written for good the first time a start killed
+  // the app, with nothing able to clear it — not reinstalling, not updating.
+  // Build 284 crashed on LAUNCH for everybody, which is exactly the condition
+  // that writes it. Every handset running then has had its foreground service
+  // off ever since, so its socket dies when the app closes; every handset
+  // that was not has been fine. Same code, opposite behaviour, for good.
+  assert.strictEqual(K.isDisabled({ disabledFlag: '317', currentVersion: 317 }), true,
+    'a build that just crashed is allowed to keep trying');
+  assert.strictEqual(K.isDisabled({ disabledFlag: '284', currentVersion: 317 }), false,
+    'a newer build is still punished for a crash in an older one');
+});
+
+test('…and the old permanent flag clears on the next update', () => {
+  // '1' carries no version. It has to read as "some earlier build", or the
+  // phones broken by 284 never come back — which is the entire point.
+  assert.strictEqual(K.isDisabled({ disabledFlag: '1', currentVersion: 317 }), false,
+    'the legacy permanent flag still disables the service forever');
+  assert.strictEqual(K.isDisabled({ disabledFlag: 'yes', currentVersion: 317 }), false);
+});
+
+test('…but an unknown build stays disabled, which is the safe direction', () => {
+  // A dev build stamps BUILD_VERSION 0. Re-enabling on a build we cannot
+  // identify risks the crash loop the canary exists to stop.
+  assert.strictEqual(K.isDisabled({ disabledFlag: '284', currentVersion: 0 }), true);
+  assert.strictEqual(K.isDisabled({ disabledFlag: '284' }), true);
   assert.strictEqual(K.isDisabled({ disabledFlag: null }), false);
   assert.strictEqual(K.isDisabled({ disabledFlag: '' }), false);
   assert.strictEqual(K.isDisabled(null), false);
+});
+
+test('THE FLAG IS WRITTEN WITH THE BUILD NUMBER, not a bare 1', () => {
+  // Everything above is decoration if init() still writes '1'.
+  const src = fs.readFileSync(path.join(NAT, 'src', 'keepAlive.ts'), 'utf8');
+  const code = src.split('\n').filter(l => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
+  assert.ok(/setItem\(DISABLED_KEY, String\(BUILD_VERSION\)\)/.test(code),
+    'the disable is still written without the build number, so it is permanent again');
+  assert.ok(/currentVersion: BUILD_VERSION/.test(code),
+    'init never tells isDisabled which build is running');
+  assert.ok(/import \{ BUILD_VERSION \}/.test(code), 'BUILD_VERSION is used but not imported');
 });
 
 test('the survival window is long enough for Android to object', () => {

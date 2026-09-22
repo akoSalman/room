@@ -104,6 +104,17 @@ jobs:
           fi
           echo ""
 
+          echo "### EVERY DEVICE, as it last registered"
+          echo "# keepalive=blocked -> that phone's foreground service is off for"
+          echo "#                      good on its build: its socket dies when the"
+          echo "#                      app closes, and no notification code helps."
+          echo "# A phone on an old build has none of the app-side fixes."
+          journalctl -u "$SERVICE" --since '7 days ago' --no-pager 2>/dev/null \
+            | grep -a '\[device\]' | awk '{ for(i=1;i<=NF;i++) if ($i ~ /^user=/) u=$i; a[u]=$0 } END { for (k in a) print a[k] }' \
+            | sed 's/^.*\[device\]/[device]/' | sort
+          echo "(end of device lines)"
+          echo ""
+
           echo "### DOES THE SOCKET SURVIVE THE APP CLOSING, last 2 hours"
           echo "# reason=ping-timeout  -> the app stopped answering; its JS is frozen"
           echo "#                         or dead and the foreground service is not"

@@ -34,6 +34,7 @@ import * as outbox from './src/outbox';
 import * as pushReg from './src/pushRegistration';
 import * as notifyDiag from './src/notifyDiag';
 import * as keepAlive from './src/keepAlive';
+import { BUILD_VERSION } from './src/version';
 import * as socketNotifier from './src/socketNotifier';
 import { C } from './src/theme';
 
@@ -582,7 +583,16 @@ export default function App() {
             if (token) pushRegisteredRef.current = true;
             return;
           }
-          const res = await apiFetch('/push-token', 'POST', { token, platform: 'android' });
+          // The device's own notification health travels with the token.
+          // This request already happens on every cold start, and "it works
+          // on some phones and not others" cannot be answered by collecting
+          // screenshots one phone at a time — the server logs these, so one
+          // report shows every device at once. Nothing identifying: a build
+          // number and one word of state.
+          const res = await apiFetch('/push-token', 'POST', {
+            token, platform: 'android',
+            build: BUILD_VERSION, keepAlive: keepAlive.status(),
+          });
           if (res?.ok) {
             pushRegisteredRef.current = true;
             // The launch has now had its unconditional send.

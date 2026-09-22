@@ -1174,7 +1174,7 @@ function messagePreview(msg) {
 
 // Register/unregister device push tokens
 app.post('/push-token', authMiddleware, (req, res) => {
-  const { token, platform, provider } = req.body;
+  const { token, platform, provider, build, keepAlive } = req.body;
   if (!token) return res.status(400).json({ error: 'Token required' });
   // 'fcm' unless the app says otherwise, so every existing client keeps
   // working unchanged. An unrecognised value is stored as fcm rather than
@@ -1183,6 +1183,14 @@ app.post('/push-token', authMiddleware, (req, res) => {
   db.prepare(`INSERT INTO push_tokens (user_id, token, platform, provider) VALUES (?, ?, ?, ?)
               ON CONFLICT(token) DO UPDATE SET user_id = excluded.user_id, provider = excluded.provider`)
     .run(req.user.id, String(token), platform || null, prov);
+  // One line per device, so "it works on some phones and not others" is a
+  // table rather than a round of screenshots. The push report greps these.
+  // No token, no username: this is read into a repository that has been
+  // public.
+  const b = Number(build);
+  console.log(`[device] user=${req.user.id} build=${Number.isFinite(b) && b > 0 ? b : '?'}`
+    + ` keepalive=${String(keepAlive || 'unknown').replace(/[^a-z-]/gi, '') || 'unknown'}`
+    + ` provider=${prov}`);
   res.json({ ok: true });
 });
 app.delete('/push-token', authMiddleware, (req, res) => {

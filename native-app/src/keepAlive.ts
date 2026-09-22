@@ -43,6 +43,7 @@
 // handset permanently. Worst case for somebody it does not work on is one
 // crash, once — not one per launch, which is what took the call version out.
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { BUILD_VERSION } from './version';
 import notifee, {
   AndroidImportance, AndroidForegroundServiceType, AndroidVisibility,
 } from '@notifee/react-native';
@@ -148,8 +149,39 @@ export function crashedOnLastStart(o: { canaryPresent: boolean }): boolean {
 }
 
 /** Is the service permanently off on this device? */
-export function isDisabled(o: { disabledFlag: string | null | undefined }): boolean {
-  return !!(o && o.disabledFlag);
+export function isDisabled(o: {
+  disabledFlag: string | null | undefined;
+  /** The build running now. A disable belongs to the build that earned it. */
+  currentVersion?: number | string | null;
+}): boolean {
+  const flag = o && o.disabledFlag;
+  if (!flag) return false;
+  // ── WHY THIS IS NOT PERMANENT ANY MORE ─────────────────────────────────────
+  //
+  // Reported as: notifications work on some phones and not on others. This is
+  // the mechanism that would produce exactly that, and nothing else in the
+  // app is per-DEVICE and permanent.
+  //
+  // The flag used to be the string '1', written for good the first time a
+  // start killed the app, and nothing could ever clear it — not reinstalling
+  // the app, not updating it, nothing the user could reach. Build 284 crashed
+  // on launch for EVERYBODY, which is precisely the condition that writes it.
+  // Every handset that happened to be running then has had its foreground
+  // service switched off ever since, so its socket dies the moment the app
+  // closes; every handset that was not has been fine. Same build, same code,
+  // opposite behaviour, permanently.
+  //
+  // The flag now records WHICH BUILD crashed. A different build is different
+  // code — very possibly code in which the crash is fixed — so it gets its
+  // own chance, and the canary will disable it again in one launch if it is
+  // still wrong. The old '1' has no version in it and so reads as "some
+  // earlier build", which clears on the next update: that is the intent, and
+  // it is how the phones broken by 284 come back.
+  const at = String(flag).trim();
+  if (!/^\d+$/.test(at)) return false;               // legacy '1', or nonsense
+  const now = Number(o && o.currentVersion);
+  if (!Number.isFinite(now) || now <= 0) return true; // unknown build: stay safe
+  return Number(at) === now;
 }
 
 let running = false;
@@ -195,12 +227,20 @@ export async function init(): Promise<void> {
       AsyncStorage.getItem(CANARY_KEY).catch(() => null),
       AsyncStorage.getItem(DISABLED_KEY).catch(() => null),
     ]);
-    if (isDisabled({ disabledFlag: off })) { disabled = true; return; }
+    if (isDisabled({ disabledFlag: off, currentVersion: BUILD_VERSION })) {
+      disabled = true;
+      console.warn(`[keepAlive] disabled: a start in build ${off} killed the app`);
+      return;
+    }
+    // A flag from an older build is cleared rather than just ignored, so the
+    // next launch does not have to reason about it again.
+    if (off) await AsyncStorage.removeItem(DISABLED_KEY).catch(() => {});
     if (crashedOnLastStart({ canaryPresent: !!canary })) {
       disabled = true;
-      await AsyncStorage.setItem(DISABLED_KEY, '1').catch(() => {});
+      // The BUILD that crashed, not a bare '1'. See isDisabled.
+      await AsyncStorage.setItem(DISABLED_KEY, String(BUILD_VERSION)).catch(() => {});
       await AsyncStorage.removeItem(CANARY_KEY).catch(() => {});
-      console.warn('[keepAlive] a previous start killed the app; disabled on this device');
+      console.warn('[keepAlive] a previous start killed the app; disabled for this build');
     }
   } catch {}
   try {
