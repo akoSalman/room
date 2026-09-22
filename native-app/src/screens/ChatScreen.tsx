@@ -10,6 +10,9 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
 import * as FileSystem from 'expo-file-system';
+import * as storage from '../storage';
+import * as pickFailure from '../pickFailure';
+import { BUILD_VERSION } from '../version';
 import * as Clipboard from 'expo-clipboard';
 import * as IntentLauncher from 'expo-intent-launcher';
 import * as ScreenCapture from 'expo-screen-capture';
@@ -2557,6 +2560,37 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     setPendingMedia(prev => [...prev, { uri: a.uri, name: a.name, mime: guessMime(a.name || a.uri, a.mimeType) }]);
   }
 
+  /**
+   * Attach a video through the document picker.
+   *
+   * Offered whenever the gallery could not hand one over, because the user
+   * established that this route works on the very file the gallery refused:
+   * "when picking 150MB video as video from gallery it doesn't pick but as
+   * file is ok".
+   */
+  async function pickVideoAsFile() {
+    try {
+      const res = await DocumentPicker.getDocumentAsync({
+        type: 'video/*', copyToCacheDirectory: true,
+      });
+      if (res.canceled) return;
+      const a = res.assets[0];
+      setPendingMedia(prev => [...prev, {
+        uri: a.uri, name: a.name || 'video.mp4', mime: guessMime(a.name || a.uri, a.mimeType),
+      }]);
+    } catch (e: any) {
+      const f = pickFailure.failureMessage({ error: e, isVideo: true });
+      Alert.alert(f.title, f.body);
+    }
+  }
+
+  /** Offer the file route from an alert, rather than leaving a dead end. */
+  function offerFileRoute(f: { title: string; body: string; offerFileRoute: boolean }) {
+    Alert.alert(f.title, f.body, f.offerFileRoute
+      ? [{ text: 'Cancel', style: 'cancel' }, { text: 'Attach as file', onPress: pickVideoAsFile }]
+      : [{ text: 'OK' }]);
+  }
+
   async function pickFromGallery() {
     setShowAttachMenu(false);
     // Same as the camera: only ask when we don't already have it.
@@ -2566,15 +2600,45 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       Alert.alert('Permission Required', 'Please allow access to your photo library.');
       return;
     }
-    const res = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.All,
-      allowsMultipleSelection: true,
-      selectionLimit: 10,
-      quality: 0.6, // same compression as the camera — see pickFromCamera
-      exif: false,
-    });
+    // ── Every picked VIDEO is copied whole, before we see it ───────────────
+    //
+    // expo-image-picker's MediaHandler.handleVideo copies the file byte for
+    // byte into the app's cache directory and then reads its metadata from
+    // the copy. A 150 MB video therefore needs 150 MB of free space and a
+    // full read-and-write before anything appears in the composer.
+    //
+    // And this whole call was awaited with no try/catch. When that copy
+    // failed the rejection went nowhere: nothing was attached, nothing was
+    // said, and the app looked like it had simply ignored the tap. That
+    // silence is the bug as the user experienced it — "it doesn't pick".
+    //
+    // Making room first is not a workaround for somebody else's copy; the
+    // space it frees is this app's own rubbish, and the phone that reported
+    // this was holding nine gigabytes of it.
+    await storage.sweep(BUILD_VERSION).catch(() => {});
+    let res: any;
+    try {
+      res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.All,
+        allowsMultipleSelection: true,
+        selectionLimit: 10,
+        quality: 0.6, // same compression as the camera — see pickFromCamera
+        exif: false,
+      });
+    } catch (e: any) {
+      const free = await FileSystem.getFreeDiskStorageAsync().catch(() => null);
+      offerFileRoute(pickFailure.failureMessage({
+        error: e,
+        // Nothing here knows how big the file was — the picker threw before
+        // saying. Free space alone is enough of a reason to name space as the
+        // likely cause rather than shrug.
+        outOfSpace: pickFailure.spaceLooksTight(free),
+        isVideo: true,
+      }));
+      return;
+    }
     if (res.canceled) return;
-    setPendingMedia(prev => [...prev, ...res.assets.map((asset, i) => {
+    setPendingMedia(prev => [...prev, ...res.assets.map((asset: any, i: number) => {
       const isVideo = asset.type === 'video';
       return { uri: asset.uri, name: isVideo ? `video-${i}.mp4` : `photo-${i}.jpg`, mime: isVideo ? 'video/mp4' : 'image/jpeg' };
     })]);
