@@ -10,6 +10,7 @@ const crypto = require('crypto');
 const { recipientsFor, tokenIsDead, notificationTag, collapseKeyFor, presenceLine } = require('./notify');
 const najva = require('./najva');
 const mviews = require('./messageViews');
+const { seenByAllUpTo } = require('./readReceipts');
 const credentials = require('./credentials');
 const cors = require('cors');
 const db = require('./db');
@@ -1534,6 +1535,39 @@ app.get('/read-receipts/:roomId', authMiddleware, (req, res) => {
   const rows = db.prepare('SELECT user_id, last_read_msg_id FROM room_reads WHERE room_id = ? AND user_id != ?')
     .all(room.id, req.user.id);
   res.json(rows.reduce((acc, r) => { acc[r.user_id] = r.last_read_msg_id; return acc; }, {}));
+});
+
+/** Every member of a room, the caller included. A DM's members are its pair. */
+function roomMemberIds(room) {
+  if (!room) return [];
+  if (room.is_dm) {
+    const pair = dmParticipants(room);
+    if (pair) return pair;
+  }
+  return db.prepare('SELECT user_id FROM room_members WHERE room_id = ?')
+    .all(room.id).map(r => r.user_id);
+}
+
+/**
+ * How far EVERY other member has read.
+ *
+ * A separate endpoint rather than another key on /read-receipts, because both
+ * clients read that response as "a map of ids to numbers" and take the
+ * maximum of its values. Adding a key to it would break every phone running a
+ * build that is already out there — and those are the phones this is for.
+ *
+ * The rule itself is in readReceipts.js, where it is tested against rooms
+ * larger than the two people available to test it with by hand.
+ */
+app.get('/seen-by-all/:roomId', authMiddleware, (req, res) => {
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
+  if (!room || !canAccessRoom(req.user.id, room)) return res.status(404).json({ error: 'Room not found' });
+  const rows = db.prepare('SELECT user_id, last_read_msg_id FROM room_reads WHERE room_id = ?')
+    .all(room.id);
+  const marks = rows.reduce((acc, r) => { acc[r.user_id] = r.last_read_msg_id; return acc; }, {});
+  res.json({
+    upto: seenByAllUpTo({ marks, memberIds: roomMemberIds(room), authorId: req.user.id }),
+  });
 });
 
 /**
@@ -3135,9 +3169,40 @@ io.on('connection', (socket) => {
     recordReadMark(roomId, lastMsgId);
     const row = db.prepare('SELECT last_read_msg_id FROM room_reads WHERE user_id = ? AND room_id = ?')
       .get(socket.user.id, roomId);
-    socket.to(String(roomId)).emit('messages_read', {
-      roomId: String(roomId), userId: socket.user.id, lastReadMsgId: row.last_read_msg_id,
-    });
+    // `seenByAllUpTo` travels WITH the per-reader mark rather than replacing
+    // it: builds already on people's phones use lastReadMsgId and must go on
+    // working, and the rooms screen's own unread handling wants the reader's
+    // own position, not the room's slowest.
+    const readRoom = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+    let seenByAll = 0;
+    try {
+      const marks = db.prepare('SELECT user_id, last_read_msg_id FROM room_reads WHERE room_id = ?')
+        .all(roomId)
+        .reduce((acc, r) => { acc[r.user_id] = r.last_read_msg_id; return acc; }, {});
+      const memberIds = roomMemberIds(readRoom);
+      // Computed once per member, so each recipient is told the figure that
+      // applies to THEIR messages — everyone else's reading, excluding their
+      // own, which is the only reader who never counts.
+      for (const id of memberIds) {
+        if (id === socket.user.id) continue;
+        const upto = seenByAllUpTo({ marks, memberIds, authorId: id });
+        io.to(`user:${id}`).emit('messages_read', {
+          roomId: String(roomId), userId: socket.user.id,
+          lastReadMsgId: row.last_read_msg_id, seenByAllUpTo: upto,
+        });
+      }
+      seenByAll = 1;
+    } catch (err) {
+      console.error('[seen-by-all]', err.message);
+    }
+    // The per-reader broadcast still goes out when the group figure could not
+    // be worked out, so a failure here costs the new tick rule and nothing
+    // else. Sent to the room minus this socket, exactly as before.
+    if (!seenByAll) {
+      socket.to(String(roomId)).emit('messages_read', {
+        roomId: String(roomId), userId: socket.user.id, lastReadMsgId: row.last_read_msg_id,
+      });
+    }
   });
 
   /**

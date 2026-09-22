@@ -985,8 +985,14 @@ function connectSocket() {
       if (el) el.dataset.expiresAt = String(oneTimeExpiry[messageId]);
       scheduleExpirySweep();
     });
-    socket.on('messages_read', ({ roomId, lastReadMsgId }) => {
+    socket.on('messages_read', ({ roomId, lastReadMsgId, seenByAllUpTo }) => {
       if (String(roomId) !== String(currentRoomId)) return;
+      // Deliberately not clamped upwards: "seen by everyone" can go DOWN when
+      // a member joins, and a tick that only ever climbs would keep claiming
+      // a message was seen by a room that no longer has seen it.
+      if (typeof seenByAllUpTo === 'number') {
+        maxOtherReadMsgId = seenByAllUpTo; updateSeenCheckmarks(); return;
+      }
       if (lastReadMsgId > maxOtherReadMsgId) { maxOtherReadMsgId = lastReadMsgId; updateSeenCheckmarks(); }
     });
   });
@@ -2286,10 +2292,13 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   } catch {}
   const msgs = await api('/messages/' + roomId);
   try {
-    const receipts = await api('/read-receipts/' + roomId);
-    if (receipts && typeof receipts === 'object' && !receipts.error) {
-      maxOtherReadMsgId = Math.max(0, ...Object.values(receipts));
-    }
+    // The furthest EVERYONE has read, not the furthest anyone has. Math.max
+    // here is the same number as the minimum in a DM, which is why the room
+    // case went unnoticed: one member opening the chat turned the sender's
+    // tick blue for all of them. The server answers this because it turns on
+    // who has NO read mark, and this page does not know the membership.
+    const seen = await api('/seen-by-all/' + roomId);
+    if (seen && typeof seen.upto === 'number') maxOtherReadMsgId = seen.upto;
   } catch {}
   if (Array.isArray(msgs)) {
     msgs.forEach(appendMessage);

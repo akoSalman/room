@@ -1624,12 +1624,20 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         Object.keys(all).forEach(k => { parsed[Number(k)] = all[k]; });
         setReactions(prev => ({ ...parsed, ...prev })); // live updates win
       }).catch(() => {});
-      apiFetch(`/read-receipts/${room.id}`).then(receipts => {
+      // ── Seen means seen by EVERYONE ────────────────────────────────────
+      //
+      // This used to be Math.max over /read-receipts, which is the same
+      // number as the minimum in a DM and quite a different one in a room:
+      // the tick went blue the moment any single member opened the chat.
+      //
+      // The figure is asked of the server rather than worked out here,
+      // because the answer turns on who has NOT read — a member who has
+      // never opened the room has no read mark at all, so the people who
+      // decide the answer are precisely the ones missing from that map, and
+      // the client does not know the membership. See readReceipts.js.
+      apiFetch(`/seen-by-all/${room.id}`).then(res => {
         if (!mounted) return;
-        if (receipts && typeof receipts === 'object' && !Array.isArray(receipts) && !receipts.error) {
-          const vals = Object.values(receipts) as number[];
-          setMaxOtherReadMsgId(vals.length ? Math.max(0, ...vals) : 0);
-        }
+        if (res && typeof res.upto === 'number') setMaxOtherReadMsgId(res.upto);
       }).catch(() => {});
       if (Array.isArray(msgs)) {
         const exp: Record<number, number> = {};
@@ -2015,8 +2023,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       onSock('voice_played', ({ messageId }: any) => {
         setMessages(prev => prev.map(msg => msg.id === messageId ? { ...msg, played: 1 } : msg));
       });
-      onSock('messages_read', ({ roomId, lastReadMsgId }: any) => {
+      onSock('messages_read', ({ roomId, lastReadMsgId, seenByAllUpTo }: any) => {
         if (roomId != room.id) return;
+        // NOT monotonic any more, and that is the point. The old value only
+        // ever climbed, which is right for "the furthest anyone has read" and
+        // wrong for "the furthest EVERYONE has read": the latter drops the
+        // moment somebody new is added to the room, or a member who had been
+        // keeping up stops. Clamping it upwards would leave a blue tick
+        // standing on a message that is no longer seen by all.
+        if (typeof seenByAllUpTo === 'number') { setMaxOtherReadMsgId(seenByAllUpTo); return; }
+        // A server that has not been deployed yet still sends only the
+        // per-reader mark. Better the old behaviour than none.
         setMaxOtherReadMsgId(prev => lastReadMsgId > prev ? lastReadMsgId : prev);
       });
     })();
