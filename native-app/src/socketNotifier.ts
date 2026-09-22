@@ -25,6 +25,7 @@
 // pushed in as a value rather than captured in a closure, because a closure
 // over React state is the same lifetime mistake wearing a different hat.
 import notifee, { AndroidImportance } from '@notifee/react-native';
+import * as notificationIcon from './notificationIcon';
 import * as Notifications from 'expo-notifications';
 import { AppState } from 'react-native';
 import * as pushReg from './pushRegistration';
@@ -190,6 +191,7 @@ export function attach(socket: any, opts?: { pushRegistered?: () => boolean }): 
       title: msg.username,
       body: bodyFor(msg?.type),
       android: {
+        ...notificationIcon.iconFields(),
         channelId: MESSAGES_CHANNEL,
         tag: pushReg.notificationTag(msg.id),
         importance: AndroidImportance.HIGH,

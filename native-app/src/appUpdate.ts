@@ -15,6 +15,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { Platform } from 'react-native';
 import notifee, { AndroidImportance } from '@notifee/react-native';
+import * as notificationIcon from './notificationIcon';
 import * as connection from './connection';
 import {
   DownloadPhase, phaseOnNetworkChange, shouldAutoResume, snapshotMatches, canContinue,
@@ -131,6 +132,7 @@ async function notify(progress: number) {
       title: 'Downloading update',
       body: `${Math.round(progress * 100)}%`,
       android: {
+        ...notificationIcon.iconFields(),
         channelId: CHANNEL,
         importance: AndroidImportance.LOW,
         onlyAlertOnce: true,

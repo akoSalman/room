@@ -47,6 +47,7 @@ import { BUILD_VERSION } from './version';
 import notifee, {
   AndroidImportance, AndroidForegroundServiceType, AndroidVisibility,
 } from '@notifee/react-native';
+import * as notificationIcon from './notificationIcon';
 
 /** Written before a start attempt, cleared once the process has survived it. */
 export const CANARY_KEY = 'keepalive-starting';
@@ -288,6 +289,7 @@ export async function start(appState: string | null | undefined): Promise<void> 
       title: 'Connected',
       body: 'Messages arrive instantly while this is on.',
       android: {
+        ...notificationIcon.iconFields(),
         channelId: CHANNEL_ID,
         asForegroundService: true,
         // DATA_SYNC and nothing else. The call version asked for PHONE_CALL,
