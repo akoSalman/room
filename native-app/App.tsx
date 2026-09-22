@@ -34,6 +34,7 @@ import * as outbox from './src/outbox';
 import * as pushReg from './src/pushRegistration';
 import * as notifyDiag from './src/notifyDiag';
 import * as keepAlive from './src/keepAlive';
+import * as socketNotifier from './src/socketNotifier';
 import { C } from './src/theme';
 
 // Keep the app layout LTR even on RTL locales (Persian/Arabic): mirroring the
@@ -626,99 +627,37 @@ export default function App() {
 
   // Global notifications: any message from someone else, in any room except
   // the one currently open, raises a local notification.
+  //
+  // THE LISTENER IS NOT OWNED BY THIS COMPONENT ANY MORE, and that is the
+  // whole point of the change. It used to be registered here with the
+  // ordinary cleanup — sock.off('message_received', handler) — which meant
+  // the socket's lifetime and the listener's lifetime belonged to different
+  // things: the socket to the keep-alive foreground service, the listener to
+  // a mounted React tree. Closing the app tore the listener off a socket that
+  // was still connected and still receiving, so nothing was drawn; reopening
+  // re-attached it, which is exactly why this read as "works when open, not
+  // when closed" instead of as a bug.
+  //
+  // socketNotifier.attach() is idempotent and is never undone here. All this
+  // effect does now is tell it where the user is, as a value — a closure over
+  // React state would be the same lifetime mistake in a different shape.
   useEffect(() => {
     if (screen === 'auth') return;
-    let sock: any = null;
-    let handler: any = null;
-    let delHandler: any = null;
+    let cancelled = false;
     (async () => {
       const uname = await getUsername();
-      sock = await getSocket();
-      handler = (msg: any) => {
-        // Raised from the app's OWN socket, the moment the message lands.
-        //
-        // A FALLBACK, not a parallel path. If this device is registered with
-        // Firebase, Firebase does the notifying and this stays silent — the
-        // arrangement every build up to 264 shipped, and the only one users
-        // have ever reported as working. Asked for by name after four of my
-        // builds failed to beat it. See socketRaiseAllowed.
-        if (!pushReg.socketRaiseAllowed({ msgId: msg.id, pushRegistered: pushRegisteredRef.current })) return;
-        if (msg.username === uname) return;
-        if (AppState.currentState === 'active') return; // in-app badges cover it
-        if (screen === 'chat' && room && msg.room_id === room.id) return;
-        // Never preview content — only the kind of message received
-        const body = msg.type === 'text' ? '💬 New message'
-          : msg.type === 'audio' ? '🎙 Voice message'
-          : msg.type === 'image' ? '🖼 Photo'
-          : msg.type === 'gallery' ? '🖼 Photos'
-          : msg.type === 'video' ? '🎥 Video'
-          : msg.type === 'music' ? '🎵 Audio file'
-          : msg.type === 'invite' ? '🔒 Room invitation' : '📄 File';
-        // Tie the notification to the message id so it can be pulled from the
-        // tray if the sender deletes the message.
-        // ── Posted through notifee, not expo-notifications ──────────────────
-        //
-        // This is the third posting mechanism here, so the reasons, in order:
-        //
-        //   trigger: null        shown, but on the DEFAULT channel — no custom
-        //                        sound, no heads-up. And it carries the same
-        //                        tag as the server's FCM notification, so
-        //                        Android treated the sounded FCM one as an
-        //                        UPDATE of this silent one. An update makes no
-        //                        sound. That is where the sound went.
-        //
-        //   trigger: {channelId} named the right channel and showed NOTHING.
-        //                        In expo-notifications a non-null trigger
-        //                        SCHEDULES rather than presents, whatever
-        //                        ChannelAwareTriggerInput's docs imply. The
-        //                        screen read "shown by the app itself: 38,
-        //                        last 2s ago" against a phone that had shown
-        //                        none of them — see below for why nobody saw
-        //                        the rejections.
-        //
-        //   notifee              posts now, on a named channel, with no
-        //                        scheduler in the path. It is already how the
-        //                        call notification and the keep-alive service
-        //                        are posted, so it is the mechanism this app
-        //                        has actual evidence works.
-        //
-        // AND THE RESULT IS RECORDED FROM THE RESULT. The previous version ran
-        // .catch(() => {}) and then recorded 'socket-raised' on the next line
-        // unconditionally, so the counter said 38 whether Android had accepted
-        // 38 or refused 38. A counter that reports attempts under a label
-        // reading "shown" is how three builds went out believing this path
-        // worked.
-        notifee.displayNotification({
-          // Matches the tag the server puts on its own FCM notification, so if
-          // both arrive Android replaces rather than stacks them.
-          id: pushReg.notificationTag(msg.id),
-          title: msg.username,
-          body,
-          android: {
-            channelId: MESSAGES_CHANNEL,
-            tag: pushReg.notificationTag(msg.id),
-            importance: AndroidImportance.HIGH,
-            pressAction: { id: 'default', launchActivity: 'default' },
-          },
-        }).then(
-          () => notifyDiag.record('socket-raised'),
-          (e: any) => notifyDiag.record('socket-failed', undefined, e?.message || String(e)),
-        );
-      };
-      // When a message is deleted, dismiss its notification on this device too.
-      delHandler = ({ messageId }: any) => {
-        // Both libraries: the notification may have been posted by notifee
-        // (socket) or drawn by Android from the server's FCM payload.
-        notifee.cancelNotification(pushReg.notificationTag(messageId)).catch(() => {});
-        Notifications.dismissNotificationAsync(pushReg.notificationTag(messageId)).catch(() => {});
-      };
-      sock.on('message_received', handler);
-      sock.on('message_deleted', delHandler);
+      const sock = await getSocket();
+      if (cancelled) return;
+      socketNotifier.setMe(uname);
+      socketNotifier.attach(sock, { pushRegistered: () => pushRegisteredRef.current });
     })();
-    return () => {
-      if (sock && handler) sock.off('message_received', handler);
-      if (sock && delHandler) sock.off('message_deleted', delHandler);
-    };
+    return () => { cancelled = true; };
+  }, [screen === 'auth']);
+
+  // Where the user is, pushed to the notifier so it can stay silent about the
+  // conversation already on screen. Not a dependency of the attach above.
+  useEffect(() => {
+    socketNotifier.setViewing(screen === 'chat' && room ? room.id : null);
   }, [screen, room?.id]);
 
   // Hardware back: step back through screens instead of closing the app.
@@ -751,6 +690,7 @@ export default function App() {
     await offlineStore.clearAll();
     audioManager.stop();
     disconnectSocket();
+    socketNotifier.detach();
     setScreen('auth');
     setRoom(null);
   }

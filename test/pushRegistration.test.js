@@ -275,10 +275,11 @@ test('THE SILENT ONE: the app\'s own notification names the message channel', ()
   // goes through notifee, which has no scheduler in the path — and the check
   // is for the channel on the notifee post. See notifyDiag.test.js for the
   // counter that hid all of this by reporting attempts as notifications.
-  const post = app.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  const post = notifier.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
   const at = post.indexOf('notifee.displayNotification({');
   assert.ok(at > 0, 'the socket notification is no longer posted through notifee');
-  assert.ok(/channelId: MESSAGES_CHANNEL/.test(post.slice(at, post.indexOf('delHandler =', at))),
+  assert.ok(/channelId: MESSAGES_CHANNEL/.test(
+      post.slice(at, post.indexOf("socket.on('message_deleted'", at))),
     'the socket notification lands on the default channel, silent, and swallows the FCM one');
   // Comment lines stripped first. The explanation above this call contains
   // the words "trigger: null", and a check against the raw source matches the
@@ -303,6 +304,10 @@ test('…and the channel is named once, not spelled out twice', () => {
 // ── The wiring ──────────────────────────────────────────────────────────────
 
 const app = fs.readFileSync(path.join(NAT, 'App.tsx'), 'utf8');
+// The socket notification moved into its own module so the listener is no
+// longer torn off the socket when a screen unmounts — the app-open/app-closed
+// bug. These checks follow it; App.tsx keeps the registration wiring.
+const notifier = fs.readFileSync(path.join(NAT, 'src', 'socketNotifier.ts'), 'utf8');
 const at = app.indexOf('// Register the device FCM token');
 const effect = at > 0 ? app.slice(at, app.indexOf('// Global notifications:')) : '';
 
@@ -360,13 +365,17 @@ test('the token is remembered only after the server accepts it', () => {
     'the token is recorded before the server accepted it');
 });
 
-test('…and App.tsx asks it before raising one, PASSING the registration state', () => {
-  assert.ok(/pushReg\.socketRaiseAllowed\(\{ msgId: msg\.id, pushRegistered: pushRegisteredRef\.current \}\)/.test(app),
+test('…and the notifier asks it before raising one, with the registration state', () => {
+  // The gate lives in socketNotifier.shouldRaise now; App.tsx supplies the
+  // registration state as a getter, so the listener can read it without being
+  // re-created (and re-attached) whenever it changes.
+  assert.ok(/pushReg\.socketRaiseAllowed\(\{ msgId: o\.msgId, pushRegistered: o\.pushRegistered \}\)/.test(notifier),
     'the gate cannot see whether Firebase is covering this device, so it never closes');
+  assert.ok(/pushRegistered: \(\) => pushRegisteredRef\.current/.test(app),
+    'App.tsx never hands the notifier the registration state');
   // Gating on registration is what caused the late notifications. It must not
   // come back by someone "restoring" it while editing this file.
-  const handler = app.slice(app.indexOf('// Global notifications:'),
-    app.indexOf('// When a message is deleted, dismiss its notification'));
+  const handler = notifier;
   assert.ok(handler.length > 400, 'the notification handler moved');
   // Gating on registration is BACK, deliberately and by request. It was
   // removed in 264 on reasoning that still looks right on paper — the shared
@@ -379,7 +388,7 @@ test('…and App.tsx asks it before raising one, PASSING the registration state'
   // The identifier comes from the shared helper, not a second copy of the
   // format — a hand-written `msg-${id}` here is how the two drift apart and
   // every message starts arriving twice.
-  assert.ok(/id: pushReg\.notificationTag\(msg\.id\)/.test(app),
+  assert.ok(/id: pushReg\.notificationTag\(msg\.id\)/.test(notifier),
     'the notification is named by hand rather than by the shared rule');
   // stayConnected was the abandoned half of the first socket-first attempt and
   // must stay gone. keepAlive is NOT: it was asked for once the phone's own

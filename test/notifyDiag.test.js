@@ -222,6 +222,12 @@ test('recent times read in units a person can act on', () => {
 // ── The wiring ──────────────────────────────────────────────────────────────
 
 const app = fs.readFileSync(path.join(NAT, 'App.tsx'), 'utf8');
+// The socket notification moved OUT of App.tsx and into its own module, so
+// that it is not torn off the socket when a screen unmounts — which is what
+// made it work with the app open and not with it closed. These checks follow
+// it there; App.tsx is still read for the listener and token wiring.
+const notifier = fs.readFileSync(path.join(NAT, 'src', 'socketNotifier.ts'), 'utf8');
+const both = app + '\n' + notifier;
 const rooms = fs.readFileSync(path.join(NAT, 'src', 'screens', 'RoomsScreen.tsx'), 'utf8');
 
 test('THE FACT IS ACTUALLY RECORDED: an arriving push is counted', () => {
@@ -235,7 +241,7 @@ test('THE FACT IS ACTUALLY RECORDED: an arriving push is counted', () => {
 
 test('…and so are the other four', () => {
   for (const k of ['handler', 'token-accepted', 'socket-raised', 'socket-failed']) {
-    assert.ok(new RegExp(`notifyDiag\\.record\\('${k}'`).test(app), `${k} is never recorded`);
+    assert.ok(new RegExp(`notifyDiag\\.record\\('${k}'`).test(both), `${k} is never recorded`);
   }
 });
 
@@ -243,12 +249,12 @@ test('THE POST IS NOT FIRE-AND-FORGET: its result decides what is recorded', () 
   // The bug this file exists to prevent, in its own call site. Read the socket
   // handler's post and require that 'socket-raised' is recorded from the
   // RESULT of the call, not on a line that runs regardless.
-  const code = app.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  const code = notifier.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
   const i = code.indexOf('notifee.displayNotification({');
   assert.ok(i > 0, 'the socket notification is no longer posted through notifee');
   // Bounded by what FOLLOWS the post, not by a character count: a fixed window
   // breaks the moment a line is added, and then passes while checking nothing.
-  const end = code.indexOf('delHandler =', i);
+  const end = code.indexOf("socket.on('message_deleted'", i);
   assert.ok(end > i);
   const post = code.slice(i, end);
   assert.ok(/\.then\(/.test(post),
@@ -262,15 +268,15 @@ test('THE POST IS NOT FIRE-AND-FORGET: its result decides what is recorded', () 
 test('the socket post names the Messages channel, and notifee owns that channel', () => {
   // Posting on the default channel is silent AND, sharing a tag with the
   // server's FCM notification, turns the sounded one into a soundless update.
-  const code = app.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  const code = notifier.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
   const i = code.indexOf('notifee.displayNotification({');
-  const post = code.slice(i, code.indexOf('delHandler =', i));
+  const post = code.slice(i, code.indexOf("socket.on('message_deleted'", i));
   assert.ok(/channelId: MESSAGES_CHANNEL/.test(post), 'the socket post has no channel');
   assert.ok(/tag: pushReg\.notificationTag/.test(post),
     'without the matching tag, FCM and the socket stack two notifications');
   // notifee REJECTS on an unknown channel, so it must create it itself rather
   // than trusting expo-notifications to have done it.
-  assert.ok(/notifee\.createChannel\(\{[\s\S]{0,200}id: MESSAGES_CHANNEL/.test(code),
+  assert.ok(/notifee\.createChannel\(\{[\s\S]{0,400}id: MESSAGES_CHANNEL/.test(app),
     'notifee posts on a channel it never creates; the first post rejects');
 });
 
@@ -279,7 +285,7 @@ test('expo\'s scheduler is not in the path any more', () => {
   // non-null trigger SCHEDULES in expo-notifications, whatever
   // ChannelAwareTriggerInput's documentation implies. Build 293 posted 38 of
   // these and the phone showed none.
-  const code = app.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  const code = both.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
   assert.ok(!/trigger: \{ channelId: MESSAGES_CHANNEL \}/.test(code),
     'the scheduling trigger is back; these notifications will not appear');
 });
