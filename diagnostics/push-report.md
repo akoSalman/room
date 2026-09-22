@@ -1,6 +1,6 @@
 # Push report — bistbarg
 
-Generated 2026-09-22T10:19Z by .github/workflows/push-report.yml
+Generated 2026-09-22T10:51Z by .github/workflows/push-report.yml
 
 ```
 Warning: Permanently added '185.8.174.198' (ED25519) to the list of known hosts.
@@ -34,93 +34,93 @@ users who have sent a message in the last 7 days: 13
 #                         the process killed outright).
 # held=Ns              -> how long it lasted. Compare with when the
 #                         app was closed.
-Sep 22 09:56:02 srv5524755161 node[2762713]: [presence] connect user=1 sockets=1
-Sep 22 09:56:29 srv5524755161 node[2762713]: [presence] connect user=13 sockets=2
-Sep 22 09:56:30 srv5524755161 node[2762713]: [presence] disconnect user=13 held=57s reason=transport-close sockets=1
-Sep 22 09:56:33 srv5524755161 node[2762713]: [presence] disconnect user=13 held=4s reason=transport-close sockets=0
-Sep 22 09:56:37 srv5524755161 node[2762713]: [presence] connect user=13 sockets=1
-Sep 22 09:56:41 srv5524755161 node[2762713]: [presence] disconnect user=13 held=4s reason=transport-close sockets=0
-Sep 22 10:02:16 srv5524755161 node[2762713]: [presence] connect user=11 sockets=1
-Sep 22 10:02:16 srv5524755161 node[2762713]: [presence] connect user=11 sockets=2
-Sep 22 10:02:16 srv5524755161 node[2762713]: [presence] connect user=11 sockets=3
-Sep 22 10:03:00 srv5524755161 node[2762713]: [presence] disconnect user=11 held=44s reason=ping-timeout sockets=2
-Sep 22 10:03:00 srv5524755161 node[2762713]: [presence] disconnect user=11 held=45s reason=ping-timeout sockets=1
-Sep 22 10:03:00 srv5524755161 node[2762713]: [presence] disconnect user=11 held=44s reason=ping-timeout sockets=0
-Sep 22 10:11:55 srv5524755161 node[2762713]: [presence] connect user=13 sockets=1
-Sep 22 10:11:55 srv5524755161 node[2762713]: [presence] connect user=13 sockets=2
-Sep 22 10:11:55 srv5524755161 node[2762713]: [presence] connect user=13 sockets=3
-Sep 22 10:11:55 srv5524755161 node[2762713]: [presence] connect user=13 sockets=4
-Sep 22 10:11:57 srv5524755161 node[2762713]: [presence] connect user=13 sockets=5
-Sep 22 10:11:57 srv5524755161 node[2762713]: [presence] connect user=13 sockets=6
-Sep 22 10:12:42 srv5524755161 node[2762713]: [presence] connect user=13 sockets=7
-Sep 22 10:12:42 srv5524755161 node[2762713]: [presence] connect user=13 sockets=8
-Sep 22 10:12:42 srv5524755161 node[2762713]: [presence] connect user=13 sockets=9
-Sep 22 10:12:42 srv5524755161 node[2762713]: [presence] connect user=13 sockets=10
-Sep 22 10:12:42 srv5524755161 node[2762713]: [presence] connect user=13 sockets=11
-Sep 22 10:12:42 srv5524755161 node[2762713]: [presence] connect user=13 sockets=12
-Sep 22 10:12:43 srv5524755161 node[2762713]: [presence] disconnect user=13 held=46s reason=transport-close sockets=11
-Sep 22 10:12:45 srv5524755161 node[2762713]: [presence] disconnect user=13 held=50s reason=transport-close sockets=10
-Sep 22 10:12:45 srv5524755161 node[2762713]: [presence] disconnect user=13 held=50s reason=transport-close sockets=9
-Sep 22 10:12:45 srv5524755161 node[2762713]: [presence] disconnect user=13 held=50s reason=transport-close sockets=8
-Sep 22 10:12:46 srv5524755161 node[2762713]: [presence] disconnect user=13 held=50s reason=transport-close sockets=7
-Sep 22 10:12:47 srv5524755161 node[2762713]: [presence] disconnect user=13 held=49s reason=transport-close sockets=6
-Sep 22 10:14:17 srv5524755161 node[2762713]: [presence] disconnect user=13 held=95s reason=transport-close sockets=5
-Sep 22 10:14:17 srv5524755161 node[2762713]: [presence] disconnect user=13 held=95s reason=transport-close sockets=4
-Sep 22 10:14:17 srv5524755161 node[2762713]: [presence] disconnect user=13 held=95s reason=transport-close sockets=3
-Sep 22 10:14:17 srv5524755161 node[2762713]: [presence] disconnect user=13 held=95s reason=transport-close sockets=2
-Sep 22 10:14:17 srv5524755161 node[2762713]: [presence] disconnect user=13 held=95s reason=transport-close sockets=1
-Sep 22 10:14:17 srv5524755161 node[2762713]: [presence] disconnect user=13 held=95s reason=transport-close sockets=0
-Sep 22 10:16:17 srv5524755161 node[2762713]: [presence] disconnect user=1 held=1215s reason=transport-close sockets=0
-Sep 22 10:16:29 srv5524755161 node[2762713]: [presence] connect user=3 sockets=1
-Sep 22 10:16:56 srv5524755161 node[2762713]: [presence] disconnect user=3 held=28s reason=transport-close sockets=0
-Sep 22 10:17:48 srv5524755161 node[2762713]: [presence] connect user=1 sockets=1
+Sep 22 10:39:51 srv5524755161 node[2776560]: [presence] connect user=6 sockets=18
+Sep 22 10:39:51 srv5524755161 node[2776560]: [presence] connect user=6 sockets=19
+Sep 22 10:39:51 srv5524755161 node[2776560]: [presence] connect user=6 sockets=20
+Sep 22 10:39:51 srv5524755161 node[2776560]: [presence] connect user=6 sockets=21
+Sep 22 10:39:51 srv5524755161 node[2776560]: [presence] connect user=6 sockets=22
+Sep 22 10:39:51 srv5524755161 node[2776560]: [presence] connect user=6 sockets=23
+Sep 22 10:39:51 srv5524755161 node[2776560]: [presence] connect user=6 sockets=24
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=8s reason=transport-close sockets=23
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=7s reason=transport-close sockets=22
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=8s reason=transport-close sockets=21
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=8s reason=transport-close sockets=20
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=7s reason=transport-close sockets=19
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=9s reason=transport-close sockets=18
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=8s reason=transport-close sockets=17
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=9s reason=transport-close sockets=16
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=9s reason=transport-close sockets=15
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=8s reason=transport-close sockets=14
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=8s reason=transport-close sockets=13
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=9s reason=transport-close sockets=12
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=8s reason=transport-close sockets=11
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=8s reason=transport-close sockets=10
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=9s reason=transport-close sockets=9
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=8s reason=transport-close sockets=8
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=7s reason=transport-close sockets=7
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=8s reason=transport-close sockets=6
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=9s reason=transport-close sockets=5
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=8s reason=transport-close sockets=4
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=9s reason=transport-close sockets=3
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=7s reason=transport-close sockets=2
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=8s reason=transport-close sockets=1
+Sep 22 10:39:58 srv5524755161 node[2776560]: [presence] disconnect user=6 held=9s reason=transport-close sockets=0
+Sep 22 10:48:26 srv5524755161 node[2776560]: [presence] connect user=3 sockets=1
+Sep 22 10:48:45 srv5524755161 node[2776560]: [presence] disconnect user=1 held=541s reason=transport-close sockets=0
+Sep 22 10:49:02 srv5524755161 node[2776560]: [presence] connect user=3 sockets=2
+Sep 22 10:49:05 srv5524755161 node[2776560]: [presence] connect user=1 sockets=1
+Sep 22 10:49:11 srv5524755161 node[2776560]: [presence] disconnect user=1 held=5s reason=transport-close sockets=0
+Sep 22 10:49:11 srv5524755161 node[2776560]: [presence] disconnect user=3 held=45s reason=ping-timeout sockets=1
+Sep 22 10:49:32 srv5524755161 node[2776560]: [presence] connect user=1 sockets=1
+Sep 22 10:50:42 srv5524755161 node[2776560]: [presence] disconnect user=3 held=100s reason=transport-close sockets=0
+Sep 22 10:51:17 srv5524755161 node[2776560]: [presence] connect user=3 sockets=1
 (end of presence lines)
 
 ### what the service logged about push, last 2 hours
-Sep 22 09:15:05 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [1] — auth 2ms, send 169ms
-Sep 22 09:15:05 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [1] — auth 2ms, send 173ms
-Sep 22 09:15:05 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [1] — auth 2ms, send 156ms
-Sep 22 09:15:05 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [1] — auth 3ms, send 3808ms
-Sep 22 09:15:05 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [1] — auth 2ms, send 146ms
-Sep 22 09:15:05 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [1] — auth 3ms, send 171ms
-Sep 22 09:15:06 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [1] — auth 0ms, send 165ms
-Sep 22 09:15:06 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [1] — auth 2ms, send 187ms
-Sep 22 09:15:06 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 156ms
-Sep 22 09:15:06 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 143ms
-Sep 22 09:15:07 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 1069ms
-Sep 22 09:15:11 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [1] — auth 0ms, send 5167ms
-Sep 22 09:19:40 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [1] — auth 5ms, send 395ms
-Sep 22 09:20:25 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [1] — auth 2ms, send 423ms
-Sep 22 09:21:11 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [1] — auth 6ms, send 394ms
-Sep 22 09:31:38 srv5524755161 node[2762713]: [push] 2 device(s) for 3 user(s) [1,12,13] — auth 1ms, send 605ms
-Sep 22 09:36:11 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [1] — auth 2ms, send 447ms
-Sep 22 09:46:14 srv5524755161 node[2762713]: [push] 2 device(s) for 3 user(s) [1,11,12] — auth 452ms, send 429ms
-Sep 22 09:47:29 srv5524755161 node[2762713]: [push] 2 device(s) for 3 user(s) [1,12,13] — auth 1ms, send 568ms
-Sep 22 09:48:33 srv5524755161 node[2762713]: [push] msg 7899 room 18: suppressed for 1 viewer(s) [11]
-Sep 22 09:48:33 srv5524755161 node[2762713]: [push] 1 device(s) for 2 user(s) [1,12] — auth 0ms, send 463ms
-Sep 22 09:48:57 srv5524755161 node[2762713]: [push] 2 device(s) for 3 user(s) [1,11,12] — auth 2ms, send 483ms
-Sep 22 09:49:15 srv5524755161 node[2762713]: [push] 2 device(s) for 3 user(s) [1,11,12] — auth 1ms, send 506ms
-Sep 22 09:53:58 srv5524755161 node[2762713]: [push] 2 device(s) for 3 user(s) [11,12,13] — auth 1ms, send 497ms
-Sep 22 09:54:35 srv5524755161 node[2762713]: [push] 2 device(s) for 3 user(s) [1,11,12] — auth 1ms, send 543ms
-Sep 22 10:02:13 srv5524755161 node[2762713]: [push] 2 device(s) for 3 user(s) [11,12,13] — auth 1ms, send 548ms
-Sep 22 10:02:25 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [15] — auth 1ms, send 450ms
-Sep 22 10:02:45 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [15] — auth 0ms, send 402ms
-Sep 22 10:03:08 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [6] — auth 0ms, send 392ms
-Sep 22 10:03:13 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [6] — auth 1ms, send 495ms
-Sep 22 10:03:16 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [6] — auth 1ms, send 160ms
-Sep 22 10:03:19 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [6] — auth 0ms, send 167ms
-Sep 22 10:05:16 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [15] — auth 0ms, send 421ms
-Sep 22 10:12:38 srv5524755161 node[2762713]: [push] 2 device(s) for 3 user(s) [1,11,12] — auth 1ms, send 525ms
-Sep 22 10:16:32 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [1] — auth 0ms, send 438ms
-Sep 22 10:16:32 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 419ms
-Sep 22 10:16:32 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 182ms
-Sep 22 10:16:32 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 179ms
-Sep 22 10:16:32 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 174ms
-Sep 22 10:16:34 srv5524755161 node[2762713]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 2024ms
+Sep 22 10:49:25 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 160ms
+Sep 22 10:49:25 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 236ms
+Sep 22 10:49:25 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 163ms
+Sep 22 10:49:25 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 0ms, send 158ms
+Sep 22 10:49:26 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 158ms
+Sep 22 10:49:26 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 139ms
+Sep 22 10:49:26 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 2ms, send 171ms
+Sep 22 10:49:26 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 162ms
+Sep 22 10:49:27 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 7ms, send 178ms
+Sep 22 10:49:27 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 3ms, send 178ms
+Sep 22 10:49:27 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 163ms
+Sep 22 10:49:27 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 0ms, send 153ms
+Sep 22 10:49:28 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 157ms
+Sep 22 10:49:28 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 184ms
+Sep 22 10:50:20 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 433ms
+Sep 22 10:50:21 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 425ms
+Sep 22 10:50:21 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 170ms
+Sep 22 10:50:21 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 146ms
+Sep 22 10:50:25 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 18ms, send 187ms
+Sep 22 10:50:25 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 3ms, send 212ms
+Sep 22 10:50:25 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 9ms, send 528ms
+Sep 22 10:50:25 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 4ms, send 531ms
+Sep 22 10:50:25 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 27ms, send 656ms
+Sep 22 10:50:25 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 20ms, send 680ms
+Sep 22 10:50:25 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 7ms, send 770ms
+Sep 22 10:50:25 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 11ms, send 774ms
+Sep 22 10:50:26 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 49ms, send 893ms
+Sep 22 10:50:26 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 43ms, send 972ms
+Sep 22 10:50:26 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 39ms, send 1027ms
+Sep 22 10:50:26 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 33ms, send 1046ms
+Sep 22 10:50:26 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 29ms, send 1132ms
+Sep 22 10:51:18 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 0ms, send 410ms
+Sep 22 10:51:18 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 428ms
+Sep 22 10:51:18 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 161ms
+Sep 22 10:51:19 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 430ms
+Sep 22 10:51:19 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 150ms
+Sep 22 10:51:19 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 166ms
+Sep 22 10:51:19 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 2ms, send 195ms
+Sep 22 10:51:19 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 1ms, send 163ms
+Sep 22 10:51:20 srv5524755161 node[2776560]: [push] 1 device(s) for 1 user(s) [1] — auth 3ms, send 171ms
 (end of push log lines)
 
 ### FCM credentials present?
-Sep 22 08:23:16 srv5524755161 node[2759254]: [FCM] Loaded service account for project "REDACTED" from /opt/chatroom-chat.bistbarg.com/firebase-service-account.json
 Sep 22 08:45:11 srv5524755161 node[2762713]: [FCM] Loaded service account for project "REDACTED" from /opt/chatroom-chat.bistbarg.com/firebase-service-account.json
+Sep 22 10:33:07 srv5524755161 node[2776560]: [FCM] Loaded service account for project "REDACTED" from /opt/chatroom-chat.bistbarg.com/firebase-service-account.json
 (end)
 ```
