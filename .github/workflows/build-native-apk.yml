@@ -587,8 +587,25 @@ jobs:
           # Uploaded beside the live file and moved into place afterwards: a
           # phone downloading while this runs must never get half a file.
           $SSH "root@$HOST" "mkdir -p '$APP_DIR/uploads/.app'"
-          scp -i ~/.ssh/apk_key -o StrictHostKeyChecking=accept-new \
-            "$APK" "root@$HOST:$APP_DIR/uploads/.app/latest.apk.part"
+          # Retried, because this crosses the same long, lossy link the code
+          # deploy does and one dropped transfer should not cost a whole
+          # twenty-minute build. Run 302 built the APK in ten minutes and then
+          # failed here after four, so the build existed and no phone could
+          # have it. deploy-servers.yml has had these four attempts for a
+          # while; this step was simply never given them.
+          for attempt in 1 2 3 4; do
+            if scp -i ~/.ssh/apk_key -o StrictHostKeyChecking=accept-new \
+                 -o ServerAliveInterval=20 -o ServerAliveCountMax=15 \
+                 "$APK" "root@$HOST:$APP_DIR/uploads/.app/latest.apk.part"; then
+              break
+            fi
+            if [ "$attempt" = 4 ]; then
+              echo "::error::could not send the APK to $HOST after 4 attempts"
+              exit 1
+            fi
+            echo "transfer failed, retrying in $((attempt * 5))s"
+            sleep $((attempt * 5))
+          done
           $SSH "root@$HOST" \
             "APP_DIR='$APP_DIR' VERSION='$VERSION' SHA='$SHA' SIZE='$SIZE' TITLE='$TITLE' bash -s" <<'EOF'
           set -e
