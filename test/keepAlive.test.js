@@ -316,6 +316,37 @@ test('…and the channel id was bumped, or none of that reaches a real phone', (
   assert.ok(/SECRET = -1/.test(en), 'notifee renumbered AndroidVisibility; recheck keepAlive');
 });
 
+
+// ── The blind spot ──────────────────────────────────────────────────────────
+
+test('THE DEVICE CAN SAY IT HAS BLOCKED ITSELF', () => {
+  // This module disables itself PERMANENTLY on a handset whose previous start
+  // killed the app — one shipped build did exactly that to everybody. A
+  // device in that state can never raise a notification from its socket
+  // again, and until now nothing said so: permission, channel and token all
+  // read as fine and the notifications were unreachable for a reason nobody
+  // could see.
+  const src = fs.readFileSync(path.join(NAT, 'src', 'keepAlive.ts'), 'utf8');
+  assert.ok(/export function status\(\)/.test(src), 'there is no way to ask what the service is doing');
+  for (const word of ["'off'", "'blocked'", "'running'", "'idle'"]) {
+    assert.ok(src.includes(word), `status() cannot report ${word}`);
+  }
+});
+
+test('…and the screen shows it, along with whether the socket is really up', () => {
+  // The shade's "Connected" is drawn natively and keeps showing whether the
+  // connection is up or not, so it is not evidence — which is how it misled
+  // this investigation for days.
+  const rooms = fs.readFileSync(path.join(NAT, 'src', 'screens', 'RoomsScreen.tsx'), 'utf8');
+  const code = rooms.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  assert.ok(/keepAlive\.status\(\)/.test(code), 'the diagnostics never ask whether the service is running');
+  assert.ok(/BLOCKED on this phone/.test(code),
+    'a permanently disabled keep-alive is not reported, so it looks like everything is fine');
+  assert.ok(/socketConnected/.test(code), 'the screen never says whether the socket is connected');
+  assert.ok(/\(await getSocket\(\)\)\?\.connected/.test(code),
+    'the socket state is assumed rather than asked');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

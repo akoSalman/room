@@ -21,6 +21,7 @@ import { changesLeftText, renameWorthDoing, renamedText } from '../profileEdit';
 import * as upd from '../updateSource';
 import { BUILD_VERSION } from '../version';
 import * as connection from '../connection';
+import * as keepAlive from '../keepAlive';
 import { statusLine as updateStatusLine } from '../updateResume';
 
 const AVATAR_EMOJIS = ['🦄','🐉','🧙‍♂️','🧚‍♀️','🧛‍♂️','🧞‍♂️','🦊','🐺','🦁','🐯','🐼','🐸','🦉','🐙','🦋','🤖','👽','🐲','🦅','🐬','🔥','⚡','🌙','⭐'];
@@ -61,6 +62,9 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   const [diag, setDiag] = useState<null | {
     d: notifyDiag.Diag; permissionGranted: boolean; channelEnabled: boolean;
     channelImportance: string; tokenRegistered: boolean;
+    /** Is the socket actually up right now? The shade's "Connected" is drawn
+     *  natively and keeps showing whether it is or not. */
+    socketConnected: boolean;
   }>(null);
   const [renamingRoom, setRenamingRoom] = useState<Room | null>(null);
   const [renameText, setRenameText] = useState('');
@@ -228,7 +232,15 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
           AsyncStorage.getItem(pushReg.SENT_TOKEN_KEY).catch(() => null),
         ]);
         const imp = ch ? Number((ch as any).importance) : -1;
+        // Asked of the socket itself rather than of the shade. The
+        // "Connected" notification is drawn natively by the foreground
+        // service and goes on showing whether the connection is up or not,
+        // which is exactly the sort of number that has misled this
+        // investigation four times.
+        let socketConnected = false;
+        try { socketConnected = !!(await getSocket())?.connected; } catch {}
         setDiag({
+          socketConnected,
           d,
           permissionGranted: !!(perm as any)?.granted,
           // expo's scale is NOT Android's: NONE=2, MIN=3, LOW=4, DEFAULT=5,
@@ -863,6 +875,25 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
                   <Text style={s.diagLine}>
                     Registered for push: {diag.tokenRegistered ? 'yes' : 'NO'}
                     {'  ·  '}server accepted {notifyDiag.ago(diag.d.lastTokenAcceptedAt)}
+                  </Text>
+                  {/* THE TWO FACTS THAT DECIDE EVERYTHING, and neither was
+                      on this screen. The keep-alive can disable itself
+                      permanently on a handset whose previous start killed the
+                      app — one shipped build did that to everybody — and a
+                      device in that state can never notify from its socket
+                      again, while every other line here reads as fine. And
+                      the shade's "Connected" is drawn natively: it says
+                      nothing about whether the socket is actually up. */}
+                  <Text style={s.diagLine}>
+                    Keep-alive service: {
+                      keepAlive.status() === 'running' ? 'running'
+                        : keepAlive.status() === 'blocked'
+                          ? 'BLOCKED on this phone (a previous start crashed it)'
+                          : keepAlive.status() === 'off' ? 'off in this build' : 'not started'
+                    }
+                  </Text>
+                  <Text style={s.diagLine}>
+                    Socket to the server: {diag.socketConnected ? 'connected' : 'NOT connected'}
                   </Text>
                   <Text style={s.diagLine}>
                     Push messages received: {diag.d.receivedCount}

@@ -162,6 +162,29 @@ export function isRunning(): boolean {
 }
 
 /**
+ * What this device's keep-alive is actually doing, in one word.
+ *
+ * A BLIND SPOT, and an expensive one. The phone shows "Connected — messages
+ * arrive instantly while this is on", which is drawn natively and says
+ * nothing about whether the service is running; and this module can disable
+ * itself PERMANENTLY on a handset whose previous start killed the app, which
+ * one earlier build did to everybody. A device in that state can never
+ * notify from its socket again, and nothing on any screen said so — so the
+ * diagnostics reported permission, channel and token as fine and the
+ * notifications were unreachable for a reason nobody could see.
+ *
+ *   'off'      the feature is switched off in this build
+ *   'blocked'  disabled on THIS device, for good, after a start killed it
+ *   'running'  started and Android accepted it
+ *   'idle'     allowed, but not started yet
+ */
+export function status(): 'off' | 'blocked' | 'running' | 'idle' {
+  if (!KEEP_ALIVE_SERVICE) return 'off';
+  if (disabled) return 'blocked';
+  return running ? 'running' : 'idle';
+}
+
+/**
  * Read the canary at launch and decide whether this device may ever try again.
  *
  * Called once, before anything attempts a start.
