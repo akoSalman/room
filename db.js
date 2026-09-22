@@ -129,6 +129,18 @@ db.exec(`
     platform TEXT
   );
 `);
+// Which service issued this token, because there are now two and their tokens
+// are not interchangeable: a Najva subscriber token posted to Firebase is a
+// rejected send, and an FCM token posted to Najva is the same in reverse.
+//
+// Added by migration rather than in the CREATE above, because every existing
+// row predates Najva and is an FCM token — which is exactly what the default
+// says. A table rebuilt from the CREATE alone on a fresh server would agree.
+try {
+  db.prepare("SELECT provider FROM push_tokens LIMIT 1").get();
+} catch {
+  db.exec("ALTER TABLE push_tokens ADD COLUMN provider TEXT NOT NULL DEFAULT 'fcm'");
+}
 // Browsers — including an iPhone running this as a home-screen app, which is
 // the only way an iPhone can have this app at all. One row per browser, keyed
 // by the endpoint the push service gave it.

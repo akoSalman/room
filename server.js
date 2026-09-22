@@ -8,6 +8,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const { recipientsFor, tokenIsDead, notificationTag, collapseKeyFor } = require('./notify');
+const najva = require('./najva');
 const credentials = require('./credentials');
 const cors = require('cors');
 const db = require('./db');
@@ -779,6 +780,62 @@ function hasPushRoute(userId, fromUserId) {
   } catch { return false; }
 }
 
+/**
+ * Notify through Najva, for the devices registered with it.
+ *
+ * Fire-and-forget like the Firebase path next door: a push that fails must
+ * never delay or break the message it is about. Unlike that path, the reason
+ * for a failure is logged with a fixed [najva] prefix so the push report can
+ * pull it off a live server — this project has spent a week on notifications
+ * that failed silently, and the difference between "sent and lost" and
+ * "rejected with a reason" is the whole diagnosis.
+ */
+function sendNajvaToUsers(userIds, title, body, data = {}) {
+  if (!Array.isArray(userIds) || !userIds.length) return;
+  if (!najva.configured(process.env)) return;
+  let tokens;
+  try {
+    const placeholders = userIds.map(() => '?').join(',');
+    tokens = db.prepare(
+      `SELECT token FROM push_tokens WHERE user_id IN (${placeholders}) AND provider = 'najva'`)
+      .all(...userIds).map(r => r.token);
+  } catch (err) {
+    console.error('[najva] could not read tokens:', err.message);
+    return;
+  }
+  if (!tokens.length) return;
+  // One request for all of them: subscriber_tokens is a list, and a request
+  // per device would multiply the rate at which this hits the API for no gain.
+  const payload = najva.buildBody({
+    apiKey: process.env.NAJVA_API_KEY, title, body, tokens, data,
+  });
+  fetch(najva.ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: najva.authHeader(process.env.NAJVA_AUTH_TOKEN),
+    },
+    body: JSON.stringify(payload),
+  }).then(async r => {
+    const text = await r.text().catch(() => '');
+    if (r.ok) {
+      console.log(`[najva] ${tokens.length} device(s) for ${userIds.length} user(s)`);
+      return;
+    }
+    console.error(najva.najvaFailure(r.status, text));
+    // Only an explicit "this subscriber is unknown" removes a row. A failed
+    // send is not a dead token — deleting on a bare 404 is the mistake that
+    // cost every Firebase device its notifications once already.
+    if (najva.tokenIsDead(r.status, text)) {
+      try {
+        const ph = tokens.map(() => '?').join(',');
+        db.prepare(`DELETE FROM push_tokens WHERE provider = 'najva' AND token IN (${ph})`).run(...tokens);
+        console.warn('[najva] removed token(s) Najva no longer knows');
+      } catch {}
+    }
+  }).catch(err => console.error('[najva] request error:', err.message));
+}
+
 async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
   if (!userIds.length) return;
   // The rule lives in notify.js so it can be tested: the rest of this function
@@ -790,10 +847,19 @@ async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
   // which needs no Google credentials at all. A server with no FCM key must
   // still be able to notify them.
   sendWebPushToUsers(userIds, title, body, data);
+  // Najva runs ALONGSIDE Firebase and before its early return, because a
+  // server with no Google credentials must still notify these phones — and
+  // because on the networks this app is used on, Najva is the path that
+  // arrives. See najva.js for the measurement that put it here.
+  sendNajvaToUsers(userIds, title, body, data);
   if (!fcmCreds) return;
   try {
     const placeholders = userIds.map(() => '?').join(',');
-    const tokens = db.prepare(`SELECT token FROM push_tokens WHERE user_id IN (${placeholders})`)
+    // provider = 'fcm' and nothing else. A Najva subscriber token posted to
+    // Firebase is a rejected send, and before the column existed every row
+    // here was assumed to be Google's.
+    const tokens = db.prepare(
+      `SELECT token FROM push_tokens WHERE user_id IN (${placeholders}) AND provider = 'fcm'`)
       .all(...userIds).map(r => r.token);
     // A recipient with no device token cannot be pushed to at all. The
     // notification they eventually see is the app raising it itself when its
@@ -1107,10 +1173,15 @@ function messagePreview(msg) {
 
 // Register/unregister device push tokens
 app.post('/push-token', authMiddleware, (req, res) => {
-  const { token, platform } = req.body;
+  const { token, platform, provider } = req.body;
   if (!token) return res.status(400).json({ error: 'Token required' });
-  db.prepare('INSERT INTO push_tokens (user_id, token, platform) VALUES (?, ?, ?) ON CONFLICT(token) DO UPDATE SET user_id = excluded.user_id')
-    .run(req.user.id, String(token), platform || null);
+  // 'fcm' unless the app says otherwise, so every existing client keeps
+  // working unchanged. An unrecognised value is stored as fcm rather than
+  // trusted: a typo must not create a token nothing will ever send to.
+  const prov = provider === 'najva' ? 'najva' : 'fcm';
+  db.prepare(`INSERT INTO push_tokens (user_id, token, platform, provider) VALUES (?, ?, ?, ?)
+              ON CONFLICT(token) DO UPDATE SET user_id = excluded.user_id, provider = excluded.provider`)
+    .run(req.user.id, String(token), platform || null, prov);
   res.json({ ok: true });
 });
 app.delete('/push-token', authMiddleware, (req, res) => {

@@ -18,6 +18,7 @@ on:
       # if any of them is missing from this list.
       - 'credentials.js'
       - 'notify.js'
+      - 'najva.js'
       - 'webPush.js'
       - 'linkMeta.js'
       - 'package.json'
