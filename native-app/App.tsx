@@ -35,6 +35,7 @@ import * as pushReg from './src/pushRegistration';
 import * as notifyDiag from './src/notifyDiag';
 import * as keepAlive from './src/keepAlive';
 import { BUILD_VERSION } from './src/version';
+import * as storage from './src/storage';
 import * as socketNotifier from './src/socketNotifier';
 import { C } from './src/theme';
 
@@ -247,7 +248,22 @@ export default function App() {
   // popped another copy of the picker on top of the previous one.
   // Cached media is kept, but not without limit — trim it back at startup so
   // a heavy chat history cannot quietly fill the phone.
-  useEffect(() => { mediaCache.prune().catch(() => {}); }, []);
+  //
+  // This ran, and the phone filled anyway: it trims documentDirectory/media/,
+  // which is photos and voice notes, and the app writes to five other places
+  // that nothing ever trimmed or even counted. Downloaded videos are the size
+  // of it — hundreds of megabytes each, no cap — and the update APK sat in
+  // the cache after being installed. Reported as 9 GB in Android's app info
+  // against half a gigabyte on the profile screen; both figures were honest
+  // about what they measured, and one of them measured a sixth of the app.
+  //
+  // The sweep needs the running version: an install cannot report its own
+  // success, because it replaces the process that would do the reporting, so
+  // the evidence that the APK is spent is the version running now.
+  useEffect(() => {
+    mediaCache.prune().catch(() => {});
+    storage.sweep(BUILD_VERSION).catch(() => {});
+  }, []);
 
   const sharePickerBuiltRef = React.useRef(false);
   useEffect(() => {

@@ -6,6 +6,7 @@ import {
 import * as FileSystem from 'expo-file-system';
 import * as appUpdate from '../appUpdate';
 import * as mediaCache from '../mediaCache';
+import * as storage from '../storage';
 import * as offline from '../offlineStore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fmtBytes } from '../download';
@@ -219,7 +220,7 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   useEffect(() => {
     if (!showProfile) return;
     let alive = true;
-    mediaCache.usage().then(b => { if (alive) setCacheBytes(b); }).catch(() => {});
+    storage.usage().then(b => { if (alive) setCacheBytes(b); }).catch(() => {});
     return () => { alive = false; };
   }, [showProfile]);
 
@@ -723,9 +724,9 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
             <View style={s.section}>
               <Text style={s.sectionTitle}>DOWNLOADED MEDIA</Text>
               <Text style={s.cacheHint}>
-                Photos, voice messages and files are kept after the first
-                download, so opening them again costs nothing. Older ones are
-                removed automatically once this passes 2 GB.
+                Photos, voice messages, videos and files are kept after the
+                first download, so opening them again costs nothing. Older ones
+                are removed automatically as this grows.
               </Text>
               <View style={s.cacheRow}>
                 <Text style={s.cacheSize}>
@@ -735,12 +736,20 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
                   style={s.clearCacheBtn}
                   onPress={() => Alert.alert(
                     'Clear downloaded media?',
-                    'Your messages are not affected. Photos and files will be downloaded again the next time you open them.',
+                    'Your messages are not affected. Photos, videos and files will be downloaded again the next time you open them.',
                     [
                       { text: 'Cancel', style: 'cancel' },
                       {
                         text: 'Clear', style: 'destructive',
-                        onPress: async () => { await mediaCache.clear(); setCacheBytes(0); },
+                        // Everything this app is holding, not just the photo
+                        // cache. Clearing one directory out of six while
+                        // showing the total for all six is how a "Clear"
+                        // button appears to do nothing.
+                        onPress: async () => {
+                          await mediaCache.clear();
+                          await storage.clearAll().catch(() => {});
+                          storage.usage().then(setCacheBytes).catch(() => setCacheBytes(0));
+                        },
                       },
                     ],
                   )}
