@@ -314,6 +314,56 @@ test('THE CHECK IS WIRED, and a bad file is DELETED rather than kept', () => {
     'the file is recorded as a ready-to-install build before it has been checked');
 });
 
+
+// ── The downgrade offer ─────────────────────────────────────────────────────
+
+test('A PHONE NEWER THAN THE SERVER IS UP TO DATE, not offered a downgrade', () => {
+  // From a real screenshot: CURRENT v311, LATEST v310, and a blue button
+  // reading "Update to version 310". An offer to go BACKWARDS — and worse, it
+  // replaced the only "up to date" state the screen has, so that user could
+  // never be offered anything newer either. They were stuck.
+  assert.strictEqual(C.installChoice({
+    downloadedVersion: null, latestVersion: 310, currentVersion: 311,
+  }), 'up-to-date', 'the app offers to install an OLDER build than the one running');
+  assert.strictEqual(C.installChoice({
+    downloadedVersion: null, latestVersion: 1, currentVersion: 999,
+  }), 'up-to-date');
+  // Equal is still up to date, and a genuinely newer build is still offered.
+  assert.strictEqual(C.installChoice({
+    downloadedVersion: null, latestVersion: 311, currentVersion: 311,
+  }), 'up-to-date');
+  assert.strictEqual(C.installChoice({
+    downloadedVersion: null, latestVersion: 313, currentVersion: 311,
+  }), 'update');
+});
+
+test('…and a stale DOWNLOADED build is not offered to a newer phone either', () => {
+  // The same trap one layer down: an APK sitting on the phone from before an
+  // update must not be installed over a newer running build.
+  assert.strictEqual(C.installChoice({
+    downloadedVersion: 305, latestVersion: 310, currentVersion: 311,
+  }), 'up-to-date');
+});
+
+test('THE SERVER NEVER PUBLISHES OVER A HIGHER VERSION', () => {
+  // Two builds can be in flight at once and nothing sequenced them: run 310
+  // started before run 311 and finished after it, moving its manifest over
+  // the newer one. That is what produced the downgrade offer above.
+  const wf = fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows',
+    'build-native-apk.yml'), 'utf8');
+  const pub = wf.slice(wf.indexOf("Publish APK to"), wf.indexOf('Publish latest APK to public'));
+  assert.ok(/HAVE/.test(pub), 'the publish step never reads the version already on the server');
+  assert.ok(/\[ "\$HAVE" -gt "\$VERSION" \]/.test(pub),
+    'nothing compares the built version with the one already published');
+  // And it must bail BEFORE moving anything into place.
+  const guard = pub.indexOf('-gt "$VERSION"');
+  const move = pub.indexOf('mv -f latest.apk.part');
+  assert.ok(guard > 0 && move > guard,
+    'the manifest is moved into place before the version is checked');
+  assert.ok(/rm -f latest.apk.part latest.json.part/.test(pub),
+    'a refused publish leaves its .part files behind on the server');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

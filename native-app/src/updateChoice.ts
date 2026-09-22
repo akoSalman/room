@@ -29,7 +29,18 @@ export function installChoice(o: {
 }): UpdateChoice {
   // Without knowing what is available, nothing can be recommended.
   if (o.latestVersion === null) return 'unknown';
-  if (o.currentVersion === o.latestVersion) return 'up-to-date';
+  // >=, not ==. A phone on a build NEWER than the one the server advertises
+  // was told "Update to version 310" while running 311 — an offer to go
+  // backwards, and worse, an offer that replaces the only "up to date" state
+  // the screen has. The user is then stuck: the button never becomes the
+  // newer build, because the server's number never rises past what they
+  // already have.
+  //
+  // That happens whenever two builds overlap and the older one finishes last,
+  // which had nothing stopping it. The workflow now refuses to publish over a
+  // higher version, but this has to hold anyway: the app cannot assume the
+  // server's number only ever goes up.
+  if (o.currentVersion >= o.latestVersion) return 'up-to-date';
   const d = o.downloadedVersion;
   // Offer the file on disk only while it is both newer than what is running and
   // not itself out of date.

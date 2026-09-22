@@ -623,6 +623,28 @@ jobs:
             "notes": "Automated build $VERSION"
           }
           JSON
+          # ── NEVER GO BACKWARDS ─────────────────────────────────────────
+          #
+          # Two builds can be in flight at once — a push and a dispatch, or two
+          # pushes — and nothing sequenced them. Run 310 started before run 311
+          # and finished after it, so it moved ITS manifest into place on top of
+          # the newer one. The server then advertised 310 while a phone was
+          # running 311, and the app offered "Update to version 310": an offer
+          # to go backwards, and one that replaced the only "up to date" state
+          # the screen has. That user could no longer be offered anything
+          # newer, because the advertised number never rose past what they
+          # already had.
+          #
+          # So a lower version simply does not publish. The APK it built is
+          # still on the GitHub release; it just does not become what this
+          # server hands out.
+          HAVE=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*\([0-9]\+\).*/\1/p' latest.json 2>/dev/null | head -1)
+          HAVE=${HAVE:-0}
+          if [ "$HAVE" -gt "$VERSION" ]; then
+            echo "::warning::server already has v$HAVE; refusing to publish the older v$VERSION"
+            rm -f latest.apk.part latest.json.part
+            exit 0
+          fi
           mv -f latest.apk.part latest.apk
           mv -f latest.json.part latest.json
           ls -l latest.apk latest.json
