@@ -22,6 +22,7 @@ import * as upd from '../updateSource';
 import { BUILD_VERSION } from '../version';
 import * as connection from '../connection';
 import * as keepAlive from '../keepAlive';
+import * as battery from '../batteryExemption';
 import { statusLine as updateStatusLine } from '../updateResume';
 
 const AVATAR_EMOJIS = ['🦄','🐉','🧙‍♂️','🧚‍♀️','🧛‍♂️','🧞‍♂️','🦊','🐺','🦁','🐯','🐼','🐸','🦉','🐙','🦋','🤖','👽','🐲','🦅','🐬','🔥','⚡','🌙','⭐'];
@@ -903,6 +904,28 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
                       by the app itself: 0" has two opposite causes — the
                       listener never fired, or it fired and refused everything
                       — and they look identical without this. */}
+                  {/* ── The one thing only the user can grant ──────────────
+                      Reported as "works for the first minute with the app
+                      closed, then stops". That is Doze: a foreground service
+                      exempts the app from standby, which is why the first
+                      minute works at all, but not from Doze's network
+                      suspension. Android makes the whitelist a decision only
+                      a person can take, so the app can do nothing here except
+                      ask clearly. There is no workaround. */}
+                  {battery.offerable() && (
+                    <TouchableOpacity
+                      onPress={() => battery.open().then(ok => {
+                        if (!ok) Alert.alert('Battery settings',
+                          'Open Settings → Apps → this app → Battery and choose "No restrictions".');
+                      })}
+                    >
+                      <Text style={[s.diagLine, s.diagAction]}>
+                        Notifications stop after a minute? Tap here and choose
+                        {' '}"Don't optimise" — Android suspends this app's
+                        {' '}connection otherwise.
+                      </Text>
+                    </TouchableOpacity>
+                  )}
                   <Text style={s.diagLine}>
                     Messages reaching the app: {diag.d.socketMsgCount}
                     {'  ·  '}last {notifyDiag.ago(diag.d.lastSocketMsgAt)}
@@ -1135,6 +1158,7 @@ const s = StyleSheet.create({
   roomActionBtn: { padding: 6 },
   roomActionIcon: { fontSize: 18 },
   diagVerdict: { color: C.text, fontSize: 14, fontWeight: '700', marginBottom: 8, lineHeight: 19 },
+  diagAction: { color: C.accent, textDecorationLine: 'underline' },
   diagLine: { color: C.textDim, fontSize: 13, marginBottom: 4 },
   logoutBtn: { backgroundColor: C.danger, borderRadius: 10, padding: 13, alignItems: 'center' },
   logoutBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },

@@ -412,9 +412,23 @@ test('the foreground service is back, but only on the terms that make it safe', 
   const appJson = JSON.parse(fs.readFileSync(path.join(NAT, 'app.json'), 'utf8'));
   assert.ok(appJson.expo.android.permissions.includes('android.permission.FOREGROUND_SERVICE_DATA_SYNC'),
     'the service declares a type the app cannot back up, which Android answers by killing it');
-  // The battery prompt was a separate idea and is still not one of these.
-  assert.ok(!appJson.expo.android.permissions.includes('android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS'),
-    'a permission is declared for a prompt nobody asked to bring back');
+  // THE BATTERY PROMPT IS NOW ONE OF THESE, and this assertion used to say
+  // the opposite. It was written when the prompt was an idea nobody had asked
+  // for; it is now the answer to a measured symptom.
+  //
+  // With the socket listener finally attached to the socket, notifications
+  // arrived with the app closed — for about a minute, and then stopped. That
+  // is Doze. A foreground service exempts the process from app standby, which
+  // is why the first minute works at all, and does NOT exempt it from Doze
+  // suspending the app's network. The only documented way out is the
+  // battery-optimisation whitelist, which Android lets nobody but the user
+  // grant, and the one-tap dialog for it is refused without this permission.
+  //
+  // Rewritten rather than deleted: the decision it recorded was real and has
+  // been reversed by evidence, which is worth saying where the next person
+  // will read it. See src/batteryExemption.ts.
+  assert.ok(appJson.expo.android.permissions.includes('android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS'),
+    'without this the one-tap battery dialog is silently refused, and Doze keeps stopping the socket after a minute');
   // stayConnected really is gone for good.
   assert.ok(!fs.existsSync(path.join(NAT, 'src', 'stayConnected.ts')));
   // …and the rule that cost a release is enforced where it can be tested.
