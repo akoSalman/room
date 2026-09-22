@@ -123,6 +123,59 @@ test('THE BUTTON EXISTS AND IS WIRED', () => {
     'the row explains it in Android\'s vocabulary rather than the user\'s');
 });
 
+// ── Autostart: the last case, and it is not a code fix ─────────────────────
+
+test('THE THIRD CASE: every OEM autostart screen is tried, not just one', () => {
+  // Reported precisely:
+  //   app open ........................ works
+  //   app closed, service running ..... works
+  //   ALL apps cleared, service gone .. nothing
+  //
+  // The third is not a bug in this app. Once the process is dead the socket
+  // cannot exist, and nothing but a push service reaches a phone whose app is
+  // not running — which here is Firebase, which delivers nothing to it.
+  //
+  // Stock Android does not kill a foreground service when its task is swiped
+  // away (notifee's does not even set stopWithTask, so it defaults to
+  // staying). Xiaomi, Huawei, Oppo and Vivo all force-stop it anyway, and a
+  // force-stopped app is restarted by nothing until a person opens it. Their
+  // escape hatch is a per-app Autostart toggle in the OEM's own settings app.
+  const plan = B.autostartPlan();
+  assert.ok(plan.length >= 4, `only ${plan.length} manufacturers covered`);
+  const pkgs = plan.map(p => p.pkg).join(' ');
+  for (const oem of ['com.miui.securitycenter', 'com.huawei.systemmanager',
+                     'com.coloros.safecenter', 'com.vivo.permissionmanager']) {
+    assert.ok(pkgs.includes(oem), `${oem} has no autostart route`);
+  }
+  // MIUI first: it is the handset this was reported from.
+  assert.strictEqual(plan[0].pkg, 'com.miui.securitycenter');
+  // Every entry names an activity. An intent with a package and no class
+  // opens the OEM's app at its home screen, which is not an answer.
+  for (const p of plan) assert.ok(p.cls && p.cls.length > 10, `${p.pkg} has no activity`);
+});
+
+test('…and it always ends somewhere, on a phone that is none of them', async () => {
+  // None of these intents exists on stock Android, and an intent no activity
+  // handles fails silently on many devices rather than throwing.
+  const src = fs.readFileSync(path.join(NAT, 'src', 'batteryExemption.ts'), 'utf8');
+  const code = src.split('\n').filter(l => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
+  const fn = code.slice(code.indexOf('export async function openAutostart'));
+  assert.ok(/Linking\.openSettings\(\)/.test(fn),
+    'a Samsung or Pixel gets a button that does nothing');
+  assert.strictEqual(await B.openAutostart(), true);
+});
+
+test('the autostart row is wired, and separate from the battery one', () => {
+  // Two different OEM permissions. Having one says nothing about the other,
+  // and the reporter had already turned battery saver off.
+  const rooms = fs.readFileSync(path.join(NAT, 'src', 'screens', 'RoomsScreen.tsx'), 'utf8');
+  const code = rooms.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  assert.ok(/battery\.openAutostart\(\)/.test(code), 'the autostart row opens nothing');
+  assert.ok(/battery\.open\(\)/.test(code), 'the battery row was replaced rather than added to');
+  assert.ok(/clear all apps/i.test(rooms),
+    'the row does not name the symptom, so nobody will know it is for them');
+});
+
 let passed = 0, failed = 0;
 (async () => {
   for (const { n, f } of tests) {

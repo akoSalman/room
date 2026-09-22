@@ -112,3 +112,77 @@ export async function open(pkg?: string | null): Promise<boolean> {
     return false;
   }
 }
+
+
+// ── Autostart: the OEM permission Android knows nothing about ──────────────
+//
+// Reported, and it is the last case left:
+//
+//   app open ......................... notifications work
+//   app closed, service still running  notifications work
+//   ALL apps cleared, service gone ... nothing
+//
+// The third is not a bug in this app and there is no code that fixes it. Once
+// the process is dead the socket cannot exist, and the only thing that can
+// reach a phone whose app is not running is a push service — which on these
+// handsets is Firebase, and Firebase delivers nothing here. That is measured,
+// not assumed: dozens sent, every one accepted by Google, none arriving, VPN
+// included.
+//
+// What is left is the OEM's own permission. Stock Android does not kill a
+// foreground service when its task is swiped away — notifee's service does
+// not even set stopWithTask, so it defaults to staying — but Xiaomi, Huawei,
+// Oppo and Vivo all ship a "clear all" that force-stops the process anyway,
+// and a force-stopped app is not restarted by anything until a person opens
+// it again. Their escape hatch is a per-app "Autostart" toggle that lives in
+// the OEM's own settings app, under a different name on each.
+//
+// None of these intents exists on stock Android, and an intent no activity
+// handles fails SILENTLY on many devices, so this is a list to try in order
+// and the last step is the app's own settings page, which always opens.
+const AUTOSTART_INTENTS: Array<{ action: string; pkg: string; cls: string }> = [
+  // Xiaomi / Redmi / POCO — MIUI. The one this was reported from.
+  { action: 'android.intent.action.MAIN', pkg: 'com.miui.securitycenter',
+    cls: 'com.miui.permcenter.autostart.AutoStartManagementActivity' },
+  // Huawei
+  { action: 'android.intent.action.MAIN', pkg: 'com.huawei.systemmanager',
+    cls: 'com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity' },
+  // Oppo / Realme — ColorOS
+  { action: 'android.intent.action.MAIN', pkg: 'com.coloros.safecenter',
+    cls: 'com.coloros.safecenter.permission.startup.StartupAppListActivity' },
+  // Vivo — FuntouchOS
+  { action: 'android.intent.action.MAIN', pkg: 'com.vivo.permissionmanager',
+    cls: 'com.vivo.permissionmanager.activity.BgStartUpManagerActivity' },
+];
+
+/** Exposed so the list can be checked without a phone. */
+export function autostartPlan(): typeof AUTOSTART_INTENTS {
+  return AUTOSTART_INTENTS.slice();
+}
+
+/**
+ * Open the OEM's autostart screen, or the app's own settings if there is none.
+ *
+ * Tries every OEM in turn rather than detecting the manufacturer: the check
+ * would be one more thing to get wrong, the wrong ones simply fail, and a
+ * rebadged phone reporting an unexpected manufacturer still gets its screen.
+ */
+export async function openAutostart(): Promise<boolean> {
+  if (Platform.OS !== 'android') return false;
+  for (const i of AUTOSTART_INTENTS) {
+    try {
+      await IntentLauncher.startActivityAsync(i.action, {
+        packageName: i.pkg, className: i.cls,
+      } as any);
+      return true;
+    } catch {
+      // Not this manufacturer, or the activity moved. Try the next.
+    }
+  }
+  try {
+    await Linking.openSettings();
+    return true;
+  } catch {
+    return false;
+  }
+}

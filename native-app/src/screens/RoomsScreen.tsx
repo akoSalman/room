@@ -948,6 +948,23 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
                       </Text>
                     </TouchableOpacity>
                   )}
+                  {/* The OTHER OEM permission, and the one that decides the
+                      last remaining case: clearing all apps force-stops the
+                      process on Xiaomi, Huawei, Oppo and Vivo, and a
+                      force-stopped app is restarted by nothing until somebody
+                      opens it. Autostart is their escape hatch. Separate from
+                      battery, and having one says nothing about the other. */}
+                  {battery.offerable() && (
+                    <TouchableOpacity onPress={() => battery.openAutostart().then(ok => {
+                      if (!ok) Alert.alert('Autostart',
+                        'Open your phone\'s Security or Settings app, find Autostart (or Auto-launch), and allow this app.');
+                    })}>
+                      <Text style={[s.diagLine, s.diagAction]}>
+                        Nothing after you clear all apps? Tap here and allow
+                        {' '}Autostart, then lock this app in the recent-apps list.
+                      </Text>
+                    </TouchableOpacity>
+                  )}
                   <Text style={s.diagLine}>
                     Messages reaching the app: {diag.d.socketMsgCount}
                     {'  ·  '}last {notifyDiag.ago(diag.d.lastSocketMsgAt)}
