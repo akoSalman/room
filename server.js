@@ -2612,7 +2612,10 @@ io.on('connection', (socket) => {
     const word = (v) => String(v || 'unknown').replace(/[^a-z-]/gi, '').slice(0, 16) || 'unknown';
     console.log(`[device] user=${socket.user.id} build=${n(h && h.build)}`
       + ` keepalive=${word(h && h.keepAlive)} state=${word(h && h.state)}`
-      + ` received=${n(h && h.received)} raised=${n(h && h.raised)} failed=${n(h && h.failed)}`
+      + ` received=${n(h && h.received)} msgs=${n(h && h.msgs)}`
+      + ` raised=${n(h && h.raised)} skipped=${n(h && h.skipped)}`
+      + (h && h.skipReason ? ` why=${word(h.skipReason)}` : '')
+      + ` failed=${n(h && h.failed)}`
       + (h && h.lastError ? ` err="${String(h.lastError).replace(/["\n]/g, ' ').slice(0, 80)}"` : ''));
   });
 

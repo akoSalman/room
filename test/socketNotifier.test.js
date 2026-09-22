@@ -154,6 +154,47 @@ test('the body names the KIND of message and never its content', () => {
   }
 });
 
+// ── Why it said no ──────────────────────────────────────────────────────────
+
+test('THE REFUSAL NAMES THE RULE THAT REFUSED IT', () => {
+  // A phone reported "Shown by the app itself: 0 · never" with the socket
+  // connected and the keep-alive running. Two causes, opposite fixes, and
+  // identical from outside: the listener never fired, or it fired and every
+  // message was refused. Guessing between them cost days.
+  assert.strictEqual(S.raiseDecision(base).reason, 'ok');
+  assert.strictEqual(S.raiseDecision({ ...base, appState: 'active' }).reason, 'app-active');
+  assert.strictEqual(S.raiseDecision({ ...base, msgUsername: 'sara' }).reason, 'mine');
+  assert.strictEqual(S.raiseDecision({ ...base, msgId: null }).reason, 'no-id');
+  assert.strictEqual(S.raiseDecision(null).reason, 'no-message');
+  // Every reason is short enough to survive a log line and a screenshot.
+  for (const o of [base, { ...base, appState: 'active' }, { ...base, msgId: null }]) {
+    assert.ok(S.raiseDecision(o).reason.length <= 40);
+    assert.ok(!/\s/.test(S.raiseDecision(o).reason), 'a reason with spaces breaks the log format');
+  }
+});
+
+test('shouldRaise still answers yes or no, and agrees with the decision', () => {
+  for (const o of [base, { ...base, appState: 'active' }, { ...base, msgUsername: 'sara' },
+                   { ...base, msgId: null }, null]) {
+    assert.strictEqual(S.shouldRaise(o), S.raiseDecision(o).raise);
+  }
+});
+
+test('EVERY ARRIVAL IS COUNTED, before any rule runs', () => {
+  // Without this, "0 shown" cannot be told from "0 arrived".
+  const code = fs.readFileSync(path.join(NAT, 'src', 'socketNotifier.ts'), 'utf8')
+    .split('\n').filter(l => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
+  const i = code.indexOf("socket.on('message_received'");
+  assert.ok(i > 0);
+  const body = code.slice(i, i + 700);
+  assert.ok(/notifyDiag\.record\('socket-msg'\)/.test(body),
+    'arrivals are not counted, so a silent listener and a refusing one look identical');
+  assert.ok(body.indexOf("record('socket-msg')") < body.indexOf('raiseDecision('),
+    'the arrival is counted after the rules, so a refusal is never counted as an arrival');
+  assert.ok(/notifyDiag\.record\('socket-skipped', undefined, decision\.reason\)/.test(body),
+    'the refusal reason is computed and then thrown away');
+});
+
 // ── Attaching, which is the actual bug ──────────────────────────────────────
 
 test('ATTACH IS IDEMPOTENT: re-rendering does not stack listeners', () => {

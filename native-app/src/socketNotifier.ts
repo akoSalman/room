@@ -40,55 +40,54 @@ export const MESSAGES_CHANNEL = 'messages-v3';
  * that has been got wrong repeatedly, and an `if` inside an event handler
  * cannot be tested without a phone, a server and a second person to type.
  */
-export function shouldRaise(o: {
-  /** Who sent it. */
+export type RaiseDecision = { raise: boolean; reason: string };
+
+/**
+ * Whether to notify, AND WHY NOT.
+ *
+ * The reason is the point. A phone reported "Shown by the app itself: 0 ·
+ * never" with the socket connected and the keep-alive running, which leaves
+ * two possibilities that need opposite fixes and look identical from outside:
+ * the listener never fired at all, or it fired and every message was refused.
+ * Guessing between them has cost days, so the refusal now says which rule
+ * turned it down and that reason travels to the server.
+ */
+export function raiseDecision(o: {
   msgUsername?: string | null;
-  /** Who I am. Never notify me about my own message. */
   me?: string | null;
-  /** 'active' means the user is looking at the app right now. */
   appState?: string | null;
-  /** The room whose messages are on screen, or null when none is. */
   viewingRoomId?: string | number | null;
   msgRoomId?: string | number | null;
   msgId?: string | number | null;
-  /** Whether this device is registered for push. Accepted and ignored. */
   pushRegistered?: boolean;
-}): boolean {
-  if (!o) return false;
-  // No id means no tag, and without the tag this and the server's push are two
-  // separate notifications rather than one replacing the other.
-  if (!pushReg.socketRaiseAllowed({ msgId: o.msgId, pushRegistered: o.pushRegistered })) return false;
-  if (o.msgUsername && o.me && o.msgUsername === o.me) return false;
-  // ── THE ONE THAT MATTERS: is the app in front of the user RIGHT NOW? ──────
-  //
-  // In front of them, the in-app badges do the signalling and a popup over the
-  // conversation being read is noise. Everywhere else, notify.
-  if (o.appState === 'active') return false;
-
-  // …and the open room is checked ONLY while the app is active.
-  //
-  // This is the bug that was reported as "notifications still do not work
-  // while the app is closed", and it was mine. viewingRoomId is set when a
-  // chat opens and nothing clears it when the app goes away — so closing the
-  // app from inside a conversation left that room marked "being read", and
-  // every message in it was suppressed for as long as the app stayed closed.
-  // The one conversation you are most likely to be waiting on is the one it
-  // silenced.
-  //
-  // It did not show up before the listener was moved out of React, because
-  // back then closing the app destroyed the listener outright — a different
-  // bug that hid this one.
-  //
-  // Guarded rather than deleted: when the app IS active this is what stops a
-  // notification appearing over the chat already on screen, which the check
-  // above cannot distinguish on its own if AppState is momentarily stale
-  // during a transition. Compared as strings, because a room id arrives from
-  // the socket as a number and is held in navigation state as a string, and
-  // 7 !== '7' would notify somebody about the chat they are reading.
+}): RaiseDecision {
+  if (!o) return { raise: false, reason: 'no-message' };
+  // No id means no tag, and without the tag this and the server's push are
+  // two notifications rather than one replacing the other.
+  if (!pushReg.socketRaiseAllowed({ msgId: o.msgId, pushRegistered: o.pushRegistered })) {
+    return { raise: false, reason: 'no-id' };
+  }
+  if (o.msgUsername && o.me && o.msgUsername === o.me) {
+    return { raise: false, reason: 'mine' };
+  }
+  // THE ONE THAT MATTERS: is the app in front of the user right now? In front
+  // of them the in-app badges do the signalling; everywhere else, notify.
+  if (o.appState === 'active') return { raise: false, reason: 'app-active' };
+  // …and the open room only while the app is ACTIVE. Unguarded, this silenced
+  // the conversation you closed the app from — viewingRoomId is set when a
+  // chat opens and nothing clears it when the app goes away. Kept for the
+  // case where AppState is momentarily stale during a transition.
   if (o.appState === 'active'
       && o.viewingRoomId != null && o.msgRoomId != null
-      && String(o.viewingRoomId) === String(o.msgRoomId)) return false;
-  return true;
+      && String(o.viewingRoomId) === String(o.msgRoomId)) {
+    return { raise: false, reason: 'reading-this-room' };
+  }
+  return { raise: true, reason: 'ok' };
+}
+
+/** The same decision as a boolean, for callers that only need yes or no. */
+export function shouldRaise(o: Parameters<typeof raiseDecision>[0]): boolean {
+  return raiseDecision(o).raise;
 }
 
 /** The one-line body: what KIND of message, never its content. */
@@ -143,7 +142,10 @@ export function attach(socket: any, opts?: { pushRegistered?: () => boolean }): 
   attachedTo = socket;
 
   socket.on('message_received', (msg: any) => {
-    if (!shouldRaise({
+    // Recorded BEFORE any rule runs, so "the listener never fired" and "it
+    // fired and refused everything" stop looking identical from outside.
+    notifyDiag.record('socket-msg');
+    const decision = raiseDecision({
       msgUsername: msg?.username,
       me,
       appState: AppState.currentState,
@@ -151,7 +153,11 @@ export function attach(socket: any, opts?: { pushRegistered?: () => boolean }): 
       msgRoomId: msg?.room_id,
       msgId: msg?.id,
       pushRegistered: opts?.pushRegistered ? opts.pushRegistered() : false,
-    })) return;
+    });
+    if (!decision.raise) {
+      notifyDiag.record('socket-skipped', undefined, decision.reason);
+      return;
+    }
     notifee.displayNotification({
       // The same tag the server puts on its push, so whichever arrives first
       // is shown and the other replaces it rather than stacking.

@@ -899,6 +899,20 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
                     Push messages received: {diag.d.receivedCount}
                     {'  ·  '}last {notifyDiag.ago(diag.d.lastReceivedAt)}
                   </Text>
+                  {/* Messages REACHING the app, before any rule runs. "Shown
+                      by the app itself: 0" has two opposite causes — the
+                      listener never fired, or it fired and refused everything
+                      — and they look identical without this. */}
+                  <Text style={s.diagLine}>
+                    Messages reaching the app: {diag.d.socketMsgCount}
+                    {'  ·  '}last {notifyDiag.ago(diag.d.lastSocketMsgAt)}
+                  </Text>
+                  {diag.d.socketSkippedCount > 0 && (
+                    <Text style={s.diagLine}>
+                      …of those, not shown: {diag.d.socketSkippedCount}
+                      {'  ·  '}last because: {diag.d.lastSkipReason}
+                    </Text>
+                  )}
                   <Text style={s.diagLine}>
                     Shown by the app itself: {diag.d.socketRaisedCount}
                     {'  ·  '}last {notifyDiag.ago(diag.d.lastSocketRaisedAt)}

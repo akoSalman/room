@@ -50,6 +50,17 @@ export type Diag = {
   lastHandlerShowed: boolean | null;
   /** The server accepted this device's push token. */
   lastTokenAcceptedAt: number | null;
+  /**
+   * A message arrived on the socket at all — counted BEFORE any rule runs.
+   *
+   * "Shown by the app itself: 0" has two completely different causes that look
+   * identical: the listener never fired, or it fired and every message was
+   * refused. This separates them, and lastSkipReason says which rule did it.
+   */
+  socketMsgCount: number;
+  lastSocketMsgAt: number | null;
+  socketSkippedCount: number;
+  lastSkipReason: string | null;
 };
 
 const EMPTY: Diag = {
@@ -63,6 +74,10 @@ const EMPTY: Diag = {
   lastHandlerAt: null,
   lastHandlerShowed: null,
   lastTokenAcceptedAt: null,
+  socketMsgCount: 0,
+  lastSocketMsgAt: null,
+  socketSkippedCount: 0,
+  lastSkipReason: null,
 };
 
 /** The blank slate, as a value — never the shared object, or callers mutate it. */
@@ -80,7 +95,8 @@ export function empty(): Diag {
 export function apply(
   prev: Diag | null | undefined,
   event: {
-    kind: 'received' | 'socket-raised' | 'socket-failed' | 'handler' | 'token-accepted';
+    kind: 'received' | 'socket-raised' | 'socket-failed' | 'socket-msg'
+      | 'socket-skipped' | 'handler' | 'token-accepted';
     at: number; showed?: boolean; error?: string;
   },
 ): Diag {
@@ -92,6 +108,14 @@ export function apply(
       return { ...d, lastReceivedAt: at, receivedCount: (Number(d.receivedCount) || 0) + 1 };
     case 'socket-raised':
       return { ...d, lastSocketRaisedAt: at, socketRaisedCount: (Number(d.socketRaisedCount) || 0) + 1 };
+    case 'socket-msg':
+      return { ...d, lastSocketMsgAt: at, socketMsgCount: (Number(d.socketMsgCount) || 0) + 1 };
+    case 'socket-skipped':
+      return {
+        ...d,
+        socketSkippedCount: (Number(d.socketSkippedCount) || 0) + 1,
+        lastSkipReason: String(event.error || 'unknown').slice(0, 40),
+      };
     case 'socket-failed':
       return {
         ...d,
@@ -153,6 +177,14 @@ export function verdict(d: Diag | null | undefined, o: {
   // appears no matter what Google does, and the reason is right here in the
   // app. This went unseen for three builds because the rejection was thrown
   // away by a bare .catch(() => {}) and the counter was bumped anyway.
+  // The socket is this app's fast path. If messages are reaching it and being
+  // refused, say which rule refused them — that is the whole diagnosis, and
+  // it is invisible from every other line on the screen.
+  const msgs = Number(d?.socketMsgCount) || 0;
+  const skipped = Number(d?.socketSkippedCount) || 0;
+  if (msgs > 0 && (Number(d?.socketRaisedCount) || 0) === 0 && skipped > 0) {
+    return `Messages reach the app but it refuses to show them: ${d?.lastSkipReason || 'unknown'}`;
+  }
   const failed = Number(d?.socketFailedCount) || 0;
   const failedAt = Number(d?.lastSocketFailedAt) || 0;
   const raisedAt = Number(d?.lastSocketRaisedAt) || 0;
@@ -201,7 +233,8 @@ export async function read(): Promise<Diag> {
  * instrumentation that can break the thing it measures is worse than none.
  */
 export function record(
-  kind: 'received' | 'socket-raised' | 'socket-failed' | 'handler' | 'token-accepted',
+  kind: 'received' | 'socket-raised' | 'socket-failed' | 'socket-msg'
+    | 'socket-skipped' | 'handler' | 'token-accepted',
   showed?: boolean,
   error?: string,
 ): void {

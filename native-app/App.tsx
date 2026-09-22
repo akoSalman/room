@@ -384,6 +384,9 @@ export default function App() {
           received: d.receivedCount,
           raised: d.socketRaisedCount,
           failed: d.socketFailedCount,
+          msgs: d.socketMsgCount,
+          skipped: d.socketSkippedCount,
+          skipReason: d.lastSkipReason,
           lastError: d.lastSocketError ? String(d.lastSocketError).slice(0, 80) : null,
         })).catch(() => {});
       }).catch(() => {});
