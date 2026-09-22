@@ -365,6 +365,28 @@ export default function App() {
       // is what silenced that conversation for as long as the app was closed,
       // and it should not be true in two places for it to be wrong in one.
       if (st !== 'active') socketNotifier.setViewing(null);
+      // ── The counters, to the server, on every transition ──────────────────
+      //
+      // These live on the phone and have only ever been read off screenshots,
+      // one handset at a time, which is why "works on some devices" took days
+      // to even state. Sent on EVERY change, so the value captured on the way
+      // back IN includes whatever happened while the app was closed — which
+      // is the case that keeps failing and the one a screenshot taken
+      // afterwards cannot distinguish from a fresh install.
+      //
+      // Counts and one word of state. No message content, no token, no
+      // username: this is read into a repository that has been public.
+      notifyDiag.read().then(d => {
+        getSocket().then(sk => sk?.emit('device_health', {
+          build: BUILD_VERSION,
+          keepAlive: keepAlive.status(),
+          state: st,
+          received: d.receivedCount,
+          raised: d.socketRaisedCount,
+          failed: d.socketFailedCount,
+          lastError: d.lastSocketError ? String(d.lastSocketError).slice(0, 80) : null,
+        })).catch(() => {});
+      }).catch(() => {});
       if (st === 'active') {
         Notifications.dismissAllNotificationsAsync().catch(() => {});
         ensureSocketAlive(); // recover fast after SIM calls / network switches

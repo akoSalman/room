@@ -2600,6 +2600,22 @@ io.on('connection', (socket) => {
   // hidden browser tab or a backgrounded app reports false. A device that is
   // merely *sitting* on a room is not "reading" it, so without this a laptop
   // with the tab left open would suppress notifications forever.
+  // What the phone's own notification counters say, reported as they change.
+  //
+  // The app sends these on every foreground/background transition, so the one
+  // that arrives as it comes BACK includes whatever happened while it was
+  // closed. Logged with a fixed prefix so the push report shows every device
+  // at once: "it works on some phones and not others" is not a question that
+  // can be answered one screenshot at a time.
+  socket.on('device_health', (h) => {
+    const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : '?');
+    const word = (v) => String(v || 'unknown').replace(/[^a-z-]/gi, '').slice(0, 16) || 'unknown';
+    console.log(`[device] user=${socket.user.id} build=${n(h && h.build)}`
+      + ` keepalive=${word(h && h.keepAlive)} state=${word(h && h.state)}`
+      + ` received=${n(h && h.received)} raised=${n(h && h.raised)} failed=${n(h && h.failed)}`
+      + (h && h.lastError ? ` err="${String(h.lastError).replace(/["\n]/g, ' ').slice(0, 80)}"` : ''));
+  });
+
   socket.on('app_focus', (focused) => {
     const cur = onlineUsers.get(socket.id);
     if (!cur) return;
