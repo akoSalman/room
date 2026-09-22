@@ -8,9 +8,6 @@ import * as appUpdate from '../appUpdate';
 import * as mediaCache from '../mediaCache';
 import * as offline from '../offlineStore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as pushReg from '../pushRegistration';
-import * as notifyDiag from '../notifyDiag';
-import * as Notifications from 'expo-notifications';
 import { fmtBytes } from '../download';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { Ionicons } from '@expo/vector-icons';
@@ -58,15 +55,6 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   const [myId, setMyId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [showProfile, setShowProfile] = useState(false);
-  // Notification diagnostics: gathered when the sheet opens, so it always
-  // reflects the phone right now rather than whenever the app started.
-  const [diag, setDiag] = useState<null | {
-    d: notifyDiag.Diag; permissionGranted: boolean; channelEnabled: boolean;
-    channelImportance: string; tokenRegistered: boolean;
-    /** Is the socket actually up right now? The shade's "Connected" is drawn
-     *  natively and keeps showing whether it is or not. */
-    socketConnected: boolean;
-  }>(null);
   const [renamingRoom, setRenamingRoom] = useState<Room | null>(null);
   const [renameText, setRenameText] = useState('');
   const [newUsername, setNewUsername] = useState('');
@@ -222,44 +210,14 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   // Check for a newer build once on mount: drives the header update badge.
   useEffect(() => { checkLatestVersion(); }, []);
 
-  // Measured when the sheet opens; walking the directory on every render
-  // would be pointless work.
+  // The cache size, measured when the sheet opens rather than on every
+  // render. What used to stand here as well — permission, channel importance,
+  // token, socket state, six counters — was a diagnostics readout, removed at
+  // the user's request. None of those facts were lost: App.tsx still gathers
+  // them and emits them to the server on every foreground change, which is
+  // where they were actually read from anyway. This screen no longer asks.
   useEffect(() => {
     if (!showProfile) return;
-    (async () => {
-      try {
-        const [d, perm, ch, sent] = await Promise.all([
-          notifyDiag.read(),
-          Notifications.getPermissionsAsync().catch(() => ({ granted: false } as any)),
-          Notifications.getNotificationChannelAsync('messages-v3').catch(() => null),
-          AsyncStorage.getItem(pushReg.SENT_TOKEN_KEY).catch(() => null),
-        ]);
-        const imp = ch ? Number((ch as any).importance) : -1;
-        // Asked of the socket itself rather than of the shade. The
-        // "Connected" notification is drawn natively by the foreground
-        // service and goes on showing whether the connection is up or not,
-        // which is exactly the sort of number that has misled this
-        // investigation four times.
-        let socketConnected = false;
-        try { socketConnected = !!(await getSocket())?.connected; } catch {}
-        setDiag({
-          socketConnected,
-          d,
-          permissionGranted: !!(perm as any)?.granted,
-          // expo's scale is NOT Android's: NONE=2, MIN=3, LOW=4, DEFAULT=5,
-          // HIGH=6, MAX=7. Written as `>= 2` first, against Android's 0-5
-          // scale, which called a completely silenced channel "on" — the exact
-          // false reassurance this screen exists to prevent.
-          //
-          // LOW is the floor: NONE draws nothing at all and MIN is collapsed
-          // in the shade with no sound and no status-bar icon, which to
-          // somebody waiting for a message is indistinguishable from nothing.
-          channelEnabled: imp >= 4,
-          channelImportance: ch ? String(imp) : 'missing',
-          tokenRegistered: !!sent,
-        });
-      } catch { setDiag(null); }
-    })();
     let alive = true;
     mediaCache.usage().then(b => { if (alive) setCacheBytes(b); }).catch(() => {});
     return () => { alive = false; };
@@ -877,123 +835,45 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
               )}
             </View>
 
-            {/* Why notifications are or are not arriving, on THIS phone.
-                Every fact here is one that cannot be read from the source, and
-                each of them was guessed wrongly at least once. */}
-            <View style={s.section}>
-              <Text style={s.sectionTitle}>Notifications</Text>
-              {!diag ? (
-                <Text style={s.diagLine}>Checking…</Text>
-              ) : (
-                <>
-                  <Text style={s.diagVerdict}>
-                    {notifyDiag.verdict(diag.d, diag)}
+            {/* ── What a USER can act on, and nothing else ────────────────
+                This was a diagnostics readout: a verdict, six counters, the
+                channel importance, the socket state. It earned its keep —
+                it is what finally found the bug — but it was instrumentation
+                for me, shown to somebody who wants their messages.
+                Asked for its removal, and rightly.
+                
+                The two rows below stay because they are not diagnostics:
+                they are the only two things a person can DO about the one
+                case that still fails, and both are OEM permissions no app
+                can grant itself. The counters they replaced still exist and
+                still reach me — the app reports them to the server on every
+                foreground change — so nothing was lost by taking them off
+                this screen. */}
+            {battery.offerable() && (
+              <View style={s.section}>
+                <Text style={s.sectionTitle}>Notifications</Text>
+                <TouchableOpacity
+                  onPress={() => battery.open().then(ok => {
+                    if (!ok) Alert.alert('Battery settings',
+                      'Open Settings → Apps → this app → Battery and choose "No restrictions".');
+                  })}
+                >
+                  <Text style={[s.diagLine, s.diagAction]}>
+                    Notifications stop after a minute? Tap here and choose
+                    {' '}"Don't optimise".
                   </Text>
-                  <Text style={s.diagLine}>
-                    Allowed by Android: {diag.permissionGranted ? 'yes' : 'NO'}
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => battery.openAutostart().then(ok => {
+                  if (!ok) Alert.alert('Autostart',
+                    'Open your phone\'s Security or Settings app, find Autostart (or Auto-launch), and allow this app.');
+                })}>
+                  <Text style={[s.diagLine, s.diagAction]}>
+                    Nothing after you clear all apps? Tap here and allow
+                    {' '}Autostart, then lock this app in the recent-apps list.
                   </Text>
-                  <Text style={s.diagLine}>
-                    "Messages" channel: {diag.channelEnabled ? 'on' : 'OFF'} (importance {diag.channelImportance})
-                  </Text>
-                  <Text style={s.diagLine}>
-                    Registered for push: {diag.tokenRegistered ? 'yes' : 'NO'}
-                    {'  ·  '}server accepted {notifyDiag.ago(diag.d.lastTokenAcceptedAt)}
-                  </Text>
-                  {/* THE TWO FACTS THAT DECIDE EVERYTHING, and neither was
-                      on this screen. The keep-alive can disable itself
-                      permanently on a handset whose previous start killed the
-                      app — one shipped build did that to everybody — and a
-                      device in that state can never notify from its socket
-                      again, while every other line here reads as fine. And
-                      the shade's "Connected" is drawn natively: it says
-                      nothing about whether the socket is actually up. */}
-                  <Text style={s.diagLine}>
-                    Keep-alive service: {
-                      keepAlive.status() === 'running' ? 'running'
-                        : keepAlive.status() === 'blocked'
-                          ? 'BLOCKED on this phone (a previous start crashed it)'
-                          : keepAlive.status() === 'off' ? 'off in this build' : 'not started'
-                    }
-                  </Text>
-                  <Text style={s.diagLine}>
-                    Socket to the server: {diag.socketConnected ? 'connected' : 'NOT connected'}
-                  </Text>
-                  <Text style={s.diagLine}>
-                    Push messages received: {diag.d.receivedCount}
-                    {'  ·  '}last {notifyDiag.ago(diag.d.lastReceivedAt)}
-                  </Text>
-                  {/* Messages REACHING the app, before any rule runs. "Shown
-                      by the app itself: 0" has two opposite causes — the
-                      listener never fired, or it fired and refused everything
-                      — and they look identical without this. */}
-                  {/* ── The one thing only the user can grant ──────────────
-                      Reported as "works for the first minute with the app
-                      closed, then stops". That is Doze: a foreground service
-                      exempts the app from standby, which is why the first
-                      minute works at all, but not from Doze's network
-                      suspension. Android makes the whitelist a decision only
-                      a person can take, so the app can do nothing here except
-                      ask clearly. There is no workaround. */}
-                  {battery.offerable() && (
-                    <TouchableOpacity
-                      onPress={() => battery.open().then(ok => {
-                        if (!ok) Alert.alert('Battery settings',
-                          'Open Settings → Apps → this app → Battery and choose "No restrictions".');
-                      })}
-                    >
-                      <Text style={[s.diagLine, s.diagAction]}>
-                        Notifications stop after a minute? Tap here and choose
-                        {' '}"Don't optimise" — Android suspends this app's
-                        {' '}connection otherwise.
-                      </Text>
-                    </TouchableOpacity>
-                  )}
-                  {/* The OTHER OEM permission, and the one that decides the
-                      last remaining case: clearing all apps force-stops the
-                      process on Xiaomi, Huawei, Oppo and Vivo, and a
-                      force-stopped app is restarted by nothing until somebody
-                      opens it. Autostart is their escape hatch. Separate from
-                      battery, and having one says nothing about the other. */}
-                  {battery.offerable() && (
-                    <TouchableOpacity onPress={() => battery.openAutostart().then(ok => {
-                      if (!ok) Alert.alert('Autostart',
-                        'Open your phone\'s Security or Settings app, find Autostart (or Auto-launch), and allow this app.');
-                    })}>
-                      <Text style={[s.diagLine, s.diagAction]}>
-                        Nothing after you clear all apps? Tap here and allow
-                        {' '}Autostart, then lock this app in the recent-apps list.
-                      </Text>
-                    </TouchableOpacity>
-                  )}
-                  <Text style={s.diagLine}>
-                    Messages reaching the app: {diag.d.socketMsgCount}
-                    {'  ·  '}last {notifyDiag.ago(diag.d.lastSocketMsgAt)}
-                  </Text>
-                  {diag.d.socketSkippedCount > 0 && (
-                    <Text style={s.diagLine}>
-                      …of those, not shown: {diag.d.socketSkippedCount}
-                      {'  ·  '}last because: {diag.d.lastSkipReason}
-                    </Text>
-                  )}
-                  <Text style={s.diagLine}>
-                    Shown by the app itself: {diag.d.socketRaisedCount}
-                    {'  ·  '}last {notifyDiag.ago(diag.d.lastSocketRaisedAt)}
-                  </Text>
-                  {diag.d.socketFailedCount > 0 && (
-                    <Text style={s.diagLine}>
-                      Refused by Android: {diag.d.socketFailedCount}
-                      {'  ·  '}last {notifyDiag.ago(diag.d.lastSocketFailedAt)}
-                      {'\n'}{diag.d.lastSocketError}
-                    </Text>
-                  )}
-                  <Text style={s.diagLine}>
-                    Last one was {diag.d.lastHandlerShowed === null ? 'not seen yet'
-                      : diag.d.lastHandlerShowed ? 'shown' : 'hidden (app was open)'}
-                    {'  ·  '}{notifyDiag.ago(diag.d.lastHandlerAt)}
-                  </Text>
-                </>
-              )}
-            </View>
+                </TouchableOpacity>
+              </View>
+            )}
 
             {/* Logout */}
             <View style={s.section}>
@@ -1196,7 +1076,6 @@ const s = StyleSheet.create({
   myRoomName: { flex: 1, color: C.text, fontSize: 15 },
   roomActionBtn: { padding: 6 },
   roomActionIcon: { fontSize: 18 },
-  diagVerdict: { color: C.text, fontSize: 14, fontWeight: '700', marginBottom: 8, lineHeight: 19 },
   diagAction: { color: C.accent, textDecorationLine: 'underline' },
   diagLine: { color: C.textDim, fontSize: 13, marginBottom: 4 },
   logoutBtn: { backgroundColor: C.danger, borderRadius: 10, padding: 13, alignItems: 'center' },

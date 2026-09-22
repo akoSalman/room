@@ -31,9 +31,15 @@ jobs:
     # decides they want one. To get a build, either run this workflow manually
     # (Actions → Build Native APK → Run workflow) or put [build apk] in the
     # commit message.
+    #
+    # The `|| 1` that used to end this condition made it ALWAYS true: every
+    # push touching native-app built an APK, which is exactly what the
+    # paragraph above says it does not do. It was left behind from forcing one
+    # build through, and nothing failed to announce it — the workflow simply
+    # went on building, with a comment above it describing something else.
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      contains(github.event.head_commit.message, '[build apk]') || 1
+      contains(github.event.head_commit.message, '[build apk]')
     # Bounded, because it hung.
     #
     # Builds 184 and 185 both stopped making progress inside Gradle and were

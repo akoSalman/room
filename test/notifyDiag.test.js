@@ -228,7 +228,6 @@ const app = fs.readFileSync(path.join(NAT, 'App.tsx'), 'utf8');
 // it there; App.tsx is still read for the listener and token wiring.
 const notifier = fs.readFileSync(path.join(NAT, 'src', 'socketNotifier.ts'), 'utf8');
 const both = app + '\n' + notifier;
-const rooms = fs.readFileSync(path.join(NAT, 'src', 'screens', 'RoomsScreen.tsx'), 'utf8');
 
 test('THE FACT IS ACTUALLY RECORDED: an arriving push is counted', () => {
   // Without this listener the screen would report "never received" on every
@@ -290,30 +289,55 @@ test('expo\'s scheduler is not in the path any more', () => {
     'the scheduling trigger is back; these notifications will not appear');
 });
 
-test('the screen shows it, and names the key rather than respelling it', () => {
-  assert.ok(/notifyDiag\.verdict\(/.test(rooms), 'the screen never states a verdict');
-  assert.ok(/receivedCount/.test(rooms), 'the screen does not show whether pushes arrive');
-  assert.ok(/pushReg\.SENT_TOKEN_KEY/.test(rooms),
-    'the storage key is written out a second time, which is how the two drift apart');
-  assert.ok(!/'push-token-sent'/.test(rooms));
+// ── Where these facts are read, now that the screen does not show them ─────
+//
+// The profile screen used to print the verdict and every counter. That was
+// instrumentation shown to somebody who wants their messages, and it was
+// removed on request. The facts themselves were never the readout's: they are
+// emitted to the server, which is where they were actually read from — one
+// report covering every handset, instead of screenshots one phone at a time.
+// So these checks follow them to App.tsx rather than being deleted with the
+// panel, because a counter nobody transmits is the same as no counter.
+
+test('EVERY COUNTER STILL LEAVES THE PHONE', () => {
+  const code = app.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  const i = code.indexOf("emit('device_health'");
+  assert.ok(i > 0, 'nothing reports this device\'s notification health any more');
+  // Bounded by what follows the emit, never by a character count.
+  const end = code.indexOf('}).catch(', i);
+  assert.ok(end > i);
+  const payload = code.slice(i, end);
+  for (const field of ['receivedCount', 'socketRaisedCount', 'socketFailedCount',
+                       'socketMsgCount', 'socketSkippedCount', 'lastSkipReason']) {
+    assert.ok(payload.includes(field), `${field} is gathered and then not sent`);
+  }
+  assert.ok(/keepAlive\.status\(\)/.test(payload),
+    'the report no longer says whether the keep-alive service is running');
 });
 
-test('a silenced channel counts as off, on EXPO\'s scale not Android\'s', () => {
-  // expo-notifications numbers importance differently from the Android
-  // constants: NONE=2, MIN=3, LOW=4, DEFAULT=5, HIGH=6, MAX=7. The first
-  // version of this check used Android's 0-5 scale and so reported a fully
-  // silenced channel (expo NONE = 2) as enabled — the precise false
-  // reassurance this screen exists to prevent.
-  assert.ok(/imp >= 4/.test(rooms),
-    'the channel check uses the wrong scale, so a silenced channel reads as on');
-  assert.ok(!/imp >= 2\b/.test(rooms), 'the Android-scale threshold is back');
-  // Pinned against the library itself, so a version that renumbers the enum
-  // fails here instead of quietly lying on somebody's phone.
-  const enumSrc = fs.readFileSync(path.join(
-    NAT, 'node_modules', 'expo-notifications', 'build',
-    'NotificationChannelManager.types.d.ts'), 'utf8');
-  assert.ok(/NONE = 2/.test(enumSrc) && /LOW = 4/.test(enumSrc) && /MAX = 7/.test(enumSrc),
-    'expo renumbered AndroidImportance; the threshold in RoomsScreen must be rechecked');
+test('…and it still carries nothing that identifies a person', () => {
+  // This report is read into a repository that has been public. It was
+  // written that way deliberately and nothing about removing a screen
+  // changes it, so the constraint is asserted rather than remembered.
+  const code = app.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  const i = code.indexOf("emit('device_health'");
+  const payload = code.slice(i, code.indexOf('}).catch(', i));
+  for (const leak of ['username', 'token', 'content', 'body']) {
+    assert.ok(!payload.includes(leak), `the health report carries ${leak}`);
+  }
+});
+
+test('THE PANEL IS GONE, and stayed gone', () => {
+  // Asked for plainly: "remove all that test text for notification in
+  // profile". A readout is easy to reinstate by accident while debugging the
+  // next thing, so the absence is a test rather than a memory.
+  const rooms = fs.readFileSync(path.join(NAT, 'src', 'screens', 'RoomsScreen.tsx'), 'utf8');
+  const code = rooms.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  for (const gone of ['notifyDiag.verdict(', 'receivedCount', 'socketRaisedCount',
+                      'channelImportance', 'Messages reaching the app',
+                      'Shown by the app itself', 'Refused by Android']) {
+    assert.ok(!code.includes(gone), `the diagnostics readout is back on the profile screen: ${gone}`);
+  }
 });
 
 let passed = 0, failed = 0;

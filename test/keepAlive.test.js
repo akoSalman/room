@@ -372,18 +372,25 @@ test('THE DEVICE CAN SAY IT HAS BLOCKED ITSELF', () => {
   }
 });
 
-test('…and the screen shows it, along with whether the socket is really up', () => {
+test('…and that state is REPORTED, not just available', () => {
   // The shade's "Connected" is drawn natively and keeps showing whether the
   // connection is up or not, so it is not evidence — which is how it misled
-  // this investigation for days.
-  const rooms = fs.readFileSync(path.join(NAT, 'src', 'screens', 'RoomsScreen.tsx'), 'utf8');
-  const code = rooms.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
-  assert.ok(/keepAlive\.status\(\)/.test(code), 'the diagnostics never ask whether the service is running');
-  assert.ok(/BLOCKED on this phone/.test(code),
-    'a permanently disabled keep-alive is not reported, so it looks like everything is fine');
-  assert.ok(/socketConnected/.test(code), 'the screen never says whether the socket is connected');
-  assert.ok(/\(await getSocket\(\)\)\?\.connected/.test(code),
-    'the socket state is assumed rather than asked');
+  // this investigation for days. status() is the honest answer, and it is
+  // worth nothing unless something transmits it.
+  //
+  // It used to be printed on the profile screen. That readout was removed at
+  // the user's request, so this follows the fact to App.tsx, where it travels
+  // to the server with the device health report and with the push token.
+  const app = fs.readFileSync(path.join(NAT, 'App.tsx'), 'utf8');
+  const code = app.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  const uses = code.split('keepAlive.status()').length - 1;
+  assert.ok(uses >= 2,
+    'the keep-alive state is reported in fewer places than it was, so a phone '
+    + 'whose service is blocked looks the same as one whose service is running');
+  assert.ok(code.includes("emit('device_health'"),
+    'nothing reports the keep-alive state on every foreground change');
+  assert.ok(/'\/push-token'/.test(code),
+    'the state no longer travels with the token, so a cold start reports nothing');
 });
 
 let passed = 0, failed = 0;

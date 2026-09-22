@@ -118,8 +118,12 @@ test('THE BUTTON EXISTS AND IS WIRED', () => {
   // And it explains the symptom in the user's words, not in Android's.
   assert.ok(/stop after a minute/i.test(rooms),
     'the row does not say what it is for, so nobody will tap it');
-  assert.ok(!/\bDoze\b/.test(code.slice(code.indexOf('battery.offerable()'),
-                                        code.indexOf('Messages reaching the app'))),
+  // Bounded by what FOLLOWS the battery row, never by a character count: the
+  // block it used to end at was the diagnostics readout, and that is gone.
+  const rowStart = code.indexOf('battery.offerable()');
+  const rowEnd = code.indexOf('battery.openAutostart()', rowStart);
+  assert.ok(rowEnd > rowStart, 'the two rows are no longer adjacent, so this test measures nothing');
+  assert.ok(!/\bDoze\b/.test(code.slice(rowStart, rowEnd)),
     'the row explains it in Android\'s vocabulary rather than the user\'s');
 });
 
