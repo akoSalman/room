@@ -2550,14 +2550,26 @@ io.on('connection', (socket) => {
   // JavaScript is frozen or gone, and no work on the notification code can
   // matter. "transport close" means the connection itself went.
   const connectedAt = Date.now();
-  const socketsFor = (uid) => [...onlineUsers.values()].filter(u => u.userId === uid).length;
+  // Counted from the actual connections, NOT from onlineUsers.
+  //
+  // onlineUsers only holds sockets that have sent join_room, so it missed
+  // every socket that was connected but not in a room — which printed
+  // "sockets=1" while seven were open, and "sockets=-1" on the way out. A
+  // diagnostic that reports a number its label does not describe is what this
+  // whole investigation has been made of; this one lasted a single report.
+  const socketsFor = (uid) => {
+    let n = 0;
+    for (const s of io.of('/').sockets.values()) if (s.user && s.user.id === uid) n++;
+    return n;
+  };
   console.log(presenceLine({
-    connected: true, userId: socket.user.id, remaining: socketsFor(socket.user.id) + 1,
+    connected: true, userId: socket.user.id, remaining: socketsFor(socket.user.id),
   }));
   socket.on('disconnect', (reason) => {
     console.log(presenceLine({
       connected: false, userId: socket.user.id, reason,
-      heldMs: Date.now() - connectedAt, remaining: socketsFor(socket.user.id) - 1,
+      // This socket is already out of the map by the time 'disconnect' fires.
+      heldMs: Date.now() - connectedAt, remaining: socketsFor(socket.user.id),
     }));
   });
 

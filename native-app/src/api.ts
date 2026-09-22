@@ -105,9 +105,46 @@ export async function apiFetch(path: string, method = 'GET', body?: object) {
 }
 
 let socket: Socket | null = null;
+/**
+ * The in-flight creation, so concurrent callers share one socket.
+ *
+ * ── SEVEN SOCKETS FOR ONE PHONE ────────────────────────────────────────────
+ *
+ * Measured on the server, which had never logged this until it was looked for:
+ *
+ *     08:35:44  connect    user=11          (seven times, same second)
+ *     08:35:51  disconnect user=11 held=7s  (seven times, same second)
+ *
+ * Two compounding faults in the eight lines below, both now fixed.
+ *
+ * FIRST, the guard asked `socket?.connected` rather than whether a socket
+ * EXISTED. A socket that is merely reconnecting — which is most of the time on
+ * these connections — failed that test, so a brand new one was built and the
+ * old one was abandoned. Abandoned is not closed: socket.io goes on
+ * reconnecting it forever, so every drop left another immortal socket behind.
+ *
+ * SECOND, `await getToken()` sits between the check and the assignment. Every
+ * caller that arrived during that await passed the guard and created its own.
+ * The ordinary async-singleton race, and the app calls getSocket() from
+ * several places at once on resume.
+ *
+ * Together they turn one bad minute of network into a handful of permanent
+ * sockets, each reconnecting on its own schedule, each raising its own
+ * presence on the server.
+ */
+let creating: Promise<Socket> | null = null;
 
 export async function getSocket(): Promise<Socket> {
-  if (socket?.connected) return socket;
+  // EXISTS, not "is connected". socket.io reconnects an existing socket by
+  // itself; replacing it during a reconnect is what orphaned the old one.
+  if (socket) return socket;
+  // A creation already under way is awaited rather than raced.
+  if (creating) return creating;
+  creating = createSocket().finally(() => { creating = null; });
+  return creating;
+}
+
+async function createSocket(): Promise<Socket> {
   const token = await getToken();
   // Default transports: start on HTTP long-polling, upgrade to WebSocket when
   // the proxy supports it. Forcing websocket-only made the app silently dead
@@ -158,4 +195,5 @@ export function ensureSocketAlive() {
 export function disconnectSocket() {
   socket?.disconnect();
   socket = null;
+  creating = null;
 }
