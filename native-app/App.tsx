@@ -406,6 +406,12 @@ export default function App() {
           lastError: d.lastSocketError ? String(d.lastSocketError).slice(0, 80) : null,
         })).catch(() => {});
       }).catch(() => {});
+      // Leaving the foreground is a normal exit, not a start that killed us.
+      // Recorded here because whatever ends the process after this point —
+      // the launcher reclaiming it, MIUI force-stopping it on "clear all
+      // apps" — must not be blamed on the keep-alive. See
+      // keepAlive.noteLeavingForeground.
+      if (st !== 'active') keepAlive.noteLeavingForeground().catch(() => {});
       if (st === 'active') {
         Notifications.dismissAllNotificationsAsync().catch(() => {});
         ensureSocketAlive(); // recover fast after SIM calls / network switches

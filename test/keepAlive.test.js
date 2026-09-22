@@ -393,6 +393,95 @@ test('…and that state is REPORTED, not just available', () => {
     'the state no longer travels with the token, so a cold start reports nothing');
 });
 
+// ── The canary that called a closed app a crash ─────────────────────────────
+//
+// Measured, not guessed. The push report for build 334, on a fresh install:
+//
+//   [device] user=1 build=334 keepalive=blocked state=background
+//            received=0 msgs=22 raised=21
+//
+// The service had disabled itself on the reporter's phone. It had not
+// crashed: the canary is cleared by a four-second JavaScript timer, and ANY
+// end of the process inside that window leaves it behind — a person closing
+// the app, or MIUI force-stopping it when they clear all apps. The first such
+// death disabled the keep-alive for the whole build.
+//
+// So on that handset the act that most needs the keep-alive was the act that
+// switched it off, and every new build was blocked again the first time they
+// did it.
+
+test('ONE CANARY IS NOT A CRASH', () => {
+  // The bug, stated as a test. A single ambiguous death must not disable the
+  // feature that every notification on the device depends on.
+  assert.strictEqual(K.shouldDisable({ strikes: K.strikesAfterLaunch({ canaryPresent: true, strikes: 0 }) }), false);
+  assert.strictEqual(K.shouldDisable({ strikes: 1 }), false);
+  assert.strictEqual(K.shouldDisable({ strikes: 2 }), false);
+});
+
+test('…but a start that kills the app EVERY time still gets caught', () => {
+  // A foreground service Android refuses kills the process on every launch,
+  // so a real one reaches three strikes within seconds. Not blocking at all
+  // would leave such a phone in a crash loop.
+  let strikes = 0;
+  for (let launch = 1; launch <= 3; launch++) {
+    strikes = K.strikesAfterLaunch({ canaryPresent: true, strikes });
+  }
+  assert.strictEqual(strikes, 3);
+  assert.strictEqual(K.shouldDisable({ strikes }), true);
+  assert.strictEqual(K.STRIKES_TO_DISABLE, 3);
+});
+
+test('ONE CLEAN LAUNCH WIPES THE COUNT, rather than decrementing it', () => {
+  // A launch with no canary is positive evidence that a start does not kill
+  // this app. Ambiguous deaths from weeks ago must not accumulate quietly
+  // until some unrelated third one crosses the line.
+  assert.strictEqual(K.strikesAfterLaunch({ canaryPresent: false, strikes: 2 }), 0);
+  assert.strictEqual(K.strikesAfterLaunch({ canaryPresent: false, strikes: 99 }), 0);
+  // Which is what saves the reporter's pattern: close quickly, open, close
+  // quickly. Never three in a row, so never blocked.
+  let strikes = 0;
+  for (const canaryPresent of [true, false, true, false, true, false]) {
+    strikes = K.strikesAfterLaunch({ canaryPresent, strikes });
+    assert.strictEqual(K.shouldDisable({ strikes }), false);
+  }
+});
+
+test('nonsense in storage counts as no strikes, never as enough', () => {
+  // Storage returns strings, and has returned null and undefined on real
+  // devices. Every one of these must fail SAFE — towards keeping the service.
+  for (const v of [null, undefined, '', 'x', NaN, -3]) {
+    assert.strictEqual(K.strikesAfterLaunch({ canaryPresent: true, strikes: v }), 1, String(v));
+    assert.strictEqual(K.shouldDisable({ strikes: v }), false, String(v));
+  }
+  // …and a string, which is what AsyncStorage actually hands back.
+  assert.strictEqual(K.strikesAfterLaunch({ canaryPresent: true, strikes: '2' }), 3);
+  assert.strictEqual(K.shouldDisable({ strikes: '3' }), true);
+  assert.strictEqual(K.shouldDisable({}), false);
+});
+
+test('LEAVING THE APP CLEARS THE CANARY', () => {
+  // The half that matters on MIUI. A refusal kills the process while the app
+  // is still in front of the user; a person leaving is ANNOUNCED first. Once
+  // that announcement arrives, nothing that happens next is the start's
+  // fault — including a force-stop from "clear all apps".
+  const src = fs.readFileSync(path.join(NAT, 'src', 'keepAlive.ts'), 'utf8');
+  assert.ok(/export async function noteLeavingForeground/.test(src),
+    'nothing distinguishes a normal exit from a start that killed the app');
+  const fn = src.slice(src.indexOf('export async function noteLeavingForeground'));
+  assert.ok(/removeItem\(CANARY_KEY\)/.test(fn.slice(0, fn.indexOf('\n}'))),
+    'leaving the app does not clear the canary, so closing it still counts as a crash');
+});
+
+test('…and the app actually says when it is leaving', () => {
+  // A module nothing calls is the same as no module.
+  const app = fs.readFileSync(path.join(NAT, 'App.tsx'), 'utf8');
+  const code = app.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  assert.ok(/keepAlive\.noteLeavingForeground\(\)/.test(code),
+    'nothing tells the keep-alive that the app is being closed normally');
+  assert.ok(/st !== 'active'/.test(code),
+    'the notice is not tied to the app actually leaving the foreground');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

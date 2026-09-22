@@ -53,6 +53,35 @@ import * as notificationIcon from './notificationIcon';
 export const CANARY_KEY = 'keepalive-starting';
 /** Set for good once a start has been shown to kill this device's app. */
 export const DISABLED_KEY = 'keepalive-disabled';
+/** How many launches in a row must find the canary before believing it. */
+export const STRIKES_KEY = 'keepalive-strikes';
+
+/**
+ * How much evidence it takes to switch this device's keep-alive off.
+ *
+ * ── WHY THIS IS NOT ONE ─────────────────────────────────────────────────────
+ *
+ * It was one, and that is what has been breaking notifications on this phone.
+ *
+ * The canary is written before the start and cleared by a JavaScript timer
+ * four seconds later. Finding it at the next launch was taken as proof that
+ * the start had killed the app. It proves nothing of the sort: it proves the
+ * PROCESS ENDED inside those four seconds, and the overwhelmingly common
+ * reason for that is a person closing the app, or MIUI force-stopping it when
+ * they clear all apps.
+ *
+ * So on the handset that reported this, the act that most needs the keep-alive
+ * — clearing all apps — was the act that disabled it. And because the flag is
+ * per build, every new build was blocked again the first time they did it.
+ * The report showed build 334 already `keepalive=blocked` on a fresh install.
+ *
+ * A genuine refusal by Android is not occasional: a foreground service it will
+ * not accept kills the process on EVERY launch, so three launches in a row
+ * reach three strikes within seconds. A person closing the app quickly does
+ * not do it three times in a row without one launch in between surviving —
+ * and one survival resets the count to zero.
+ */
+export const STRIKES_TO_DISABLE = 3;
 
 /**
  * 'connection-v2', and the suffix is load-bearing.
@@ -142,11 +171,45 @@ export function mayStart(o: {
  * Did the previous start kill the app?
  *
  * The canary was written before the start and should have been cleared
- * afterwards. Finding it at launch means the clearing never happened, and the
- * only thing that prevents it is the process dying in between.
+ * afterwards. Finding it at launch means the clearing never happened.
+ *
+ * What that does NOT mean is that the start killed anything. The clearing is a
+ * JavaScript timer, and every way a process can end stops a JavaScript timer:
+ * the user leaving, the launcher reclaiming memory, MIUI force-stopping the
+ * app when they clear all apps. Treating the first one of those as proof is
+ * what disabled this feature on the phone that needed it most.
  */
 export function crashedOnLastStart(o: { canaryPresent: boolean }): boolean {
   return !!o && !!o.canaryPresent;
+}
+
+/**
+ * How many strikes this device has now, given what the last launch found.
+ *
+ * A canary adds one. NO canary clears the count outright rather than
+ * decrementing it: one clean launch is positive evidence that a start does not
+ * kill this app, and it should wipe out ambiguous deaths from weeks ago rather
+ * than leaving them to accumulate into a block.
+ */
+export function strikesAfterLaunch(o: {
+  canaryPresent?: boolean; strikes?: number | string | null;
+}): number {
+  if (!o || !o.canaryPresent) return 0;
+  const n = Number(o.strikes);
+  return (Number.isFinite(n) && n > 0 ? Math.floor(n) : 0) + 1;
+}
+
+/**
+ * Is that enough evidence to switch the service off for this build?
+ *
+ * The asymmetry is deliberate. Blocking wrongly costs every notification on
+ * the device, silently and until the next build. Not blocking wrongly costs
+ * one crash on a handset where the service genuinely cannot start — and the
+ * strike after it will block anyway.
+ */
+export function shouldDisable(o: { strikes?: number | null }): boolean {
+  const n = Number(o && o.strikes);
+  return Number.isFinite(n) && n >= STRIKES_TO_DISABLE;
 }
 
 /** Is the service permanently off on this device? */
@@ -236,12 +299,33 @@ export async function init(): Promise<void> {
     // A flag from an older build is cleared rather than just ignored, so the
     // next launch does not have to reason about it again.
     if (off) await AsyncStorage.removeItem(DISABLED_KEY).catch(() => {});
-    if (crashedOnLastStart({ canaryPresent: !!canary })) {
-      disabled = true;
-      // The BUILD that crashed, not a bare '1'. See isDisabled.
-      await AsyncStorage.setItem(DISABLED_KEY, String(BUILD_VERSION)).catch(() => {});
+
+    // ── One canary is not evidence. Three in a row is ──────────────────────
+    //
+    // This used to disable the service the first time it found a canary,
+    // which meant the first time the process ended within four seconds of a
+    // start — a person closing the app, or MIUI force-stopping it on "clear
+    // all apps". See STRIKES_TO_DISABLE.
+    const prior = await AsyncStorage.getItem(STRIKES_KEY).catch(() => null);
+    const strikes = strikesAfterLaunch({
+      canaryPresent: crashedOnLastStart({ canaryPresent: !!canary }),
+      strikes: prior,
+    });
+    if (strikes === 0) {
+      // A clean launch. Wipe the count rather than letting old ambiguous
+      // deaths sit around waiting for a third.
+      if (prior) await AsyncStorage.removeItem(STRIKES_KEY).catch(() => {});
+    } else {
+      await AsyncStorage.setItem(STRIKES_KEY, String(strikes)).catch(() => {});
       await AsyncStorage.removeItem(CANARY_KEY).catch(() => {});
-      console.warn('[keepAlive] a previous start killed the app; disabled for this build');
+      if (shouldDisable({ strikes })) {
+        disabled = true;
+        // The BUILD that crashed, not a bare '1'. See isDisabled.
+        await AsyncStorage.setItem(DISABLED_KEY, String(BUILD_VERSION)).catch(() => {});
+        console.warn(`[keepAlive] ${strikes} starts in a row killed the app; disabled for this build`);
+      } else {
+        console.warn(`[keepAlive] strike ${strikes} of ${STRIKES_TO_DISABLE}`);
+      }
     }
   } catch {}
   try {
@@ -316,6 +400,27 @@ export async function start(appState: string | null | undefined): Promise<void> 
     await AsyncStorage.removeItem(CANARY_KEY).catch(() => {});
     console.warn('[keepAlive] start failed:', e?.message);
   }
+}
+
+/**
+ * The app is going away in the ordinary manner. That is not a crash.
+ *
+ * The other half of the strike fix, and the one that matters on MIUI. The
+ * canary is cleared by a four-second timer, and a process killed inside that
+ * window leaves it behind — which is precisely what happens when somebody
+ * opens the app, reads a message and clears all apps twenty seconds later.
+ *
+ * AppState tells us the difference. A refusal by Android kills the process
+ * while the app is still in FRONT of the user; a person leaving is announced,
+ * as 'background' or 'inactive', before the process ends. So when that
+ * announcement arrives, the canary goes: whatever ends the process after this
+ * point, the start was not what did it.
+ *
+ * Called from App.tsx's AppState listener, which already exists.
+ */
+export async function noteLeavingForeground(): Promise<void> {
+  clearTimeout(clearTimer);
+  await AsyncStorage.removeItem(CANARY_KEY).catch(() => {});
 }
 
 /** Take it down — on sign-out, and nowhere else. */
