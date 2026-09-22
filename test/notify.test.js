@@ -199,6 +199,63 @@ test('the server actually sends the collapse key', () => {
     'collapseKeyFor exists but nothing sends its result, so bursts still drop');
 });
 
+
+// ── Does the socket survive the app closing? ────────────────────────────────
+
+test('THE REASON IS THE DIAGNOSIS: it is recorded verbatim', () => {
+  // socket.io's disconnect reason separates two failures that look identical
+  // from the phone and need opposite fixes:
+  //   ping timeout   — the connection is open, the app stopped answering. The
+  //                    JavaScript is frozen or dead and the foreground service
+  //                    is not keeping it alive.
+  //   transport close — the connection itself went away.
+  const t1 = N.presenceLine({ connected: false, userId: 1, reason: 'ping timeout', heldMs: 90_000, remaining: 0 });
+  assert.ok(/reason=ping-timeout/.test(t1), t1);
+  assert.ok(/held=90s/.test(t1), t1);
+  const t2 = N.presenceLine({ connected: false, userId: 1, reason: 'transport close', heldMs: 1000, remaining: 0 });
+  assert.ok(/reason=transport-close/.test(t2), t2);
+});
+
+test('every line is greppable by one fixed prefix', () => {
+  // The push report pulls these off a live server. A diagnosis that depends
+  // on somebody having logged the right thing at the time is not a diagnosis.
+  assert.ok(N.presenceLine({ connected: true, userId: 3, remaining: 1 }).startsWith('[presence] connect '));
+  assert.ok(N.presenceLine({ connected: false, userId: 3, remaining: 0 }).startsWith('[presence] disconnect '));
+});
+
+test('a connect line does not claim a duration it cannot know', () => {
+  const line = N.presenceLine({ connected: true, userId: 3, remaining: 1 });
+  assert.ok(!/held=/.test(line), line);
+  assert.ok(!/reason=/.test(line), line);
+});
+
+test('NO USERNAME, because this is read into a public repository', () => {
+  const line = N.presenceLine({
+    connected: false, userId: 7, username: 'sara', reason: 'ping timeout',
+    heldMs: 5000, remaining: 0,
+  });
+  assert.ok(!/sara/.test(line), `the presence log leaks who was online: ${line}`);
+});
+
+test('missing pieces read as "?" rather than as NaN or undefined', () => {
+  const line = N.presenceLine({ connected: false });
+  assert.ok(!/NaN|undefined/.test(line), line);
+  assert.ok(/user=\?/.test(line), line);
+  assert.ok(/reason=unknown/.test(line), line);
+  assert.ok(!/NaN|undefined/.test(N.presenceLine(null)));
+});
+
+test('the server actually logs both events, with the reason', () => {
+  const fs2 = require('fs'), path2 = require('path');
+  const src = fs2.readFileSync(path2.join(__dirname, '..', 'server.js'), 'utf8');
+  const code = src.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  assert.ok(/presenceLine\(\{\s*connected: true/.test(code), 'connects are never logged');
+  assert.ok(/socket\.on\('disconnect', \(reason\)/.test(code),
+    'the disconnect handler does not take the reason, which is the whole diagnosis');
+  assert.ok(/heldMs: Date\.now\(\) - connectedAt/.test(code),
+    'nothing records how long the socket lasted before it dropped');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

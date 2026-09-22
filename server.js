@@ -7,7 +7,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { recipientsFor, tokenIsDead, notificationTag, collapseKeyFor } = require('./notify');
+const { recipientsFor, tokenIsDead, notificationTag, collapseKeyFor, presenceLine } = require('./notify');
 const najva = require('./najva');
 const credentials = require('./credentials');
 const cors = require('cors');
@@ -2536,6 +2536,30 @@ io.on('connection', (socket) => {
   // Personal channel so the user receives message events for unread badges
   // even when not actively viewing that room (or before a new DM room exists).
   socket.join('user:' + socket.user.id);
+
+  // ── Does the socket survive the app being closed? ──────────────────────────
+  //
+  // Never recorded until now, and it is the question the last several days
+  // have turned on. The phone shows "Connected" with the app closed, but that
+  // notification is drawn natively by the foreground service and would keep
+  // showing even if the JavaScript holding the socket had been killed. It has
+  // been treated as evidence and it is not evidence.
+  //
+  // The disconnect REASON is. See presenceLine in notify.js: "ping timeout"
+  // means the app stopped answering while the connection was still open — the
+  // JavaScript is frozen or gone, and no work on the notification code can
+  // matter. "transport close" means the connection itself went.
+  const connectedAt = Date.now();
+  const socketsFor = (uid) => [...onlineUsers.values()].filter(u => u.userId === uid).length;
+  console.log(presenceLine({
+    connected: true, userId: socket.user.id, remaining: socketsFor(socket.user.id) + 1,
+  }));
+  socket.on('disconnect', (reason) => {
+    console.log(presenceLine({
+      connected: false, userId: socket.user.id, reason,
+      heldMs: Date.now() - connectedAt, remaining: socketsFor(socket.user.id) - 1,
+    }));
+  });
 
   socket.on('join_room', (roomId) => {
     const prev = onlineUsers.get(socket.id);

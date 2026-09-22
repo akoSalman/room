@@ -143,4 +143,50 @@ function collapseKeyFor(data) {
   return `room-${data.roomId}`;
 }
 
-module.exports = { recipientsFor, tokenIsDead, notificationTag, collapseKeyFor };
+/**
+ * One line saying a socket came or went, and WHY it went.
+ *
+ * This is here because the central question about notifications has never
+ * been measured. The app keeps its socket alive with the app closed using a
+ * foreground service, and the phone shows "Connected — messages arrive
+ * instantly while this is on". That notification is drawn natively. It would
+ * keep showing even if the JavaScript behind it had been killed, so it is not
+ * evidence of anything, and it has been read as evidence for days.
+ *
+ * socket.io's disconnect reason settles it, and the two answers need opposite
+ * fixes:
+ *
+ *   ping timeout        the connection is open but the app stopped answering.
+ *                       The JavaScript is frozen or dead: the foreground
+ *                       service is not keeping it alive, and no amount of
+ *                       work on the notification code can matter.
+ *
+ *   transport close     the connection itself went away — network, or the
+ *                       process being killed outright.
+ *
+ *   client namespace    the app asked to disconnect. That would be a bug in
+ *   disconnect          this repository, and a findable one.
+ *
+ * Paired with how long the socket lasted, that says whether closing the app
+ * kills the connection and after how long — which is the difference between
+ * "notifications are broken" and "notifications work for ninety seconds".
+ *
+ * No username, because this line is read off a server into a report that is
+ * committed to a repository that has been public.
+ */
+function presenceLine(o) {
+  const e = o || {};
+  const kind = e.connected ? 'connect' : 'disconnect';
+  const parts = [`[presence] ${kind} user=${e.userId == null ? '?' : e.userId}`];
+  if (!e.connected) {
+    const ms = Number(e.heldMs);
+    parts.push(`held=${Number.isFinite(ms) && ms >= 0 ? Math.round(ms / 1000) : '?'}s`);
+    parts.push(`reason=${String(e.reason || 'unknown').replace(/\s+/g, '-')}`);
+  }
+  parts.push(`sockets=${Number.isFinite(Number(e.remaining)) ? Number(e.remaining) : '?'}`);
+  return parts.join(' ');
+}
+
+module.exports = {
+  recipientsFor, tokenIsDead, notificationTag, collapseKeyFor, presenceLine,
+};

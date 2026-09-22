@@ -104,9 +104,23 @@ jobs:
           fi
           echo ""
 
+          echo "### DOES THE SOCKET SURVIVE THE APP CLOSING, last 2 hours"
+          echo "# reason=ping-timeout  -> the app stopped answering; its JS is frozen"
+          echo "#                         or dead and the foreground service is not"
+          echo "#                         keeping it alive. Notification code is"
+          echo "#                         irrelevant until that is fixed."
+          echo "# reason=transport-close -> the connection itself went (network, or"
+          echo "#                         the process killed outright)."
+          echo "# held=Ns              -> how long it lasted. Compare with when the"
+          echo "#                         app was closed."
+          journalctl -u "$SERVICE" --since '2 hours ago' --no-pager 2>/dev/null \
+            | grep -a '\[presence\]' | tail -40
+          echo "(end of presence lines)"
+          echo ""
+
           echo "### what the service logged about push, last 2 hours"
           journalctl -u "$SERVICE" --since '2 hours ago' --no-pager 2>/dev/null \
-            | grep -aE '\[push\]|\[FCM\]' | tail -40
+            | grep -aE '\[push\]|\[FCM\]|\[najva\]' | tail -40
           echo "(end of push log lines)"
           echo ""
 
