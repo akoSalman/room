@@ -185,10 +185,14 @@ test('a mixed multi-selection is split on the app too', () => {
 
 test('the message goes off screen without waiting for a round trip', () => {
   assert.ok(/function hideLocally\(/.test(chat), 'nothing removes a hidden message locally');
-  assert.ok(/sock\.on\('message_hidden'/.test(chat),
+  assert.ok(/onSock\('message_hidden'/.test(chat),
     'a hide done on another device never reaches this one');
-  assert.ok(/off\('message_hidden'\)/.test(chat),
-    'the listener is never removed, so leaving and re-entering stacks them');
+  // Removed BY REFERENCE now. This used to assert off('message_hidden') — the
+  // blanket form, which socket.io reads as "remove EVERY listener for this
+  // event", and which is what tore the notification listener off the socket
+  // from this file and silenced notifications for a week.
+  assert.ok(/for \(const \[event, handler\] of chatHandlersRef\.current\) sock\.off\(event, handler\)/.test(chat),
+    'the listeners are never removed, so leaving and re-entering stacks them');
 });
 
 // ── The web ─────────────────────────────────────────────────────────────────

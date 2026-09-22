@@ -257,13 +257,16 @@ test('the app draws the line from the rule, and lifts the button by the same one
     'the app writes its own sentence again');
   assert.ok(/const someoneIsBusy = !!activityBar\(\{/.test(chat),
     'the button lift is computed separately, so it can disagree with the line');
-  assert.ok(/sock\.on\('user_sending'/.test(chat) && /sock\.on\('user_stopped_sending'/.test(chat),
+  assert.ok(/onSock\('user_sending'/.test(chat) && /onSock\('user_stopped_sending'/.test(chat),
     'the app never hears about anybody else sending');
-  assert.ok(/off\('user_sending'\)/.test(chat) && /off\('user_stopped_sending'\)/.test(chat),
+  // Removed BY REFERENCE. off('user_sending') — the blanket form — removes
+  // EVERY listener for that event, other modules' included; that is what tore
+  // the notification listener off the socket and silenced notifications.
+  assert.ok(/for \(const \[event, handler\] of chatHandlersRef\.current\) sock\.off\(event, handler\)/.test(chat),
     'the listeners are never removed, so re-entering a chat stacks them');
   // isForRoom, like every other presence event: these arrive on the personal
   // channel too, and without it another chat's upload shows up in this one.
-  const at = chat.indexOf("sock.on('user_sending'");
+  const at = chat.indexOf("onSock('user_sending'");
   assert.ok(/isForRoom\(roomId, room\.id\)/.test(chat.slice(at, at + 400)),
     'a file being sent in another chat is announced in this one');
 });

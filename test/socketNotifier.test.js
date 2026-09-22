@@ -184,8 +184,8 @@ test('EVERY ARRIVAL IS COUNTED, before any rule runs', () => {
   // Without this, "0 shown" cannot be told from "0 arrived".
   const code = fs.readFileSync(path.join(NAT, 'src', 'socketNotifier.ts'), 'utf8')
     .split('\n').filter(l => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
-  const i = code.indexOf("socket.on('message_received'");
-  assert.ok(i > 0);
+  const i = code.indexOf("if (event !== 'message_received') return;");
+  assert.ok(i > 0, 'the message listener moved');
   const body = code.slice(i, i + 700);
   assert.ok(/notifyDiag\.record\('socket-msg'\)/.test(body),
     'arrivals are not counted, so a silent listener and a refusing one look identical');
@@ -202,22 +202,24 @@ test('ATTACH IS IDEMPOTENT: re-rendering does not stack listeners', () => {
   // notifications — or, with the shared tag, silently replaced itself N times
   // while the phone buzzed once per copy.
   const calls = [];
-  const sock = { on: (ev) => calls.push(ev) };
+  const sock = { on: (ev) => calls.push(ev), onAny: () => calls.push('any') };
   S.attach(sock);
   S.attach(sock);
   S.attach(sock);
-  assert.strictEqual(calls.filter(c => c === 'message_received').length, 1,
-    'the listener was attached more than once for the same socket');
+  // onAny now, so the marker is 'any' — see THE SILENCER for why the
+  // notifier cannot use on('message_received') any more.
+  assert.strictEqual(calls.filter(c => c === 'any').length, 2,
+    'the listeners were attached more than once for the same socket');
   S.detach();
 });
 
 test('…but a NEW socket (re-login) does get listeners', () => {
-  const a = { on: () => {} };
+  const a = { on: () => {}, onAny: () => {} };
   const calls = [];
-  const b = { on: (ev) => calls.push(ev) };
+  const b = { on: (ev) => calls.push(ev), onAny: () => calls.push('any') };
   S.attach(a);
   S.attach(b);
-  assert.ok(calls.includes('message_received'), 'after re-login nothing listens at all');
+  assert.ok(calls.includes('any'), 'after re-login nothing listens at all');
   S.detach();
 });
 
@@ -312,6 +314,42 @@ test('…and api.ts tells subscribers about the socket that ALREADY exists', () 
   const ret = made.indexOf('return socket;');
   assert.ok(notify > 0, 'new sockets are never announced');
   assert.ok(notify < ret, 'the socket is returned before its subscribers are told');
+});
+
+test('THE SILENCER: no screen can remove the notifier\'s listener', () => {
+  // The bug that hid behind every other one this week.
+  //
+  //     socketRef.current?.off('message_received');   // ChatScreen
+  //     sock?.off('message_received');                // RoomsScreen
+  //
+  // socket.io's off() given ONLY an event name removes EVERY listener for it,
+  // including this module's. Leaving a chat — or closing the app, which
+  // unmounts the screen — tore the notification listener off the socket from
+  // a file that has never heard of it. The socket stayed connected, every
+  // diagnostic stayed green, and "messages reaching the app" sat at 0.
+  //
+  // Two defences, and both are needed. Fixing the call sites is necessary;
+  // onAny is what makes it stay fixed, because the next screen will do the
+  // blunt thing again and the damage lands somewhere else entirely.
+  const src = fs.readFileSync(path.join(NAT, 'src', 'socketNotifier.ts'), 'utf8');
+  const code = src.split('\n').filter(l => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
+  assert.ok(/socket\.onAny\(/.test(code),
+    "the notifier listens with on('message_received'), which any screen can remove");
+  assert.ok(!/socket\.on\('message_received'/.test(code));
+  assert.ok(!/socket\.on\('message_deleted'/.test(code));
+});
+
+test('…and NO screen removes listeners by event name alone', () => {
+  // The root cause, checked where it happens rather than only defended
+  // against. A blanket off() is a silent action at a distance: it breaks a
+  // different file from the one it is written in.
+  for (const f of ['ChatScreen.tsx', 'RoomsScreen.tsx']) {
+    const src = fs.readFileSync(path.join(NAT, 'src', 'screens', f), 'utf8');
+    const lines = src.split('\n').filter(l => !l.trim().startsWith('//'));
+    const blanket = lines.filter(l => /\.off\((['"`])[^'"`]+\1\s*\)/.test(l));
+    assert.deepStrictEqual(blanket, [],
+      `${f} removes every listener for an event, including other modules':\n      ${blanket.join('\n      ')}`);
+  }
 });
 
 test('sign-out releases it', () => {

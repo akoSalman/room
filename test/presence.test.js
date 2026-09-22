@@ -172,7 +172,11 @@ test('both clients refuse what is not about the chat on screen', () => {
     assert.ok(web, `the web no longer listens for ${evt}`);
     assert.ok(/Presence\.isForRoom\(roomId, currentRoomId\)/.test(web),
       `the web draws ${evt} from any chat`);
-    const nat = body(chat, evt, 'sock.on');
+    // onSock, not sock.on: ChatScreen records every listener it adds so it
+    // can remove exactly its own. The blanket off(event) it used to call
+    // removed EVERY listener for that event, including the notification
+    // module's, which silenced notifications for a week.
+    const nat = body(chat, evt, 'onSock');
     assert.ok(nat, `the app no longer listens for ${evt}`);
     assert.ok(/if \(!isForRoom\(roomId, room\.id\)\) return;/.test(nat),
       `the app draws ${evt} from any chat`);

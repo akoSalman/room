@@ -141,7 +141,32 @@ export function attach(socket: any, opts?: { pushRegistered?: () => boolean }): 
   if (!socket || attachedTo === socket) return;
   attachedTo = socket;
 
-  socket.on('message_received', (msg: any) => {
+  // ── onAny, NOT on('message_received') ──────────────────────────────────────
+  //
+  // This is why the notifier was deaf, and it is nothing to do with the socket
+  // or with Android. Two screens tear down their own listeners like this:
+  //
+  //     socketRef.current?.off('message_received');     // ChatScreen
+  //     sock?.off('message_received');                  // RoomsScreen
+  //
+  // socket.io's off() WITH NO HANDLER removes EVERY listener for that event,
+  // not just the caller's. So opening a chat and leaving it — or closing the
+  // app, which unmounts the screen — removed this module's listener too, from
+  // a file that has never heard of it. The socket stayed connected, the
+  // diagnostics stayed green, and "messages reaching the app" sat at 0.
+  //
+  // That also explains the shape of the report: it worked for the first
+  // seconds after a fresh start and then stopped, and differed between phones
+  // depending on whether a chat had been opened yet.
+  //
+  // Fixing the two call sites is necessary and NOT sufficient: any screen
+  // added later does the same blunt thing, and it fails silently in a
+  // different file from the one that breaks. onAny cannot be removed by an
+  // off('message_received') from anywhere, so this listener is safe from code
+  // that does not know it exists.
+  socket.onAny((event: string, msg: any) => {
+    if (event !== 'message_received') return;
+
     // Recorded BEFORE any rule runs, so "the listener never fired" and "it
     // fired and refused everything" stop looking identical from outside.
     notifyDiag.record('socket-msg');
@@ -176,7 +201,11 @@ export function attach(socket: any, opts?: { pushRegistered?: () => boolean }): 
     );
   });
 
-  socket.on('message_deleted', ({ messageId }: any) => {
+  // Same reasoning: ChatScreen's cleanup calls off('message_deleted') with no
+  // handler, which would take this with it.
+  socket.onAny((event: string, payload: any) => {
+    if (event !== 'message_deleted') return;
+    const messageId = payload && payload.messageId;
     // Both libraries: the notification may have been posted by notifee from
     // here, or drawn by Android from the server's push payload.
     notifee.cancelNotification(pushReg.notificationTag(messageId)).catch(() => {});

@@ -125,6 +125,8 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   // Used to scroll the profile sheet straight to the APP UPDATE section when
   // the user arrives via the update badge — otherwise the sheet opened at the
   // top and the update controls sat off-screen below the fold.
+  /** Removes exactly this screen's socket listeners, by reference. */
+  const offRef = useRef<null | (() => void)>(null);
   const profileScrollRef = useRef<ScrollView>(null);
   const updateSectionY = useRef(0);
   const scrollToUpdate = useCallback(() => {
@@ -290,52 +292,72 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
         setRooms(prev => bump(prev));
         setDms(prev => bump(prev));
       };
-      sock.on('message_received', (msg: any) => {
+      const onMsg = (msg: any) => {
         bumpRoom(msg.room_id);
         if (msg.username === uname) return; // own messages are never "unread"
         setUnread(prev => ({ ...prev, [msg.room_id]: (prev[msg.room_id] || 0) + 1 }));
-      });
+      };
       // A comment is activity too. It arrives under its own name — it must
       // never be appended to a conversation — so this list never heard about
       // it, and a chat whose only new thing was a comment sat where it was.
-      sock.on('comment_added', (ev: any) => {
+      const onComment = (ev: any) => {
         if (!ev || ev.roomId == null) return;
         bumpRoom(ev.roomId);
         if (ev.comment?.username === uname) return;
         setUnread(prev => ({ ...prev, [ev.roomId]: (prev[ev.roomId] || 0) + 1 }));
-      });
-      sock.on('dm_activity', () => load());
+      };
+      const onDm = () => load();
       // Cleared elsewhere — by the other person, or on another device. The
       // list has to lose the chat here too, or it stays on screen showing a
       // last message that is gone.
-      sock.on('history_cleared', ({ roomId }: any) => {
+      const onCleared = ({ roomId }: any) => {
         setDms(prev => prev.filter(d => d.id !== roomId));
         load();
-      });
+      };
       // Membership changed elsewhere (joined by link, left, removed by an
       // owner) — the room list is no longer accurate.
-      sock.on('room_created', () => load());
-      sock.on('left_room', () => load());
+      const onCreated = () => load();
+      const onLeft = () => load();
       // The mode changed in some chat — refresh so its marker appears or goes,
       // for whichever of the two people is looking at this list.
-      sock.on('disappearing_changed', () => load());
-      sock.on('removed_from_room', () => load());
+      const onDisappearing = () => load();
+      const onRemoved = () => load();
       // Someone wrote my @name somewhere. If the chat is not open, the room
       // list is where I should be able to see it.
-      sock.on('mentioned', (m: any) => {
+      const onMentioned = (m: any) => {
         if (!m?.roomId) return;
         setMentions(prev => ({ ...prev, [m.roomId]: true }));
-      });
+      };
+      // Registered together, and removed BY REFERENCE below.
+      sock.on('message_received', onMsg);
+      sock.on('comment_added', onComment);
+      sock.on('dm_activity', onDm);
+      sock.on('history_cleared', onCleared);
+      sock.on('room_created', onCreated);
+      sock.on('left_room', onLeft);
+      sock.on('disappearing_changed', onDisappearing);
+      sock.on('removed_from_room', onRemoved);
+      sock.on('mentioned', onMentioned);
+      offRef.current = () => {
+        sock.off('message_received', onMsg);
+        sock.off('comment_added', onComment);
+        sock.off('dm_activity', onDm);
+        sock.off('history_cleared', onCleared);
+        sock.off('room_created', onCreated);
+        sock.off('left_room', onLeft);
+        sock.off('disappearing_changed', onDisappearing);
+        sock.off('removed_from_room', onRemoved);
+        sock.off('mentioned', onMentioned);
+      };
     })();
-    return () => {
-      sock?.off('message_received');
-      sock?.off('dm_activity');
-      sock?.off('room_created');
-      sock?.off('left_room');
-      sock?.off('disappearing_changed');
-      sock?.off('removed_from_room');
-      sock?.off('mentioned');
-    };
+    // BY REFERENCE, every one.
+    //
+    // These used to be sock.off('message_received') and so on, with no
+    // handler. socket.io's off() with no handler removes EVERY listener for
+    // that event, including ones belonging to modules this file has never
+    // heard of — which is precisely what silenced notifications: leaving this
+    // screen tore src/socketNotifier.ts's listener off the socket, from here.
+    return () => { offRef.current?.(); offRef.current = null; };
   }, [load]);
 
   const searchTimer = useRef<any>(null);

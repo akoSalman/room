@@ -954,6 +954,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   const isNearBottomRef = useRef(true);
   const typingTimer = useRef<any>(null);
   const socketRef = useRef<any>(null);
+  /**
+   * Every socket listener this screen registered, so the cleanup removes
+   * exactly its own.
+   *
+   * It used to call off(event) with no handler, which socket.io reads as
+   * "remove EVERY listener for this event" — including src/socketNotifier.ts's,
+   * which is what raises the notification when the app is closed. Leaving this
+   * screen therefore silenced notifications, from a file that has never heard
+   * of the notifier.
+   */
+  const chatHandlersRef = useRef<Array<[string, (...a: any[]) => void]>>([]);
   const meRef = useRef('');
   const title = room.is_dm ? (room.other_username || '') : room.name;
 
@@ -1746,6 +1757,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         .catch(() => {});
 
       socketRef.current = sock;
+      // Every listener this screen adds is remembered, so the cleanup can
+      // remove exactly these and nobody else's. See the cleanup for what the
+      // blunt form cost.
+      const onSock = (event: string, handler: (...a: any[]) => void) => {
+        chatHandlersRef.current.push([event, handler]);
+        sock.on(event, handler);
+      };
       sock.emit('join_room', room.id);
 
       // socket.io reconnects by itself, but the server no longer has us in
@@ -1754,12 +1772,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         sock.emit('join_room', room.id);
         refreshLatest();
       };
-      sock.on('connect', reconnectHandlerRef.current);
+      onSock('connect', reconnectHandlerRef.current);
 
       // A comment never arrives as a message: it would appear in the chat it
       // was written about. This carries the parent's new count for the badge,
       // and the comment itself for anyone with that thread open.
-      sock.on('comment_added', (ev: any) => {
+      onSock('comment_added', (ev: any) => {
         if (String(ev.roomId) !== String(room.id)) return;
         setCommentCounts(c => ({ ...c, [String(ev.parentId)]: normaliseCount(ev.count) }));
         const msg: Message = ev.comment;
@@ -1799,7 +1817,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         }
       });
 
-      sock.on('message_received', (msg: Message) => {
+      onSock('message_received', (msg: Message) => {
         // The gallery's memory of this room is now one message out of date.
         // Marked, not dropped: the next open still draws instantly from what
         // is held and picks up the new photo behind it.
@@ -1893,7 +1911,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       // The other side cleared the conversation for both of us. Their decision
       // has already taken effect on the server, so showing messages that no
       // longer exist until the next reload would be showing a lie.
-      sock.on('history_cleared', ({ roomId, uptoId, scope }: any) => {
+      onSock('history_cleared', ({ roomId, uptoId, scope }: any) => {
         if (roomId !== room.id) { rm.forgetCached(roomId); return; }
         rm.forgetCached(roomId);
         const keep = messagesRef.current.filter(
@@ -1902,15 +1920,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         if (scope === 'both') toast('This chat was cleared');
       });
 
-      sock.on('removed_from_room', ({ roomId, roomName }: any) => {
+      onSock('removed_from_room', ({ roomId, roomName }: any) => {
         if (roomId !== room.id) return;
         Alert.alert('Removed', `You were removed from "${roomName}".`);
         onBack();
       });
-      sock.on('message_edited', ({ messageId, content }: any) => {
+      onSock('message_edited', ({ messageId, content }: any) => {
         setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content, edited: 1 } : m));
       });
-      sock.on('message_deleted', ({ messageId, roomId }: any) => {
+      onSock('message_deleted', ({ messageId, roomId }: any) => {
         // Before the room filter: a live share running in ANOTHER chat is
         // still mine, and deleting its message must stop it wherever I am.
         locationManager.stopForMessage(messageId);
@@ -1929,7 +1947,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       });
       // "Delete for me", done on another device this user is signed in on.
       // Nobody else is told, because for them nothing has happened.
-      sock.on('message_hidden', ({ messageId, roomId }: any) => {
+      onSock('message_hidden', ({ messageId, roomId }: any) => {
         if (roomId != null && roomId !== room.id) return;
         const gone = messagesRef.current.find(m => String(m.id) === String(messageId));
         if (gone && lightboxBelongsTo(gone)) closeViewer();
@@ -1938,47 +1956,47 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         if (gone) forgetCachedMedia(gone);
         hideLocally(messageId);
       });
-      sock.on('reactions_updated', ({ messageId, roomId, reactions: r }: any) => {
+      onSock('reactions_updated', ({ messageId, roomId, reactions: r }: any) => {
         // These now also arrive on our personal channel (so they reach us even
         // when backgrounded), which means updates for OTHER rooms land here too.
         if (roomId != null && roomId !== room.id) return;
         setReactions(prev => ({ ...prev, [messageId]: r }));
       });
-      sock.on('room_online', ({ users }: any) => setOnline(users));
+      onSock('room_online', ({ users }: any) => setOnline(users));
       // Only about THIS chat. Reported on the web as a stranger's "is typing"
       // under somebody else's conversation; the app trusted the same routing,
       // so it could show it too — see src/presence.ts.
-      sock.on('user_typing', ({ username: u, roomId }: any) => {
+      onSock('user_typing', ({ username: u, roomId }: any) => {
         if (!isForRoom(roomId, room.id)) return;
         setTyping(prev => prev.includes(u) ? prev : [...prev, u]);
       });
-      sock.on('user_stopped_typing', ({ username: u, roomId }: any) => {
+      onSock('user_stopped_typing', ({ username: u, roomId }: any) => {
         if (!isForRoom(roomId, room.id)) return;
         setTyping(prev => prev.filter(x => x !== u));
       });
-      sock.on('user_recording', ({ username: u, roomId }: any) => {
+      onSock('user_recording', ({ username: u, roomId }: any) => {
         if (!isForRoom(roomId, room.id)) return;
         setRecordingUsers(prev => prev.includes(u) ? prev : [...prev, u]);
       });
-      sock.on('user_stopped_recording', ({ username: u, roomId }: any) => {
+      onSock('user_stopped_recording', ({ username: u, roomId }: any) => {
         if (!isForRoom(roomId, room.id)) return;
         setRecordingUsers(prev => prev.filter(x => x !== u));
       });
       // "is sending a photo", the same way "is typing" works. Guarded by
       // isForRoom like the rest: these arrive on the personal channel too, so
       // without it a file being sent in another chat shows up in this one.
-      sock.on('user_sending', ({ username: u, roomId, kind }: any) => {
+      onSock('user_sending', ({ username: u, roomId, kind }: any) => {
         if (!isForRoom(roomId, room.id)) return;
         setSendingUsers(prev => {
           const rest = prev.filter(x => x.username !== u);
           return [...rest, { username: u, kind: (kind || 'file') as SendKind }];
         });
       });
-      sock.on('user_stopped_sending', ({ username: u, roomId }: any) => {
+      onSock('user_stopped_sending', ({ username: u, roomId }: any) => {
         if (!isForRoom(roomId, room.id)) return;
         setSendingUsers(prev => prev.filter(x => x.username !== u));
       });
-      sock.on('one_time_viewed', ({ messageId, roomId, viewedAt, seconds }: any) => {
+      onSock('one_time_viewed', ({ messageId, roomId, viewedAt, seconds }: any) => {
         // Also delivered on our personal channel now, so ignore other rooms.
         if (roomId != null && roomId !== room.id) return;
         setOneTimeExpiry(prev => ({ ...prev, [messageId]: Date.now() + seconds * 1000 }));
@@ -1994,10 +2012,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         )));
       });
 
-      sock.on('voice_played', ({ messageId }: any) => {
+      onSock('voice_played', ({ messageId }: any) => {
         setMessages(prev => prev.map(msg => msg.id === messageId ? { ...msg, played: 1 } : msg));
       });
-      sock.on('messages_read', ({ roomId, lastReadMsgId }: any) => {
+      onSock('messages_read', ({ roomId, lastReadMsgId }: any) => {
         if (roomId != room.id) return;
         setMaxOtherReadMsgId(prev => lastReadMsgId > prev ? lastReadMsgId : prev);
       });
@@ -2005,22 +2023,29 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     return () => {
       mounted = false;
       socketRef.current?.emit('leave_room');
-      socketRef.current?.off('message_received');
-      socketRef.current?.off('removed_from_room');
-      socketRef.current?.off('message_edited');
-      socketRef.current?.off('message_deleted');
-      socketRef.current?.off('message_hidden');
-      socketRef.current?.off('reactions_updated');
-      socketRef.current?.off('room_online');
-      socketRef.current?.off('user_typing');
-      socketRef.current?.off('user_stopped_typing');
-      socketRef.current?.off('user_recording');
-      socketRef.current?.off('user_stopped_recording');
-      socketRef.current?.off('user_sending');
-      socketRef.current?.off('user_stopped_sending');
-      socketRef.current?.off('messages_read');
-      socketRef.current?.off('one_time_viewed');
-      socketRef.current?.off('voice_played');
+      // ── off(event) WITH NO HANDLER REMOVES EVERYBODY'S ───────────────────
+      //
+      // That is what these lines used to be, and it is what silenced
+      // notifications. socket.io's off() given only an event name removes
+      // EVERY listener registered for it, including ones belonging to modules
+      // this file has never heard of. src/socketNotifier.ts listens for
+      // message_received to raise the notification when the app is closed —
+      // and leaving this screen, or closing the app, which unmounts it, tore
+      // that listener off the socket from here.
+      //
+      // The socket stayed connected, every diagnostic stayed green, and
+      // "messages reaching the app" sat at zero. It looked like an Android
+      // problem for a week.
+      //
+      // These now name the listener they are removing. The notifier ALSO
+      // moved to onAny, which an off(event) cannot reach at all, because the
+      // next screen written will do the blunt thing again and the damage
+      // lands in a different file from the mistake.
+      const sock = socketRef.current;
+      if (sock) {
+        for (const [event, handler] of chatHandlersRef.current) sock.off(event, handler);
+      }
+      chatHandlersRef.current = [];
       if (reconnectHandlerRef.current) socketRef.current?.off('connect', reconnectHandlerRef.current);
     };
   }, [room.id]);

@@ -271,9 +271,11 @@ test('a comment moves its chat up both clients\' lists', () => {
   // A comment never arrives as `message_received` — it must never be appended
   // to a conversation — so neither list heard about it at all.
   const rooms = fs.readFileSync(path.join(NAT, 'src', 'screens', 'RoomsScreen.tsx'), 'utf8');
-  assert.ok(/sock\.on\('comment_added'/.test(rooms), 'the app list never hears about comments');
-  const handler = rooms.slice(rooms.indexOf("sock.on('comment_added'"),
-    rooms.indexOf("sock.on('dm_activity'"));
+  assert.ok(/sock\.on\('comment_added', onComment\)/.test(rooms),
+    'the app list never hears about comments');
+  // The handlers are named consts now and registered together further down,
+  // so the body is bounded by the next declaration rather than the next on().
+  const handler = rooms.slice(rooms.indexOf('const onComment ='), rooms.indexOf('const onDm ='));
   assert.ok(/bumpRoom\(ev\.roomId\)/.test(handler), 'the app hears it and does not move the chat');
   assert.ok(/ev\.comment\?\.username === uname/.test(handler),
     'the app badges the author for their own comment');

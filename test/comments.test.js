@@ -343,7 +343,7 @@ test('the app reads the parent at the moment of sending', () => {
 });
 
 test('a comment arriving live moves the app badge too', () => {
-  const fn = chat.slice(chat.indexOf("sock.on('comment_added'"), chat.indexOf("sock.on('message_received'"));
+  const fn = chat.slice(chat.indexOf("onSock('comment_added'"), chat.indexOf("onSock('message_received'"));
   assert.ok(fn.length > 0, 'the app ignores comments arriving');
   assert.ok(/String\(ev\.roomId\) !== String\(room\.id\)/.test(fn),
     'a comment in another chat moves this one\'s badges');
@@ -393,7 +393,7 @@ test('a comment\'s own echo does the bookkeeping the room\'s echo does', () => {
   // so an upload bar would spin forever, a voice player would keep the
   // temporary id, and the crash-safety copy would be left to resend at the
   // next launch.
-  const fn = chat.slice(chat.indexOf("sock.on('comment_added'"), chat.indexOf("sock.on('message_received'"));
+  const fn = chat.slice(chat.indexOf("onSock('comment_added'"), chat.indexOf("onSock('message_received'"));
   for (const call of ['up.finish(pendingId)', 'outbox.markDone(pendingId)', 'removeFailedMsg(pendingId)',
     'audioManager.retarget(pendingId, msg.id)', 'replaceOutgoing(pendingId, msg)']) {
     assert.ok(fn.includes(call), `the comment echo never calls ${call}`);

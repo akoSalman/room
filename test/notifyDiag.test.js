@@ -254,7 +254,7 @@ test('THE POST IS NOT FIRE-AND-FORGET: its result decides what is recorded', () 
   assert.ok(i > 0, 'the socket notification is no longer posted through notifee');
   // Bounded by what FOLLOWS the post, not by a character count: a fixed window
   // breaks the moment a line is added, and then passes while checking nothing.
-  const end = code.indexOf("socket.on('message_deleted'", i);
+  const end = code.indexOf("if (event !== 'message_deleted')", i);
   assert.ok(end > i);
   const post = code.slice(i, end);
   assert.ok(/\.then\(/.test(post),
@@ -270,7 +270,7 @@ test('the socket post names the Messages channel, and notifee owns that channel'
   // server's FCM notification, turns the sounded one into a soundless update.
   const code = notifier.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
   const i = code.indexOf('notifee.displayNotification({');
-  const post = code.slice(i, code.indexOf("socket.on('message_deleted'", i));
+  const post = code.slice(i, code.indexOf("if (event !== 'message_deleted')", i));
   assert.ok(/channelId: MESSAGES_CHANNEL/.test(post), 'the socket post has no channel');
   assert.ok(/tag: pushReg\.notificationTag/.test(post),
     'without the matching tag, FCM and the socket stack two notifications');
