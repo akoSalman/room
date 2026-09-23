@@ -34,7 +34,9 @@ const SERVER_MANIFEST_URL = `${BASE_URL}/app/latest.json`;
 const LATEST_APK_URL = `https://github.com/akoSalman/room-releases/releases/download/${RELEASE_TAG}/${RELEASE_FILE}`;
 const LATEST_RELEASE_API = `https://api.github.com/repos/akoSalman/room-releases/releases/tags/${RELEASE_TAG}`;
 
-type Room = { id: number; name: string; is_dm: number; other_username?: string; other_avatar?: string | null; created_by?: number; is_private?: number; disappearing_seconds?: number };
+// `muted` arrives from SQLite's EXISTS as 0 or 1, not a boolean — so it is
+// only ever tested for truthiness, never compared against `true`.
+type Room = { id: number; name: string; is_dm: number; other_username?: string; other_avatar?: string | null; created_by?: number; is_private?: number; disappearing_seconds?: number; muted?: number | boolean };
 
 export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount, onProfileOpened }: {
   onSelectRoom: (room: Room) => void;
@@ -168,6 +170,26 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
       if (!res || !res.ok) { Alert.alert('Could not mark it read'); return; }
       setUnread(u => ({ ...u, [res.roomId]: res.unread }));
     });
+  }
+
+  /**
+   * Silence a room, or let it speak again.
+   *
+   * The row is updated before the request answers. Muting is not destructive
+   * and the sheet closes immediately, so waiting for a round trip would show
+   * somebody the OLD state on a list they are already looking at — and a
+   * failed request puts it straight back.
+   */
+  async function toggleRoomMute(room: Room) {
+    const next = !room.muted;
+    setClearing(null);
+    setRooms(prev => prev.map(r => (r.id === room.id ? { ...r, muted: next } : r)));
+    const res = await apiFetch(`/room-mute/${room.id}`, next ? 'POST' : 'DELETE').catch(() => null);
+    if (!res || res.error) {
+      setRooms(prev => prev.map(r => (r.id === room.id ? { ...r, muted: room.muted } : r)));
+      Alert.alert(next ? 'Could not mute' : 'Could not unmute',
+        'Try again once the app is back online.');
+    }
   }
 
   const load = useCallback(async () => {
@@ -577,6 +599,13 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
                 {item.disappearing_seconds > 0 && (
                   <Text style={s.roomDisappearing}>⏳</Text>
                 )}
+                {/* A muted room says so on the list, or somebody who muted one
+                    weeks ago reads its silence as the app being broken —
+                    which, after this month, is the first thing they will
+                    think. */}
+                {!item.is_dm && item.muted ? (
+                  <Ionicons name="notifications-off" size={14} color={C.muted} />
+                ) : null}
                 {mentions[item.id] && (
                   <View style={s.mentionBadge}><Text style={s.mentionBadgeText}>@</Text></View>
                 )}
@@ -612,6 +641,28 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
                   <Text style={s.sheetRowText}>Mark as read</Text>
                   <Text style={s.sheetRowHint}>
                     Clears the badge, including anything new in this chat's comments.
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            )}
+            {/* Mute, for the busy group that is the whole reason somebody
+                reaches for this. It stops the NOTIFICATION and nothing else:
+                the messages still arrive and still count as unread, because a
+                mute that hid them would be a block wearing another name. */}
+            {clearing && !clearing.is_dm && (
+              <TouchableOpacity style={s.sheetRow} onPress={() => toggleRoomMute(clearing)}>
+                <Ionicons
+                  name={clearing.muted ? 'notifications-outline' : 'notifications-off-outline'}
+                  size={19} color={C.text}
+                />
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={s.sheetRowText}>
+                    {clearing.muted ? 'Unmute this room' : 'Mute this room'}
+                  </Text>
+                  <Text style={s.sheetRowHint}>
+                    {clearing.muted
+                      ? 'Notifications from this room will arrive again.'
+                      : 'No notifications. Messages still arrive and still count as unread.'}
                   </Text>
                 </View>
               </TouchableOpacity>

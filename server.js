@@ -672,14 +672,17 @@ app.get('/mentions/:roomId', authMiddleware, (req, res) => {
 app.get('/rooms', authMiddleware, (req, res) => {
   const rooms = db.prepare(`
     SELECT rooms.*,
-      (SELECT MAX(m.id) FROM messages m WHERE m.room_id = rooms.id) AS last_msg_id
+      (SELECT MAX(m.id) FROM messages m WHERE m.room_id = rooms.id) AS last_msg_id,
+      -- So the list can show a muted room as muted without a request per row.
+      EXISTS (SELECT 1 FROM room_mutes rmu
+              WHERE rmu.room_id = rooms.id AND rmu.user_id = ?) AS muted
     FROM rooms
     WHERE is_dm = 0 AND (
       created_by = ?
       OR EXISTS (SELECT 1 FROM room_members rm WHERE rm.room_id = rooms.id AND rm.user_id = ?)
     )
     ORDER BY last_msg_id IS NULL, last_msg_id DESC, rooms.id DESC
-  `).all(req.user.id, req.user.id);
+  `).all(req.user.id, req.user.id, req.user.id);
   res.json(rooms);
 });
 
@@ -843,7 +846,11 @@ async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
   if (!userIds.length) return;
   // The rule lives in notify.js so it can be tested: the rest of this function
   // is behind credential checks a test environment has no way to satisfy.
-  userIds = recipientsFor(userIds, android.fromUserId, hasMuted);
+  // The room id rides along on every message push already, so a muted room is
+  // filtered in the one place the person mute is — not at each of the seven
+  // call sites, which is how one of them would eventually be forgotten.
+  userIds = recipientsFor(userIds, android.fromUserId, hasMuted,
+    { roomId: data && data.roomId, isRoomMuted: hasMutedRoom });
   if (!userIds.length) return;
   // Browsers first, and independently of Firebase: an iPhone can only have
   // this app as a home-screen PWA, and that PWA is pushed through Web Push,
@@ -1622,6 +1629,19 @@ function hasMuted(userId, otherId) {
 }
 
 /**
+ * Has this user silenced this room?
+ *
+ * The room id arrives from a push payload, where everything is a string, so it
+ * is converted here rather than at the one call site that happens to know.
+ */
+function hasMutedRoom(userId, roomId) {
+  const rid = parseInt(String(roomId), 10);
+  if (!userId || !Number.isFinite(rid)) return false;
+  return !!db.prepare('SELECT 1 FROM room_mutes WHERE user_id = ? AND room_id = ?')
+    .get(userId, rid);
+}
+
+/**
  * The last message this user has cleared away in this room.
  *
  * Everything at or below it is hidden from them. Returns 0 when they have
@@ -1846,6 +1866,31 @@ function setPeerFlag(table, cols) {
     res.json({ ok: true, on });
   };
 }
+
+/**
+ * Silence a room, or let it speak again.
+ *
+ * Separate from setPeerFlag because the thing being muted is a room, not a
+ * user: the id names a different table and the access check is a different
+ * question — you may only mute a room you can actually see.
+ */
+function setRoomMute(req, res) {
+  const roomId = parseInt(req.params.roomId, 10);
+  if (!roomId) return res.status(400).json({ error: 'Invalid room' });
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+  if (!room || !canAccessRoom(req.user.id, room)) return res.status(404).json({ error: 'Room not found' });
+  const on = req.method === 'POST';
+  if (on) {
+    db.prepare('INSERT OR IGNORE INTO room_mutes (user_id, room_id) VALUES (?, ?)')
+      .run(req.user.id, roomId);
+  } else {
+    db.prepare('DELETE FROM room_mutes WHERE user_id = ? AND room_id = ?')
+      .run(req.user.id, roomId);
+  }
+  res.json({ ok: true, on });
+}
+app.post('/room-mute/:roomId', authMiddleware, setRoomMute);
+app.delete('/room-mute/:roomId', authMiddleware, setRoomMute);
 
 app.post('/block/:userId', authMiddleware, setPeerFlag('user_blocks', ['blocker_id', 'blocked_id']));
 app.delete('/block/:userId', authMiddleware, setPeerFlag('user_blocks', ['blocker_id', 'blocked_id']));

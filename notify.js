@@ -20,14 +20,29 @@
  * still counted as unread. A mute that hid the message would be a block
  * wearing a different name, and someone who chose "mute" did not choose that.
  */
-function recipientsFor(userIds, fromUserId, isMuted) {
+function recipientsFor(userIds, fromUserId, isMuted, opts) {
   const ids = Array.isArray(userIds) ? userIds : [];
+  // ── A muted ROOM drops its notifications too ──────────────────────────────
+  //
+  // Asked for as a mute button on rooms. Muting a PERSON was already handled
+  // here; a room was not, so the one chat somebody actually wants quiet — the
+  // busy group — was the one thing they could not silence.
+  //
+  // Applied before the sender check, and independently of it: a room is muted
+  // whoever is talking in it, which is the entire point of muting a room
+  // rather than each of its members one at a time.
+  const roomId = opts && opts.roomId;
+  const isRoomMuted = opts && opts.isRoomMuted;
+  let out = ids.slice();
+  if (roomId != null && roomId !== '' && typeof isRoomMuted === 'function') {
+    out = out.filter(id => !isRoomMuted(id, roomId));
+  }
   // No sender attributed to this notification — a system notice, say. There is
-  // nobody to have muted, so nobody is filtered out.
-  if (!fromUserId) return ids.slice();
+  // nobody to have muted, so nobody is filtered out on that count.
+  if (!fromUserId) return out;
   // Never notify someone about their own message. Every caller filters this
   // already; doing it here too means a caller that forgets cannot cause it.
-  return ids.filter(id => id !== fromUserId && !isMuted(id, fromUserId));
+  return out.filter(id => id !== fromUserId && !isMuted(id, fromUserId));
 }
 
 /**

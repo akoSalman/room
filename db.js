@@ -173,6 +173,22 @@ db.exec(`
     UNIQUE(user_id, muted_id)
   );
 `);
+// Muting a ROOM, which is a different thing from muting each of its members.
+//
+// A busy group is the one chat somebody actually wants quiet, and until now it
+// was the only one they could not silence: user_mutes is per person, so a room
+// of ten needed ten mutes and still made a noise when an eleventh joined.
+//
+// Like a person mute, this stops the NOTIFICATION and nothing else. The
+// messages still arrive, the chat still shows them, and they are still counted
+// as unread — a mute that hid messages would be a block wearing another name.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS room_mutes (
+    user_id INTEGER NOT NULL,
+    room_id INTEGER NOT NULL,
+    UNIQUE(user_id, room_id)
+  );
+`);
 // "Clear for me" cannot delete anything — the other person's copy is theirs.
 // So it records a HIGH-WATER MARK instead: everything up to and including this
 // message id is hidden from this user, in this room, everywhere it would
