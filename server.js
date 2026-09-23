@@ -11,6 +11,7 @@ const { recipientsFor, tokenIsDead, notificationTag, collapseKeyFor, presenceLin
 const najva = require('./najva');
 const mviews = require('./messageViews');
 const { seenByAllUpTo } = require('./readReceipts');
+const roomVoice = require('./roomVoice');
 const credentials = require('./credentials');
 const cors = require('cors');
 const db = require('./db');
@@ -3082,6 +3083,9 @@ io.on('connection', (socket) => {
     const key = String(roomId);
     if (!voiceRooms.has(key)) voiceRooms.set(key, new Map());
     const members = voiceRooms.get(key);
+    // Whether this join is the call BEGINNING, read before the joiner is
+    // added. Afterwards the two cases are indistinguishable.
+    const starting = roomVoice.isCallStarting({ countBefore: members.size });
     // Tell the joiner who is already in (they will RECEIVE offers from them)
     socket.emit('voice_peers', {
       roomId: key,
@@ -3094,15 +3098,61 @@ io.on('connection', (socket) => {
       });
     });
     members.set(socket.id, { userId: socket.user.id, username: socket.user.username });
-    io.to(key).emit('voice_count', { roomId: key, count: members.size });
+
+    // ── Tell the people who are NOT here ──────────────────────────────────
+    //
+    // This used to be `io.to(key)`, the chat's socket room, which reaches
+    // only the members who already have that chat open. Everybody else was
+    // never told a voice chat existed — and since a room call only connects
+    // when a second person joins, nobody ever did. That, and not the
+    // signalling, is why room calls "didn't work at all".
+    const vroom = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+    const memberIds = vroom ? getRoomMemberIds(vroom) : [];
+    announceVoice(key, memberIds, members);
+    if (starting) {
+      // A call BEGINNING is news. The third person arriving at one is not,
+      // and pushing for that would teach people to ignore this.
+      const text = roomVoice.startedPush({
+        username: socket.user.username, roomName: vroom ? vroom.name : '',
+      });
+      sendPushToUsers(
+        roomVoice.pushTargets({ memberIds, starterId: socket.user.id }),
+        text.title, text.body,
+        { type: 'room-voice', roomId: key },
+        { channelId: 'messages-v3', sound: 'notify', tag: `room-voice-${key}` },
+      );
+    }
   });
+
+  /**
+   * Broadcast who is in a room's voice chat, to every member of the room.
+   *
+   * Names as well as a count: "2 in" tells you a call is happening, and who
+   * is in it tells you whether to join.
+   */
+  function announceVoice(key, memberIds, members) {
+    const payload = {
+      roomId: key,
+      count: members.size,
+      usernames: [...members.values()].map(m => m.username),
+    };
+    roomVoice.notifyTargets({ memberIds }).forEach(id => {
+      io.to('user:' + id).emit('voice_count', payload);
+    });
+    // The chat's socket room as well, for builds already installed that
+    // listen there and know nothing about the per-user delivery.
+    io.to(key).emit('voice_count', payload);
+  }
   const leaveVoice = () => {
     voiceRooms.forEach((members, key) => {
       if (members.delete(socket.id)) {
         members.forEach(m => {
           io.to('user:' + m.userId).emit('voice_peer_left', { roomId: key, userId: socket.user.id });
         });
-        io.to(key).emit('voice_count', { roomId: key, count: members.size });
+        // Every member again, not just the open chats — otherwise the badge
+        // that said "2 in" stays on screen after the call has ended.
+        const vroom = db.prepare('SELECT * FROM rooms WHERE id = ?').get(key);
+        announceVoice(key, vroom ? getRoomMemberIds(vroom) : [], members);
         if (!members.size) voiceRooms.delete(key);
       }
     });

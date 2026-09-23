@@ -314,6 +314,23 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   // Ticks so "12m left" on a live pin stays honest without a per-second render.
   const [clockTick, setClockTick] = useState(0);
   const [maxOtherReadMsgId, setMaxOtherReadMsgId] = useState(0);
+  // Who is in THIS room's voice chat, from callManager's per-room record.
+  // Held as state so the badge and banner re-render when somebody joins or
+  // leaves a call this screen is not part of.
+  const [voiceIn, setVoiceIn] = useState(() => callManager.voiceIn(room.id));
+
+  // callManager records every room's voice chat, including rooms nobody has
+  // open. This subscribes the header badge and the join banner to it.
+  useEffect(() => {
+    const sync = () => setVoiceIn(callManager.voiceIn(room.id));
+    sync();
+    // Both subscriptions: onRoomVoice fires when somebody else joins or
+    // leaves, subscribe fires when I do — and the banner hides itself once I
+    // am in the call, so it has to hear about both.
+    const offRoom = callManager.onRoomVoice(sync);
+    const offMine = callManager.subscribe(sync);
+    return () => { offRoom(); offMine?.(); };
+  }, [room.id]);
   // clientId -> uploaded file URL, so the server's echo can be matched back to
   // its optimistic bubble even when the server doesn't echo client_id.
   const pendingUploadPaths = useRef<Record<string, string>>({});
@@ -5057,6 +5074,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
             onPress={() => callManager.toggleRoomVoice(room.id, room.name)}
             style={s.callBtn} hitSlop={{ top: 10, bottom: 10 }}>
             <Ionicons name="call-outline" size={22} color={C.accent} />
+            {/* The live count. Without it the button looks identical whether
+                a call is happening or not, which is how room calls came to
+                be reported as not working at all: the first person to tap it
+                waited alone, because nothing on anybody else's phone said a
+                thing. */}
+            {voiceIn && voiceIn.count > 0 ? (
+              <View style={s.voiceDot}><Text style={s.voiceDotText}>{voiceIn.count}</Text></View>
+            ) : null}
           </TouchableOpacity>
         )}
         {/* Search, where the profile avatar used to be. Your own avatar is one
@@ -5068,6 +5093,25 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         </TouchableOpacity>
       </View>
       )}
+
+      {/* ── A voice chat is happening in this room ──────────────────────────
+          One tap to join. The badge on the call button says a call exists;
+          this says who is in it and makes joining the obvious next move.
+          Hidden once you are in it yourself — the call window is the UI then. */}
+      {!room.is_dm && voiceIn && voiceIn.count > 0 && !callManager.inRoomVoice(room.id) ? (
+        <TouchableOpacity
+          style={s.voiceBanner}
+          onPress={() => callManager.toggleRoomVoice(room.id, room.name)}
+        >
+          <Ionicons name="call" size={16} color="#fff" />
+          <Text style={s.voiceBannerText} numberOfLines={1}>
+            {voiceIn.usernames && voiceIn.usernames.length
+              ? `${voiceIn.usernames.slice(0, 3).join(', ')}${voiceIn.count > 3 ? ` +${voiceIn.count - 3}` : ''} in voice chat`
+              : `Voice chat · ${voiceIn.count} in`}
+          </Text>
+          <Text style={s.voiceBannerJoin}>JOIN</Text>
+        </TouchableOpacity>
+      ) : null}
 
       {/* Online users modal */}
       <Modal visible={showOnline} transparent animationType="slide" onRequestClose={() => setShowOnline(false)}>
@@ -6516,6 +6560,19 @@ const s = StyleSheet.create({
   messagesList: { padding: 12, gap: 6 },
   msgRow: { width: '100%' },
   callBtn: { paddingHorizontal: 6, paddingVertical: 4 },
+  // The live voice-chat count, on the room's call button.
+  voiceDot: {
+    position: 'absolute', top: 0, right: 0, minWidth: 16, height: 16,
+    borderRadius: 8, backgroundColor: '#2fbf5f', alignItems: 'center',
+    justifyContent: 'center', paddingHorizontal: 3,
+  },
+  voiceDotText: { color: '#fff', fontSize: 10, fontWeight: '800' },
+  voiceBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#2fbf5f', paddingHorizontal: 14, paddingVertical: 9,
+  },
+  voiceBannerText: { color: '#fff', fontSize: 13, fontWeight: '600', flex: 1 },
+  voiceBannerJoin: { color: '#fff', fontSize: 12, fontWeight: '800', letterSpacing: 0.5 },
   callBtnText: { fontSize: 18 },
   msgWrapper: { maxWidth: '80%', marginVertical: 2 },
   mine: { alignSelf: 'flex-end', alignItems: 'flex-end' },

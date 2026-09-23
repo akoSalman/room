@@ -330,9 +330,22 @@ class CallManager {
     s.on('voice_peer_left', ({ roomId, userId }: any) => {
       if (this.mode === 'room-voice' && String(roomId) === String(this.roomVoiceId)) this.dropPeer(userId);
     });
-    s.on('voice_count', ({ roomId, count }: any) => {
-      if (this.mode === 'room-voice' && String(roomId) === String(this.roomVoiceId)) {
-        this.status = `Voice chat · ${count} in`;
+    s.on('voice_count', ({ roomId, count, usernames }: any) => {
+      // ── Recorded for EVERY room, not only the one you are calling in ────
+      //
+      // This handler used to begin with `if (this.mode === 'room-voice')`,
+      // so the count was visible only to somebody already in the call. That
+      // is the whole reason room calls "didn't work at all": the first person
+      // to tap the button waited alone, because nothing on any other member's
+      // phone changed in any way. A room call cannot connect until a second
+      // person joins, and nobody had been given a reason to.
+      const key = String(roomId);
+      const n = Number(count) || 0;
+      if (n > 0) this.roomVoice.set(key, { count: n, usernames: usernames || [] });
+      else this.roomVoice.delete(key);
+      this.roomVoiceListeners.forEach(fn => { try { fn(); } catch {} });
+      if (this.mode === 'room-voice' && key === String(this.roomVoiceId)) {
+        this.status = `Voice chat · ${n} in`;
         this.emit();
       }
     });
@@ -653,6 +666,33 @@ class CallManager {
     this.status = 'Voice chat · joining…';
     this.emit();
     this.sock.emit('voice_join', { roomId });
+  }
+
+  // ── Who is in each room's voice chat, for the rooms you are NOT in ──────
+  //
+  // Kept here rather than in a screen because it must survive a screen being
+  // unmounted: the point of it is to be true on a phone whose owner is
+  // reading something else entirely.
+  private roomVoice = new Map<string, { count: number; usernames: string[] }>();
+  private roomVoiceListeners = new Set<() => void>();
+
+  /** Am I currently in THIS room's voice chat? */
+  inRoomVoice(roomId: number | string | null | undefined): boolean {
+    if (roomId == null) return false;
+    return this.mode === 'room-voice' && String(this.roomVoiceId) === String(roomId);
+  }
+
+  /** Who is in this room's voice chat right now, or null if nobody is. */
+  voiceIn(roomId: number | string | null | undefined):
+    { count: number; usernames: string[] } | null {
+    if (roomId == null) return null;
+    return this.roomVoice.get(String(roomId)) || null;
+  }
+
+  /** Re-render when any room's voice chat changes. Returns an unsubscribe. */
+  onRoomVoice(fn: () => void): () => void {
+    this.roomVoiceListeners.add(fn);
+    return () => { this.roomVoiceListeners.delete(fn); };
   }
 
   end() {

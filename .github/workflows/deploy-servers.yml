@@ -21,6 +21,7 @@ on:
       - 'najva.js'
       - 'messageViews.js'
       - 'readReceipts.js'
+      - 'roomVoice.js'
       - 'webPush.js'
       - 'linkMeta.js'
       - 'package.json'
