@@ -67,6 +67,27 @@
     return muted ? 'Unmute notifications' : 'Mute notifications';
   }
 
+  // Kept in step with native-app/src/peerActions.ts — a test compares the two,
+  // because two clients quietly disagreeing about what "mute" means is the
+  // worst kind of bug: no error anywhere, and a phone that stays silent for a
+  // different length of time than the one that set it.
+  var MUTE_CHOICES = ['2h', 'forever'];
+
+  function muteChoiceLabel(choice) {
+    return choice === '2h' ? 'For 2 hours' : 'Until I turn it back on';
+  }
+
+  function mutedUntilLabel(until, now) {
+    now = now === undefined ? Date.now() : now;
+    var t = Number(until);
+    if (!isFinite(t) || t <= 0) return 'Muted';
+    if (t <= now) return 'Muted';
+    var mins = Math.ceil((t - now) / 60000);
+    if (mins < 60) return 'Muted for ' + mins + ' more minute' + (mins === 1 ? '' : 's');
+    var hours = Math.round(mins / 60);
+    return 'Muted for ' + hours + ' more hour' + (hours === 1 ? '' : 's');
+  }
+
   function muteHint(muted, name) {
     return muted
       ? 'You will be notified about ' + name + ' again.'
@@ -130,6 +151,9 @@
     clearConfirm: clearConfirm,
     muteLabel: muteLabel,
     muteHint: muteHint,
+    muteChoiceLabel: muteChoiceLabel,
+    mutedUntilLabel: mutedUntilLabel,
+    MUTE_CHOICES: MUTE_CHOICES,
     blockLabel: blockLabel,
     blockHint: blockHint,
     blockConfirm: blockConfirm,

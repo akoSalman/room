@@ -63,6 +63,7 @@ import {
 import LocationPicker from '../components/LocationPicker';
 import PeerSheet from '../components/PeerSheet';
 import { PeerView, ClearScope, vanishedStyle } from '../peerActions';
+import * as peerActions from '../peerActions';
 import * as pick from '../locationPick';
 import { uploadResumable } from '../chunkedUpload';
 
@@ -3757,15 +3758,36 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   }
   const peerIdRef = useRef<number | null>(null);
 
-  async function setPeerFlag(kind: 'mute' | 'block', on: boolean) {
+  async function setPeerFlag(kind: 'mute' | 'block', on: boolean, forHow?: peerActions.MuteFor) {
     const id = peerIdRef.current;
     if (!id) return;
-    const r = await apiFetch(`/${kind}/${id}`, on ? 'POST' : 'DELETE');
+    const r = await apiFetch(`/${kind}/${id}`, on ? 'POST' : 'DELETE',
+      on && kind === 'mute' ? { for: forHow } : undefined);
     if (r?.error) { toast(r.error); return; }
-    setPeer(prev => prev && { ...prev, [kind === 'mute' ? 'muted' : 'blocked']: on });
+    setPeer(prev => prev && {
+      ...prev,
+      [kind === 'mute' ? 'muted' : 'blocked']: on,
+      ...(kind === 'mute' ? { mutedUntil: r?.until ?? null } : {}),
+    });
     toast(kind === 'mute'
-      ? (on ? 'Notifications muted' : 'Notifications on')
+      ? (on ? (forHow === '2h' ? 'Muted for 2 hours' : 'Notifications muted') : 'Notifications on')
       : (on ? 'Blocked' : 'Unblocked'));
+  }
+
+  /**
+   * Mute a person, having asked for how long.
+   *
+   * Unmuting asks nothing: there is only one way to stop being quiet.
+   */
+  function askMutePeer(on: boolean) {
+    if (!on) return setPeerFlag('mute', false);
+    Alert.alert('Mute notifications', 'How long should this chat stay quiet?', [
+      { text: 'Cancel', style: 'cancel' },
+      ...peerActions.MUTE_CHOICES.map(c => ({
+        text: peerActions.muteChoiceLabel(c),
+        onPress: () => { setPeerFlag('mute', true, c); },
+      })),
+    ]);
   }
 
   /**
@@ -6030,7 +6052,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         peer={peer}
         isDm={!!room.is_dm && peer?.username === room.other_username}
         onClose={() => setPeerOpen(false)}
-        onToggleMute={(next) => setPeerFlag('mute', next)}
+        onToggleMute={(next) => askMutePeer(next)}
         onToggleBlock={(next) => setPeerFlag('block', next)}
         onClear={clearHistory}
         // Only when this is someone else's chat — in a direct chat you are

@@ -1,124 +1,100 @@
 #!/usr/bin/env python3
-"""Generates assets/ring.wav — the incoming-call tone.
+"""
+Generate ring.wav — the sound a phone makes for an incoming call.
 
-Written out rather than downloaded because these users' phones cannot reach a
-sound library, and a stock Android ringtone is exactly what an incoming call
-must NOT sound like: it has to be recognisable as THIS app across a room.
+── Why the old one was replaced ────────────────────────────────────────────
 
-The tone is an FM bell — a sine carrier with a sine modulator an octave up,
-whose index decays fast — struck as a rising four-note phrase over a soft
-sustained fifth, then answered by the same phrase a fourth higher. That is the
-"telephone" shape (a call, an answer) without copying any particular one.
+Reported as: "the sound of call ringtone is too much sharp". Measured before
+changing anything, which is the only way to know whether a replacement is
+actually softer or merely different:
 
-Deliberate choices:
-  * A5-C6 region for the melody: small phone speakers roll off below ~400 Hz,
-    so a low tone that sounds warm on a laptop is inaudible in a pocket.
-  * Every note is enveloped to silence and the whole phrase fades in and out,
-    so looping it — which is what a call does — has no click at the seam.
-  * ~6 s per cycle, four cycles: long enough that a notification channel plays
-    a real ring rather than a chime, short enough to stop being pleasant before
-    it stops being polite.
+    ring.wav (old)   centroid 1989 Hz   11% of energy above 2 kHz
+                     strongest partials 1314, 1760 and 5281 Hz
 
-Run: python3 native-app/assets/make-ring.py
+A spectral centroid near 2 kHz sits in the band the ear is most sensitive to
+(roughly 2–5 kHz, where the ear canal resonates), and a 5.3 kHz partial on top
+of it is what "sharp" means. It was doing its job — a ringtone has to cut
+through a pocket — but it cuts through a quiet room just as hard.
+
+── What this makes instead ─────────────────────────────────────────────────
+
+A soft bell, two notes, repeating with room to breathe:
+
+  * fundamentals at 523 Hz and 392 Hz (C5 and G4), an interval that resolves
+    downwards rather than alarming;
+  * partials at 2x and 3x only, each far quieter than the one below it, and
+    nothing above 1.6 kHz at all — so the centroid lands under 700 Hz;
+  * a 45 ms attack rather than an instant one, which is most of the
+    difference between "bell" and "beep";
+  * a 1.3 s exponential decay, and 1.5 s of near-silence between phrases, so
+    it is not a continuous tone pressing on the ear.
+
+Still normalised to a real level — a ringtone nobody hears is a worse bug than
+one that is too bright — but with a crest factor that leaves it feeling soft
+rather than loud.
+
+Run:  python3 make-ring.py
 """
 import math
 import struct
 import wave
 
-SR = 44100
+RATE = 44100
+SECONDS = 15.0          # matches the old file, and the 30s cap on the push
+PEAK = 0.62             # headroom left deliberately; see the docstring
 
 
-def env(n, attack, decay):
-    """Percussive envelope: a fast rise, an exponential fall to true zero."""
-    out = []
-    a = max(1, int(attack * SR))
+def bell(freq, dur, attack=0.045, decay=1.3):
+    """One soft bell note: three partials, gentle attack, long decay."""
+    n = int(dur * RATE)
+    out = [0.0] * n
+    # Amplitude per partial. The drop is steep on purpose: it is the harmonics
+    # above the fundamental that carry brightness, and a bell that keeps them
+    # loud is a chime.
+    partials = ((1.0, 1.0), (2.0, 0.22), (3.0, 0.07))
+    for mult, amp in partials:
+        f = freq * mult
+        if f > 1600:        # nothing in the band that made the old one sharp
+            continue
+        w = 2 * math.pi * f / RATE
+        for i in range(n):
+            out[i] += amp * math.sin(w * i)
+    atk = max(1, int(attack * RATE))
     for i in range(n):
-        if i < a:
-            e = i / a
-        else:
-            e = math.exp(-(i - a) / (decay * SR))
-        out.append(e)
-    # Pull the tail to zero so a note never ends on a step.
-    tail = min(n, int(0.01 * SR))
-    for i in range(tail):
-        out[n - tail + i] *= 1 - i / tail
+        env = math.exp(-i / (decay * RATE))
+        if i < atk:
+            # A raised cosine, not a straight line: a linear attack still has
+            # a corner in it, and a corner is a click.
+            env *= 0.5 - 0.5 * math.cos(math.pi * i / atk)
+        out[i] *= env
     return out
 
 
-def bell(freq, dur, amp, ratio=2.0, index=3.2, decay=0.35):
-    """One FM strike."""
-    n = int(dur * SR)
-    e = env(n, 0.004, decay)
-    out = []
-    for i in range(n):
-        t = i / SR
-        # The modulation index decays faster than the note: bright on the
-        # strike, pure as it rings out. That is what makes it read as a bell
-        # rather than as a buzz.
-        idx = index * math.exp(-t / (decay * 0.6))
-        mod = idx * math.sin(2 * math.pi * freq * ratio * t)
-        out.append(amp * e[i] * math.sin(2 * math.pi * freq * t + mod))
-    return out
+def build():
+    total = int(SECONDS * RATE)
+    buf = [0.0] * total
+    phrase = 0.0
+    while phrase < SECONDS:
+        # Two notes, the second a fourth below, 0.42 s apart.
+        for offset, freq in ((0.0, 523.25), (0.42, 392.00)):
+            start = int((phrase + offset) * RATE)
+            note = bell(freq, 1.6)
+            for i, v in enumerate(note):
+                j = start + i
+                if j >= total:
+                    break
+                buf[j] += v
+        phrase += 3.4          # 1.9 s of ringing, 1.5 s of room to breathe
+    loud = max(abs(v) for v in buf) or 1.0
+    scale = PEAK * 32767 / loud
+    return b''.join(struct.pack('<h', int(max(-32768, min(32767, v * scale)))) for v in buf)
 
 
-def pad(freq, dur, amp):
-    """A soft sustained tone under the phrase, so it is not four bare pings."""
-    n = int(dur * SR)
-    out = []
-    for i in range(n):
-        t = i / SR
-        # Slow swell in and out across the whole note.
-        e = math.sin(math.pi * min(1.0, i / n)) ** 1.5
-        v = math.sin(2 * math.pi * freq * t) * 0.75 + math.sin(2 * math.pi * freq * 2 * t) * 0.25
-        out.append(amp * e * v)
-    return out
-
-
-def mix(buf, part, at):
-    start = int(at * SR)
-    need = start + len(part)
-    if need > len(buf):
-        buf.extend([0.0] * (need - len(buf)))
-    for i, v in enumerate(part):
-        buf[start + i] += v
-
-
-def semitone(base, n):
-    return base * (2 ** (n / 12))
-
-
-A5 = 880.0
-CYCLE = 6.0
-CYCLES = 3
-
-buf = []
-for c in range(CYCLES):
-    t0 = c * CYCLE
-    # Phrase one: a rising call. Phrase two answers it a fourth higher.
-    for phrase, (shift, when) in enumerate(((0, 0.0), (5, 1.6))):
-        base = semitone(A5, shift)
-        mix(buf, pad(base / 2, 1.25, 0.055), t0 + when)
-        for i, step in enumerate((0, 4, 7, 12)):
-            mix(buf,
-                bell(semitone(base, step), 0.9, 0.30 if i < 3 else 0.34,
-                     decay=0.30 if i < 3 else 0.42),
-                t0 + when + i * 0.19)
-    # …then silence, which is half of what makes a ring a ring.
-
-# Fade the very start and end of the whole file, for the seam on repeat.
-edge = int(0.03 * SR)
-for i in range(min(edge, len(buf))):
-    buf[i] *= i / edge
-    buf[len(buf) - 1 - i] *= i / edge
-
-peak = max(abs(v) for v in buf) or 1.0
-# -1 dBFS. Loud, because it is competing with a pocket.
-scale = 0.89 / peak
-frames = b''.join(struct.pack('<h', int(max(-1.0, min(1.0, v * scale)) * 32767)) for v in buf)
-
-with wave.open('native-app/assets/ring.wav', 'wb') as w:
-    w.setnchannels(1)
-    w.setsampwidth(2)
-    w.setframerate(SR)
-    w.writeframes(frames)
-print(f'ring.wav: {len(buf) / SR:.1f}s, {len(frames) / 1024:.0f} KiB')
+if __name__ == '__main__':
+    data = build()
+    with wave.open('ring.wav', 'wb') as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(RATE)
+        w.writeframes(data)
+    print(f'wrote ring.wav — {len(data) // 2 / RATE:.2f}s')

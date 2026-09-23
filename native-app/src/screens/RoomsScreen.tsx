@@ -14,13 +14,13 @@ import * as IntentLauncher from 'expo-intent-launcher';
 import { Ionicons } from '@expo/vector-icons';
 import { C, isRTL } from '../theme';
 import { ClearScope, clearScopes, clearLabel, clearHint, clearConfirm } from '../peerActions';
+import * as peerActions from '../peerActions';
 import { apiFetch, getUsername, getUserId, getSocket, setAuth, getAvatar, RELEASE_TAG, RELEASE_FILE, BASE_URL } from '../api';
 import { changesLeftText, renameWorthDoing, renamedText } from '../profileEdit';
 import * as upd from '../updateSource';
 import { BUILD_VERSION } from '../version';
 import * as connection from '../connection';
 import * as keepAlive from '../keepAlive';
-import * as battery from '../batteryExemption';
 import { statusLine as updateStatusLine } from '../updateResume';
 
 const AVATAR_EMOJIS = ['🦄','🐉','🧙‍♂️','🧚‍♀️','🧛‍♂️','🧞‍♂️','🦊','🐺','🦁','🐯','🐼','🐸','🦉','🐙','🦋','🤖','👽','🐲','🦅','🐬','🔥','⚡','🌙','⭐'];
@@ -36,7 +36,7 @@ const LATEST_RELEASE_API = `https://api.github.com/repos/akoSalman/room-releases
 
 // `muted` arrives from SQLite's EXISTS as 0 or 1, not a boolean — so it is
 // only ever tested for truthiness, never compared against `true`.
-type Room = { id: number; name: string; is_dm: number; other_username?: string; other_avatar?: string | null; created_by?: number; is_private?: number; disappearing_seconds?: number; muted?: number | boolean };
+type Room = { id: number; name: string; muted_until?: number | null; is_dm: number; other_username?: string; other_avatar?: string | null; created_by?: number; is_private?: number; disappearing_seconds?: number; muted?: number | boolean };
 
 export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount, onProfileOpened }: {
   onSelectRoom: (room: Room) => void;
@@ -180,16 +180,36 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
    * somebody the OLD state on a list they are already looking at — and a
    * failed request puts it straight back.
    */
-  async function toggleRoomMute(room: Room) {
-    const next = !room.muted;
+  async function applyRoomMute(room: Room, on: boolean, forHow?: peerActions.MuteFor) {
     setClearing(null);
-    setRooms(prev => prev.map(r => (r.id === room.id ? { ...r, muted: next } : r)));
-    const res = await apiFetch(`/room-mute/${room.id}`, next ? 'POST' : 'DELETE').catch(() => null);
+    setRooms(prev => prev.map(r => (r.id === room.id ? { ...r, muted: on ? 1 : 0 } : r)));
+    const res = await apiFetch(
+      `/room-mute/${room.id}`, on ? 'POST' : 'DELETE', on ? { for: forHow } : undefined,
+    ).catch(() => null);
     if (!res || res.error) {
       setRooms(prev => prev.map(r => (r.id === room.id ? { ...r, muted: room.muted } : r)));
-      Alert.alert(next ? 'Could not mute' : 'Could not unmute',
+      Alert.alert(on ? 'Could not mute' : 'Could not unmute',
         'Try again once the app is back online.');
+      return;
     }
+    setRooms(prev => prev.map(r => (r.id === room.id ? { ...r, muted_until: res.until } : r)));
+  }
+
+  /**
+   * Silence a room, or let it speak again.
+   *
+   * Muting asks for how long; unmuting does not ask anything, because there is
+   * only one way to stop being quiet.
+   */
+  function toggleRoomMute(room: Room) {
+    if (room.muted) { applyRoomMute(room, false); return; }
+    Alert.alert('Mute this room', 'How long should it stay quiet?', [
+      { text: 'Cancel', style: 'cancel', onPress: () => setClearing(null) },
+      ...peerActions.MUTE_CHOICES.map(c => ({
+        text: peerActions.muteChoiceLabel(c),
+        onPress: () => applyRoomMute(room, true, c),
+      })),
+    ]);
   }
 
   const load = useCallback(async () => {
@@ -661,7 +681,7 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
                   </Text>
                   <Text style={s.sheetRowHint}>
                     {clearing.muted
-                      ? 'Notifications from this room will arrive again.'
+                      ? `${peerActions.mutedUntilLabel(clearing.muted_until)}. Tap to turn notifications back on.`
                       : 'No notifications. Messages still arrive and still count as unread.'}
                   </Text>
                 </View>
@@ -895,46 +915,6 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
               )}
             </View>
 
-            {/* ── What a USER can act on, and nothing else ────────────────
-                This was a diagnostics readout: a verdict, six counters, the
-                channel importance, the socket state. It earned its keep —
-                it is what finally found the bug — but it was instrumentation
-                for me, shown to somebody who wants their messages.
-                Asked for its removal, and rightly.
-                
-                The two rows below stay because they are not diagnostics:
-                they are the only two things a person can DO about the one
-                case that still fails, and both are OEM permissions no app
-                can grant itself. The counters they replaced still exist and
-                still reach me — the app reports them to the server on every
-                foreground change — so nothing was lost by taking them off
-                this screen. */}
-            {battery.offerable() && (
-              <View style={s.section}>
-                <Text style={s.sectionTitle}>Notifications</Text>
-                <TouchableOpacity
-                  onPress={() => battery.open().then(ok => {
-                    if (!ok) Alert.alert('Battery settings',
-                      'Open Settings → Apps → this app → Battery and choose "No restrictions".');
-                  })}
-                >
-                  <Text style={[s.diagLine, s.diagAction]}>
-                    Notifications stop after a minute? Tap here and choose
-                    {' '}"Don't optimise".
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => battery.openAutostart().then(ok => {
-                  if (!ok) Alert.alert('Autostart',
-                    'Open your phone\'s Security or Settings app, find Autostart (or Auto-launch), and allow this app.');
-                })}>
-                  <Text style={[s.diagLine, s.diagAction]}>
-                    Nothing after you clear all apps? Tap here and allow
-                    {' '}Autostart, then lock this app in the recent-apps list.
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
             {/* Logout */}
             <View style={s.section}>
               <TouchableOpacity style={s.logoutBtn} onPress={() => { setShowProfile(false); onLogout(); }}>
@@ -1136,8 +1116,6 @@ const s = StyleSheet.create({
   myRoomName: { flex: 1, color: C.text, fontSize: 15 },
   roomActionBtn: { padding: 6 },
   roomActionIcon: { fontSize: 18 },
-  diagAction: { color: C.accent, textDecorationLine: 'underline' },
-  diagLine: { color: C.textDim, fontSize: 13, marginBottom: 4 },
   logoutBtn: { backgroundColor: C.danger, borderRadius: 10, padding: 13, alignItems: 'center' },
   logoutBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
   updateHint: { color: C.muted, fontSize: 13, marginBottom: 10 },

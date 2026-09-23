@@ -14,6 +14,8 @@ export type PeerView = {
   username: string;
   avatar?: string | null;
   muted: boolean;
+  /** When the mute ends, in ms. null = forever. */
+  mutedUntil?: number | null;
   blocked: boolean;
   isSelf?: boolean;
 };
@@ -70,6 +72,39 @@ export function clearConfirm(scope: ClearScope, name: string): { title: string; 
 
 export function muteLabel(muted: boolean): string {
   return muted ? 'Unmute notifications' : 'Mute notifications';
+}
+
+/**
+ * How long a mute lasts, offered as a choice.
+ *
+ * Two options and no more. A list of durations is a menu somebody has to read
+ * while already irritated by a chat that will not shut up; "for a while" and
+ * "for good" is the whole of what anybody wants at that moment.
+ */
+export type MuteFor = '2h' | 'forever';
+
+/** The choices, in the order they are offered. */
+export const MUTE_CHOICES: MuteFor[] = ['2h', 'forever'];
+
+export function muteChoiceLabel(choice: MuteFor): string {
+  return choice === '2h' ? 'For 2 hours' : 'Until I turn it back on';
+}
+
+/**
+ * What a mute in force says about itself.
+ *
+ * `until` is a millisecond timestamp from the server, or null for forever.
+ * Formatted HERE, on the phone, which is the only party that knows the user's
+ * timezone — a server rendering "until 14:30" would be guessing at it.
+ */
+export function mutedUntilLabel(until: number | null | undefined, now = Date.now()): string {
+  const t = Number(until);
+  if (!Number.isFinite(t) || t <= 0) return 'Muted';
+  if (t <= now) return 'Muted';       // expired but not yet swept; see mutes.js
+  const mins = Math.ceil((t - now) / 60000);
+  if (mins < 60) return `Muted for ${mins} more minute${mins === 1 ? '' : 's'}`;
+  const hours = Math.round(mins / 60);
+  return `Muted for ${hours} more hour${hours === 1 ? '' : 's'}`;
 }
 
 export function muteHint(muted: boolean, name: string): string {

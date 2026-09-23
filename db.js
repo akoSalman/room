@@ -182,13 +182,20 @@ db.exec(`
 // Like a person mute, this stops the NOTIFICATION and nothing else. The
 // messages still arrive, the chat still shows them, and they are still counted
 // as unread — a mute that hid messages would be a block wearing another name.
+// A mute can now end by itself: `until` is the millisecond it expires, and
+// NULL means forever. Existing rows have no value and so stay permanent, which
+// is exactly what they meant before the column existed.
+try { db.exec('ALTER TABLE user_mutes ADD COLUMN until INTEGER'); } catch {}
 db.exec(`
   CREATE TABLE IF NOT EXISTS room_mutes (
     user_id INTEGER NOT NULL,
     room_id INTEGER NOT NULL,
+    until INTEGER,
     UNIQUE(user_id, room_id)
   );
 `);
+// For a room_mutes table created before `until` existed.
+try { db.exec('ALTER TABLE room_mutes ADD COLUMN until INTEGER'); } catch {}
 // "Clear for me" cannot delete anything — the other person's copy is theirs.
 // So it records a HIGH-WATER MARK instead: everything up to and including this
 // message id is hidden from this user, in this room, everywhere it would

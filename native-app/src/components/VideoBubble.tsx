@@ -5,13 +5,20 @@
 // progress in MB/KB. Once downloaded the video plays from disk — instantly,
 // and offline.
 //
-// Streaming still works without downloading: tapping the tile opens the player,
-// which plays while it buffers. The button is for keeping it.
+// Tapping the tile DOWNLOADS the video and then opens the player by itself.
+//
+// It used to stream instead, keeping nothing — and that was a deliberate
+// choice, written down right here. It was reported as a bug, and the report
+// was right: "it will download and play but when closing video the download
+// button is still there". The bytes were spent, the video played, and the
+// tile went back to offering a download of the thing just watched, on every
+// rewatch. For somebody on a metered connection that is the wrong trade
+// twice, so the data is now spent once and the phone keeps what it paid for.
 import React, { useEffect, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { C } from '../theme';
-import { fmtBytes, progressPercent } from '../download';
+import { fmtBytes, progressPercent, videoTapAction, shouldAutoOpen } from '../download';
 import * as downloads from '../videoDownloads';
 import * as covers from '../videoCoverStore';
 import { coverToShow } from '../videoCover';
@@ -63,8 +70,25 @@ export default function VideoBubble({
   const total = dl?.total || size;
   const pct = status === 'downloading' ? progressPercent(dl!.written, total) : 0;
 
+  // Whether a tap is waiting on a download to finish, so the player can be
+  // opened the moment it does — once, and only for the person who asked.
+  const [waiting, setWaiting] = useState(false);
+
+  useEffect(() => {
+    if (!shouldAutoOpen({ waiting, status: dl?.status, hasFile: !!dl?.uri })) return;
+    setWaiting(false);
+    onOpen(dl!.uri!);
+  }, [waiting, dl?.status, dl?.uri]);
+
+  // A download the user did not ask to wait for must not yank them into a
+  // player later; leaving the tile cancels the waiting, not the download.
+  useEffect(() => () => setWaiting(false), [url]);
+
   function play() {
-    onOpen(status === 'done' && dl?.uri ? dl.uri : url);
+    const action = videoTapAction({ status, hasFile: !!dl?.uri });
+    if (action === 'play-local') { onOpen(dl!.uri!); return; }
+    setWaiting(true);
+    if (action === 'start-download') downloads.start(url).catch(() => {});
   }
 
   return (

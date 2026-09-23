@@ -426,7 +426,7 @@ test('the foreground service is back, but only on the terms that make it safe', 
   //
   // Rewritten rather than deleted: the decision it recorded was real and has
   // been reversed by evidence, which is worth saying where the next person
-  // will read it. See src/batteryExemption.ts.
+  // will read it.
   assert.ok(appJson.expo.android.permissions.includes('android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS'),
     'without this the one-tap battery dialog is silently refused, and Doze keeps stopping the socket after a minute');
   // stayConnected really is gone for good.

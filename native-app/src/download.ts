@@ -37,3 +37,54 @@ export function progressPercent(written: number, total: number): number {
   if (!total || total <= 0) return 0;
   return Math.max(0, Math.min(100, (written / total) * 100));
 }
+
+// ── Tapping a video that is not on the phone yet ────────────────────────────
+//
+// Reported as: "when tapping play video that is not downloaded it will
+// download and play but when closing video the download button is still there
+// and it's marked as new not downloaded video."
+//
+// Both halves of that were true, and the second followed from a design this
+// file's neighbour states plainly: tapping the tile STREAMED the video and
+// kept nothing, while the button beside it was "for keeping it". So the bytes
+// were spent, the video played, and the tile went back to offering a download
+// of the thing that had just been watched — and offered it again on every
+// rewatch.
+//
+// For somebody on a metered connection that is the wrong trade twice over. So
+// a tap now downloads, with the progress the tile already knows how to draw,
+// and opens the player by itself when the file is there. The data is spent
+// once and the phone keeps what it paid for.
+
+/** What a tap on a video tile should do. */
+export type VideoTapAction = 'play-local' | 'start-download' | 'wait';
+
+/**
+ * Tapping a video tile: play it, fetch it, or let a running fetch finish.
+ *
+ * `status` is the download state; `hasFile` says whether a local copy is
+ * actually recorded, because a status of 'done' with no uri is a record of
+ * something that is no longer on disk.
+ */
+export function videoTapAction(o: {
+  status?: string | null; hasFile?: boolean;
+}): VideoTapAction {
+  if (o && o.status === 'done' && o.hasFile) return 'play-local';
+  // Already fetching: a second tap must not start it again, and must not be
+  // taken as the user changing their mind.
+  if (o && (o.status === 'downloading' || o.status === 'paused')) return 'wait';
+  return 'start-download';
+}
+
+/**
+ * Has a download the user was waiting on just finished?
+ *
+ * Only ever true once per wait: the player opening is an interruption, and
+ * one that arrives twice — or after the user has gone somewhere else — is
+ * worse than none.
+ */
+export function shouldAutoOpen(o: {
+  waiting?: boolean; status?: string | null; hasFile?: boolean;
+}): boolean {
+  return !!(o && o.waiting && o.status === 'done' && o.hasFile);
+}

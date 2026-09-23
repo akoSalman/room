@@ -12,6 +12,7 @@ const najva = require('./najva');
 const mviews = require('./messageViews');
 const { seenByAllUpTo } = require('./readReceipts');
 const roomVoice = require('./roomVoice');
+const mutes = require('./mutes');
 const credentials = require('./credentials');
 const cors = require('cors');
 const db = require('./db');
@@ -675,14 +676,17 @@ app.get('/rooms', authMiddleware, (req, res) => {
       (SELECT MAX(m.id) FROM messages m WHERE m.room_id = rooms.id) AS last_msg_id,
       -- So the list can show a muted room as muted without a request per row.
       EXISTS (SELECT 1 FROM room_mutes rmu
-              WHERE rmu.room_id = rooms.id AND rmu.user_id = ?) AS muted
+              WHERE rmu.room_id = rooms.id AND rmu.user_id = ?
+                AND (rmu.until IS NULL OR rmu.until > ?)) AS muted,
+      (SELECT rmu2.until FROM room_mutes rmu2
+       WHERE rmu2.room_id = rooms.id AND rmu2.user_id = ?) AS muted_until
     FROM rooms
     WHERE is_dm = 0 AND (
       created_by = ?
       OR EXISTS (SELECT 1 FROM room_members rm WHERE rm.room_id = rooms.id AND rm.user_id = ?)
     )
     ORDER BY last_msg_id IS NULL, last_msg_id DESC, rooms.id DESC
-  `).all(req.user.id, req.user.id, req.user.id);
+  `).all(req.user.id, Date.now(), req.user.id, req.user.id, req.user.id);
   res.json(rooms);
 });
 
@@ -1624,8 +1628,24 @@ function hasBlocked(targetId, senderId) {
 
 function hasMuted(userId, otherId) {
   if (!userId || !otherId) return false;
-  return !!db.prepare('SELECT 1 FROM user_mutes WHERE user_id = ? AND muted_id = ?')
+  const row = db.prepare('SELECT until FROM user_mutes WHERE user_id = ? AND muted_id = ?')
     .get(userId, otherId);
+  if (!row) return false;
+  // A timed mute that has run out is swept as it is read. Lazily, because
+  // there is no other moment the question is asked, and a sweep on a timer
+  // would be a scheduler to maintain for something worth one DELETE.
+  if (mutes.hasExpired({ until: row.until, now: Date.now() })) {
+    db.prepare('DELETE FROM user_mutes WHERE user_id = ? AND muted_id = ?').run(userId, otherId);
+    return false;
+  }
+  return mutes.isActive({ until: row.until, now: Date.now() });
+}
+
+/** When this person's mute of that person ends. null = forever or not muted. */
+function muteUntil(userId, otherId) {
+  const row = db.prepare('SELECT until FROM user_mutes WHERE user_id = ? AND muted_id = ?')
+    .get(userId, otherId);
+  return row ? mutes.untilOrNull(row.until) : null;
 }
 
 /**
@@ -1637,8 +1657,14 @@ function hasMuted(userId, otherId) {
 function hasMutedRoom(userId, roomId) {
   const rid = parseInt(String(roomId), 10);
   if (!userId || !Number.isFinite(rid)) return false;
-  return !!db.prepare('SELECT 1 FROM room_mutes WHERE user_id = ? AND room_id = ?')
+  const row = db.prepare('SELECT until FROM room_mutes WHERE user_id = ? AND room_id = ?')
     .get(userId, rid);
+  if (!row) return false;
+  if (mutes.hasExpired({ until: row.until, now: Date.now() })) {
+    db.prepare('DELETE FROM room_mutes WHERE user_id = ? AND room_id = ?').run(userId, rid);
+    return false;
+  }
+  return mutes.isActive({ until: row.until, now: Date.now() });
 }
 
 /**
@@ -1842,6 +1868,9 @@ app.get('/user-profile/:username', authMiddleware, (req, res) => {
     // Both are MY settings about them, never theirs about me: whether someone
     // has blocked you is not something you get to ask the server.
     muted: hasMuted(req.user.id, other.id),
+    // A timestamp, not a sentence: the phone knows the user's timezone and
+    // locale, this process does not. null means forever.
+    mutedUntil: muteUntil(req.user.id, other.id),
     blocked: hasBlocked(req.user.id, other.id),
     dmRoomId: dm ? dm.id : null,
   });
@@ -1881,21 +1910,50 @@ function setRoomMute(req, res) {
   if (!room || !canAccessRoom(req.user.id, room)) return res.status(404).json({ error: 'Room not found' });
   const on = req.method === 'POST';
   if (on) {
-    db.prepare('INSERT OR IGNORE INTO room_mutes (user_id, room_id) VALUES (?, ?)')
-      .run(req.user.id, roomId);
-  } else {
-    db.prepare('DELETE FROM room_mutes WHERE user_id = ? AND room_id = ?')
-      .run(req.user.id, roomId);
+    // `for` is '2h' or anything else, which means forever. The choice is
+    // turned into a moment here rather than on the phone, because a phone
+    // with a wrong clock would otherwise mute itself until 2031.
+    const until = mutes.expiryFor(req.body && req.body.for, Date.now());
+    db.prepare(`INSERT INTO room_mutes (user_id, room_id, until) VALUES (?, ?, ?)
+      ON CONFLICT(user_id, room_id) DO UPDATE SET until = excluded.until`)
+      .run(req.user.id, roomId, until);
+    return res.json({ ok: true, on, until });
   }
-  res.json({ ok: true, on });
+  db.prepare('DELETE FROM room_mutes WHERE user_id = ? AND room_id = ?')
+    .run(req.user.id, roomId);
+  res.json({ ok: true, on, until: null });
 }
 app.post('/room-mute/:roomId', authMiddleware, setRoomMute);
 app.delete('/room-mute/:roomId', authMiddleware, setRoomMute);
 
 app.post('/block/:userId', authMiddleware, setPeerFlag('user_blocks', ['blocker_id', 'blocked_id']));
 app.delete('/block/:userId', authMiddleware, setPeerFlag('user_blocks', ['blocker_id', 'blocked_id']));
-app.post('/mute/:userId', authMiddleware, setPeerFlag('user_mutes', ['user_id', 'muted_id']));
-app.delete('/mute/:userId', authMiddleware, setPeerFlag('user_mutes', ['user_id', 'muted_id']));
+/**
+ * Muting a PERSON, which now carries an expiry like muting a room.
+ *
+ * Its own handler rather than setPeerFlag: that helper writes two columns and
+ * knows nothing about a third, and teaching it about `until` would push the
+ * mute's one special case into the code that blocks people too.
+ */
+function setUserMute(req, res) {
+  const otherId = parseInt(req.params.userId, 10);
+  if (!otherId || otherId === req.user.id) return res.status(400).json({ error: 'Invalid user' });
+  if (!db.prepare('SELECT 1 FROM users WHERE id = ?').get(otherId)) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  if (req.method === 'POST') {
+    const until = mutes.expiryFor(req.body && req.body.for, Date.now());
+    db.prepare(`INSERT INTO user_mutes (user_id, muted_id, until) VALUES (?, ?, ?)
+      ON CONFLICT(user_id, muted_id) DO UPDATE SET until = excluded.until`)
+      .run(req.user.id, otherId, until);
+    return res.json({ ok: true, on: true, until });
+  }
+  db.prepare('DELETE FROM user_mutes WHERE user_id = ? AND muted_id = ?')
+    .run(req.user.id, otherId);
+  res.json({ ok: true, on: false, until: null });
+}
+app.post('/mute/:userId', authMiddleware, setUserMute);
+app.delete('/mute/:userId', authMiddleware, setUserMute);
 
 /**
  * Clear a conversation.

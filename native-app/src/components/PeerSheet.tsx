@@ -12,7 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { C } from '../theme';
 import {
   ClearScope, PeerView, actionsFor, avatarFor, blockConfirm, blockHint, blockLabel,
-  clearConfirm, clearHint, clearLabel, clearScopes, muteHint, muteLabel,
+  clearConfirm, clearHint, clearLabel, clearScopes, muteHint, muteLabel, mutedUntilLabel,
 } from '../peerActions';
 
 function Row({ icon, color, label, hint, onPress, busy }: {
@@ -96,7 +96,9 @@ export default function PeerSheet({
               icon={peer.muted ? 'notifications-outline' : 'notifications-off-outline'}
               color={C.text}
               label={muteLabel(peer.muted)}
-              hint={muteHint(peer.muted, name)}
+              hint={peer.muted
+                ? `${mutedUntilLabel(peer.mutedUntil)}. ${muteHint(true, name)}`
+                : muteHint(false, name)}
               busy={busy === 'mute'}
               onPress={() => run('mute', () => onToggleMute(!peer.muted))}
             />
