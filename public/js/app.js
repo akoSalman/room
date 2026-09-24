@@ -189,6 +189,61 @@ const EMOJIS = ['👍','❤️','😂','😮','😢','🔥','👏','🎉','🤔'
 let loadedAppVersion = null;
 let reloadingForUpdate = false;
 
+/** Everything that would be thrown away by a reload of this tab. */
+function updateContext() {
+  const input = document.getElementById('msg-input');
+  return {
+    composerText: input ? input.value : '',
+    uploading: Object.keys(pendingUploads).length > 0,
+    // `Calls` is a top-level const in calls.js — a lexical global, NOT a
+    // property of window, so `window.Calls` is undefined and reading it
+    // fails silently. test/webGlobals.test.js exists for exactly this and
+    // caught it here.
+    inCall: typeof Calls !== 'undefined' && !!(Calls.inCall && Calls.inCall()),
+    recording: isRecording,
+    hidden: document.visibilityState === 'hidden',
+  };
+}
+
+/**
+ * Take the new version, clearing the caches so the reload really fetches it.
+ *
+ * Without the cache clear the page reloads onto the same files it already had
+ * — the update "happens" and changes nothing, which is worse than not
+ * offering it.
+ */
+async function applyUpdate() {
+  if (reloadingForUpdate) return;
+  reloadingForUpdate = true;
+  try {
+    if (window.caches) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+    }
+    const reg = await navigator.serviceWorker?.getRegistration();
+    await reg?.update();
+  } catch {}
+  location.reload();
+}
+
+/** Offer the update, and keep offering it until it is taken. */
+function showUpdateBanner() {
+  if (document.getElementById('update-banner')) return;
+  const bar = document.createElement('div');
+  bar.id = 'update-banner';
+  const text = document.createElement('span');
+  text.textContent = AppVersion.bannerText();
+  const btn = document.createElement('button');
+  btn.textContent = AppVersion.bannerAction();
+  btn.onclick = applyUpdate;
+  bar.appendChild(text);
+  bar.appendChild(btn);
+  // Deliberately NOT dismissible. A version banner that can be waved away is
+  // waved away, and then the person is on old code with nothing to remind
+  // them — which is the state this whole mechanism exists to end.
+  document.body.appendChild(bar);
+}
+
 async function checkAppVersion() {
   if (reloadingForUpdate) return;
   try {
@@ -196,21 +251,17 @@ async function checkAppVersion() {
     const { version } = await res.json();
     if (!version) return;
     if (loadedAppVersion === null) { loadedAppVersion = version; return; }
-    if (version === loadedAppVersion) return;
 
-    reloadingForUpdate = true;
-    // Clear the service-worker caches first, so the reload genuinely fetches
-    // the new files rather than replaying the old ones.
-    try {
-      if (window.caches) {
-        const keys = await caches.keys();
-        await Promise.all(keys.map(k => caches.delete(k)));
-      }
-      const reg = await navigator.serviceWorker?.getRegistration();
-      await reg?.update();
-    } catch {}
-    showToast('Updating to the latest version…');
-    setTimeout(() => location.reload(), 600);
+    // Reloading is not a small thing to do to somebody unasked: a typed
+    // message, an upload, a call and a recording all live only in this tab.
+    // So it is offered — and taken silently only when the tab is hidden and
+    // there is nothing in it to lose, which is how most people will get the
+    // new version without ever seeing a banner at all.
+    const action = AppVersion.updateAction({
+      loaded: loadedAppVersion, latest: version, ...updateContext(),
+    });
+    if (action === 'reload') { applyUpdate(); return; }
+    if (action === 'ask') showUpdateBanner();
   } catch {}
 }
 

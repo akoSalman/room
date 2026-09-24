@@ -43,13 +43,48 @@ app.use(express.json());
 // reaches people who have had the tab (or PWA) open for days.
 const APP_VERSION = (() => {
   try {
-    const files = ['public/js/app.js', 'public/js/calls.js', 'public/js/e2e.js',
-                   'public/js/credentials.js', 'public/css/style.css', 'public/index.html'];
+    // ── EVERY front-end file, not a list somebody has to remember ──────────
+    //
+    // Reported as: the web version does not prompt an update.
+    //
+    // This used to hash six named files — app.js, calls.js, e2e.js,
+    // credentials.js, style.css and index.html — out of the fifty-three that
+    // public/js alone holds. A deploy that changed any of the other
+    // forty-seven produced an IDENTICAL fingerprint, so every open tab and
+    // installed PWA compared the new version against the old one, found them
+    // equal, and went on running code from weeks ago. Nothing failed, nothing
+    // logged, and the update simply never happened.
+    //
+    // A hand-maintained list of "the files that matter" was always going to
+    // rot: every module added since — scrollAnchor, messageInfo, peerActions,
+    // messageMenu, readPosition and the rest — was invisible to it the moment
+    // it was written, and nobody would have thought to come back here.
+    //
+    // So the whole directory is walked instead. Uploads are excluded because
+    // they are user content and change constantly; anything else served to a
+    // browser counts, sorted so the answer does not depend on the order the
+    // filesystem happens to return.
     const h = require('crypto').createHash('sha1');
-    for (const f of files) {
-      const p = path.join(__dirname, f);
-      if (fs.existsSync(p)) h.update(fs.readFileSync(p));
-    }
+    const root = path.join(__dirname, 'public');
+    const walk = (dir) => {
+      let entries = [];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      for (const e of entries) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) {
+          if (e.name === 'uploads' || e.name === 'tiles') continue;
+          walk(full);
+          continue;
+        }
+        if (!/\.(js|css|html|json|webmanifest)$/i.test(e.name)) continue;
+        // The PATH is hashed as well as the bytes, so adding an empty file or
+        // renaming one is a change — which it is.
+        h.update(path.relative(root, full));
+        h.update(fs.readFileSync(full));
+      }
+    };
+    walk(root);
     return h.digest('hex').slice(0, 12);
   } catch {
     return String(Date.now());

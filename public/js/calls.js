@@ -482,8 +482,16 @@ const Calls = (() => {
     applyVideoPanes();
   }
 
+  /**
+   * Is a call happening right now?
+   *
+   * Asked by the update prompt: reloading the page ends a call outright, and
+   * doing that to somebody mid-sentence is not an update, it is a hang-up.
+   */
+  function inCall() { return !!mode; }
+
   return {
     bindSocket, setDMPeer, startDM, toggleRoomVoice, accept, decline, end,
-    toggleMute, toggleCam, toggleMinimize, swapVideos,
+    toggleMute, toggleCam, toggleMinimize, swapVideos, inCall,
   };
 })();
