@@ -1349,9 +1349,11 @@ function isMobile() { return window.innerWidth <= 640; }
 function openProfile() {
   if (document.getElementById('sidebar').classList.contains('collapsed')) return;
   closeUsernameEditor();
-  document.getElementById('prof-cur-pass').value = '';
-  document.getElementById('prof-new-pass').value = '';
-  ['profile-error', 'profile-success', 'password-error', 'password-success']
+  // The password fields were cleared here too. They are gone, and reading
+  // .value off a null would throw and take the whole of openProfile with it —
+  // the avatar picker, the room list and the version boxes all stop being
+  // built, from one line that looks like tidying up.
+  ['profile-error', 'profile-success']
     .forEach(id => { document.getElementById(id).textContent = ''; });
   setAvatarInitials(username);
   buildAvatarPicker();
@@ -2022,26 +2024,6 @@ async function saveUsername() {
   closeUsernameEditor();
   document.getElementById('profile-success').textContent =
     ProfileEdit.renamedText(usernameChangesLeft);
-}
-
-// ─── Changing your password ───────────────────────────────────────────────────
-async function savePassword() {
-  const currentPassword = document.getElementById('prof-cur-pass').value;
-  const newPassword = document.getElementById('prof-new-pass').value;
-  const err = document.getElementById('password-error');
-  const ok = document.getElementById('password-success');
-  err.textContent = ''; ok.textContent = '';
-  const problem = ProfileEdit.passwordProblem({ currentPassword, newPassword });
-  if (problem) { err.textContent = problem; return; }
-  const res = await api('/profile', 'PUT', { currentPassword, newPassword });
-  if (res.error) { err.textContent = res.error; return; }
-  // The private key is wrapped with the password, so it has to be re-wrapped
-  // with the new one or every encrypted chat becomes unreadable on next sign-in.
-  E2E.rewrap(newPassword, api).catch(() => {});
-  saveSession(res.token, res.username);
-  document.getElementById('prof-cur-pass').value = '';
-  document.getElementById('prof-new-pass').value = '';
-  ok.textContent = 'Password changed';
 }
 
 // ─── Rooms ────────────────────────────────────────────────────────────────────

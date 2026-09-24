@@ -147,12 +147,36 @@ test('the pencil, the warning and the count are all on the page', () => {
   assert.ok(/const me = await api\('\/me'\)/.test(app), 'the count is guessed rather than asked for');
 });
 
-test('a password change still re-wraps the encryption key', () => {
-  // The private key is wrapped with the password; without this every
-  // encrypted chat becomes unreadable at the next sign-in.
-  const fn = app.slice(app.indexOf('async function savePassword()'), app.indexOf('async function savePassword()') + 1600);
-  assert.ok(/E2E\.rewrap\(newPassword, api\)/.test(fn), 'the encryption key is left wrapped with the old password');
-  assert.ok(fn.includes('ProfileEdit.passwordProblem('), 'the checks are written out again by hand');
+test('NOTHING CHANGES A PASSWORD WITHOUT RE-WRAPPING THE KEY', () => {
+  // The web's password section was removed on request, and with it the only
+  // place in either client a password could be changed.
+  //
+  // The invariant it carried did not go anywhere. The private key is WRAPPED
+  // with the password, so a change that does not re-wrap it leaves every
+  // encrypted chat unreadable at the next sign-in — silently, and with no way
+  // back. The server still accepts the change over PUT /profile, so this is
+  // not hypothetical; it is waiting for whoever adds the screen back.
+  //
+  // So the test no longer looks for a function that is gone. It says the
+  // thing that must stay true: any client code that sends a new password
+  // re-wraps the key in the same breath.
+  const senders = [];
+  const re = /newPassword/g;
+  let m;
+  while ((m = re.exec(app)) !== null) {
+    // The 400 characters around each mention, which is more than the whole of
+    // the function that used to be here.
+    senders.push(app.slice(Math.max(0, m.index - 400), m.index + 400));
+  }
+  for (const near of senders) {
+    if (!/api\('\/profile'[^)]*newPassword|newPassword[^;]*api\('\/profile'/.test(near)) continue;
+    assert.ok(/E2E\.rewrap\(/.test(near),
+      'a password is changed without re-wrapping the key — every encrypted chat '
+      + 'becomes unreadable at the next sign-in');
+  }
+  // And the section really is gone, which is what was asked for.
+  assert.ok(!/id="prof-cur-pass"/.test(html), 'the password section is still on the page');
+  assert.ok(!/function savePassword/.test(app), 'the handler is still there with nothing to call it');
 });
 
 test('the avatar picker is six and a "more", like the app', () => {
