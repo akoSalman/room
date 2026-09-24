@@ -39,6 +39,22 @@
   var SETTLE_MS = 4000;
 
   /**
+   * …and how long the BOTTOM is held for, which is a different question.
+   *
+   * Four seconds was the number inherited from the prepend hold, and it is
+   * too short for the case that was reported next: a chat whose last messages
+   * are photos, opened on a phone connection. The photos are what decide the
+   * height, they are the slowest thing on the page, and a hold that gives up
+   * at four seconds gives up precisely when they start arriving.
+   *
+   * Longer is safe here in a way it would not be for the prepend hold, because
+   * this one ends the instant the reader touches the screen — see
+   * shouldHoldBottom. The cost of it running is one comparison per frame
+   * while a chat is opening.
+   */
+  var BOTTOM_HOLD_MS = 15000;
+
+  /**
    * Movement smaller than this is not worth a correction.
    *
    * Sub-pixel differences come out of rounding and zoom, and writing scrollTop
@@ -158,28 +174,14 @@
   function shouldHoldBottom(o) {
     var s = o || {};
     if (s.userScrolled) return false;
-    if (!stillHolding(s.startedAt, s.now, s.settleMs)) return false;
+    var ms = typeof s.settleMs === 'number' ? s.settleMs : BOTTOM_HOLD_MS;
+    if (!stillHolding(s.startedAt, s.now, ms)) return false;
     return worthCorrecting(distanceFromBottom(s));
-  }
-
-  /**
-   * Does this scroll event look like the reader, rather than our own write?
-   *
-   * Corrections move the list too, and a correction that counted as a user
-   * scroll would cancel the hold on its first application — leaving exactly
-   * the behaviour reported. So a scroll is the reader's only when it leaves
-   * the list somewhere we did not put it.
-   */
-  function isUserScroll(o) {
-    var s = o || {};
-    var at = Number(s.scrollTop), put = Number(s.lastWroteTop);
-    if (!isFinite(at)) return false;
-    if (!isFinite(put)) return true;
-    return Math.abs(at - put) >= MIN_SHIFT;
   }
 
   global.ScrollAnchor = {
     SETTLE_MS: SETTLE_MS,
+    BOTTOM_HOLD_MS: BOTTOM_HOLD_MS,
     MIN_SHIFT: MIN_SHIFT,
     shiftFor: shiftFor,
     worthCorrecting: worthCorrecting,
@@ -188,7 +190,6 @@
     shouldLoadOlder: shouldLoadOlder,
     distanceFromBottom: distanceFromBottom,
     shouldHoldBottom: shouldHoldBottom,
-    isUserScroll: isUserScroll,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
 

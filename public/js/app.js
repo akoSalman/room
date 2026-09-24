@@ -6132,67 +6132,90 @@ function handleGlobalClick(e) {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 // ── Getting to the bottom, and STAYING there while the page settles ─────────
 //
-// Reported on the iPhone web version: opening a chat lands on the newest
-// message and then "instantly it seems that scrolls to a couple message
-// upper", leaving the reader to scroll down for the latest one.
+// Reported twice. First: opening a chat lands on the newest message and then
+// "instantly it seems that scrolls to a couple message upper". Then, after the
+// first attempt at this: "when last message are image and first open chat
+// images are not loaded then after loading images the scroll seems to go upper
+// instead of the end of chat" — the same thing, said more precisely, and the
+// precision is what showed the first fix up.
 //
-// `scrollTop = scrollHeight` is a number, correct only for the height at that
-// instant. The page just rendered is full of photos that are zero pixels tall
-// until they load — the same fact that made loading older messages jump, and
-// which js/scrollAnchor.js was written for. Each one that arrives grows the
-// content BELOW the saved position, so the bottom moves away and the reader is
-// left short of it.
+// `scrollTop = scrollHeight` is a NUMBER, correct only for the height at that
+// instant. A photo is zero pixels tall until it loads, so a chat whose last
+// messages are photos measures as almost nothing and then grows by a screenful
+// underneath the reader.
 //
-// So the bottom is held for as long as the page takes to settle: on every
-// image and video that loads, and once more after layout for anything with no
-// event of its own. The hold ends the moment the reader scrolls for
-// themselves — being dragged back to the newest message while deliberately
-// reading something older would be far worse than the complaint being fixed.
+// The first attempt hung listeners on every <img> and <video> it could find
+// and gave up after four seconds. Both halves were wrong for this case:
+//
+//   * FOUR SECONDS is when photos on a phone connection START arriving, not
+//     when they have finished. The hold expired before the growth it existed
+//     for.
+//   * ENUMERATING ELEMENTS only covers what is in the DOM at that instant with
+//     a src already set. A link preview that measures itself late, a lazily
+//     loaded image, a web font, an <img> whose src is assigned a tick later —
+//     none of them were watched, and each one moves the bottom.
+//
+// So the height is no longer predicted. It is WATCHED: every frame, for as
+// long as the hold lasts, the list is asked how far it is from the bottom and
+// put back if it has drifted. That covers every cause of growth without
+// knowing what any of them are, and costs one comparison per frame while a
+// chat is opening.
+//
+// The hold ends the moment the reader touches the screen. That guard is what
+// makes the long window safe, and it is deliberately driven by INPUT events
+// rather than by scroll events: the browser scrolls the list too — Chrome's
+// own scroll anchoring does it while images load — and a browser-initiated
+// scroll counted as the reader would cancel the hold at exactly the moment it
+// was needed, which is indistinguishable from it never having worked.
 let bottomHold = null;
 
 function scrollBottom() {
   const m = document.getElementById('messages');
   if (!m) return;
-  if (bottomHold) { bottomHold.stop(); bottomHold = null; }
+  if (bottomHold) bottomHold.stop();
 
-  let lastWroteTop = -1;
-  const pin = () => { m.scrollTop = m.scrollHeight; lastWroteTop = m.scrollTop; };
+  const pin = () => { m.scrollTop = m.scrollHeight; };
   pin();
 
   const startedAt = Date.now();
   let userScrolled = false;
-  const onScroll = () => {
-    if (ScrollAnchor.isUserScroll({ scrollTop: m.scrollTop, lastWroteTop })) userScrolled = true;
-  };
-  m.addEventListener('scroll', onScroll, { passive: true });
+  let raf = 0;
 
-  const listeners = [];
-  const hold = () => {
-    if (!ScrollAnchor.shouldHoldBottom({
+  // Only a person produces these. Anything else that moves the list — a
+  // decoded image, scroll anchoring, a font — does not.
+  const give = () => { userScrolled = true; };
+  const INPUT = ['touchstart', 'wheel', 'keydown', 'pointerdown'];
+  INPUT.forEach(ev => m.addEventListener(ev, give, { passive: true }));
+
+  const stop = () => {
+    if (raf) cancelAnimationFrame(raf);
+    raf = 0;
+    INPUT.forEach(ev => m.removeEventListener(ev, give));
+    if (bottomHold && bottomHold.id === startedAt) bottomHold = null;
+  };
+
+  const tick = () => {
+    if (ScrollAnchor.shouldHoldBottom({
       scrollTop: m.scrollTop, scrollHeight: m.scrollHeight, clientHeight: m.clientHeight,
       startedAt, now: Date.now(), userScrolled,
-    })) return;
-    pin();
+    })) {
+      pin();
+    } else if (userScrolled
+        || !ScrollAnchor.stillHolding(startedAt, Date.now(), ScrollAnchor.BOTTOM_HOLD_MS)) {
+      // Either the reader has taken over or the window is spent. Nothing else
+      // ends this: being at the bottom already is the state it is FOR, not a
+      // reason to stop watching.
+      stop();
+      return;
+    }
+    raf = requestAnimationFrame(tick);
   };
-  m.querySelectorAll('img, video').forEach(el => {
-    if (el.complete) return;
-    ['load', 'loadedmetadata', 'error'].forEach(ev => {
-      el.addEventListener(ev, hold, { once: true });
-      listeners.push([el, ev]);
-    });
-  });
-  requestAnimationFrame(hold);
+  raf = requestAnimationFrame(tick);
 
-  bottomHold = {
-    stop() {
-      m.removeEventListener('scroll', onScroll);
-      listeners.forEach(([el, ev]) => el.removeEventListener(ev, hold));
-    },
-  };
-  // The hold cannot outlive its own window, whatever else happens.
-  setTimeout(() => { if (bottomHold) { bottomHold.stop(); bottomHold = null; } },
-    ScrollAnchor.SETTLE_MS + 250);
+  bottomHold = { id: startedAt, stop };
 }
+
+
 function show(id) { document.getElementById(id).classList.remove('hidden'); }
 function hide(id) { document.getElementById(id).classList.add('hidden'); }
 

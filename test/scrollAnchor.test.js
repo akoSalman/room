@@ -182,13 +182,21 @@ test('THE BUG: a list that has grown below the reader is not at the bottom', () 
 test('…so it is pinned again, until the page settles', () => {
   const at = { scrollTop: 500, scrollHeight: 1200, clientHeight: 400 };
   assert.strictEqual(S.shouldHoldBottom({ ...at, startedAt: 0, now: 1000 }), true);
+  // FOUR SECONDS WAS NOT ENOUGH. That was the prepend hold's number, and on a
+  // phone connection it is when photos start arriving rather than when they
+  // have finished — so the hold expired at the moment it was needed. Reported
+  // as: "when last message are image… after loading images the scroll seems
+  // to go upper instead of the end of chat".
+  assert.ok(S.BOTTOM_HOLD_MS >= 10000,
+    'the bottom hold gives up before slow photos have loaded');
+  assert.strictEqual(S.shouldHoldBottom({ ...at, startedAt: 0, now: 6000 }), true);
   // Already at the bottom: nothing to do, and writing scrollTop on iOS during
   // a momentum scroll interrupts the fling.
   assert.strictEqual(S.shouldHoldBottom({
     scrollTop: 800, scrollHeight: 1200, clientHeight: 400, startedAt: 0, now: 1000,
   }), false);
-  // And the hold expires, so it cannot fight a scroll a minute later.
-  assert.strictEqual(S.shouldHoldBottom({ ...at, startedAt: 0, now: S.SETTLE_MS + 1 }), false);
+  // And it does expire, so it cannot fight a scroll a minute later.
+  assert.strictEqual(S.shouldHoldBottom({ ...at, startedAt: 0, now: S.BOTTOM_HOLD_MS + 1 }), false);
 });
 
 test('A DELIBERATE SCROLL UP ENDS THE HOLD, always', () => {
@@ -198,18 +206,6 @@ test('A DELIBERATE SCROLL UP ENDS THE HOLD, always', () => {
   const at = { scrollTop: 100, scrollHeight: 1200, clientHeight: 400, startedAt: 0, now: 500 };
   assert.strictEqual(S.shouldHoldBottom({ ...at, userScrolled: false }), true);
   assert.strictEqual(S.shouldHoldBottom({ ...at, userScrolled: true }), false);
-});
-
-test('…but OUR OWN correction does not count as one', () => {
-  // Corrections move the list too. If a correction counted as a user scroll,
-  // the hold would cancel itself on its first application — leaving precisely
-  // the reported behaviour, and looking like the fix had been applied.
-  assert.strictEqual(S.isUserScroll({ scrollTop: 800, lastWroteTop: 800 }), false);
-  assert.strictEqual(S.isUserScroll({ scrollTop: 800.4, lastWroteTop: 800 }), false);
-  assert.strictEqual(S.isUserScroll({ scrollTop: 300, lastWroteTop: 800 }), true);
-  // Before anything has been written, a scroll can only be the reader's.
-  assert.strictEqual(S.isUserScroll({ scrollTop: 300 }), true);
-  assert.strictEqual(S.isUserScroll({}), false);
 });
 
 test('nonsense measurements move nothing', () => {
@@ -226,7 +222,12 @@ test('nonsense measurements move nothing', () => {
   assert.strictEqual(S.distanceFromBottom({ scrollTop: 860, scrollHeight: 1200, clientHeight: 400 }), 0);
 });
 
-test('THE PAGE ACTUALLY HOLDS THE BOTTOM', () => {
+test('THE PAGE WATCHES THE HEIGHT rather than predicting it', () => {
+  // The second report is what showed the first fix up. Hanging listeners on
+  // every <img> only covers what is in the DOM at that instant with a src
+  // already set — not a lazily loaded image, not a link preview measuring
+  // itself late, not an <img> whose src is assigned a tick later. Each of
+  // those moves the bottom, and none of them was watched.
   const fs2 = require('fs');
   const path2 = require('path');
   const app = fs2.readFileSync(path2.join(__dirname, '..', 'public', 'js', 'app.js'), 'utf8');
@@ -235,9 +236,34 @@ test('THE PAGE ACTUALLY HOLDS THE BOTTOM', () => {
   assert.ok(i > 0, 'scrollBottom is gone');
   const body = code.slice(i, code.indexOf('\n}\n', i));
   assert.ok(/shouldHoldBottom/.test(body), 'the bottom is set once and never held');
-  assert.ok(/isUserScroll/.test(body), 'a reader scrolling up cannot escape the hold');
-  assert.ok(/addEventListener\('scroll'/.test(body), 'nothing notices the reader scrolling');
-  assert.ok(/'load'|loadedmetadata/.test(body), 'nothing re-pins as the photos arrive');
+  // Twice: once to START the loop and once inside it to re-arm. Asserting
+  // merely that the call appears passed while the kick-off was deleted and
+  // the hold never ran at all — a test that measured nothing, caught by
+  // deleting the line and watching it still pass.
+  const rafs = (body.match(/requestAnimationFrame\(tick\)/g) || []).length;
+  assert.ok(rafs >= 2,
+    `the hold is armed ${rafs} time(s): it either never starts or never re-checks, `
+    + 'so growth it did not predict is missed');
+  assert.ok(!/querySelectorAll\('img/.test(body),
+    'the hold is back to enumerating elements, which cannot see what is not there yet');
+});
+
+test('…and only a PERSON can end it', () => {
+  // The browser scrolls the list too — Chrome's own scroll anchoring does it
+  // while images load. A browser-initiated scroll counted as the reader would
+  // cancel the hold at exactly the moment it was needed, which is
+  // indistinguishable from it never having worked at all.
+  const fs2 = require('fs');
+  const path2 = require('path');
+  const app = fs2.readFileSync(path2.join(__dirname, '..', 'public', 'js', 'app.js'), 'utf8');
+  const code = app.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  const i = code.indexOf('function scrollBottom(');
+  const body = code.slice(i, code.indexOf('\n}\n', i));
+  for (const ev of ['touchstart', 'wheel', 'keydown']) {
+    assert.ok(body.includes(ev), `${ev} does not end the hold, so a reader cannot escape it`);
+  }
+  assert.ok(!/addEventListener\('scroll'/.test(body),
+    'a scroll event ends the hold again, and the browser fires those itself');
 });
 
 let passed = 0, failed = 0;
