@@ -160,6 +160,86 @@ test('the scroll handler asks before starting another page', () => {
     'the guard is not given what it needs, so it can only answer one way');
 });
 
+// ── The same bug, at the bottom of the list ─────────────────────────────────
+//
+// Reported on the iPhone web version: opening a chat you have been talking in
+// lands on the newest message, and then "instantly it seems that scrolls to a
+// couple message upper" — leaving the reader to scroll down for the latest.
+//
+// Opening a chat scrolled to the bottom ONCE, with `scrollTop = scrollHeight`.
+// That is a number, correct only for the height at that instant, and the page
+// just rendered is full of photos that are zero pixels tall until they load —
+// the fact this whole file exists for. Each one that arrives grows the content
+// BELOW the saved position, so the bottom moves away and nothing follows it.
+
+test('THE BUG: a list that has grown below the reader is not at the bottom', () => {
+  // 900 tall, 400 visible, scrolled to 500 — the bottom at the time. Two
+  // photos then load and add 300px, and that same 500 is now 300 short.
+  assert.strictEqual(S.distanceFromBottom({ scrollTop: 500, scrollHeight: 900, clientHeight: 400 }), 0);
+  assert.strictEqual(S.distanceFromBottom({ scrollTop: 500, scrollHeight: 1200, clientHeight: 400 }), 300);
+});
+
+test('…so it is pinned again, until the page settles', () => {
+  const at = { scrollTop: 500, scrollHeight: 1200, clientHeight: 400 };
+  assert.strictEqual(S.shouldHoldBottom({ ...at, startedAt: 0, now: 1000 }), true);
+  // Already at the bottom: nothing to do, and writing scrollTop on iOS during
+  // a momentum scroll interrupts the fling.
+  assert.strictEqual(S.shouldHoldBottom({
+    scrollTop: 800, scrollHeight: 1200, clientHeight: 400, startedAt: 0, now: 1000,
+  }), false);
+  // And the hold expires, so it cannot fight a scroll a minute later.
+  assert.strictEqual(S.shouldHoldBottom({ ...at, startedAt: 0, now: S.SETTLE_MS + 1 }), false);
+});
+
+test('A DELIBERATE SCROLL UP ENDS THE HOLD, always', () => {
+  // The failure that would be worse than the one being fixed: somebody
+  // scrolls up to read something, a photo finishes three seconds later, and
+  // they are yanked back to the newest message.
+  const at = { scrollTop: 100, scrollHeight: 1200, clientHeight: 400, startedAt: 0, now: 500 };
+  assert.strictEqual(S.shouldHoldBottom({ ...at, userScrolled: false }), true);
+  assert.strictEqual(S.shouldHoldBottom({ ...at, userScrolled: true }), false);
+});
+
+test('…but OUR OWN correction does not count as one', () => {
+  // Corrections move the list too. If a correction counted as a user scroll,
+  // the hold would cancel itself on its first application — leaving precisely
+  // the reported behaviour, and looking like the fix had been applied.
+  assert.strictEqual(S.isUserScroll({ scrollTop: 800, lastWroteTop: 800 }), false);
+  assert.strictEqual(S.isUserScroll({ scrollTop: 800.4, lastWroteTop: 800 }), false);
+  assert.strictEqual(S.isUserScroll({ scrollTop: 300, lastWroteTop: 800 }), true);
+  // Before anything has been written, a scroll can only be the reader's.
+  assert.strictEqual(S.isUserScroll({ scrollTop: 300 }), true);
+  assert.strictEqual(S.isUserScroll({}), false);
+});
+
+test('nonsense measurements move nothing', () => {
+  // getBoundingClientRect and scrollHeight both return 0 on a detached node,
+  // and a hold computed from those would scroll the list somewhere arbitrary.
+  for (const o of [{}, { scrollTop: NaN, scrollHeight: 1200, clientHeight: 400 },
+                   { scrollTop: 0, scrollHeight: null, clientHeight: 400 }]) {
+    assert.strictEqual(S.distanceFromBottom(o), 0, JSON.stringify(o));
+    assert.strictEqual(S.shouldHoldBottom({ ...o, startedAt: 0, now: 1 }), false);
+  }
+  assert.strictEqual(S.distanceFromBottom(), 0);
+  // iOS rubber-band overscroll puts scrollTop past the end while the finger
+  // is down. That is a bounce which returns by itself, not a gap to correct.
+  assert.strictEqual(S.distanceFromBottom({ scrollTop: 860, scrollHeight: 1200, clientHeight: 400 }), 0);
+});
+
+test('THE PAGE ACTUALLY HOLDS THE BOTTOM', () => {
+  const fs2 = require('fs');
+  const path2 = require('path');
+  const app = fs2.readFileSync(path2.join(__dirname, '..', 'public', 'js', 'app.js'), 'utf8');
+  const code = app.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  const i = code.indexOf('function scrollBottom(');
+  assert.ok(i > 0, 'scrollBottom is gone');
+  const body = code.slice(i, code.indexOf('\n}\n', i));
+  assert.ok(/shouldHoldBottom/.test(body), 'the bottom is set once and never held');
+  assert.ok(/isUserScroll/.test(body), 'a reader scrolling up cannot escape the hold');
+  assert.ok(/addEventListener\('scroll'/.test(body), 'nothing notices the reader scrolling');
+  assert.ok(/'load'|loadedmetadata/.test(body), 'nothing re-pins as the photos arrive');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

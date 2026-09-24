@@ -96,6 +96,88 @@
     return Number(s.scrollTop) < (typeof s.threshold === 'number' ? s.threshold : 80);
   }
 
+  // ── The same bug, at the bottom of the list ───────────────────────────────
+  //
+  // Reported on the iPhone web version: opening a chat you have been talking
+  // in lands on the newest message, and then "instantly it seems that scrolls
+  // to a couple message upper" and you have to scroll down to reach the
+  // latest one.
+  //
+  // Opening a chat scrolls to the bottom ONCE, with `scrollTop = scrollHeight`.
+  // That is a NUMBER, and it is correct only for the height at that instant.
+  // The page just rendered is full of photos that are zero pixels tall until
+  // they load — the same fact that made prepending jump, written up at the top
+  // of this file. As each one arrives the content grows BELOW the saved
+  // position, so a scrollTop that was the bottom a moment ago is now a couple
+  // of messages short of it, and nothing moves the reader the rest of the way.
+  //
+  // So the bottom needs holding too, for as long as the page takes to settle —
+  // and not one instant longer than the reader's own first scroll.
+
+  /**
+   * How far from the bottom the list is sitting.
+   *
+   * Positive means there is content below the fold. Zero, or near it, is the
+   * bottom.
+   */
+  function distanceFromBottom(o) {
+    var s = o || {};
+    // num(), not Number(): Number(null) is 0 and perfectly finite, so a
+    // missing scrollHeight would read as a container zero pixels tall and
+    // answer "400 pixels PAST the bottom" — a correction computed from a
+    // measurement that was never taken. The same trap this file already
+    // documents for shiftFor, walked into again one function below it.
+    var top = num(s.scrollTop), height = num(s.scrollHeight), view = num(s.clientHeight);
+    if (top === null || height === null || view === null) return 0;
+    var gap = height - view - top;
+    // Never negative. iOS rubber-band overscroll puts scrollTop past the end
+    // for as long as the finger is down, and "minus sixty" is not a distance
+    // worth correcting — it is a bounce that will come back by itself.
+    return gap > 0 ? gap : 0;
+  }
+
+  /** A finite number, or null. See the trap described above. */
+  function num(v) {
+    if (v === null || v === undefined || v === '') return null;
+    var n = Number(v);
+    return isFinite(n) ? n : null;
+  }
+
+  /**
+   * Should the bottom be re-pinned right now?
+   *
+   * Three things have to be true, and the middle one is what keeps this from
+   * becoming a bug of its own: the hold is still within its window, the reader
+   * has not scrolled for themselves, and the list has actually drifted.
+   *
+   * `userScrolled` is the important one. Somebody who deliberately scrolls up
+   * to read something must not be dragged back to the newest message by a
+   * photo finishing three seconds later — that would be far worse than the
+   * complaint being fixed.
+   */
+  function shouldHoldBottom(o) {
+    var s = o || {};
+    if (s.userScrolled) return false;
+    if (!stillHolding(s.startedAt, s.now, s.settleMs)) return false;
+    return worthCorrecting(distanceFromBottom(s));
+  }
+
+  /**
+   * Does this scroll event look like the reader, rather than our own write?
+   *
+   * Corrections move the list too, and a correction that counted as a user
+   * scroll would cancel the hold on its first application — leaving exactly
+   * the behaviour reported. So a scroll is the reader's only when it leaves
+   * the list somewhere we did not put it.
+   */
+  function isUserScroll(o) {
+    var s = o || {};
+    var at = Number(s.scrollTop), put = Number(s.lastWroteTop);
+    if (!isFinite(at)) return false;
+    if (!isFinite(put)) return true;
+    return Math.abs(at - put) >= MIN_SHIFT;
+  }
+
   global.ScrollAnchor = {
     SETTLE_MS: SETTLE_MS,
     MIN_SHIFT: MIN_SHIFT,
@@ -104,6 +186,9 @@
     nextTop: nextTop,
     stillHolding: stillHolding,
     shouldLoadOlder: shouldLoadOlder,
+    distanceFromBottom: distanceFromBottom,
+    shouldHoldBottom: shouldHoldBottom,
+    isUserScroll: isUserScroll,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
 

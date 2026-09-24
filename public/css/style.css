@@ -1723,3 +1723,18 @@ body.commenting #install-hint { display: none; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .pending-name:hover { color: var(--accent); }
+
+/* ── Message info: who has seen it ────────────────────────────────────────── */
+/* Names, not a count: "3 of 5" is not an answer to "who has seen it". */
+.msginfo-heading {
+  font-size: 12px; font-weight: 700; letter-spacing: 0.4px;
+  opacity: 0.6; margin: 12px 0 6px; text-transform: uppercase;
+}
+.msginfo-row {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 10px; padding: 4px 0;
+}
+.msginfo-name { font-size: 14px; }
+/* The time is secondary to the name — you look for the person first. */
+.msginfo-when { font-size: 12px; opacity: 0.6; white-space: nowrap; }
+.msginfo-empty { font-size: 13px; opacity: 0.6; padding: 2px 0; }

@@ -64,6 +64,7 @@ import LocationPicker from '../components/LocationPicker';
 import PeerSheet from '../components/PeerSheet';
 import { PeerView, ClearScope, vanishedStyle } from '../peerActions';
 import * as peerActions from '../peerActions';
+import * as messageInfo from '../messageInfo';
 import * as pick from '../locationPick';
 import { uploadResumable } from '../chunkedUpload';
 
@@ -3270,17 +3271,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
    * today or from last month. Accepts both shapes the server sends: read
    * marks are epoch milliseconds, created_at is a UTC string.
    */
-  function fullWhen(v: number | string | null | undefined) {
-    if (v == null || v === '') return '';
-    const d = typeof v === 'number'
-      ? new Date(v)
-      : new Date(String(v).includes('T') ? String(v) : String(v).replace(' ', 'T') + 'Z');
-    if (Number.isNaN(d.getTime())) return '';
-    return d.toLocaleString([], {
-      day: '2-digit', month: 'short',
-      hour: '2-digit', minute: '2-digit',
-    });
-  }
+  // Moved to src/messageInfo.ts when the web grew the same panel, so the two
+  // clients cannot end up printing different times for one message.
+  const fullWhen = messageInfo.fullWhen;
 
   function fmtTime(iso: string) {
     // created_at is UTC ("YYYY-MM-DD HH:MM:SS"); mark it as such so it's
@@ -5832,7 +5825,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
                     are talking to has read you is the point, and it is the
                     same question either way. Only a real, sent message has an
                     id the server knows. */}
-                {Number(m.id) > 0 && (
+                {messageInfo.canShowInfo(m) && (
                   <Row icon="information-circle-outline" label="Info" onPress={() => {
                     close();
                     openMessageInfo(m);
@@ -5881,10 +5874,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
                   <Text style={s.infoSent}>Sent {fullWhen(msgInfo.sentAt)}</Text>
                 )}
                 <Text style={s.infoHeading}>
-                  {`Seen by ${(msgInfo?.seen || []).length}`}
+                  {messageInfo.seenHeading((msgInfo?.seen || []).length)}
                 </Text>
                 {(msgInfo?.seen || []).length === 0 ? (
-                  <Text style={s.infoEmpty}>Nobody has seen this yet.</Text>
+                  <Text style={s.infoEmpty}>{messageInfo.emptySeenText()}</Text>
                 ) : (msgInfo?.seen || []).map((p: any) => (
                   <View key={`s${p.userId}`} style={s.infoRow}>
                     <Text style={s.infoName}>{p.avatar ? `${p.avatar} ` : ''}{p.username}</Text>
@@ -5894,7 +5887,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
                 {(msgInfo?.notSeen || []).length > 0 && (
                   <>
                     <Text style={s.infoHeading}>
-                      {`Not seen yet ${(msgInfo?.notSeen || []).length}`}
+                      {messageInfo.notSeenHeading((msgInfo?.notSeen || []).length)}
                     </Text>
                     {(msgInfo?.notSeen || []).map((p: any) => (
                       <View key={`n${p.userId}`} style={s.infoRow}>

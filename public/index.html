@@ -569,11 +569,27 @@
   <button onclick="ctxReact()">😊 &nbsp;React</button>
   <button id="ctx-comment-btn" onclick="ctxComments()">💬 &nbsp;Comments</button>
   <button id="ctx-edit-btn" onclick="ctxEdit()">✏️ &nbsp;Edit</button>
+  <!-- Who has seen it, and when. Hidden on a message still being sent: the
+       server has never heard of a client-side id. See js/messageInfo.js. -->
+  <button id="ctx-info-btn" onclick="ctxInfo()">ℹ️ &nbsp;Info</button>
   <hr/>
   <!-- The label is written by js/messageDelete.js, because it is not the same
        delete on both sides: your own message goes for everyone, somebody
        else's disappears from your copy only. -->
   <button id="ctx-delete-btn" class="danger" onclick="ctxDelete()">🗑 &nbsp;Delete</button>
+</div>
+
+<!-- ── Message info: who has seen it ──────────────── -->
+<!-- Names, not a count: "3 of 5" is not an answer to "who has seen it". -->
+<div id="msginfo-modal" class="modal-overlay hidden" onclick="closeMsgInfo()">
+  <div class="modal-card" style="max-width:340px" onclick="event.stopPropagation()">
+    <h3 style="margin:0 0 4px">Message info</h3>
+    <div id="msginfo-sent" class="msginfo-when"></div>
+    <div id="msginfo-body"></div>
+    <div class="modal-actions">
+      <button onclick="closeMsgInfo()">Close</button>
+    </div>
+  </div>
 </div>
 
 <!-- ── Emoji Picker ───────────────────────────────── -->
@@ -664,6 +680,7 @@
 <script src="/js/scrollFab.js"></script>
 <script src="/js/bidi.js"></script>
 <script src="/js/messageMenu.js"></script>
+<script src="/js/messageInfo.js"></script>
 <script src="/js/messageDelete.js"></script>
 <script src="/js/textDraft.js"></script>
 <script src="/js/scrollAnchor.js"></script>

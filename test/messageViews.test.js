@@ -258,16 +258,26 @@ test('the panel distinguishes "still loading" from "nobody has seen it"', () => 
   // An empty list shown while the answer is still in flight reads as a fact,
   // and it is the opposite of one.
   assert.ok(/msgInfo\?\.loading/.test(ccode), 'there is no loading state, so an empty list shows first');
-  assert.ok(/Nobody has seen this yet/.test(ccode));
+  // The wording moved to src/messageInfo.ts when the web grew the same panel,
+  // so the two clients cannot say different things about one message. The
+  // screen is checked for USING it; the words themselves are checked there.
+  assert.ok(/messageInfo\.emptySeenText\(\)/.test(ccode),
+    'the empty list no longer says anything in words');
   assert.ok(/msgInfo\?\.error/.test(ccode), 'a failed request looks identical to nobody having read it');
 });
 
 test('the time shown includes the DATE', () => {
   // A list of times with no dates cannot distinguish today from last month.
-  assert.ok(/function fullWhen/.test(chat), 'no date-aware formatter');
-  const f = chat.slice(chat.indexOf('function fullWhen'), chat.indexOf('function fmtTime'));
+  //
+  // The formatter moved to src/messageInfo.ts, mirrored by the web's copy —
+  // the two are compared answer by answer in test/messageInfo.test.js, so
+  // this checks the rule itself rather than one client's copy of it.
+  const src = fs.readFileSync(path.join(ROOT, 'native-app', 'src', 'messageInfo.ts'), 'utf8');
+  assert.ok(/export function fullWhen/.test(src), 'no date-aware formatter');
+  const f = src.slice(src.indexOf('export function fullWhen'));
   assert.ok(/day: '2-digit'/.test(f) && /month: 'short'/.test(f),
     'the info panel shows a time with no date');
+  assert.ok(/messageInfo\.fullWhen/.test(chat), 'the screen does not use it');
 });
 
 let passed = 0, failed = 0;

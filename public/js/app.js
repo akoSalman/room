@@ -4908,6 +4908,10 @@ function openCtxMenu(messageId, type, isMine, wrapperEl, msg) {
   document.getElementById('ctx-edit-btn').style.display = (isMine && type === 'text') ? '' : 'none';
   document.getElementById('ctx-forward-btn').style.display = (type !== 'invite' && !msg?.one_time_seconds) ? '' : 'none';
   document.getElementById('ctx-download-btn').style.display = (msg?.file_path && !msg?.one_time_seconds) ? '' : 'none';
+  // Info needs a message the SERVER knows about; one still uploading has a
+  // client-side id and would only ever come back "not found".
+  const infoBtn = document.getElementById('ctx-info-btn');
+  if (infoBtn) infoBtn.style.display = MessageInfo.canShowInfo(msg) ? '' : 'none';
   // Delete is offered on BOTH sides now, and it is not the same delete on
   // each. The label says which, because "Delete" over somebody else's message
   // reads as unsending theirs, which it very deliberately does not do.
@@ -5317,6 +5321,78 @@ function ctxCopy() {
   closeCtxMenu();
   const text = t.type === 'text' ? (t.content || '') : t.filePath ? location.origin + t.filePath : '';
   if (text) copyToClipboard(text, null);
+}
+
+// ─── Message info: who has seen it, and when ─────────────────────────────────
+//
+// The server has answered `message_info` since the app grew this panel; the
+// web simply never asked. It reads read-mark HISTORY rather than each member's
+// current position, so it can say when somebody passed THIS message rather
+// than only where they are now — see seenBy in messageViews.js.
+function ctxInfo() {
+  if (!ctxTarget) return;
+  const id = ctxTarget.messageId;
+  closeCtxMenu();
+  openMsgInfo(id);
+}
+
+function closeMsgInfo() { hide('msginfo-modal'); }
+
+function openMsgInfo(messageId) {
+  const body = document.getElementById('msginfo-body');
+  const sent = document.getElementById('msginfo-sent');
+  sent.textContent = '';
+  body.textContent = 'Loading…';
+  show('msginfo-modal');
+  // A deadline, because a socket that has gone quiet would otherwise leave
+  // "Loading…" on screen for ever with nothing to tap but Close.
+  socket.timeout(8000).emit('message_info', { messageId }, (err, res) => {
+    if (document.getElementById('msginfo-modal').classList.contains('hidden')) return;
+    if (err || !res || res.error) {
+      body.textContent = (res && res.error) || 'Could not reach the server';
+      return;
+    }
+    sent.textContent = res.sentAt ? 'Sent ' + MessageInfo.fullWhen(res.sentAt) : '';
+    body.innerHTML = '';
+    const seen = res.seen || [];
+    const notSeen = res.notSeen || [];
+
+    const heading = (text) => {
+      const h = document.createElement('div');
+      h.className = 'msginfo-heading';
+      h.textContent = text;
+      return h;
+    };
+    const person = (p, when) => {
+      const row = document.createElement('div');
+      row.className = 'msginfo-row';
+      const name = document.createElement('span');
+      name.className = 'msginfo-name';
+      name.textContent = (p.avatar ? p.avatar + ' ' : '') + p.username;
+      row.appendChild(name);
+      if (when) {
+        const t = document.createElement('span');
+        t.className = 'msginfo-when';
+        t.textContent = when;
+        row.appendChild(t);
+      }
+      return row;
+    };
+
+    body.appendChild(heading(MessageInfo.seenHeading(seen.length)));
+    if (!seen.length) {
+      const e = document.createElement('div');
+      e.className = 'msginfo-empty';
+      e.textContent = MessageInfo.emptySeenText();
+      body.appendChild(e);
+    } else {
+      seen.forEach(p => body.appendChild(person(p, MessageInfo.fullWhen(p.at))));
+    }
+    if (notSeen.length) {
+      body.appendChild(heading(MessageInfo.notSeenHeading(notSeen.length)));
+      notSeen.forEach(p => body.appendChild(person(p, '')));
+    }
+  });
 }
 
 function ctxForward() {
@@ -6054,7 +6130,69 @@ function handleGlobalClick(e) {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function scrollBottom() { const m = document.getElementById('messages'); m.scrollTop = m.scrollHeight; }
+// ── Getting to the bottom, and STAYING there while the page settles ─────────
+//
+// Reported on the iPhone web version: opening a chat lands on the newest
+// message and then "instantly it seems that scrolls to a couple message
+// upper", leaving the reader to scroll down for the latest one.
+//
+// `scrollTop = scrollHeight` is a number, correct only for the height at that
+// instant. The page just rendered is full of photos that are zero pixels tall
+// until they load — the same fact that made loading older messages jump, and
+// which js/scrollAnchor.js was written for. Each one that arrives grows the
+// content BELOW the saved position, so the bottom moves away and the reader is
+// left short of it.
+//
+// So the bottom is held for as long as the page takes to settle: on every
+// image and video that loads, and once more after layout for anything with no
+// event of its own. The hold ends the moment the reader scrolls for
+// themselves — being dragged back to the newest message while deliberately
+// reading something older would be far worse than the complaint being fixed.
+let bottomHold = null;
+
+function scrollBottom() {
+  const m = document.getElementById('messages');
+  if (!m) return;
+  if (bottomHold) { bottomHold.stop(); bottomHold = null; }
+
+  let lastWroteTop = -1;
+  const pin = () => { m.scrollTop = m.scrollHeight; lastWroteTop = m.scrollTop; };
+  pin();
+
+  const startedAt = Date.now();
+  let userScrolled = false;
+  const onScroll = () => {
+    if (ScrollAnchor.isUserScroll({ scrollTop: m.scrollTop, lastWroteTop })) userScrolled = true;
+  };
+  m.addEventListener('scroll', onScroll, { passive: true });
+
+  const listeners = [];
+  const hold = () => {
+    if (!ScrollAnchor.shouldHoldBottom({
+      scrollTop: m.scrollTop, scrollHeight: m.scrollHeight, clientHeight: m.clientHeight,
+      startedAt, now: Date.now(), userScrolled,
+    })) return;
+    pin();
+  };
+  m.querySelectorAll('img, video').forEach(el => {
+    if (el.complete) return;
+    ['load', 'loadedmetadata', 'error'].forEach(ev => {
+      el.addEventListener(ev, hold, { once: true });
+      listeners.push([el, ev]);
+    });
+  });
+  requestAnimationFrame(hold);
+
+  bottomHold = {
+    stop() {
+      m.removeEventListener('scroll', onScroll);
+      listeners.forEach(([el, ev]) => el.removeEventListener(ev, hold));
+    },
+  };
+  // The hold cannot outlive its own window, whatever else happens.
+  setTimeout(() => { if (bottomHold) { bottomHold.stop(); bottomHold = null; } },
+    ScrollAnchor.SETTLE_MS + 250);
+}
 function show(id) { document.getElementById(id).classList.remove('hidden'); }
 function hide(id) { document.getElementById(id).classList.add('hidden'); }
 
