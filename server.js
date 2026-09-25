@@ -2679,12 +2679,38 @@ function insertSystemMessage(roomId, userId, kind, data) {
   }
 }
 
+/**
+ * Send one message to one person, saying whether THEY have muted the room.
+ *
+ * Reported as: a muted room still rings.
+ *
+ * Muting filtered the push — the Firebase and Web Push path, which is what
+ * reaches a phone with the app closed. It did nothing about the notification
+ * the app raises ITSELF from the socket, which is the one you get whenever
+ * the app is open or its keep-alive service is running, and which is most of
+ * the time. Two different code paths draw a notification for one message, and
+ * only one of them had ever heard of mutes.
+ *
+ * The flag is stamped per recipient because a mute is one person's decision
+ * about one room; every emit here is already addressed to a single user, so
+ * there is somewhere to put it.
+ *
+ * It is stamped by the SERVER rather than worked out on the phone because the
+ * phone's idea of which rooms are muted is a list it loaded at some point:
+ * mute a room on your laptop and the phone would go on ringing until it next
+ * refreshed. The server always knows.
+ */
+function emitMessageTo(userId, out, roomId) {
+  io.to('user:' + userId).emit('message_received',
+    hasMutedRoom(userId, roomId) ? { ...out, muted: true } : out);
+}
+
 // Deliver a message to every member of a room over their personal channels.
 function broadcastRoomMessage(room, msg) {
   const out = signMessage(msg);
   const ids = getRoomMemberIds(room);
-  ids.forEach(id => io.to('user:' + id).emit('message_received', out));
-  previewerIds(room, ids).forEach(id => io.to('user:' + id).emit('message_received', out));
+  ids.forEach(id => emitMessageTo(id, out, room.id));
+  previewerIds(room, ids).forEach(id => emitMessageTo(id, out, room.id));
 }
 
 // Public rooms can be read before joining, so someone may have the room open
@@ -2946,8 +2972,8 @@ io.on('connection', (socket) => {
       ? (id) => io.to('user:' + id).emit('comment_added', {
         parentId: parent.id, roomId: room.id, count: commentCount, comment: outMsg,
       })
-      : (id) => io.to('user:' + id).emit('message_received',
-        viewingUserIds.has(id) ? { ...outMsg, seenElsewhere: true } : outMsg);
+      : (id) => emitMessageTo(id,
+        viewingUserIds.has(id) ? { ...outMsg, seenElsewhere: true } : outMsg, room.id);
     // Undelivered by design: it goes back to its author and nowhere else.
     if (blockedDelivery) {
       deliver(socket.user.id);
@@ -3149,7 +3175,7 @@ io.on('connection', (socket) => {
     const msg = db.prepare(`
       SELECT m.*, u.username, u.avatar FROM messages m JOIN users u ON m.user_id = u.id WHERE m.id = ?
     `).get(result.lastInsertRowid);
-    [socket.user.id, peer].forEach(id => io.to('user:' + id).emit('message_received', signMessage(msg)));
+    [socket.user.id, peer].forEach(id => emitMessageTo(id, signMessage(msg), msg.room_id));
     io.emit('dm_activity', { room: dm });
   });
   socket.on('call_answer', ({ toUserId, sdp }) => {
@@ -3554,7 +3580,7 @@ io.on('connection', (socket) => {
     const msg = db.prepare(`
       SELECT m.*, u.username, u.avatar FROM messages m JOIN users u ON m.user_id = u.id WHERE m.id = ?
     `).get(result.lastInsertRowid);
-    [socket.user.id, target.id].forEach(id => io.to('user:' + id).emit('message_received', signMessage(msg)));
+    [socket.user.id, target.id].forEach(id => emitMessageTo(id, signMessage(msg), msg.room_id));
     io.emit('dm_activity', { room: dm });
 
     // An invitation is a real message, so it gets a real push — previously it
@@ -3926,7 +3952,7 @@ io.on('connection', (socket) => {
       WHERE m.id = ?
     `).get(result.lastInsertRowid);
     const dstMembers = getRoomMemberIds(dstRoom);
-    dstMembers.forEach(id => io.to('user:' + id).emit('message_received', signMessage(msg)));
+    dstMembers.forEach(id => emitMessageTo(id, signMessage(msg), dstRoom.id));
     sendPushToUsers(
       dstMembers.filter(id => id !== socket.user.id),
       (msg.avatar ? msg.avatar + ' ' : '') + msg.username + (dstRoom.is_dm ? '' : ` · ${dstRoom.name}`),

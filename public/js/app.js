@@ -383,6 +383,11 @@ function showNotif(msg) {
   // Another of this user's devices is looking at the chat right now — they are
   // already reading it, so a second buzz on the laptop is just noise.
   if (msg.seenElsewhere) return;
+  // A muted room is muted here too. This is the notification the PAGE raises
+  // for itself, which is a different path from the push the server sends, and
+  // it had never heard of mutes — so a muted room went on ringing on every
+  // device that had the tab open. Stamped per recipient by the server.
+  if (msg.muted) return;
   // Never preview content — only the kind of message received
   const body = msg.type === 'text' ? '💬 New message'
     : msg.type === 'audio' ? '🎙 Voice message'

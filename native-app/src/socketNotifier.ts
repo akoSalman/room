@@ -61,8 +61,23 @@ export function raiseDecision(o: {
   msgRoomId?: string | number | null;
   msgId?: string | number | null;
   pushRegistered?: boolean;
+  /** Has this person muted the room it arrived in? Stamped by the server. */
+  muted?: boolean;
 }): RaiseDecision {
   if (!o) return { raise: false, reason: 'no-message' };
+  // ── A muted room is muted HERE too ──────────────────────────────────────
+  //
+  // Reported as: a muted room still rings.
+  //
+  // Muting filtered the PUSH — the path that reaches a phone with the app
+  // closed. This is the other path, the one the app draws itself from the
+  // socket, and it is the one you get whenever the app is open or its
+  // keep-alive service is running. Two pieces of code draw a notification for
+  // one message and only one of them had ever heard of mutes.
+  //
+  // First, before anything else: nothing about who sent it or where you are
+  // changes the answer once you have asked for a room to be quiet.
+  if (o.muted) return { raise: false, reason: 'muted' };
   // No id means no tag, and without the tag this and the server's push are
   // two notifications rather than one replacing the other.
   if (!pushReg.socketRaiseAllowed({ msgId: o.msgId, pushRegistered: o.pushRegistered })) {
@@ -173,6 +188,9 @@ export function attach(socket: any, opts?: { pushRegistered?: () => boolean }): 
     notifyDiag.record('socket-msg');
     const decision = raiseDecision({
       msgUsername: msg?.username,
+      // The server stamps this per recipient, because a mute is one person's
+      // decision and the phone's copy of the room list can be hours stale.
+      muted: !!msg?.muted,
       me,
       appState: AppState.currentState,
       viewingRoomId,
