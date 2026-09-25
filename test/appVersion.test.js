@@ -46,50 +46,50 @@ test('a different version IS', () => {
   assert.strictEqual(V.versionChanged({ loaded: 'abc', latest: 'def' }), true);
 });
 
-test('A TYPED MESSAGE IS NOT THROWN AWAY TO APPLY AN UPDATE', () => {
-  // The common case and the easiest to dismiss, which is why it is named
-  // first: somebody who has typed three lines and gone to check something has
-  // not agreed to lose them.
-  assert.strictEqual(V.wouldLoseWork({ composerText: 'half a message' }), true);
-  assert.strictEqual(V.wouldLoseWork({ composerText: '   ' }), false);
-  assert.strictEqual(V.wouldLoseWork({ composerText: '' }), false);
+test('A TYPED MESSAGE IS NOT A REASON TO WAIT', () => {
+  // My own mistake on the way past, and the reason the update stopped
+  // happening at all: I treated a draft as something a reload would destroy,
+  // so the update became a banner to tap, and a banner that can be ignored
+  // is ignored. textDraft.js writes drafts to localStorage and restores them
+  // when the chat reopens — nothing was ever at risk.
+  assert.strictEqual(V.wouldLoseWork({ composerText: 'half a message' }), false);
   assert.strictEqual(V.wouldLoseWork({}), false);
   assert.strictEqual(V.wouldLoseWork(), false);
+  assert.strictEqual(V.updateAction({ loaded: 'a', latest: 'b', composerText: 'draft' }), 'reload');
 });
 
-test('…nor an upload, a call, or a recording', () => {
-  // Each of these exists only in this tab. A reload restarts the upload from
-  // zero, ends the call outright, and loses what was being spoken.
+test('…but an upload, a call and a recording ARE', () => {
+  // These exist only in this tab: a reload restarts the upload from zero,
+  // drops the call outright, and loses what was being spoken.
   for (const k of ['uploading', 'inCall', 'recording']) {
     assert.strictEqual(V.wouldLoseWork({ [k]: true }), true, k);
+    // …and they mean WAIT, never ask. The version still arrives, just not
+    // in the middle of the thing.
+    assert.strictEqual(V.updateAction({ loaded: 'a', latest: 'b', [k]: true }), 'wait', k);
   }
 });
 
-test('WORK IN THE TAB ALWAYS MEANS ASK, even hidden', () => {
-  // A hidden tab is not permission. Somebody who switched away mid-message
-  // is coming back to it.
-  const at = { loaded: 'abc', latest: 'def' };
-  assert.strictEqual(V.updateAction({ ...at, composerText: 'draft', hidden: true }), 'ask');
-  assert.strictEqual(V.updateAction({ ...at, inCall: true, hidden: true }), 'ask');
-  assert.strictEqual(V.updateAction({ ...at, uploading: true, hidden: true }), 'ask');
+test('THERE IS NO "ASK" — IT UPDATES', () => {
+  // "Web version doesn't force update", after the banner. A prompt that can
+  // be ignored is ignored, and the person goes on running the build with the
+  // bug they reported in it.
+  const answers = new Set();
+  for (const hidden of [true, false, undefined]) {
+    for (const extra of [{}, { composerText: 'draft' }, { inCall: true },
+                         { uploading: true }, { recording: true }]) {
+      answers.add(V.updateAction({ loaded: 'abc', latest: 'def', hidden, ...extra }));
+    }
+  }
+  assert.ok(!answers.has('ask'), 'the update is still something to be agreed to');
+  assert.deepStrictEqual([...answers].sort(), ['reload', 'wait']);
 });
 
-test('AN EMPTY HIDDEN TAB JUST TAKES IT', () => {
-  // The best outcome, and the one nobody has to think about: they come back
-  // to a tab they left an hour ago and it is simply the new version.
-  assert.strictEqual(V.updateAction({ loaded: 'abc', latest: 'def', hidden: true }), 'reload');
-});
-
-test('…but a tab being LOOKED AT is asked, not reloaded under them', () => {
-  // Even with nothing to lose. The page jumping out from under somebody
-  // reading it is the ambush this replaced.
-  assert.strictEqual(V.updateAction({ loaded: 'abc', latest: 'def', hidden: false }), 'ask');
-  assert.strictEqual(V.updateAction({ loaded: 'abc', latest: 'def' }), 'ask');
-});
-
-test('the banner names the action', () => {
-  assert.ok(V.bannerText().length > 0);
-  assert.ok(/reload/i.test(V.bannerAction()));
+test('being LOOKED AT is not a reason to hold back', () => {
+  // The visible tab was the case the banner existed for, and it is the case
+  // that matters most: somebody with the app open is somebody who will hit
+  // the bug next.
+  assert.strictEqual(V.updateAction({ loaded: 'abc', latest: 'def', hidden: false }), 'reload');
+  assert.strictEqual(V.updateAction({ loaded: 'abc', latest: 'def' }), 'reload');
 });
 
 // ── The fingerprint ─────────────────────────────────────────────────────────
@@ -165,12 +165,32 @@ const app = fs.readFileSync(path.join(ROOT, 'public', 'js', 'app.js'), 'utf8');
 const appCode = app.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
 const html = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
 
-test('THE PAGE ASKS, and can be told yes', () => {
+test('THE PAGE TAKES IT, with nothing to tap', () => {
   assert.ok(/js\/appVersion\.js/.test(html), 'the rules are never loaded by the page');
   assert.ok(/AppVersion\.updateAction\(/.test(appCode), 'the page still decides for itself');
-  assert.ok(/function showUpdateBanner/.test(appCode), 'there is nothing to prompt with');
-  assert.ok(/update-banner/.test(fs.readFileSync(path.join(ROOT, 'public', 'css', 'style.css'), 'utf8')),
-    'the banner has no styling, so it lands wherever');
+  assert.ok(!/showUpdateBanner/.test(appCode), 'the banner is back, and so is the ignoring of it');
+  assert.ok(!/update-banner/.test(fs.readFileSync(path.join(ROOT, 'public', 'css', 'style.css'), 'utf8')),
+    'the banner styling is still there for a banner nothing builds');
+});
+
+test('…and a busy tab is COME BACK TO, not forgotten', () => {
+  // Waiting for an upload is only useful if something looks again soon. The
+  // five-minute poll would leave the new version sitting there unapplied
+  // long after the upload had finished.
+  const i = appCode.indexOf('async function checkAppVersion');
+  const body = appCode.slice(i, appCode.indexOf('\n}\n', i));
+  assert.ok(/'wait'/.test(body), 'a busy tab is treated as nothing to do');
+  assert.ok(/setTimeout\(checkAppVersion/.test(body),
+    'nothing re-checks, so the update lands whenever the next poll happens to run');
+});
+
+test('THE DRAFT IS WRITTEN BEFORE THE RELOAD', () => {
+  // Drafts surviving is the whole reason this no longer asks permission. The
+  // save is debounced by 400ms, so the last characters typed would otherwise
+  // be the ones lost — by the mechanism defending them.
+  const i = appCode.indexOf('async function applyUpdate');
+  const body = appCode.slice(i, appCode.indexOf('\n}', i));
+  assert.ok(/flushDraft\(\)/.test(body), 'the newest characters typed are lost on reload');
 });
 
 test('…and taking it CLEARS THE CACHES first', () => {
@@ -182,18 +202,19 @@ test('…and taking it CLEARS THE CACHES first', () => {
   assert.ok(/location\.reload\(\)/.test(body));
 });
 
-test('THE TAB IS NOT RELOADED WHILE IT IS BEING USED', () => {
-  // The whole reason this stopped being automatic.
+test('THE TAB IS NOT RELOADED OUT FROM UNDER REAL WORK', () => {
   const i = appCode.indexOf('async function checkAppVersion');
   const body = appCode.slice(i, appCode.indexOf('\n}\n', i));
   assert.ok(/updateContext\(\)/.test(body), 'the decision is made without looking at the tab');
-  assert.ok(!/setTimeout\(\(\) => location\.reload/.test(body),
-    'the page still reloads itself on a timer, unasked');
   const ctx = appCode.slice(appCode.indexOf('function updateContext'));
   const cbody = ctx.slice(0, ctx.indexOf('\n}'));
-  for (const k of ['composerText', 'uploading', 'inCall', 'recording', 'hidden']) {
+  for (const k of ['uploading', 'inCall', 'recording']) {
     assert.ok(cbody.includes(k), `${k} is never looked at, so it cannot protect anything`);
   }
+  // And a draft is NOT among them: it survives, and treating it as work to
+  // protect is what made the update optional.
+  assert.ok(!cbody.includes('composerText'),
+    'a draft is being guarded again, which is how this became a banner');
 });
 
 let passed = 0, failed = 0;

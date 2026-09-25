@@ -9,15 +9,17 @@
 // forty-seven was invisible and no client ever reloaded. That is fixed in
 // server.js, where the whole directory is walked.
 //
-// The second is here. When a change WAS noticed the page reloaded itself after
-// a 600ms toast — which is fine if you are reading, and is a half-written
-// message thrown away if you are not. A reload is not a small thing to do to
-// somebody without asking, so it is now offered and taken when they say so.
+// The second is here, and I got it wrong on the way past. Having fixed the
+// fingerprint I also replaced the automatic reload with a banner to tap,
+// reasoning that a reload would throw away a half-written message. It would
+// not: textDraft.js writes drafts to localStorage and puts them back when the
+// chat reopens. So the only thing the banner achieved was to make the update
+// optional — and an optional update is one people carry on ignoring while
+// still running the version with the bug they reported.
 //
-// The rules live here, away from the DOM, because "is it safe to reload right
-// now" is the part that is easy to get wrong and impossible to notice: getting
-// it wrong loses work that was never saved anywhere, silently, for the person
-// least likely to report it.
+// It updates by itself again. It waits for the three things a reload really
+// does end — an upload, a call, a recording — and takes the new version the
+// moment they are done.
 (function (global) {
   'use strict';
 
@@ -36,60 +38,51 @@
   }
 
   /**
-   * Would reloading right now throw away something the person cannot get back?
+   * Would reloading right now throw away something that cannot come back?
    *
-   * Each of these is work that exists only in this tab:
+   * THREE things, and a typed message is not one of them. Drafts are written
+   * to localStorage by textDraft.js and restored when the chat reopens, so a
+   * reload does not cost a half-written message — I asked people to confirm
+   * an update on the strength of a risk that does not exist, and that is why
+   * the update stopped happening.
    *
-   *   composerText  a message typed and not sent
-   *   uploading     bytes on their way up, which start again from zero
-   *   inCall        a call, which simply ends
-   *   recording     a voice message being spoken
+   * What a reload really ends:
    *
-   * A draft is the common one and the easiest to dismiss, which is exactly why
-   * it is named first: somebody who has typed three lines and gone to check
-   * something has not agreed to lose them.
+   *   uploading   bytes on their way up, which start again from zero
+   *   inCall      a call, which simply drops
+   *   recording   a voice message being spoken
+   *
+   * None of these is a reason to ASK. They are a reason to WAIT, and then to
+   * update without asking, which is what somebody wants from an app they did
+   * not come here to administer.
    */
   function wouldLoseWork(o) {
     var s = o || {};
-    if (s.uploading || s.inCall || s.recording) return true;
-    return String(s.composerText || '').trim().length > 0;
+    return !!(s.uploading || s.inCall || s.recording);
   }
 
   /**
    * What to do about a version that has changed.
    *
-   *   'none'   nothing has changed, or nothing is known yet
-   *   'ask'    show the banner and wait to be tapped
-   *   'reload' nothing would be lost and nobody is looking — just do it
+   *   'none'    nothing has changed, or nothing is known yet
+   *   'wait'    something is in flight; take it the moment that ends
+   *   'reload'  now
    *
-   * Reloading unasked is allowed in exactly one case: the tab is hidden and
-   * there is no work in it. Somebody who comes back to a tab they left an hour
-   * ago is not interrupted by anything, and they arrive on the new version
-   * without having to be told about versions at all — which is the best
-   * outcome and the one they never have to think about.
+   * There is deliberately no "ask" any more. A prompt that can be ignored is
+   * ignored, and the person carries on using a version with the bug they
+   * reported still in it — which is what happened, and is the whole reason
+   * this is being written a third time.
    */
   function updateAction(o) {
     var s = o || {};
     if (!versionChanged(s)) return 'none';
-    if (wouldLoseWork(s)) return 'ask';
-    return s.hidden ? 'reload' : 'ask';
-  }
-
-  /** What the banner says. Short, and it names the action. */
-  function bannerText() {
-    return 'A new version is ready';
-  }
-
-  function bannerAction() {
-    return 'Reload';
+    return wouldLoseWork(s) ? 'wait' : 'reload';
   }
 
   global.AppVersion = {
     versionChanged: versionChanged,
     wouldLoseWork: wouldLoseWork,
     updateAction: updateAction,
-    bannerText: bannerText,
-    bannerAction: bannerAction,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
 

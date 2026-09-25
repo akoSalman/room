@@ -189,11 +189,15 @@ const EMOJIS = ['👍','❤️','😂','😮','😢','🔥','👏','🎉','🤔'
 let loadedAppVersion = null;
 let reloadingForUpdate = false;
 
-/** Everything that would be thrown away by a reload of this tab. */
+/**
+ * The three things a reload really ends.
+ *
+ * A half-written message is NOT one of them: textDraft.js writes drafts to
+ * localStorage and restores them when the chat reopens. Treating a draft as
+ * something to protect is what turned this into a banner nobody tapped.
+ */
 function updateContext() {
-  const input = document.getElementById('msg-input');
   return {
-    composerText: input ? input.value : '',
     uploading: Object.keys(pendingUploads).length > 0,
     // `Calls` is a top-level const in calls.js — a lexical global, NOT a
     // property of window, so `window.Calls` is undefined and reading it
@@ -201,7 +205,6 @@ function updateContext() {
     // caught it here.
     inCall: typeof Calls !== 'undefined' && !!(Calls.inCall && Calls.inCall()),
     recording: isRecording,
-    hidden: document.visibilityState === 'hidden',
   };
 }
 
@@ -215,6 +218,11 @@ function updateContext() {
 async function applyUpdate() {
   if (reloadingForUpdate) return;
   reloadingForUpdate = true;
+  // The draft save is debounced by 400ms, so the last few characters somebody
+  // typed may not be written yet. Drafts surviving a reload is the whole
+  // reason this no longer asks permission, so it is worth one line to make
+  // that true for the message being typed at this instant too.
+  try { flushDraft(); } catch {}
   try {
     if (window.caches) {
       const keys = await caches.keys();
@@ -226,24 +234,6 @@ async function applyUpdate() {
   location.reload();
 }
 
-/** Offer the update, and keep offering it until it is taken. */
-function showUpdateBanner() {
-  if (document.getElementById('update-banner')) return;
-  const bar = document.createElement('div');
-  bar.id = 'update-banner';
-  const text = document.createElement('span');
-  text.textContent = AppVersion.bannerText();
-  const btn = document.createElement('button');
-  btn.textContent = AppVersion.bannerAction();
-  btn.onclick = applyUpdate;
-  bar.appendChild(text);
-  bar.appendChild(btn);
-  // Deliberately NOT dismissible. A version banner that can be waved away is
-  // waved away, and then the person is on old code with nothing to remind
-  // them — which is the state this whole mechanism exists to end.
-  document.body.appendChild(bar);
-}
-
 async function checkAppVersion() {
   if (reloadingForUpdate) return;
   try {
@@ -252,18 +242,23 @@ async function checkAppVersion() {
     if (!version) return;
     if (loadedAppVersion === null) { loadedAppVersion = version; return; }
 
-    // Reloading is not a small thing to do to somebody unasked: a typed
-    // message, an upload, a call and a recording all live only in this tab.
-    // So it is offered — and taken silently only when the tab is hidden and
-    // there is nothing in it to lose, which is how most people will get the
-    // new version without ever seeing a banner at all.
+    // Taken, not offered. A banner that can be ignored is ignored, and the
+    // person goes on running the version with the bug they reported — which
+    // is what the banner I put here last time achieved.
     const action = AppVersion.updateAction({
       loaded: loadedAppVersion, latest: version, ...updateContext(),
     });
     if (action === 'reload') { applyUpdate(); return; }
-    if (action === 'ask') showUpdateBanner();
+    if (action === 'wait') {
+      // An upload, a call or a recording. Come back every few seconds so the
+      // new version lands the moment it is finished, rather than waiting for
+      // the next five-minute poll.
+      clearTimeout(updateRetryTimer);
+      updateRetryTimer = setTimeout(checkAppVersion, 5000);
+    }
   } catch {}
 }
+let updateRetryTimer = 0;
 
 checkAppVersion();
 setInterval(checkAppVersion, 5 * 60 * 1000);

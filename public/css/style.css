@@ -1739,22 +1739,3 @@ body.commenting #install-hint { display: none; }
 .msginfo-when { font-size: 12px; opacity: 0.6; white-space: nowrap; }
 .msginfo-empty { font-size: 13px; opacity: 0.6; padding: 2px 0; }
 
-/* ── "A new version is ready" ─────────────────────────────────────────────── */
-/* Fixed to the bottom, clear of the composer, and above everything: it is the
-   one message that must not be hidden behind whatever is on screen. Not
-   dismissible, because a banner that can be waved away is waved away — and
-   then the person is on old code with nothing left to remind them. */
-#update-banner {
-  position: fixed; left: 50%; transform: translateX(-50%);
-  bottom: calc(76px + env(safe-area-inset-bottom, 0px));
-  z-index: 9999; display: flex; align-items: center; gap: 12px;
-  padding: 9px 12px 9px 16px; border-radius: 999px;
-  background: #2f6fdb; color: #fff;
-  box-shadow: 0 6px 20px rgba(0,0,0,0.28);
-  font-size: 13.5px; max-width: calc(100vw - 32px);
-}
-#update-banner button {
-  background: #fff; color: #2f6fdb; border: 0;
-  border-radius: 999px; padding: 6px 14px;
-  font-size: 13px; font-weight: 700; cursor: pointer;
-}
