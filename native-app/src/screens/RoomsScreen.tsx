@@ -648,9 +648,11 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setClearing(null)} />
           <View style={s.sheet}>
             <View style={s.sheetHandle} />
-            <Text style={s.sheetTitle} numberOfLines={1}>
-              {clearing?.is_dm ? (clearing?.other_username || '') : clearing?.name}
-            </Text>
+            {/* No chat name here. The sheet opens from a long press on that
+                chat, with the row still on screen behind it — so the name was
+                telling somebody what they had just pressed, and it is one
+                more line of someone's name on a screen that may be read over
+                a shoulder. */}
             {/* Mark as read, asked for so a chat can be cleared from the list
                 without opening it. First, because it is the harmless one and
                 everything below it destroys messages. */}

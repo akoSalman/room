@@ -1834,7 +1834,12 @@ function onSidebarSearch() {
     res.users.forEach(u => {
       const d = document.createElement('div');
       d.className = 'search-result';
-      d.innerHTML = `<span>${u.avatar || '👤'}</span><b></b><em>Message</em>`;
+      // The avatar is stored as `String(avatar).slice(0, 8)` with nothing
+      // checking that it is an emoji, so it is somebody else's text and must
+      // not be interpolated into markup. The username beside it is already
+      // set as text, which is what this now matches.
+      d.innerHTML = '<span></span><b></b><em>Message</em>';
+      d.querySelector('span').textContent = u.avatar || '👤';
       d.querySelector('b').textContent = u.username;
       d.onclick = () => { clearSidebarSearch(); openDM(u.username); };
       box.appendChild(d);
@@ -4727,7 +4732,24 @@ function buildMessageElement(msg) {
     if (msg.file_path) { a.href = msg.file_path; a.target = '_blank'; }
     else a.onclick = (e) => e.preventDefault();
     a.download = msg.file_name || 'file';
-    a.innerHTML = '📄 ' + (msg.file_name || 'Download file');
+    // ── textContent, NOT innerHTML ──────────────────────────────────────────
+    //
+    // This was `a.innerHTML = '📄 ' + msg.file_name`, and file_name arrives
+    // from whoever sent the message: the socket payload goes into the
+    // database unvalidated and comes back out here. So a message whose
+    // filename was `<img src=x onerror=…>` ran that script in the browser of
+    // everybody who opened the chat — and the session token lives in
+    // localStorage, which makes it an account takeover rather than a defaced
+    // bubble.
+    //
+    // The emoji is a separate node so the name can never be read as markup.
+    a.textContent = '';
+    const icon = document.createElement('span');
+    icon.textContent = '📄 ';
+    a.appendChild(icon);
+    const label = document.createElement('span');
+    label.textContent = msg.file_name || 'Download file';
+    a.appendChild(label);
     bubble.appendChild(a);
   }
 
@@ -5566,7 +5588,12 @@ function renderReactions(messageId, reactions) {
     const chip = document.createElement('div');
     chip.className = 'reaction-chip' + (data.mine ? ' mine' : '');
     chip.title = data.users.join(', ');
-    chip.innerHTML = `${emoji}<span class="count">${data.count}</span>`;
+    // The emoji is whatever `toggle_reaction` was sent — a string of up to
+    // sixteen characters, with nothing checking it is an emoji — so it is
+    // set as text rather than built into markup.
+    chip.innerHTML = '<span class="emoji"></span><span class="count"></span>';
+    chip.querySelector('.emoji').textContent = emoji;
+    chip.querySelector('.count').textContent = String(data.count);
     chip.onclick = () => socket.emit('toggle_reaction', { messageId, emoji });
     row.appendChild(chip);
   });

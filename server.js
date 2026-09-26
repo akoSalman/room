@@ -14,6 +14,7 @@ const { seenByAllUpTo } = require('./readReceipts');
 const roomVoice = require('./roomVoice');
 const mutes = require('./mutes');
 const roomDownloads = require('./roomDownloads');
+const inputLimits = require('./inputLimits');
 const credentials = require('./credentials');
 const cors = require('cors');
 const db = require('./db');
@@ -645,7 +646,7 @@ app.put('/profile', authMiddleware, async (req, res) => {
   if (avatar !== undefined) {
     // avatar is a single emoji (or null to remove) — no password required
     db.prepare('UPDATE users SET avatar = ? WHERE id = ?')
-      .run(avatar ? String(avatar).slice(0, 8) : null, req.user.id);
+      .run(inputLimits.cleanAvatar(avatar), req.user.id);
   }
 
   const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
@@ -2959,7 +2960,12 @@ io.on('connection', (socket) => {
     const result = db.prepare(`
       INSERT INTO messages (room_id, user_id, type, content, file_path, file_name, reply_to_id, one_time_seconds, disappear_seconds, blocked_delivery, parent_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(roomId, socket.user.id, msgType, content || null, stripSig(filePath), fileName || null, replyToId || null, oneTime, disappearing || null, blockedDelivery, parent ? parent.id : null);
+    `).run(roomId, socket.user.id, msgType, content || null, stripSig(filePath),
+      // Bounded and stripped of control characters before it is stored. It
+      // used to go in exactly as it arrived, and the web rendered it with
+      // innerHTML — a stored XSS with the session token behind it. See
+      // inputLimits.js.
+      inputLimits.cleanFileName(fileName), replyToId || null, oneTime, disappearing || null, blockedDelivery, parent ? parent.id : null);
 
     const msg = db.prepare(`
       SELECT m.*, u.username, u.avatar, ${COMMENT_COUNT_SQL},
@@ -4188,7 +4194,9 @@ io.on('connection', (socket) => {
   });
 
   socket.on('toggle_reaction', ({ messageId, emoji }) => {
-    if (!emoji || typeof emoji !== 'string' || emoji.length > 16) return;
+    // A reaction comes from a fixed row of buttons, so anything outside these
+    // bounds did not come from the app and there is nothing to salvage.
+    if (!inputLimits.validEmoji(emoji)) return;
     // Authorization: reacting is contributing, so it takes membership — the
     // same bar as posting, not merely being able to read the room.
     const target = db.prepare('SELECT room_id FROM messages WHERE id = ?').get(messageId);

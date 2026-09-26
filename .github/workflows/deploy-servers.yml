@@ -24,6 +24,7 @@ on:
       - 'roomVoice.js'
       - 'mutes.js'
       - 'roomDownloads.js'
+      - 'inputLimits.js'
       - 'webPush.js'
       - 'linkMeta.js'
       - 'package.json'
