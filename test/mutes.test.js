@@ -154,6 +154,37 @@ test('unmuting asks nothing', () => {
     'unmuting opens a dialog asking how long to unmute for');
 });
 
+test('MUTE IS ALSO IN THE ROOM\'S OWN SETTINGS', () => {
+  // Asked for after the first version shipped, and fairly: mute was reachable
+  // only by long-pressing the room in the CHAT LIST, which is not where
+  // anybody looks for a room's settings. For most people the feature may as
+  // well not have existed.
+  const chat = fs.readFileSync(path.join(ROOT, 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+  const code = chat.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  assert.ok(/function toggleRoomMute/.test(code), 'the room info page cannot mute the room');
+  assert.ok(/room-mute\//.test(code), 'the control calls nothing');
+  assert.ok(/NOTIFICATIONS/.test(code), 'there is no section for it on the page');
+  // And it asks how long, exactly as the list does — two ways in, one rule.
+  assert.ok(/MUTE_CHOICES/.test(code), 'the room info page mutes for ever with no choice');
+  // Unmuting asks nothing, there as here.
+  const i = code.indexOf('function toggleRoomMute');
+  const body = code.slice(i, code.indexOf('\n  }', i));
+  assert.ok(/if \(roomMuted\) \{[\s\S]{0,60}applyRoomMute\(false\)/.test(body),
+    'unmuting opens a dialog asking how long to unmute for');
+});
+
+test('…and the page is TOLD the current state, rather than guessing', () => {
+  // Without this the row would say "Mute this room" over a room that is
+  // already muted, and the first tap would appear to do nothing.
+  const server = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const i = server.indexOf('can_change_downloads:');
+  assert.ok(i > 0);
+  const around = server.slice(i, i + 700);
+  assert.ok(/muted: hasMutedRoom\(req\.user\.id, room\.id\)/.test(around),
+    'room info never says whether the room is muted');
+  assert.ok(/muted_until/.test(around), 'room info cannot say how long is left');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

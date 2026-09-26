@@ -1850,6 +1850,15 @@ app.get('/room-info/:roomId', authMiddleware, (req, res) => {
     // asking is the one who may change it. See roomDownloads.js.
     downloads_allowed: roomDownloads.downloadsAllowed(room),
     can_change_downloads: roomDownloads.canChangeDownloads({ room, userId: req.user.id }),
+    // Muting, so the room info page can offer it too. It was reachable only
+    // by long-pressing the room in the list, which is not where anybody looks
+    // for a room's settings.
+    muted: hasMutedRoom(req.user.id, room.id),
+    muted_until: (() => {
+      const r = db.prepare('SELECT until FROM room_mutes WHERE user_id = ? AND room_id = ?')
+        .get(req.user.id, room.id);
+      return r ? mutes.untilOrNull(r.until) : null;
+    })(),
     owner_username: owner ? owner.username : null,
     owner_avatar: owner ? owner.avatar : null,
     is_owner: room.created_by === req.user.id,

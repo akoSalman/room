@@ -452,8 +452,13 @@ export default function CameraScreen({
         </View>
       )}
 
-      {/* Zoom readout — tap to reset to 1x */}
-      {zoom > 0.001 && !recording && (
+      {/* Zoom readout — tap to reset to 1x.
+          Shown while RECORDING too. It was hidden then, along with the stops
+          below, which left the one moment you most want to zoom — a clip
+          already running — with no visible control at all. The pinch gesture
+          was never disabled, so zooming worked the whole time and simply gave
+          no sign of itself. */}
+      {zoom > 0.001 && (
         <TouchableOpacity style={s.zoomPill} onPress={() => setZoom(0)}>
           <Text style={s.zoomText}>{zoomLabel}</Text>
         </TouchableOpacity>
@@ -481,9 +486,12 @@ export default function CameraScreen({
           </ScrollView>
         )}
 
-        {/* Quick zoom stops, right above the shutter */}
-        {!recording && (
-          <View style={s.zoomRow}>
+        {/* Quick zoom stops, right above the shutter.
+            Offered during a recording as well: changing the zoom mid-clip is
+            a normal thing to want and expo-camera applies it live, unlike
+            flipping the camera or changing mode, which stay hidden because
+            they would end the clip or throw it away. */}
+        <View style={s.zoomRow}>
             {ZOOM_STOPS.map(st => {
               const on = activeStop.label === st.label && Math.abs(zoom - st.value) < 0.02;
               return (
@@ -496,8 +504,7 @@ export default function CameraScreen({
                 </TouchableOpacity>
               );
             })}
-          </View>
-        )}
+        </View>
 
         {/* Photo / Video switch */}
         {!recording && (

@@ -67,6 +67,8 @@ import * as peerActions from '../peerActions';
 import * as messageInfo from '../messageInfo';
 import * as live from '../liveIndicator';
 import * as saveTarget from '../saveTarget';
+import * as reactionBurst from '../reactionBurst';
+import ReactionBurst from '../components/ReactionBurst';
 import * as pick from '../locationPick';
 import { uploadResumable } from '../chunkedUpload';
 
@@ -215,6 +217,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
 }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [reactions, setReactions] = useState<Record<number, Reaction[]>>({});
+  // messageId -> the emoji currently flying up on it. Keyed by message so two
+  // people reacting to different messages both get their animation.
+  const [bursts, setBursts] = useState<Record<string, string>>({});
   // The draft lives in a ref, NOT state: keystrokes and emoji taps must not
   // re-render the whole message list (that's what made typing/sending laggy).
   // Controlled composer state: React owns the value, so clearing after send is
@@ -401,6 +406,39 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       .catch(() => {});
     return () => { alive = false; };
   }, [room.id]);
+  // ── Muting this room, from the room's own settings page ─────────────────
+  //
+  // It was reachable only by long-pressing the room in the list, which is not
+  // where anybody looks for a room's settings — so for most people the
+  // feature may as well not have existed.
+  const [roomMuted, setRoomMuted] = useState(false);
+  const [roomMutedUntil, setRoomMutedUntil] = useState<number | null>(null);
+
+  async function applyRoomMute(on: boolean, forHow?: peerActions.MuteFor) {
+    const res = await apiFetch(
+      `/room-mute/${room.id}`, on ? 'POST' : 'DELETE', on ? { for: forHow } : undefined,
+    ).catch(() => null);
+    if (!res || res.error) {
+      Alert.alert(on ? 'Could not mute' : 'Could not unmute',
+        'Try again once the app is back online.');
+      return;
+    }
+    setRoomMuted(on);
+    setRoomMutedUntil(res.until ?? null);
+  }
+
+  /** Muting asks for how long; unmuting asks nothing. */
+  function toggleRoomMute() {
+    if (roomMuted) { applyRoomMute(false); return; }
+    Alert.alert('Mute this room', 'How long should it stay quiet?', [
+      { text: 'Cancel', style: 'cancel' },
+      ...peerActions.MUTE_CHOICES.map(c => ({
+        text: peerActions.muteChoiceLabel(c),
+        onPress: () => { applyRoomMute(true, c); },
+      })),
+    ]);
+  }
+
   // ── The room's house rule about saving media ────────────────────────────
   //
   // The owner's setting, read from room-info and kept current by the server's
@@ -2046,7 +2084,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         // These now also arrive on our personal channel (so they reach us even
         // when backgrounded), which means updates for OTHER rooms land here too.
         if (roomId != null && roomId !== room.id) return;
-        setReactions(prev => ({ ...prev, [messageId]: r }));
+        setReactions(prev => {
+          // Worked out HERE, inside the updater, because it needs the list as
+          // it was a moment ago — and reading that from `reactions` outside
+          // would be a stale closure, which is how this would silently stop
+          // animating anything after the first time.
+          const added = reactionBurst.addedEmoji({ prev: prev[messageId], next: r });
+          if (added) setBursts(b => ({ ...b, [String(messageId)]: added }));
+          return { ...prev, [messageId]: r };
+        });
       });
       onSock('room_online', ({ users }: any) => setOnline(users));
       // Only about THIS chat. Reported on the web as a stranger's "is typing"
@@ -4077,6 +4123,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         // come from the server: the owner check is not the client's to make.
         setDownloadsAllowed(info.downloads_allowed !== false);
         setCanChangeDownloads(!!info.can_change_downloads);
+        setRoomMuted(!!info.muted);
+        setRoomMutedUntil(info.muted_until ?? null);
       }
     } catch {}
   }
@@ -4531,6 +4579,19 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       <View
         style={[s.msgWrapper, mine ? s.mine : s.theirs]}
       >
+        {/* The emoji that flies up when somebody reacts. Inside the wrapper so
+            it is positioned against THIS message, and it takes no touches —
+            see components/ReactionBurst.tsx. */}
+        {bursts[String(msg.id)] && (
+          <ReactionBurst
+            emoji={bursts[String(msg.id)]}
+            onDone={() => setBursts(b => {
+              const n = { ...b };
+              delete n[String(msg.id)];
+              return n;
+            })}
+          />
+        )}
         {!mine && (
           room.is_dm ? (
             <View style={s.senderChip}>
@@ -6479,6 +6540,34 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
                   <Text style={s.roomLinkText} selectable>{roomLink}</Text>
                   <TouchableOpacity style={s.shareBtn} onPress={() => Share.share({ message: roomLink })}>
                     <Text style={s.shareBtnText}>Share link</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {/* Mute — anybody's own setting about their own notifications,
+                  so unlike the one below it this is shown to every member. */}
+              {!room.is_dm && (
+                <View style={s.roomLinkBox}>
+                  <Text style={s.roomLinkLabel}>NOTIFICATIONS</Text>
+                  <TouchableOpacity style={s.dlRow} onPress={toggleRoomMute}>
+                    <Ionicons
+                      name={roomMuted ? 'notifications-off-outline' : 'notifications-outline'}
+                      size={19} color={roomMuted ? C.muted : C.accent}
+                    />
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={s.dlTitle}>
+                        {roomMuted ? 'Muted' : 'Mute this room'}
+                      </Text>
+                      <Text style={s.dlHint}>
+                        {roomMuted
+                          ? `${peerActions.mutedUntilLabel(roomMutedUntil)}. Tap to turn notifications back on.`
+                          : 'No notifications. Messages still arrive and still count as unread.'}
+                      </Text>
+                    </View>
+                    <Ionicons
+                      name={roomMuted ? 'toggle' : 'toggle-outline'}
+                      size={30} color={roomMuted ? C.muted : C.accent}
+                    />
                   </TouchableOpacity>
                 </View>
               )}

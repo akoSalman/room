@@ -109,6 +109,51 @@ test('a broken maximum does not produce NaN', () => {
   assert.strictEqual(Z.linearToFactor(0.5, 0), 1);
 });
 
+// ── Zooming while the clip is running ───────────────────────────────────────
+//
+// Asked for: zoom controls when taking a video.
+//
+// The pinch gesture was never disabled during a recording — it worked the
+// whole time. What was hidden was every sign of it: the stops above the
+// shutter and the readout that says what the zoom is, both behind
+// `!recording`. So the one moment you most want to zoom, a clip already
+// running, had no visible control and no feedback.
+
+test('THE ZOOM CONTROLS SURVIVE THE SHUTTER', () => {
+  const fs2 = require('fs');
+  const path2 = require('path');
+  const src = fs2.readFileSync(
+    path2.join(__dirname, '..', 'native-app', 'src', 'screens', 'CameraScreen.tsx'), 'utf8');
+  const code = src.split('\n').filter(l => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
+
+  // The stops.
+  const stops = code.indexOf('ZOOM_STOPS.map');
+  assert.ok(stops > 0, 'the quick zoom stops are gone');
+  const beforeStops = code.slice(code.lastIndexOf('{', stops - 200), stops);
+  assert.ok(!/!recording/.test(beforeStops),
+    'the zoom stops are hidden while recording, which is when they are wanted most');
+
+  // The readout.
+  const pill = code.indexOf('s.zoomPill');
+  assert.ok(pill > 0, 'the zoom readout is gone');
+  const beforePill = code.slice(code.lastIndexOf('{zoom', pill - 1), pill);
+  assert.ok(!/!recording/.test(beforePill), 'the zoom readout is hidden while recording');
+});
+
+test('…while the controls that would RUIN a clip stay hidden', () => {
+  // Not everything is safe mid-recording. Flipping the camera or changing
+  // mode ends the clip or throws it away, and this must not have quietly
+  // un-hidden those too.
+  const fs2 = require('fs');
+  const path2 = require('path');
+  const src = fs2.readFileSync(
+    path2.join(__dirname, '..', 'native-app', 'src', 'screens', 'CameraScreen.tsx'), 'utf8');
+  const code = src.split('\n').filter(l => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
+  const mode = code.indexOf('modeRow');
+  assert.ok(/!recording/.test(code.slice(mode - 200, mode)),
+    'the photo/video switch is offered mid-recording, which throws the clip away');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }
