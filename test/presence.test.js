@@ -92,11 +92,13 @@ const chat = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'),
 const server = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
 
 test('THE FIX: the web says which room it is in BEFORE it waits on anything', () => {
-  // Anchored on the first clear rather than the whole line: adding a fourth
-  // activity to it should not make this test claim openRoom vanished.
-  const fn = app.slice(app.indexOf('  typingUsers.clear();'),
+  // Anchored on the FUNCTION, not on a line inside it. It used to start at
+  // `typingUsers.clear()`, which meant rewriting how the indicators are
+  // stored — a change with nothing to do with presence routing — made this
+  // test report that the function had vanished. Its name is joinRoom.
+  const fn = app.slice(app.indexOf('async function joinRoom('),
     app.indexOf('  const waiting = unreadCounts[roomId] || 0;'));
-  assert.ok(fn.length > 200, 'openRoom moved');
+  assert.ok(fn.length > 200, 'joinRoom moved');
   const joined = fn.indexOf("socket.emit('join_room', roomId)");
   const firstAwait = fn.indexOf('await ');
   assert.ok(joined > -1, 'the web never tells the server which room it is looking at');

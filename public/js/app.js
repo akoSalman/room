@@ -1017,6 +1017,7 @@ function connectSocket() {
     socket.on('user_sending', ({ username: u, roomId, kind }) => {
       if (!Presence.isForRoom(roomId, currentRoomId)) return;
       sendingUsers.set(u, kind || 'file');
+      sendingAtWeb[u] = Date.now();
       renderTypingBar();
     });
     socket.on('user_stopped_sending', ({ username: u, roomId }) => {
@@ -1292,21 +1293,42 @@ function onTypingInput() {
 // The options strip stays pinned above the input bar at all times.
 function updateComposerButtons() {}
 
-function showTyping(user) { typingUsers.add(user); renderTypingBar(); }
-function hideTyping(user) { typingUsers.delete(user); renderTypingBar(); }
-function showRecordingUser(user) { recordingUsers.add(user); renderTypingBar(); }
-function hideRecordingUser(user) { recordingUsers.delete(user); renderTypingBar(); }
+// ── These are CLAIMS, not latches ───────────────────────────────────────────
+//
+// A name used to go into a Set on "started" and come out on "stopped", so the
+// bar was right only if the stop event always arrived. It does not: the
+// sender's tab is closed, their socket drops, they lose signal mid-recording.
+// Then "X is recording…" stands there for ever — photographed in the app, and
+// this code had exactly the same shape.
+//
+// Each name now carries the time it was last heard, and anything not repeated
+// recently is dropped. See js/liveIndicator.js.
+let typingAt = {}, recordingAt = {}, sendingAtWeb = {};
+let indicatorTimer = 0;
+
+function showTyping(user) { typingAt = LiveIndicator.note(typingAt, user, Date.now()); renderTypingBar(); }
+function hideTyping(user) { typingAt = LiveIndicator.drop(typingAt, user); renderTypingBar(); }
+function showRecordingUser(user) { recordingAt = LiveIndicator.note(recordingAt, user, Date.now()); renderTypingBar(); }
+function hideRecordingUser(user) { recordingAt = LiveIndicator.drop(recordingAt, user); renderTypingBar(); }
 function renderTypingBar() {
   const bar = document.getElementById('typing-bar');
   // The wording and the priority live in js/activityBar.js so this line and
   // the app's cannot drift — they already had, before "is sending" was added
   // to both.
+  const now = Date.now();
   const line = ActivityBar.activityBar({
-    typing: [...typingUsers],
-    recording: [...recordingUsers],
-    sending: [...sendingUsers].map(([username, kind]) => ({ username, kind })),
+    typing: LiveIndicator.active(typingAt, now),
+    recording: LiveIndicator.active(recordingAt, now),
+    sending: [...sendingUsers]
+      .filter(([u]) => !sendingAtWeb[u] || now - sendingAtWeb[u] < LiveIndicator.EXPIRY_MS)
+      .map(([username, kind]) => ({ username, kind })),
     me: username,
   });
+  // Re-read once a second while anything is showing, so an expired claim
+  // disappears without an event to prompt it. Stopped when the bar is empty,
+  // so an idle chat costs nothing.
+  clearTimeout(indicatorTimer);
+  if (line) indicatorTimer = setTimeout(renderTypingBar, 1000);
   if (!line) {
     bar.classList.add('hidden');
     liftScrollFab();
@@ -2228,7 +2250,7 @@ async function joinRoom(roomId, roomName, li, isDM = false) {
   flushDraft(currentRoomId);
   cancelEdit(); stopTypingSignal();
   if (isRecording) stopRecording();
-  typingUsers.clear(); recordingUsers.clear(); sendingUsers.clear(); renderTypingBar();
+  typingAt = {}; recordingAt = {}; sendingAtWeb = {}; sendingUsers.clear(); renderTypingBar();
   currentRoomId = roomId;
   currentRoomIsDM = isDM;
   // …and the chat being ENTERED gets its own back. cancelEdit() above has

@@ -65,6 +65,8 @@ import PeerSheet from '../components/PeerSheet';
 import { PeerView, ClearScope, vanishedStyle } from '../peerActions';
 import * as peerActions from '../peerActions';
 import * as messageInfo from '../messageInfo';
+import * as live from '../liveIndicator';
+import * as saveTarget from '../saveTarget';
 import * as pick from '../locationPick';
 import { uploadResumable } from '../chunkedUpload';
 
@@ -223,10 +225,43 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   const [me, setMe] = useState('');
   const [myAvatar, setMyAvatar] = useState<string | null>(null);
   const [online, setOnline] = useState<string[]>([]);
-  const [typing, setTyping] = useState<string[]>([]);
-  const [recordingUsers, setRecordingUsers] = useState<string[]>([]);
-  /** Who is uploading something to this chat, and what. */
-  const [sendingUsers, setSendingUsers] = useState<Sender[]>([]);
+  // ── Typing / recording / sending, as CLAIMS rather than latches ──────────
+  //
+  // Each of these used to be a list a name went into on "started" and came
+  // out of on "stopped" — so it was correct only if the stop event always
+  // arrived, and it does not: the sender's app is killed, their socket drops,
+  // they lose signal mid-recording. Then "Dr.Soran is recording…" stands on
+  // screen for ever, which is what was photographed.
+  //
+  // Now each name is remembered with the time it was last heard, and anything
+  // not repeated recently is dropped. See src/liveIndicator.ts.
+  const [typingAt, setTypingAt] = useState<live.Claims>({});
+  const [recordingAt, setRecordingAt] = useState<live.Claims>({});
+  const [sendingAt, setSendingAt] = useState<Record<string, { at: number; kind: SendKind }>>({});
+  // Bumped by a timer while anything is live, so the lists above are re-read
+  // and the expired names disappear without an event to prompt it.
+  const [indicatorTick, setIndicatorTick] = useState(0);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const typing = React.useMemo(() => live.active(typingAt, Date.now()), [typingAt, indicatorTick]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const recordingUsers = React.useMemo(() => live.active(recordingAt, Date.now()), [recordingAt, indicatorTick]);
+  const sendingUsers = React.useMemo<Sender[]>(() => {
+    const now = Date.now();
+    return Object.keys(sendingAt)
+      .filter(u => now - sendingAt[u].at < live.EXPIRY_MS)
+      .map(u => ({ username: u, kind: sendingAt[u].kind }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sendingAt, indicatorTick]);
+
+  // The timer runs ONLY while something is showing. An idle chat costs
+  // nothing, and the one that is showing something wrong for a few seconds is
+  // the whole complaint.
+  const somethingLive = typing.length > 0 || recordingUsers.length > 0 || sendingUsers.length > 0;
+  useEffect(() => {
+    if (!somethingLive) return;
+    const t = setInterval(() => setIndicatorTick(n => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [somethingLive]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<number | string | null>(null);
   // Read from callbacks that must not be rebuilt on every edit — the draft
@@ -304,7 +339,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   // A message opened for reliable text selection (see TextViewer).
   const [selectTextOf, setSelectTextOf] = useState<string | null>(null);
   // Fetching the context around a message being jumped to.
-  const [jumping, setJumping] = useState(false);
+  // What a jump is FOR, not merely that one is happening.
+  //
+  // Reported as: closing the search box and tapping the "back to the newest"
+  // arrow says "Finding that message…". It was the same banner for both, and
+  // for the arrow it is simply untrue — there is no "that message"; the
+  // person asked to go to the end of the chat.
+  const [jumping, setJumping] = useState<null | 'message' | 'latest'>(null);
   // In-chat search: replaces the header while open.
   const [searching, setSearching] = useState(false);
   const [openLocationId, setOpenLocationId] = useState<number | string | null>(null);
@@ -1137,11 +1178,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       // backwards until it turns up. For a photo from months ago the old loop
       // was dozens of round trips and looked exactly like the button being
       // broken — which is what it was reported as.
-      setJumping(true);
+      setJumping('message');
       try {
         const ctx = await apiFetch(`/message-context/${room.id}/${messageId}`);
         if (ctx?.error || !Array.isArray(ctx?.messages) || !ctx.messages.length) {
-          setJumping(false);
+          setJumping(null);
           toast(ctx?.error || 'That message is no longer here');
           return;
         }
@@ -1157,11 +1198,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         applyWindow(win.aroundMessage(ctx.messages, !!ctx.hasOlder, !!ctx.hasNewer));
         userDraggedRef.current = false;
       } catch {
-        setJumping(false);
+        setJumping(null);
         toast('Could not open that message');
         return;
       }
-      setJumping(false);
+      setJumping(null);
     }
 
     // Nothing is remembered about where the jump came from. It used to be, so
@@ -1380,7 +1421,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     // button doesn't work" looks like.
     cancelSettling();
     if (!hasMoreNewerRef.current) { scrollBottom(); return; }
-    setJumping(true);
+    setJumping('latest');
     try {
       const latest = await apiFetch(`/messages/${room.id}`);
       if (Array.isArray(latest) && latest.length) {
@@ -1388,7 +1429,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         markCaughtUp();
       }
     } catch {}
-    setJumping(false);
+    setJumping(null);
     // After the list has re-rendered with the new window.
     setTimeout(() => flatListRef.current?.scrollToOffset({ offset: 0, animated: false }), 50);
   }
@@ -1998,33 +2039,30 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       // so it could show it too — see src/presence.ts.
       onSock('user_typing', ({ username: u, roomId }: any) => {
         if (!isForRoom(roomId, room.id)) return;
-        setTyping(prev => prev.includes(u) ? prev : [...prev, u]);
+        setTypingAt(prev => live.note(prev, u, Date.now()));
       });
       onSock('user_stopped_typing', ({ username: u, roomId }: any) => {
         if (!isForRoom(roomId, room.id)) return;
-        setTyping(prev => prev.filter(x => x !== u));
+        setTypingAt(prev => live.drop(prev, u));
       });
       onSock('user_recording', ({ username: u, roomId }: any) => {
         if (!isForRoom(roomId, room.id)) return;
-        setRecordingUsers(prev => prev.includes(u) ? prev : [...prev, u]);
+        setRecordingAt(prev => live.note(prev, u, Date.now()));
       });
       onSock('user_stopped_recording', ({ username: u, roomId }: any) => {
         if (!isForRoom(roomId, room.id)) return;
-        setRecordingUsers(prev => prev.filter(x => x !== u));
+        setRecordingAt(prev => live.drop(prev, u));
       });
       // "is sending a photo", the same way "is typing" works. Guarded by
       // isForRoom like the rest: these arrive on the personal channel too, so
       // without it a file being sent in another chat shows up in this one.
       onSock('user_sending', ({ username: u, roomId, kind }: any) => {
         if (!isForRoom(roomId, room.id)) return;
-        setSendingUsers(prev => {
-          const rest = prev.filter(x => x.username !== u);
-          return [...rest, { username: u, kind: (kind || 'file') as SendKind }];
-        });
+        setSendingAt(prev => ({ ...prev, [u]: { at: Date.now(), kind: (kind || 'file') as SendKind } }));
       });
       onSock('user_stopped_sending', ({ username: u, roomId }: any) => {
         if (!isForRoom(roomId, room.id)) return;
-        setSendingUsers(prev => prev.filter(x => x.username !== u));
+        setSendingAt(prev => { const n = { ...prev }; delete n[u]; return n; });
       });
       onSock('one_time_viewed', ({ messageId, roomId, viewedAt, seconds }: any) => {
         // Also delivered on our personal channel now, so ignore other rooms.
@@ -3074,7 +3112,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       : [msg.file_path];
     if (!urls.length) return;
 
-    const toGallery = msg.type === 'gallery' || msg.type === 'image' || msg.type === 'video';
+    // Decided per FILE below, not from msg.type — a photo in a private room
+    // was being taken for a document, which is why it never reached the
+    // gallery and why a dialog appeared over it. See src/saveTarget.ts.
+    const firstName = saveTarget.fileNameFor({ url: urls[0], fileName: msg.file_name, now: Date.now() });
+    const toGallery = saveTarget.goesToGallery({ name: firstName, type: msg.type });
     save.begin(urls.length);
     try {
       if (toGallery) {
@@ -3092,9 +3134,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         if (save.isCancelling()) { save.finish('cancelled'); return; }
         save.advance(i);
         const u = urls[i];
-        lastName = (urls.length === 1 && msg.file_name && !msg.file_name.includes(','))
-          ? msg.file_name
-          : (u.split('/').pop() || `file-${Date.now()}`);
+        // The query string is NOT part of the name. Our media URLs are
+        // HMAC-signed, so `split('/').pop()` returned "photo.jpg?e=…&s=…",
+        // which Android reads as a file with no usable extension — written to
+        // disk, invisible to everything, exactly as photographed.
+        lastName = saveTarget.fileNameFor({
+          url: u, fileName: urls.length === 1 ? msg.file_name : null, now: Date.now(),
+        });
         const uri = await fetchWithProgress(`${BASE_URL}${u}`, FileSystem.cacheDirectory + lastName);
         if (toGallery) await MediaLibrary.saveToLibraryAsync(uri);
       }
@@ -3103,7 +3149,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       // along and finishes with a tick, and a dialog on top of that is one
       // more thing to dismiss. A document still gets one, because "saved as
       // <name>" is information the indicator has no room for.
-      if (!toGallery) Alert.alert('Downloaded', `Saved as ${lastName}`);
+      if (saveTarget.shouldAnnounce({ name: lastName, type: msg.type })) {
+        Alert.alert('Downloaded', `Saved as ${lastName}`);
+      }
     } catch {
       // Stopping on purpose is not a failure, and must not be reported as one.
       save.finish(save.isCancelling() ? 'cancelled' : 'failed');
@@ -3182,12 +3230,31 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   /** True while the recorder bar is up, so the warm-up is not taken back under it. */
   const recordingRef = useRef(false);
 
+  /**
+   * The heartbeat that keeps "is recording…" alive on the other side.
+   *
+   * It used to be announced ONCE, at the start. A two-minute voice note sent
+   * one event and then nothing, so the only thing that could ever clear it was
+   * the matching stop — and if the app died, the signal went, or the process
+   * was swiped away, that stop never came and the indicator stood for ever.
+   * That is what was photographed.
+   *
+   * Repeating it costs one tiny event every few seconds and means the other
+   * side can forget anybody it has not heard from. See src/liveIndicator.ts.
+   */
+  const recordingBeat = useRef<any>(null);
+
   function startRecordingUI() {
     audioManager.stop(); // don't record over playing audio
     clearTimeout(warmTimer.current);
     recordingRef.current = true;
     setRecording(true);
     socketRef.current?.emit('recording_start', { roomId: room.id });
+    clearInterval(recordingBeat.current);
+    recordingBeat.current = setInterval(() => {
+      if (!recordingRef.current) { clearInterval(recordingBeat.current); return; }
+      socketRef.current?.emit('recording_start', { roomId: room.id });
+    }, live.HEARTBEAT_MS);
   }
 
   /**
@@ -3211,11 +3278,23 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     if (!what) return;
     socketRef.current?.emit(what === 'start' ? 'sending_start' : 'sending_stop',
       { roomId: room.id, kind });
+    // Repeated while anything is still going up, for the same reason the
+    // recording is: a large video takes minutes, and one announcement at the
+    // start is a mark the other side can never safely remove by itself.
+    clearInterval(sendingBeat.current);
+    if (what === 'start') {
+      sendingBeat.current = setInterval(() => {
+        if (sendingCount.current <= 0) { clearInterval(sendingBeat.current); return; }
+        socketRef.current?.emit('sending_start', { roomId: room.id, kind });
+      }, live.HEARTBEAT_MS);
+    }
   }
+  const sendingBeat = useRef<any>(null);
 
   function stopRecordingUI() {
     recordingRef.current = false;
     setRecording(false);
+    clearInterval(recordingBeat.current);
     socketRef.current?.emit('recording_stop', { roomId: room.id });
   }
 
@@ -6024,7 +6103,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       {jumping && (
         <View style={s.jumpingBar}>
           <ActivityIndicator size="small" color={C.accent} />
-          <Text style={s.transcodeText}>Finding that message…</Text>
+          <Text style={s.transcodeText}>
+            {jumping === 'latest' ? 'Going to the latest messages…' : 'Finding that message…'}
+          </Text>
         </View>
       )}
       {videoWorking > 0 && (

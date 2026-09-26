@@ -2779,6 +2779,25 @@ io.on('connection', (socket) => {
       // This socket is already out of the map by the time 'disconnect' fires.
       heldMs: Date.now() - connectedAt, remaining: socketsFor(socket.user.id),
     }));
+    // ── Somebody who has gone is not still typing ─────────────────────────
+    //
+    // Photographed: "Dr.Soran is recording…" under a chat with a person who
+    // was not online. These indicators are started by an event and cleared by
+    // another, and the clearing one is exactly what a dying app never sends.
+    //
+    // The clients now expire a claim they have not heard repeated, which is
+    // the real fix and works whatever the server does. This is for the builds
+    // already on people's phones, which have no such expiry and will believe
+    // a stale indicator until the app is restarted: the one moment the server
+    // KNOWS the sender is gone, it says so on their behalf.
+    const where = onlineUsers.get(socket.id);
+    if (where && where.roomId) {
+      for (const ev of ['user_stopped_typing', 'user_stopped_recording', 'user_stopped_sending']) {
+        emitToRoomUnblocked(where.roomId, socket.user.id, ev, {
+          username: socket.user.username, roomId: String(where.roomId),
+        });
+      }
+    }
   });
 
   socket.on('join_room', (roomId) => {
