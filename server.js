@@ -13,6 +13,7 @@ const mviews = require('./messageViews');
 const { seenByAllUpTo } = require('./readReceipts');
 const roomVoice = require('./roomVoice');
 const mutes = require('./mutes');
+const roomDownloads = require('./roomDownloads');
 const credentials = require('./credentials');
 const cors = require('cors');
 const db = require('./db');
@@ -1845,6 +1846,10 @@ app.get('/room-info/:roomId', authMiddleware, (req, res) => {
   res.json({
     id: room.id, name: room.name, is_private: room.is_private, is_dm: room.is_dm,
     created_by: room.created_by, created_at: room.created_at,
+    // The room's own house rule about saving media, and whether the person
+    // asking is the one who may change it. See roomDownloads.js.
+    downloads_allowed: roomDownloads.downloadsAllowed(room),
+    can_change_downloads: roomDownloads.canChangeDownloads({ room, userId: req.user.id }),
     owner_username: owner ? owner.username : null,
     owner_avatar: owner ? owner.avatar : null,
     is_owner: room.created_by === req.user.id,
@@ -3785,6 +3790,44 @@ io.on('connection', (socket) => {
   //
   // Deliberately symmetrical and not an owner privilege: the person harmed by
   // messages that destroy themselves is the one receiving them.
+  /**
+   * The room's admin decides whether its media may be saved.
+   *
+   * Owner only, unlike the two settings below it. Those protect the person
+   * RECEIVING messages, so either side may change them; this one restricts
+   * what members may do with somebody else's pictures, which is the owner's
+   * call about their own room.
+   */
+  socket.on('set_downloads_allowed', ({ roomId, allowed }, ack) => {
+    const reply = (r) => { if (typeof ack === 'function') ack(r); };
+    try {
+      const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+      if (!room) return reply({ error: 'Room not found' });
+      if (!roomDownloads.canChangeDownloads({ room, userId: socket.user.id })) {
+        return reply({ error: 'Only the room owner can change this' });
+      }
+      const on = allowed !== false && allowed !== 0 && allowed !== '0';
+      db.prepare('UPDATE rooms SET downloads_allowed = ? WHERE id = ?').run(on ? 1 : 0, room.id);
+
+      const msg = insertSystemMessage(room.id, socket.user.id,
+        on ? 'downloads_on' : 'downloads_off', {
+          userId: socket.user.id,
+          username: socket.user.username,
+          avatar: socket.user.avatar || null,
+        });
+      if (msg) broadcastRoomMessage(room, msg);
+
+      // Everyone in the room needs to know, not only those with it open: the
+      // menu entry has to appear and disappear on every member's phone.
+      const evt = { roomId: room.id, allowed: on, byUsername: socket.user.username };
+      getRoomMemberIds(room).forEach(id => io.to('user:' + id).emit('downloads_changed', evt));
+      reply({ ok: true, allowed: on });
+    } catch (err) {
+      console.error('[set_downloads_allowed]', err.message);
+      reply({ error: 'Could not change the setting' });
+    }
+  });
+
   socket.on('set_one_time_allowed', ({ roomId, allowed }, ack) => {
     const reply = (r) => { if (typeof ack === 'function') ack(r); };
     try {

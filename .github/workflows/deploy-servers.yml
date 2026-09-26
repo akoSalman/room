@@ -23,6 +23,7 @@ on:
       - 'readReceipts.js'
       - 'roomVoice.js'
       - 'mutes.js'
+      - 'roomDownloads.js'
       - 'webPush.js'
       - 'linkMeta.js'
       - 'package.json'

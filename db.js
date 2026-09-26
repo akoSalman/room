@@ -196,6 +196,11 @@ db.exec(`
 `);
 // For a room_mutes table created before `until` existed.
 try { db.exec('ALTER TABLE room_mutes ADD COLUMN until INTEGER'); } catch {}
+// Whether a room's media may be saved to a device. NULL means allowed, which
+// is what every room created before this setting existed was already doing —
+// reading "unknown" as forbidden would have taken the download button away
+// from every chat on the server the moment it shipped.
+try { db.exec('ALTER TABLE rooms ADD COLUMN downloads_allowed INTEGER'); } catch {}
 // "Clear for me" cannot delete anything — the other person's copy is theirs.
 // So it records a HIGH-WATER MARK instead: everything up to and including this
 // message id is hidden from this user, in this room, everywhere it would

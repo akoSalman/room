@@ -401,6 +401,21 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       .catch(() => {});
     return () => { alive = false; };
   }, [room.id]);
+  // ── The room's house rule about saving media ────────────────────────────
+  //
+  // The owner's setting, read from room-info and kept current by the server's
+  // broadcast so the menu entry appears and disappears on every member's
+  // phone rather than at next open. See roomDownloads.js for what this does
+  // and, just as importantly, what it does not.
+  const [downloadsAllowed, setDownloadsAllowed] = useState(true);
+  const [canChangeDownloads, setCanChangeDownloads] = useState(false);
+  function chooseDownloadsAllowed(allowed: boolean) {
+    socketRef.current?.emit('set_downloads_allowed', { roomId: room.id, allowed }, (res: any) => {
+      if (res?.error) { Alert.alert('Could not change', res.error); return; }
+      setDownloadsAllowed(!!res.allowed);
+    });
+  }
+
   function chooseOneTimeAllowed(allowed: boolean) {
     socketRef.current?.emit('set_one_time_allowed', { roomId: room.id, allowed }, (res: any) => {
       if (res?.error) { Alert.alert('Could not change', res.error); return; }
@@ -4056,7 +4071,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   async function loadRoomInfo() {
     try {
       const info = await apiFetch(`/room-info/${room.id}`);
-      if (!info?.error) setRoomInfo(info);
+      if (!info?.error) {
+        setRoomInfo(info);
+        // The room's own setting, and whether this person may change it. Both
+        // come from the server: the owner check is not the client's to make.
+        setDownloadsAllowed(info.downloads_allowed !== false);
+        setCanChangeDownloads(!!info.can_change_downloads);
+      }
     } catch {}
   }
 
@@ -4335,9 +4356,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       if (!allowed) setOneTimeSecs(null);
     };
     sock.on('disappearing_changed', onChanged);
+    const onDownloads = ({ roomId, allowed }: any) => {
+      if (String(roomId) !== String(room.id)) return;
+      setDownloadsAllowed(allowed !== false);
+    };
+    sock.on('downloads_changed', onDownloads);
     sock.on('one_time_allowed_changed', onOneTime);
     return () => {
       sock.off('disappearing_changed', onChanged);
+      sock.off('downloads_changed', onDownloads);
       sock.off('one_time_allowed_changed', onOneTime);
     };
   }, [room.id, socketRef.current]);
@@ -5887,7 +5914,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
                 {m.type !== 'invite' && !m.one_time_seconds && (
                   <Row icon="arrow-redo-outline" label="Forward" onPress={() => { close(); openForwardPicker(m); }} />
                 )}
-                {m.file_path && !hidden && !m.one_time_seconds && canTakeContent(m) && (
+                {/* Offered only when the room's owner allows saving. The
+                    setting is the owner's; the rest of the conditions are the
+                    message's own. See roomDownloads.js. */}
+                {downloadsAllowed && m.file_path && !hidden && !m.one_time_seconds && canTakeContent(m) && (
                   <Row icon="download-outline" label="Download" onPress={() => { close(); downloadMedia(m); }} />
                 )}
                 {m.file_path && !hidden && !m.one_time_seconds && canTakeContent(m) && (
@@ -6288,9 +6318,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
               // the viewer, so "Show in chat" closes the picture to reveal
               // what was there all along.
               ...(viewerFromMedia ? [['showInChat', 'chatbubble-outline', 'Show in chat']] : []),
-              // Saving or sharing a one-time photo would defeat it.
-              ...(isOneTimeUrl(viewerUrl) ? [] : [['download', 'download-outline', 'Download']]),
-              ...(isOneTimeUrl(viewerUrl) ? [] : [['share', 'share-outline', 'Share']]),
+              // Saving or sharing a one-time photo would defeat it — and the
+              // room's owner may have turned saving off for everything else.
+              // Share goes with it: handing the file to another app is the
+              // same act by a different route, and leaving it would make the
+              // setting look like a formality.
+              ...(isOneTimeUrl(viewerUrl) || !downloadsAllowed
+                ? [] : [['download', 'download-outline', 'Download']]),
+              ...(isOneTimeUrl(viewerUrl) || !downloadsAllowed
+                ? [] : [['share', 'share-outline', 'Share']]),
               // No "Close photo" row. The sheet's own Cancel dismisses the
               // sheet, the ✕ and the back gesture close the photo, and a menu
               // entry that repeats what two other controls already do is one
@@ -6443,6 +6479,39 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
                   <Text style={s.roomLinkText} selectable>{roomLink}</Text>
                   <TouchableOpacity style={s.shareBtn} onPress={() => Share.share({ message: roomLink })}>
                     <Text style={s.shareBtnText}>Share link</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {/* Saving media: the owner's rule for this room.
+                  Shown to everyone so members can see what the rule IS, and
+                  only tappable by the owner — a setting that silently does
+                  nothing when tapped is worse than one that is not offered. */}
+              {canChangeDownloads && (
+                <View style={s.roomLinkBox}>
+                  <Text style={s.roomLinkLabel}>SAVING MEDIA</Text>
+                  <TouchableOpacity
+                    style={s.dlRow}
+                    onPress={() => chooseDownloadsAllowed(!downloadsAllowed)}
+                  >
+                    <Ionicons
+                      name={downloadsAllowed ? 'download-outline' : 'download-outline'}
+                      size={19} color={downloadsAllowed ? C.accent : C.muted}
+                    />
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={s.dlTitle}>
+                        {downloadsAllowed ? 'Members can save media' : 'Members cannot save media'}
+                      </Text>
+                      <Text style={s.dlHint}>
+                        {downloadsAllowed
+                          ? 'Download appears in the message menu and on an opened photo.'
+                          : 'The download buttons are hidden. This does not stop screenshots.'}
+                      </Text>
+                    </View>
+                    <Ionicons
+                      name={downloadsAllowed ? 'toggle' : 'toggle-outline'}
+                      size={30} color={downloadsAllowed ? C.accent : C.muted}
+                    />
                   </TouchableOpacity>
                 </View>
               )}
@@ -7138,6 +7207,9 @@ const s = StyleSheet.create({
   inviteBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
   roomLinkBox: { marginHorizontal: 20, marginBottom: 10, gap: 8 },
   roomLinkLabel: { color: C.muted, fontSize: 10.5, fontWeight: '700', letterSpacing: 0.5 },
+  dlRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10 },
+  dlTitle: { color: C.text, fontSize: 14.5, fontWeight: '700' },
+  dlHint: { color: C.muted, fontSize: 11.5, marginTop: 2, lineHeight: 15 },
   roomLinkText: { color: C.accent, fontSize: 13, backgroundColor: C.inputBg, borderRadius: 8, padding: 10 },
   shareBtn: { backgroundColor: C.accent, borderRadius: 10, padding: 12, alignItems: 'center' },
   shareBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
