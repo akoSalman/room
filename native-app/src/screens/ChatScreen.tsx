@@ -68,6 +68,7 @@ import * as messageInfo from '../messageInfo';
 import * as live from '../liveIndicator';
 import * as saveTarget from '../saveTarget';
 import * as reactionBurst from '../reactionBurst';
+import { mergeViewerList } from '../viewerList';
 import ReactionBurst from '../components/ReactionBurst';
 import * as pick from '../locationPick';
 import { uploadResumable } from '../chunkedUpload';
@@ -298,18 +299,99 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   // out rather than left open underneath.)
   const [viewerFromMedia, setViewerFromMedia] = useState(false);
   const viewerUrl = viewer ? viewer.images[viewerIdx] ?? null : null;
+  // Read back by the code that grows the list under the open viewer, which
+  // must see where the swiping has got to rather than where it started.
+  const viewerRef = useRef<{ images: string[]; index: number } | null>(null);
+  viewerRef.current = viewer;
+  const viewerIdxRef = useRef(0);
+  viewerIdxRef.current = viewerIdx;
+  // A handle on the gallery, needed for one thing only: see upgradeViewer.
+  const galleryRef = useRef<any>(null);
+  // The room's whole photo list, asked for once.
+  //
+  // An entry for this room means the question has been ASKED; an empty list
+  // means it was asked and there is nothing to be had — an older server
+  // without the route, or a request that failed. Both are remembered, so
+  // opening ten photos in a chat is one request and not ten.
+  const fullImagesRef = useRef<{ roomId: any; images: string[] } | null>(null);
+  const fullImagesPending = useRef(false);
+
+  function fullImagesFor(roomId: any): string[] | null {
+    const c = fullImagesRef.current;
+    if (!c || c.roomId !== roomId || !c.images.length) return null;
+    return c.images;
+  }
+
+  /**
+   * The room's whole photo list.
+   *
+   * ~75 bytes a photo on a connection paid for by the megabyte, so: once per
+   * chat, and only after a photo has actually been opened. Nothing here can
+   * fail loudly — every way it can go wrong leaves the viewer exactly as it
+   * was, which is the behaviour that shipped before this existed.
+   */
+  async function loadFullImages(roomId: any) {
+    if (fullImagesPending.current) return;
+    fullImagesPending.current = true;
+    try {
+      const res = await apiFetch(`/room-images/${roomId}`);
+      const images = res && !res.error && Array.isArray(res.images)
+        ? res.images.filter((u: any) => typeof u === 'string' && u) : [];
+      fullImagesRef.current = { roomId, images };
+      if (images.length) upgradeViewer(images);
+    } catch {
+      // Asked, nothing to be had. Remembered so it is not asked again.
+      fullImagesRef.current = { roomId, images: [] };
+    } finally {
+      fullImagesPending.current = false;
+    }
+  }
+
+  /**
+   * Grow the list under a viewer that is already open, without moving the
+   * photo being looked at.
+   *
+   * The gallery renders its `data` prop directly and positions the strip at
+   * `index * width`. So inserting the chat's older photos ahead of the current
+   * one shifts every photo along while the strip stays put — the picture on
+   * screen silently becomes a different picture. Its imperative `setIndex` is
+   * the only thing that moves state, shared value and offset together, so it
+   * has to be told, and one frame later, after the new `data` has rendered.
+   */
+  function upgradeViewer(full: string[]) {
+    const prev = viewerRef.current;
+    if (!prev) return;
+    const current = prev.images[viewerIdxRef.current] ?? null;
+    const next = mergeViewerList({ local: prev.images, full, current });
+    if (next.images.length === prev.images.length && next.index === viewerIdxRef.current) return;
+    setViewer(next);
+    setViewerIdx(next.index);
+    requestAnimationFrame(() => {
+      try { galleryRef.current?.setIndex(next.index, false); } catch {}
+    });
+  }
+
   // `list` lets a caller supply the exact set being browsed (the media
   // gallery's own images, in its own order). Without it the media gallery's
   // urls often weren't found in the chat's list, so the viewer opened at
   // index 0 — the wrong image — and swiping went somewhere unrelated.
+  //
+  // Opening never waits on the network. A tap that holds the screen for a
+  // round trip on these connections reads as the app having ignored it, so the
+  // viewer opens with whatever is known and is corrected a moment later.
   function openViewer(url: string, list?: string[]) {
     const base = list ?? chatImageUrls();
-    let idx = base.indexOf(url);
-    let images = base;
-    if (idx < 0) { images = [url, ...base]; idx = 0; }
-    setViewerIdx(idx);
+    // A caller that supplied its own set is browsing that set — the media
+    // grid pages its own photos in and is not asking for the chat's list.
+    const full = list ? null : fullImagesFor(room.id);
+    const { images, index } = mergeViewerList({ local: base, full, current: url });
+    setViewerIdx(index);
     setViewerNoCache(noCacheUrls());
-    setViewer({ images, index: idx });
+    setViewer({ images, index });
+    // Keyed by room, so a cached answer for the previous chat is not mistaken
+    // for an answer about this one.
+    const asked = fullImagesRef.current && fullImagesRef.current.roomId === room.id;
+    if (!list && !asked) void loadFullImages(room.id);
   }
   function closeViewer() {
     // Remember the image being looked at, not the scroll offset — the grid
@@ -5348,6 +5430,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
           {viewer && (
             <>
               <AwesomeGallery
+                ref={galleryRef}
                 data={viewer.images}
                 initialIndex={viewer.index}
                 numToRender={3}

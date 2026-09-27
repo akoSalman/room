@@ -1576,6 +1576,45 @@ app.get('/room-media/:roomId', authMiddleware, (req, res) => {
   res.json({ images: images.slice(0, 2000), ...collectOther(room, req.user.id) });
 });
 
+// Every photo in a room, oldest first — for the fullscreen viewer.
+//
+// The viewer used to build its list from the messages the chat window happened
+// to have loaded, which is a page and not a conversation. So the counter read
+// "3 / 12" in a chat holding hundreds, and swiping stopped at the edge of that
+// twelve. Only this process knows how many photos a room has.
+//
+// Separate from /room-media because the two want different things. The media
+// grid is drawn a page at a time and carries names and message ids for each
+// tab; the viewer needs one flat ordered list of urls and nothing else, in one
+// request, because a list that arrives in pieces is a counter that keeps
+// changing — the very bug being fixed.
+//
+// Oldest first, matching the chat: in the viewer, swiping left goes forward in
+// time, and the newest photo is the last.
+const VIEWER_IMAGE_LIMIT = 1500;
+app.get('/room-images/:roomId', authMiddleware, (req, res) => {
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(req.params.roomId);
+  if (!room || !canAccessRoom(req.user.id, room)) return res.status(404).json({ error: 'Not found' });
+
+  const vis = visibleMessagesSql(req.user.id, room.id, 'messages');
+  // DESC with a limit, then reversed: a chat past the limit keeps its NEWEST
+  // photos, which are the ones anybody is browsing. Taking the oldest 1500
+  // would leave the recent ones unreachable, which is the reported bug again.
+  const rows = db.prepare(`
+    SELECT id, type, file_path, file_name, user_id, disappear_seconds
+    FROM messages
+    WHERE room_id = ? ${vis} AND one_time_seconds IS NULL
+      AND type IN ('image','gallery') AND file_path IS NOT NULL
+    ORDER BY id DESC LIMIT ?
+  `).all(room.id, VIEWER_IMAGE_LIMIT);
+  const items = [];
+  rows.reverse().forEach(m => collectImages(items, m, room, req.user.id));
+  // Urls only. A signed url is ~75 bytes and these connections are metered and
+  // paid for by the megabyte; sending the names and message ids as well would
+  // roughly double a response nothing would read.
+  res.json({ images: items.map(i => i.url), truncated: rows.length === VIEWER_IMAGE_LIMIT });
+});
+
 // Read positions of every member of a room, so the client can render
 // seen/delivered checkmarks immediately on opening a room.
 app.get('/read-receipts/:roomId', authMiddleware, (req, res) => {
