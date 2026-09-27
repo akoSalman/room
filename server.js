@@ -15,6 +15,7 @@ const roomVoice = require('./roomVoice');
 const mutes = require('./mutes');
 const roomDownloads = require('./roomDownloads');
 const inputLimits = require('./inputLimits');
+const mediaAccess = require('./mediaAccess');
 const credentials = require('./credentials');
 const cors = require('cors');
 const db = require('./db');
@@ -210,11 +211,19 @@ app.get('/app/download', (req, res) => {
 // Access is therefore decided when the message is DELIVERED — which already
 // only happens for rooms the user can see — and the link stops working soon
 // after, rather than never.
-const MEDIA_URL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MEDIA_URL_TTL_MS = mediaAccess.TTL_MS;
 
-function mediaSig(name, exp) {
+// The viewer is part of what is signed.
+//
+// This is the change that makes everything else possible. A signature over
+// `name:exp` alone proves only that SOMEBODY was once allowed to be handed
+// this link — forward it and a stranger with no account gets the file. Signing
+// `name:exp:viewer` means a url issued to one person is not a url for anybody
+// else, and, more importantly, that the request arrives carrying a claim about
+// who is asking which can then be checked.
+function mediaSig(name, exp, viewerId) {
   return crypto.createHmac('sha256', JWT_SECRET)
-    .update(`${name}:${exp}`).digest('base64url').slice(0, 32);
+    .update(`${name}:${exp}:${viewerId}`).digest('base64url').slice(0, 32);
 }
 
 // The expiry is rounded UP to a day boundary, which makes the signed URL for a
@@ -226,29 +235,52 @@ function mediaSig(name, exp) {
 // the same thumbnails, photos and audio were downloaded again on every visit.
 // Rounding gives every client a key that stays put, at the cost of a link
 // living up to a day longer than the nominal window.
-const MEDIA_URL_BUCKET_MS = 24 * 60 * 60 * 1000;
+const MEDIA_URL_BUCKET_MS = mediaAccess.BUCKET_MS;
 
-// '/uploads/x.jpg' -> '/uploads/x.jpg?e=...&s=...'   (anything else untouched)
-function signPath(p) {
+/**
+ * '/uploads/x.jpg' -> '/uploads/x.jpg?e=..&s=..&u=..'  (anything else untouched)
+ *
+ * `viewerId` is REQUIRED. Every caller knows who it is signing for — a request
+ * handler has req.user, a delivery has the recipient — and a default would
+ * silently produce a url that is either unusable or, worse, usable by
+ * everybody. Signing without one returns the path unsigned, which fails
+ * closed: the media route refuses it.
+ */
+function signPath(p, viewerId) {
   if (typeof p !== 'string' || !p.startsWith('/uploads/')) return p;
-  const name = p.slice('/uploads/'.length).split('?')[0];
+  const name = mediaAccess.nameFromPath(p);
   if (!name) return p;
-  const exp = Math.ceil((Date.now() + MEDIA_URL_TTL_MS) / MEDIA_URL_BUCKET_MS) * MEDIA_URL_BUCKET_MS;
-  return `/uploads/${name}?e=${exp}&s=${mediaSig(name, exp)}`;
+  if (viewerId === null || viewerId === undefined) {
+    console.error('[media] signPath called with no viewer — refusing to sign', name);
+    return p;
+  }
+  const exp = mediaAccess.expiryFor(Date.now());
+  if (exp === null) return p;
+  return `/uploads/${name}?e=${exp}&s=${mediaSig(name, exp, viewerId)}&u=${encodeURIComponent(viewerId)}`;
 }
 
-// Sign a message's media in place. file_path is either one path or, for a
-// gallery, a JSON array of them.
-function signMessage(msg) {
+/**
+ * Sign a message's media FOR ONE RECIPIENT.
+ *
+ * file_path is either one path or, for a gallery, a JSON array of them.
+ *
+ * The recipient argument is what makes a broadcast different from what it used
+ * to be: one message going to thirty people is now thirty different url sets,
+ * each usable only by the person it was sent to. That is the cost of the
+ * feature and it is a few hmacs.
+ */
+function signMessage(msg, viewerId) {
   if (!msg || typeof msg.file_path !== 'string') return msg;
   if (msg.file_path.startsWith('[')) {
     try {
       const arr = JSON.parse(msg.file_path);
-      if (Array.isArray(arr)) return { ...msg, file_path: JSON.stringify(arr.map(signPath)) };
+      if (Array.isArray(arr)) {
+        return { ...msg, file_path: JSON.stringify(arr.map(p => signPath(p, viewerId))) };
+      }
     } catch {}
     return msg;
   }
-  return { ...msg, file_path: signPath(msg.file_path) };
+  return { ...msg, file_path: signPath(msg.file_path, viewerId) };
 }
 
 // Store raw paths, never signed ones: a signature baked into the database
@@ -269,19 +301,259 @@ function stripSig(p) {
 // Takes exp/sig explicitly rather than reading req.query: Express re-parses
 // that getter, so values written onto it (as the legacy /thumb path needs to
 // do) do not survive to the next read.
-function validMediaSig(name, exp, sig) {
+function validMediaSig(name, exp, sig, viewerId) {
   exp = parseInt(exp, 10);
   sig = String(sig || '');
-  if (!exp || !sig || Date.now() > exp) return false;
-  const expected = mediaSig(name, exp);
+  if (!exp || !sig) return false;
+  const expected = mediaSig(name, exp, viewerId);
   // Constant-time compare so the signature can't be probed byte by byte.
   const a = Buffer.from(sig), b = Buffer.from(expected);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+// ── May this person have these bytes? ───────────────────────────────────────
+//
+// Asked on every request for a file, which is the whole change. It used to be
+// asked when the MESSAGE was delivered, and the url was good to anybody
+// holding it for a week afterwards.
+//
+// A file is visible to someone who can see a room it appears in. upload_refs
+// is the index that makes that a cheap question; the messages table is still
+// the truth, so a name that is not in the index is looked up the slow way and
+// the answer is written back. That way a message-insert path added later that
+// forgets to record its files is slow rather than wrong.
+function roomsHoldingUpload(name) {
+  const rows = db.prepare('SELECT DISTINCT room_id FROM upload_refs WHERE name = ?').all(name);
+  if (rows.length) return rows.map(r => r.room_id);
+  const like = '%/uploads/' + name + '%';
+  const found = db.prepare(
+    'SELECT id, room_id FROM messages WHERE file_path LIKE ? LIMIT 50').all(like);
+  const add = db.prepare(
+    'INSERT OR IGNORE INTO upload_refs (name, message_id, room_id) VALUES (?, ?, ?)');
+  const out = new Set();
+  for (const m of found) {
+    // LIKE is a substring match; confirm the name really is one of this
+    // message's files before believing it.
+    if (!mediaAccess.uploadNamesIn(m.file_path).includes(name)) continue;
+    try { add.run(name, m.id, m.room_id); } catch {}
+    out.add(m.room_id);
+  }
+  return [...out];
+}
+
+function mayViewUpload(viewerId, name) {
+  // Your own upload, before it has been sent anywhere. Without this the
+  // preview of a photo you are about to send is refused.
+  const own = db.prepare('SELECT user_id FROM uploads WHERE name = ?').get(name);
+  if (own && String(own.user_id) === String(viewerId)) return true;
+  for (const roomId of roomsHoldingUpload(name)) {
+    const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+    if (room && canAccessRoom(viewerId, room)) return true;
+  }
+  return false;
+}
+
+// A rollout valve, off by default. Turning it on restores the old
+// anyone-with-the-link behaviour for urls that carry no viewer, which is what
+// clients holding links made before this change will send. It exists so the
+// change can be deployed and watched rather than deployed and hoped for; the
+// log line below is what says whether it is still needed.
+const ALLOW_LEGACY_MEDIA = process.env.ALLOW_LEGACY_MEDIA === '1';
+let legacyMediaHits = 0;
+
+/** Record who put a file on the server, at both places a file can arrive. */
+function rememberUpload(filename, userId) {
+  const name = mediaAccess.safeUploadName(filename);
+  if (!name) return;
+  try {
+    db.prepare('INSERT OR IGNORE INTO uploads (name, user_id, created_at) VALUES (?, ?, ?)')
+      .run(name, userId, Date.now());
+  } catch (err) {
+    console.error('[media] could not record an upload:', err.message);
+  }
+}
+
+/**
+ * Note which room a message's files appear in.
+ *
+ * The index behind the access check. Called wherever a message carrying media
+ * is stored; a path that forgets to call it is slow rather than wrong, because
+ * the lookup falls back to scanning messages — but it should not be forgotten.
+ */
+function rememberUploadRefs(msg) {
+  if (!msg || !msg.file_path) return;
+  try {
+    const add = db.prepare(
+      'INSERT OR IGNORE INTO upload_refs (name, message_id, room_id) VALUES (?, ?, ?)');
+    for (const name of mediaAccess.uploadNamesIn(msg.file_path)) {
+      add.run(name, msg.id, msg.room_id);
+    }
+  } catch (err) {
+    console.error('[media] could not index a message\'s files:', err.message);
+  }
+}
+
+/**
+ * May this person attach these files to a message?
+ *
+ * The hole this closes: `filePath` arrived from the client and was stored
+ * after nothing but a query-string strip, and the server then SIGNED whatever
+ * was stored when it delivered the message. So knowing a filename — from a
+ * room you were removed from, from a message since deleted, from a screenshot
+ * — was enough to be handed a fresh, valid url for it.
+ *
+ * Returns the refusal reason, or null when it is allowed.
+ */
+function refuseAttachment(userId, filePath) {
+  if (!filePath) return null;
+  // A path that is not a plain upload name is refused outright. This is also
+  // what stops '/uploads/../../etc/crontab' ever reaching the disk, which
+  // destroyMessage would otherwise have unlinked.
+  const names = mediaAccess.uploadNamesIn(filePath);
+  const claimed = filePath.startsWith('[')
+    ? (() => { try { const a = JSON.parse(filePath); return Array.isArray(a) ? a.length : 0; } catch { return 0; } })()
+    : 1;
+  if (!names.length || names.length !== claimed) return 'That file is not one of ours';
+  for (const name of names) {
+    const own = db.prepare('SELECT user_id FROM uploads WHERE name = ?').get(name);
+    const allowed = mediaAccess.mayAttach({
+      owns: !!own && String(own.user_id) === String(userId),
+      referencedIn: roomsHoldingUpload(name),
+      canSee: (roomId) => {
+        const r = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
+        return !!r && canAccessRoom(userId, r);
+      },
+    });
+    if (!allowed) return 'That file is not yours to send';
+  }
+  return null;
+}
+
+/**
+ * The decision for one media request. Pure lookup and arithmetic — it does not
+ * touch the response, so both routes can act on it in their own way without
+ * either of them growing its own copy of the rules.
+ */
+/**
+ * Who is asking, established from the REQUEST — never from the url.
+ *
+ * The first version of this read the `u` in the signed url and checked that
+ * person's access. That is worth nothing: `u` is self-asserted, so forwarding
+ * Ali's url still worked for anybody, because the question being answered was
+ * "may Ali see this" and Ali could. It has to be "may the person on this
+ * connection see this".
+ *
+ * Two sources, because there are two kinds of request. The app and every
+ * fetch() send `Authorization`. An <img>, <video> or <audio> tag cannot send a
+ * header at all — which is the reason signed urls were reached for in the first
+ * place — so a cookie carries it for those. The cookie is HttpOnly, so script
+ * on the page cannot read it back out, unlike the token in localStorage.
+ */
+function cookieToken(req) {
+  const raw = req.headers.cookie;
+  if (!raw) return null;
+  for (const part of raw.split(';')) {
+    const i = part.indexOf('=');
+    if (i < 0) continue;
+    if (part.slice(0, i).trim() !== MEDIA_COOKIE) continue;
+    try { return decodeURIComponent(part.slice(i + 1).trim()); } catch { return null; }
+  }
+  return null;
+}
+
+const MEDIA_COOKIE = 'mt';
+
+function viewerFromRequest(req) {
+  const header = req.headers.authorization;
+  const bearer = header && header.startsWith('Bearer ') ? header.slice(7) : null;
+  for (const token of [bearer, cookieToken(req)]) {
+    if (!token) continue;
+    try { return jwt.verify(token, JWT_SECRET).id; } catch {}
+  }
+  return null;
+}
+
+/**
+ * Hand the browser the cookie its media requests will need.
+ *
+ * Set on sign-in and on /me, so a session that already exists picks it up the
+ * next time the app or the page starts, without anybody signing in again.
+ */
+function setMediaCookie(res, token) {
+  const bits = [
+    `${MEDIA_COOKIE}=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${60 * 60 * 24 * 365}`,
+  ];
+  // Secure is correct in production and would make the cookie unusable over
+  // the plain-http origin the tests run on, which would silently turn every
+  // media test into a test of the legacy path.
+  if (process.env.NODE_ENV !== 'test' && process.env.ALLOW_INSECURE_COOKIE !== '1') {
+    bits.push('Secure');
+  }
+  res.setHeader('Set-Cookie', bits.join('; '));
+}
+
+/**
+ * `e`, `s` and `u` are passed in rather than read from `req`.
+ *
+ * Express's `req.query` is a getter that re-parses the url, so a value written
+ * onto it does not survive to the next read — which is exactly what the legacy
+ * /thumb path has to do, because those clients send the whole query
+ * url-encoded inside the filename. validMediaSig already took its arguments
+ * explicitly for this reason; taking them here keeps that true one level up.
+ */
+function mediaDecision(req, name, e, s, u) {
+  // The authenticated requester. `u` is only ever compared against this, never
+  // trusted in its place.
+  const who = viewerFromRequest(req);
+  const viewerId = who === null || who === undefined ? null : String(who);
+  // No separate check that the url's `u` matches: the signature is verified
+  // against the AUTHENTICATED viewer, so a url minted for somebody else simply
+  // fails to verify. Comparing `u` as well was tried, and no test could tell
+  // the difference — which is the definition of a line that only looks like a
+  // safeguard. `u` is therefore what it appears to be: a cache key, and a note
+  // to a human reading a log.
+  void u;
+  return mediaAccess.decide({
+    name,
+    viewerId,
+    // Only computed once there is a viewer to compute them for — and `decide`
+    // is what says so, not these arguments.
+    sigValid: viewerId !== null && validMediaSig(name, e, s, viewerId),
+    exp: e,
+    now: Date.now(),
+    hasAccess: viewerId !== null && mayViewUpload(viewerId, name),
+    allowLegacy: ALLOW_LEGACY_MEDIA,
+  });
+}
+
+/** True when the bytes may be served. Otherwise the response is already sent. */
+function mediaAllowed(req, res, name, e, s, u) {
+  const decision = mediaDecision(req, name, e, s, u);
+  if (decision === 'legacy') {
+    // Counted, not silent: this number is what says whether the valve can be
+    // closed. No filename and no user id — these logs have been committed to
+    // a repository that has been public before now.
+    if (++legacyMediaHits % 50 === 1) {
+      console.warn(`[media] legacy request without a viewer served (${legacyMediaHits} so far) — `
+        + 'these stop working when ALLOW_LEGACY_MEDIA is unset');
+    }
+    return true;
+  }
+  if (decision === 'ok') return true;
+  res.status(mediaAccess.statusFor(decision)).end();
+  return false;
+}
+
 app.use('/uploads', (req, res, next) => {
-  const name = path.basename(decodeURIComponent(req.path));
-  if (!validMediaSig(name, req.query.e, req.query.s)) return res.status(403).end();
+  let decoded;
+  try { decoded = decodeURIComponent(req.path); } catch { return res.status(400).end(); }
+  const name = mediaAccess.safeUploadName(path.basename(decoded));
+  if (!name) return res.status(400).end();
+  if (!mediaAllowed(req, res, name, req.query.e, req.query.s, req.query.u)) return;
   next();
 });
 
@@ -446,21 +718,23 @@ app.get('/thumb/:name', async (req, res) => {
   let raw = String(req.params.name || '');
   let exp = req.query.e;
   let sig = req.query.s;
+  let who = req.query.u;
   if (raw.includes('?')) {
     const [namePart, embedded] = raw.split('?');
     raw = namePart;
     const inner = new URLSearchParams(embedded);
+    // Carried in locals, NOT written back onto req.query: that getter
+    // re-parses the url, so anything assigned to it is gone by the next read.
     exp = exp || inner.get('e');
     sig = sig || inner.get('s');
+    who = who || inner.get('u');
   }
   // Only ever a bare filename inside uploads/ — no traversal, no subpaths.
-  const name = path.basename(raw);
-  if (!name || name.startsWith('.') || name !== raw) {
-    return res.status(400).end();
-  }
-  // Same signature gate as /uploads — otherwise /thumb would be an
-  // unauthenticated way to read every image on the server.
-  if (!validMediaSig(name, exp, sig)) return res.status(403).end();
+  const name = mediaAccess.safeUploadName(raw);
+  if (!name || name !== raw) return res.status(400).end();
+  // EXACTLY the same gate as /uploads: signature, expiry, and whether this
+  // viewer may see the file at all. A thumbnail is the picture, smaller.
+  if (!mediaAllowed(req, res, name, exp, sig, who)) return;
   const src = path.join('uploads', name);
   if (!fs.existsSync(src)) return res.status(404).end();
 
@@ -478,7 +752,7 @@ app.get('/thumb/:name', async (req, res) => {
   // bandwidth, which is far better than showing nothing.
   // signPath expects a full /uploads/ path, not a bare filename — handed the
   // latter it returns it untouched, producing a useless relative redirect.
-  const original = () => res.redirect(302, signPath('/uploads/' + name));
+  const original = () => res.redirect(302, signPath('/uploads/' + name, who));
 
   try {
     if (!fs.existsSync(out)) {
@@ -568,6 +842,9 @@ app.post('/auth/signin', async (req, res) => {
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) return res.status(401).json({ error: 'Wrong password' });
     const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET);
+    // The browser needs this for <img>/<video>/<audio>, which cannot send a
+    // header. See viewerFromRequest.
+    setMediaCookie(res, token);
     return res.json({ token, username: user.username, avatar: user.avatar || null, isNew: false });
   }
   if (!register) {
@@ -596,6 +873,7 @@ app.post('/auth/signin', async (req, res) => {
         .run(general.id, result.lastInsertRowid);
     }
     const token = jwt.sign({ id: result.lastInsertRowid, username: normalized }, JWT_SECRET);
+    setMediaCookie(res, token);
     res.json({ token, username: normalized, avatar: null, isNew: true });
   } catch {
     res.status(409).json({ error: 'Something went wrong, try again' });
@@ -651,6 +929,7 @@ app.put('/profile', authMiddleware, async (req, res) => {
 
   const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
   const token = jwt.sign({ id: updated.id, username: updated.username }, JWT_SECRET);
+  setMediaCookie(res, token);
   res.json({
     token, username: updated.username, avatar: updated.avatar || null,
     usernameChangesLeft: Math.max(0, USERNAME_CHANGE_LIMIT - (updated.username_changes || 0)),
@@ -660,6 +939,12 @@ app.put('/profile', authMiddleware, async (req, res) => {
 app.get('/me', authMiddleware, (req, res) => {
   const u = db.prepare('SELECT username, avatar, username_changes FROM users WHERE id = ?').get(req.user.id);
   if (!u) return res.status(404).json({ error: 'User not found' });
+  // Every client calls this on launch, which is how sessions that already
+  // exist — everybody's, on the day this deploys — pick up the media cookie
+  // without being asked to sign in again.
+  const bearer = req.headers.authorization && req.headers.authorization.startsWith('Bearer ')
+    ? req.headers.authorization.slice(7) : null;
+  if (bearer) setMediaCookie(res, bearer);
   res.json({
     username: u.username,
     avatar: u.avatar || null,
@@ -1102,18 +1387,27 @@ async function sendWebPushToUsers(userIds, title, body, data = {}) {
 function destroyMessage(msg) {
   db.prepare('DELETE FROM reactions WHERE message_id = ?').run(msg.id);
   db.prepare('DELETE FROM messages WHERE id = ?').run(msg.id);
-  if ((msg.one_time_seconds || msg.disappear_seconds) && msg.file_path) {
-    // Gallery messages store a JSON array of upload paths
-    let paths = [];
-    if (msg.file_path.startsWith('[')) {
-      try { paths = JSON.parse(msg.file_path); } catch {}
-    } else {
-      paths = [msg.file_path];
+  db.prepare('DELETE FROM upload_refs WHERE message_id = ?').run(msg.id);
+  // The bytes go with the row, for EVERY kind of delete.
+  //
+  // This used to run only for one-time and disappearing messages, so an
+  // ordinary "delete for everyone" removed the row and left the file on disk
+  // for good — and anybody who had kept the url still had the photo. Deleting
+  // a message is supposed to mean the photo is gone.
+  if (msg.file_path) {
+    // Never the stored string: `file_path` came from a client, and
+    // path.join normalises '..' away, so '/uploads/../../etc/crontab' would
+    // resolve outside the directory and be unlinked. safeUploadName is what
+    // makes this a filename and not a path.
+    for (const name of mediaAccess.uploadNamesIn(msg.file_path)) {
+      const shared = db.prepare('SELECT 1 FROM upload_refs WHERE name = ? LIMIT 1').get(name);
+      if (shared) continue;   // forwarded elsewhere, or still in another message
+      fs.unlink(path.join(__dirname, 'uploads', name), () => {});
+      for (const w of THUMB_WIDTHS) {
+        fs.unlink(path.join(THUMB_DIR, `${name}_${w}.jpg`), () => {});
+      }
+      try { db.prepare('DELETE FROM uploads WHERE name = ?').run(name); } catch {}
     }
-    paths.filter(p => typeof p === 'string' && p.startsWith('/uploads/')).forEach(p => {
-      const shared = db.prepare("SELECT 1 FROM messages WHERE file_path LIKE '%' || ? || '%' LIMIT 1").get(p);
-      if (!shared) fs.unlink(path.join(__dirname, p), () => {});
-    });
   }
   // Deliver to every member's personal channel as well as the presence room.
   // Sockets drop out of the presence channel whenever the app is backgrounded
@@ -1487,11 +1781,11 @@ function collectOther(room, viewerId) {
   rows.forEach(m => {
     const keep = mayKeepContent(m, room, viewerId);
     if (m.type === 'video' && m.file_path) {
-      files.push({ url: signPath(m.file_path), name: m.file_name || 'Video', msgId: m.id, kind: 'video', cacheable: keep });
+      files.push({ url: signPath(m.file_path, viewerId), name: m.file_name || 'Video', msgId: m.id, kind: 'video', cacheable: keep });
     } else if (m.type === 'file' && m.file_path) {
-      files.push({ url: signPath(m.file_path), name: m.file_name || 'File', msgId: m.id, kind: 'file', cacheable: keep });
+      files.push({ url: signPath(m.file_path, viewerId), name: m.file_name || 'File', msgId: m.id, kind: 'file', cacheable: keep });
     } else if (m.type === 'music' && m.file_path) {
-      music.push({ url: signPath(m.file_path), name: m.file_name || 'Audio', msgId: m.id, kind: 'music', cacheable: keep });
+      music.push({ url: signPath(m.file_path, viewerId), name: m.file_name || 'Audio', msgId: m.id, kind: 'music', cacheable: keep });
     } else if (m.type === 'text' && m.content && !m.content.startsWith('e2e:')) {
       (m.content.match(LINK_RE) || []).forEach(l => {
         if (links.length < 200 && !links.some(x => x.url === l)) links.push({ url: l, msgId: m.id });
@@ -1505,13 +1799,13 @@ function collectOther(room, viewerId) {
 function collectImages(out, m, room, viewerId) {
   const keep = mayKeepContent(m, room, viewerId);
   if (m.type === 'image' && m.file_path) {
-    out.push({ url: signPath(m.file_path), msgId: m.id, name: m.file_name || 'Photo', cacheable: keep });
+    out.push({ url: signPath(m.file_path, viewerId), msgId: m.id, name: m.file_name || 'Photo', cacheable: keep });
   } else if (m.type === 'gallery' && m.file_path) {
     // One message, several photos: they all belong to the same message, so
     // "Show in chat" from any of them lands on it.
     try {
       JSON.parse(m.file_path).forEach(u =>
-        out.push({ url: signPath(u), msgId: m.id, name: m.file_name || 'Photo', cacheable: keep }));
+        out.push({ url: signPath(u, viewerId), msgId: m.id, name: m.file_name || 'Photo', cacheable: keep }));
     } catch {}
   }
 }
@@ -2264,7 +2558,7 @@ app.get('/comments/:roomId/:msgId', authMiddleware, (req, res) => {
     ORDER BY m.id ASC
   `).all(req.params.msgId);
 
-  res.json({ parent: signMessage(parent), comments: comments.map(signMessage) });
+  res.json({ parent: signMessage(parent, req.user.id), comments: comments.map(m => signMessage(m, req.user.id)) });
 });
 
 // Messages AROUND one particular message.
@@ -2311,7 +2605,7 @@ app.get('/message-context/:roomId/:msgId', authMiddleware, (req, res) => {
   const messages = [
     ...older.slice(0, HALF + 1).reverse(),
     ...newer.slice(0, HALF),
-  ].map(signMessage);
+  ].map(m => signMessage(m, req.user.id));
   res.json({ messages, targetId: msgId, hasOlder, hasNewer });
 });
 
@@ -2359,7 +2653,7 @@ app.get('/messages/:roomId', authMiddleware, (req, res) => {
       WHERE m.room_id = ? AND m.id > ? ${vis}
       ORDER BY m.id ASC LIMIT ?
     `).all(req.params.roomId, after, MESSAGES_PAGE_SIZE);
-    return res.json(rows.map(signMessage));
+    return res.json(rows.map(m => signMessage(m, req.user.id)));
   }
 
   const messages = before
@@ -2385,7 +2679,7 @@ app.get('/messages/:roomId', authMiddleware, (req, res) => {
         WHERE m.room_id = ? ${vis}
         ORDER BY m.id DESC LIMIT ?
       `).all(req.params.roomId, MESSAGES_PAGE_SIZE);
-  res.json(messages.reverse().map(signMessage));
+  res.json(messages.reverse().map(m => signMessage(m, req.user.id)));
 });
 
 // Every reaction in a room, keyed by message id. The client had no way to load
@@ -2412,6 +2706,14 @@ app.get('/room-reactions/:roomId', authMiddleware, (req, res) => {
 
 // Reactions
 app.get('/reactions/:messageId', authMiddleware, (req, res) => {
+  // The room the message is in decides this, and it was not being asked.
+  // Message ids are sequential, so without it anyone could walk them and learn
+  // who reacted to what in every private room and every DM on the server —
+  // which is also a list of who talks to whom.
+  const msg = db.prepare('SELECT room_id FROM messages WHERE id = ?').get(req.params.messageId);
+  if (!msg) return res.json([]);
+  const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(msg.room_id);
+  if (!canAccessRoom(req.user.id, room)) return res.status(403).json({ error: 'No access' });
   const rows = db.prepare(`
     SELECT r.emoji, u.username, r.user_id FROM reactions r
     JOIN users u ON r.user_id = u.id
@@ -2423,6 +2725,7 @@ app.get('/reactions/:messageId', authMiddleware, (req, res) => {
 // Upload
 app.post('/upload', authMiddleware, upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file' });
+  rememberUpload(req.file.filename, req.user.id);
   res.json({
     url: '/uploads/' + req.file.filename,
     name: req.file.originalname,
@@ -2596,6 +2899,7 @@ app.post('/upload/session/:id/finish', authMiddleware, (req, res) => {
   } catch {}
   // Deliberately the same shape as POST /upload, so the two paths are
   // interchangeable to everything downstream.
+  rememberUpload(filename, req.user.id);
   res.json({ url: '/uploads/' + filename, name: s.meta.name, mimetype: s.meta.mime });
 });
 
@@ -2761,10 +3065,13 @@ function emitMessageTo(userId, out, roomId) {
 
 // Deliver a message to every member of a room over their personal channels.
 function broadcastRoomMessage(room, msg) {
-  const out = signMessage(msg);
+  // Signed per recipient, not once for the room: a url now names the person it
+  // was issued to, so one message to thirty people is thirty url sets, each
+  // useless to the other twenty-nine. That is the point of the change, and the
+  // cost of it is a few hmacs.
   const ids = getRoomMemberIds(room);
-  ids.forEach(id => emitMessageTo(id, out, room.id));
-  previewerIds(room, ids).forEach(id => emitMessageTo(id, out, room.id));
+  ids.forEach(id => emitMessageTo(id, signMessage(msg, id), room.id));
+  previewerIds(room, ids).forEach(id => emitMessageTo(id, signMessage(msg, id), room.id));
 }
 
 // Public rooms can be read before joining, so someone may have the room open
@@ -2855,6 +3162,15 @@ io.on('connection', (socket) => {
   });
 
   socket.on('join_room', (roomId) => {
+    // The presence channel is not harmless. Messages are delivered per member
+    // over 'user:<id>', so joining this never leaked message content — but the
+    // room channel still carries message_edited WITH ITS NEW TEXT, plus
+    // reactions, read receipts, deletions and the online list. Without a check
+    // anyone could sit on a private room or somebody else's DM, watch who was
+    // there, read every edit, and appear in that room's online list themselves.
+    if (roomId === null || roomId === undefined || roomId === '') return;
+    const target = db.prepare('SELECT * FROM rooms WHERE id = ?').get(String(roomId));
+    if (!target || !canAccessRoom(socket.user.id, target)) return;
     const prev = onlineUsers.get(socket.id);
     if (prev?.roomId) {
       socket.leave(prev.roomId);
@@ -2996,6 +3312,14 @@ io.on('connection', (socket) => {
     // offline was never delivered — it was just lost.
     const disappearing = room && room.disappearing_seconds > 0 ? room.disappearing_seconds : 0;
 
+    // The file has to be one this person may actually send. Without this,
+    // `filePath` was whatever the client said — so a filename was enough to be
+    // handed a freshly signed url for somebody else's photo, and a filename
+    // with '..' in it was enough to have the server delete any file it could
+    // write when the message later expired.
+    const refusal = refuseAttachment(socket.user.id, stripSig(filePath));
+    if (refusal) return reply({ error: refusal });
+
     const result = db.prepare(`
       INSERT INTO messages (room_id, user_id, type, content, file_path, file_name, reply_to_id, one_time_seconds, disappear_seconds, blocked_delivery, parent_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -3017,9 +3341,12 @@ io.on('connection', (socket) => {
       WHERE m.id = ?
     `).get(result.lastInsertRowid);
     if (clientId) msg.client_id = clientId; // lets the sender reconcile its optimistic local bubble
+    rememberUploadRefs(msg);
 
     const memberIds = getRoomMemberIds(room);
-    const outMsg = signMessage(msg);
+    // Signed per recipient — see broadcastRoomMessage. `deliver` below already
+    // receives the id it is delivering to, so this costs nothing but saying so.
+    const outFor = (id) => signMessage(msg, id);
 
     // Users who have ANY socket actively viewing this room right now. Push is
     // suppressed for them entirely (on all their devices) so a user reading the
@@ -3048,10 +3375,10 @@ io.on('connection', (socket) => {
       : 0;
     const deliver = parent
       ? (id) => io.to('user:' + id).emit('comment_added', {
-        parentId: parent.id, roomId: room.id, count: commentCount, comment: outMsg,
+        parentId: parent.id, roomId: room.id, count: commentCount, comment: outFor(id),
       })
       : (id) => emitMessageTo(id,
-        viewingUserIds.has(id) ? { ...outMsg, seenElsewhere: true } : outMsg, room.id);
+        viewingUserIds.has(id) ? { ...outFor(id), seenElsewhere: true } : outFor(id), room.id);
     // Undelivered by design: it goes back to its author and nowhere else.
     if (blockedDelivery) {
       deliver(socket.user.id);
@@ -3253,7 +3580,7 @@ io.on('connection', (socket) => {
     const msg = db.prepare(`
       SELECT m.*, u.username, u.avatar FROM messages m JOIN users u ON m.user_id = u.id WHERE m.id = ?
     `).get(result.lastInsertRowid);
-    [socket.user.id, peer].forEach(id => emitMessageTo(id, signMessage(msg), msg.room_id));
+    [socket.user.id, peer].forEach(id => emitMessageTo(id, signMessage(msg, id), msg.room_id));
     io.emit('dm_activity', { room: dm });
   });
   socket.on('call_answer', ({ toUserId, sdp }) => {
@@ -3323,6 +3650,18 @@ io.on('connection', (socket) => {
   // each newcomer; the server just tracks who is in the voice chat.
   socket.on('voice_join', ({ roomId }) => {
     const key = String(roomId);
+    // Membership, before anything else happens.
+    //
+    // There was no check here at all, and the consequence was not a metadata
+    // leak: this handler tells every existing participant that a peer has
+    // joined, and BOTH clients answer that by sending the newcomer a WebRTC
+    // offer automatically, with no prompt (callManager.ts, calls.js). So
+    // emitting voice_join for any room id put a stranger into that room's
+    // call, listening, and showed them in the "N in call" badge as a member.
+    if (roomId === null || roomId === undefined || roomId === '') return;
+    const joinRoom = db.prepare('SELECT * FROM rooms WHERE id = ?').get(String(roomId));
+    if (!joinRoom || !canAccessRoom(socket.user.id, joinRoom)) return;
+    if (!isRoomMember(socket.user.id, joinRoom)) return;
     if (!voiceRooms.has(key)) voiceRooms.set(key, new Map());
     const members = voiceRooms.get(key);
     // Whether this join is the call BEGINNING, read before the joiner is
@@ -3658,7 +3997,7 @@ io.on('connection', (socket) => {
     const msg = db.prepare(`
       SELECT m.*, u.username, u.avatar FROM messages m JOIN users u ON m.user_id = u.id WHERE m.id = ?
     `).get(result.lastInsertRowid);
-    [socket.user.id, target.id].forEach(id => emitMessageTo(id, signMessage(msg), msg.room_id));
+    [socket.user.id, target.id].forEach(id => emitMessageTo(id, signMessage(msg, id), msg.room_id));
     io.emit('dm_activity', { room: dm });
 
     // An invitation is a real message, so it gets a real push — previously it
@@ -4067,8 +4406,9 @@ io.on('connection', (socket) => {
       LEFT JOIN users ru ON rm.user_id = ru.id
       WHERE m.id = ?
     `).get(result.lastInsertRowid);
+    rememberUploadRefs(msg);
     const dstMembers = getRoomMemberIds(dstRoom);
-    dstMembers.forEach(id => emitMessageTo(id, signMessage(msg), dstRoom.id));
+    dstMembers.forEach(id => emitMessageTo(id, signMessage(msg, id), dstRoom.id));
     sendPushToUsers(
       dstMembers.filter(id => id !== socket.user.id),
       (msg.avatar ? msg.avatar + ' ' : '') + msg.username + (dstRoom.is_dm ? '' : ` · ${dstRoom.name}`),

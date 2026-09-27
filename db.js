@@ -388,4 +388,81 @@ try {
   console.error('[migration] default room membership:', err.message);
 }
 
+// ── Who owns an upload, and where it appears ───────────────────────────────
+//
+// Both tables exist for one reason: access to a file used to be decided when
+// the MESSAGE carrying it was delivered, and the signed url was a bearer token
+// forever after. To decide access when the bytes are actually asked for, two
+// questions have to be answerable cheaply:
+//
+//   uploads     — who put this file on the server? (so a stranger cannot
+//                 attach a filename they merely happen to know, and be handed
+//                 a freshly signed url for it)
+//   upload_refs — which rooms does this file appear in? (so "may this person
+//                 see it" is a room question, which is already answerable)
+//
+// upload_refs is an INDEX, not a source of truth. The messages table remains
+// that, and a lookup that finds nothing here falls back to scanning it and
+// writes what it learns — so a message insert added later that forgets to
+// record its files is slow, not wrong.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS uploads (
+    name TEXT PRIMARY KEY,
+    user_id INTEGER,
+    created_at INTEGER
+  )
+`);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS upload_refs (
+    name TEXT NOT NULL,
+    message_id INTEGER NOT NULL,
+    room_id INTEGER NOT NULL,
+    PRIMARY KEY (name, message_id)
+  )
+`);
+db.exec('CREATE INDEX IF NOT EXISTS idx_upload_refs_name ON upload_refs(name)');
+
+// Backfill both from the messages already stored.
+//
+// Without this every file sent before today has no owner and no room, so
+// nobody could fetch any of their own history — the fix would read, to a user,
+// exactly like the server having lost their photos.
+try {
+  once('upload_ownership_v1', () => {
+    const rows = db.prepare(`
+      SELECT id, room_id, user_id, file_path FROM messages
+      WHERE file_path IS NOT NULL AND file_path != ''
+    `).all();
+    const addRef = db.prepare(
+      'INSERT OR IGNORE INTO upload_refs (name, message_id, room_id) VALUES (?, ?, ?)');
+    // The FIRST message to carry a file is taken as its origin. A forward
+    // copies the path, so later rows are copies and their sender did not
+    // upload anything.
+    const addOwner = db.prepare(
+      'INSERT OR IGNORE INTO uploads (name, user_id, created_at) VALUES (?, ?, ?)');
+    const names = (fp) => {
+      let raw = [fp];
+      if (typeof fp === 'string' && fp.startsWith('[')) {
+        try { const a = JSON.parse(fp); raw = Array.isArray(a) ? a : []; } catch { raw = []; }
+      }
+      return raw
+        .filter(p => typeof p === 'string' && p.startsWith('/uploads/'))
+        .map(p => p.slice('/uploads/'.length).split('?')[0])
+        .filter(n => n && !n.includes('/') && !n.includes('\\') && !n.startsWith('.'));
+    };
+    const run = db.transaction(() => {
+      for (const m of rows) {
+        for (const n of names(m.file_path)) {
+          addRef.run(n, m.id, m.room_id);
+          addOwner.run(n, m.user_id, null);
+        }
+      }
+    });
+    run();
+    console.log(`[migration] indexed uploads for ${rows.length} messages`);
+  });
+} catch (err) {
+  console.error('[migration] upload ownership:', err.message);
+}
+
 module.exports = db;

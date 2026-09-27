@@ -19,6 +19,7 @@
 // So: one download per file, kept on disk, shared by every screen.
 import * as FileSystem from 'expo-file-system';
 import { localNameFor } from './download';
+import { mediaHeaders } from './mediaSource';
 
 // documentDirectory, not cacheDirectory: Android empties the cache directory
 // whenever the device is short of space, which would silently undo the whole
@@ -103,7 +104,8 @@ export async function fetchAndKeep(url: string): Promise<string | null> {
     await ensureDir();
     const tmp = `${DIR}tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     try {
-      const res = await FileSystem.downloadAsync(url, tmp);
+      const res = await FileSystem.downloadAsync(url, tmp,
+        { headers: mediaHeaders(url) });
       if (!res?.uri || (res.status && res.status >= 400)) throw new Error(`bad status ${res?.status}`);
       const info = await FileSystem.getInfoAsync(res.uri);
       if (!info.exists || !(info as any).size) throw new Error('empty');

@@ -12,6 +12,7 @@ import * as mediaCache from '../mediaCache';
 import {
   Animated, View, Text, StyleSheet, ActivityIndicator, TouchableOpacity,
 } from 'react-native';
+import { mediaSource } from '../mediaSource';
 
 type Props = {
   uri: string;
@@ -54,11 +55,11 @@ export default function GalleryImage({ uri, setImageDimensions, cache = true }: 
       <Animated.Image
         // The cache-busting suffix is only added on an explicit retry, so the
         // normal path still hits the image cache.
-        source={{ uri: attempt
+        source={mediaSource(attempt
           // A retry always goes back to the network — a cached copy that
           // failed to decode would just fail again.
           ? `${uri}${uri.includes('?') ? '&' : '?'}retry=${attempt}`
-          : (local || uri) }}
+          : (local || uri))}
         resizeMode="contain"
         style={[StyleSheet.absoluteFillObject, { opacity }]}
         onLoad={(e) => {

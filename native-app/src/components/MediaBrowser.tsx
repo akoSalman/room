@@ -44,6 +44,7 @@ import {
   MediaItem, MediaTab, MediaState,
   toRows, rowOf, cellSize, shouldLoadMore, restoreToken, shouldRestore, restoreOffset,
 } from '../roomMedia';
+import { mediaSource } from '../mediaSource';
 
 export type { MediaItem, MediaTab } from '../roomMedia';
 export type MediaAction = 'open' | 'download' | 'share' | 'showInChat';
@@ -87,7 +88,7 @@ const Cell = memo(function Cell({ item, index, size, marginRight, thumb, onOpen,
       {/* The SMALLEST thumbnail the server offers: a cell is ~130px, so asking
           for more only makes the grid slower to fill. */}
       <Image
-        source={{ uri: thumb(item.url, 96) }}
+        source={mediaSource(thumb(item.url, 96))}
         style={{ width: size, height: size, backgroundColor: PLACEHOLDER }}
         contentFit="cover"
         // Both caches on: memory for the tiles just scrolled past, disk for

@@ -1,6 +1,8 @@
 import React, { useRef } from 'react';
 import { Animated, StyleSheet } from 'react-native';
 import { PinchGestureHandler, PanGestureHandler, State } from 'react-native-gesture-handler';
+import { mediaSource } from '../mediaSource';
+
 
 export default function ZoomableImage({ uri, onSwipe }: { uri: string; onSwipe?: (dir: number) => void }) {
   const scale = useRef(new Animated.Value(1)).current;
@@ -64,7 +66,7 @@ export default function ZoomableImage({ uri, onSwipe }: { uri: string; onSwipe?:
         <PinchGestureHandler onGestureEvent={onPinchEvent} onHandlerStateChange={onPinchStateChange}>
           <Animated.Image
             fadeDuration={0}
-            source={{ uri }}
+            source={mediaSource(uri)}
             style={[s.image, {
               transform: [{ translateX }, { translateY }, { scale }],
             }]}

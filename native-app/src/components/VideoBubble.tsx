@@ -22,6 +22,7 @@ import { fmtBytes, progressPercent, videoTapAction, shouldAutoOpen } from '../do
 import * as downloads from '../videoDownloads';
 import * as covers from '../videoCoverStore';
 import { coverToShow } from '../videoCover';
+import { mediaSource } from '../mediaSource';
 
 export default function VideoBubble({
   url, uploading, onOpen, onLongPress,
@@ -101,7 +102,7 @@ export default function VideoBubble({
     >
       <View style={s.thumb}>
         {coverUri && (
-          <Image source={{ uri: coverUri }} style={StyleSheet.absoluteFill as any} resizeMode="cover" />
+          <Image source={mediaSource(coverUri)} style={StyleSheet.absoluteFill as any} resizeMode="cover" />
         )}
         {/* Over a real frame the play mark needs its own backing, or it
             disappears into whatever the picture happens to be. */}

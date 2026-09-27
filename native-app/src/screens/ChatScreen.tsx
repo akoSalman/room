@@ -21,7 +21,7 @@ import {
 } from 'react-native-gesture-handler';
 import { C, isRTL } from '../theme';
 import { baseDirection, textDirection, isolate as bidiIsolate } from '../bidi';
-import { apiFetch, getSocket, getToken, getUsername, getAvatar, BASE_URL, ensureSocketAlive } from '../api';
+import { BASE_URL, apiFetch, ensureSocketAlive, getAvatar, getSocket, getToken, getUsername, tokenSync } from '../api';
 import { e2eReady, e2eDMPeerKey, e2eEncrypt, e2eDecrypt, e2eIsEncrypted, e2eSetup, e2eVerifyIdentity } from '../e2e';
 import { callManager } from '../callManager';
 import { audioManager } from '../audioManager';
@@ -152,6 +152,7 @@ import { firstUnread, worthJumping, unreadLabel, unreadDivider } from '../unread
 import { marksRead, opensAsRead } from '../readPosition';
 import { isForRoom } from '../presence';
 import { safeName, cacheName, renamed, editableStem } from '../fileName';
+import { mediaHeaders } from '../mediaSource';
 
 type Message = {
   id: number | string; room_id: number; user_id: number; username: string; avatar?: string | null;
@@ -3203,7 +3204,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       // Stamped, so two files with the same name from two chats cannot become
       // one path where the second share hands out the first file.
       const local = FileSystem.cacheDirectory + cacheName(name);
-      const { uri } = await FileSystem.downloadAsync(`${BASE_URL}${remote}`, local);
+      const { uri } = await FileSystem.downloadAsync(`${BASE_URL}${remote}`, local,
+        { headers: mediaHeaders(`${BASE_URL}${remote}`) });
       await Sharing.shareAsync(uri, {
         mimeType: guessMime(name, 'application/octet-stream') || undefined,
         dialogTitle: name,
@@ -3225,7 +3227,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
    * registered the tap for however long the file took.
    */
   async function fetchWithProgress(url: string, to: string): Promise<string> {
-    const task = FileSystem.createDownloadResumable(url, to, {}, (p) => {
+    const task = FileSystem.createDownloadResumable(
+      url, to, { headers: mediaHeaders(url) }, (p) => {
       save.report(p.totalBytesWritten, p.totalBytesExpectedToWrite);
       // Asked for: a cross on the progress. The flag is set by the overlay's
       // button; the task is the only thing that can actually stop the bytes,

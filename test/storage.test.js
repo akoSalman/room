@@ -39,7 +39,7 @@ stub('@react-native-async-storage/async-storage',
   'module.exports = { default: { getItem: async () => null, removeItem: async () => {} } };');
 stub('./download', 'module.exports = { localNameFor: (u, p) => p + u };');
 execFileSync(TSC, [path.join(NAT, 'src', 'storage.ts'), path.join(NAT, 'src', 'mediaCache.ts'),
-  path.join(NAT, 'src', 'download.ts'),
+  path.join(NAT, 'src', 'download.ts'), path.join(NAT, 'src', 'mediaSource.ts'),
   '--outDir', OUT, '--module', 'commonjs', '--target', 'es2019',
   '--skipLibCheck', '--esModuleInterop'], { stdio: 'pipe' });
 const S = require(path.join(OUT, 'storage.js'));

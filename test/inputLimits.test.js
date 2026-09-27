@@ -139,9 +139,19 @@ test('THE UPLOADS ARE STILL SERVED AS DOWNLOADS', () => {
 test('AND STILL BEHIND A SIGNATURE, compared in constant time', () => {
   assert.ok(/crypto\.timingSafeEqual/.test(server),
     'the media signature can be probed a byte at a time');
-  const i = server.indexOf('function validMediaSig');
+  // The expiry used to be checked inside validMediaSig. It now lives in
+  // mediaAccess.decide, which is the one place both /uploads and /thumb read
+  // their answer from — so the check is asserted there instead of here.
+  const i = server.indexOf('function mediaDecision');
+  assert.ok(i > 0, 'the media decision is no longer in one place');
   const fn = server.slice(i, server.indexOf('\n}', i));
-  assert.ok(/Date\.now\(\) > exp/.test(fn), 'a signed media URL never expires');
+  assert.ok(/now: Date\.now\(\)/.test(fn) && /exp: e/.test(fn),
+    'the decision is made without reference to the clock, so a url never expires');
+  const rules = fs.readFileSync(path.join(ROOT, 'mediaAccess.js'), 'utf8');
+  assert.ok(/if \(now > exp\) return 'expired'/.test(rules), 'a signed media URL never expires');
+  // …and the identity of the requester is what the signature covers now.
+  assert.ok(/name\}:\$\{exp\}:\$\{viewerId\}/.test(server),
+    'the signature does not name its viewer, so a forwarded url works for anybody');
 });
 
 let passed = 0, failed = 0;

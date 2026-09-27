@@ -9,6 +9,7 @@ import { localNameFor } from './download';
 // the interval is a judgement about the JavaScript thread, not about either
 // feature, and two of them would drift.
 import { dueForEmit } from './saveProgress';
+import { mediaHeaders } from './mediaSource';
 
 export type DownloadState = {
   /** Bytes written so far. */
@@ -164,7 +165,7 @@ export async function start(url: string): Promise<string | null> {
   const task = FileSystem.createDownloadResumable(
     url,
     pathFor(url),
-    {},
+    { headers: mediaHeaders(url) },
     (p) => {
       const cur = state.get(key);
       if (!cur || cur.status !== 'downloading') return;

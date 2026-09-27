@@ -25,6 +25,7 @@ on:
       - 'mutes.js'
       - 'roomDownloads.js'
       - 'inputLimits.js'
+      - 'mediaAccess.js'
       - 'webPush.js'
       - 'linkMeta.js'
       - 'package.json'

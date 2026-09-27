@@ -1,20 +1,48 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { io, Socket } from 'socket.io-client';
 import * as connection from './connection';
+import { configureMedia, setMediaToken } from './mediaSource';
 
 export const BASE_URL = 'https://chat.akosalman.com';
 // Stamped per-brand by CI (build-native-apk.yml) from native-app/brands/<brand>.json
 export const RELEASE_TAG = 'latest-apk';
 export const RELEASE_FILE = 'ChatRoom-latest.apk';
 
+// Pushed into mediaSource rather than read from it: that module depends on
+// nothing, so everything which merely DISPLAYS a file can import it without
+// dragging AsyncStorage and socket.io along. See mediaSource.ts.
+configureMedia({ baseUrl: BASE_URL });
+
+// A synchronous copy of the token, for render.
+//
+// Images now have to identify the requester (see mediaSource.ts), and a
+// component cannot await AsyncStorage while deciding what to draw — an async
+// read there means every picture flickers through a broken state on each
+// mount. Kept in step by setAuth, clearAuth and the first getToken of the
+// session, which every launch does.
+let tokenNow: string | null = null;
+
+/** The token, if this process has seen it yet. Never awaits. */
+export function tokenSync(): string | null {
+  return tokenNow;
+}
+
+function rememberToken(t: string | null) {
+  tokenNow = t;
+  setMediaToken(t);
+}
+
 export async function getToken() {
-  return AsyncStorage.getItem('token');
+  const t = await AsyncStorage.getItem('token');
+  rememberToken(t);
+  return t;
 }
 export async function getUsername() {
   return AsyncStorage.getItem('username');
 }
 
 export async function setAuth(token: string, username: string, avatar?: string | null) {
+  rememberToken(token);
   await AsyncStorage.setItem('token', token);
   await AsyncStorage.setItem('username', username);
   if (avatar !== undefined) {

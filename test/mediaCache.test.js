@@ -22,6 +22,13 @@ const SRC = path.join(__dirname, '..', 'native-app', 'src');
 const WORK = fs.mkdtempSync(path.join(os.tmpdir(), 'mcsrc-'));
 fs.copyFileSync(path.join(SRC, 'mediaCache.ts'), path.join(WORK, 'mediaCache.ts'));
 fs.copyFileSync(path.join(SRC, 'download.ts'), path.join(WORK, 'download.ts'));
+// mediaCache now says WHO is asking for a file (see mediaSource.ts), so those
+// two come along. api.ts itself pulls in AsyncStorage and socket.io, neither of
+// which loads off a device, so it is stubbed down to the one thing needed here.
+fs.copyFileSync(path.join(SRC, 'mediaSource.ts'), path.join(WORK, 'mediaSource.ts'));
+fs.writeFileSync(path.join(WORK, 'api.ts'),
+  'export const BASE_URL = "https://chat.example.com";\n'
+  + 'export function tokenSync(): string | null { return "tok"; }\n');
 fs.mkdirSync(path.join(WORK, 'expo-file-system'), { recursive: true });
 fs.writeFileSync(path.join(WORK, 'expo-file-system', 'index.ts'),
   'export const cacheDirectory = "file:///cache/";\n'

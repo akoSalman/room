@@ -7,7 +7,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { C } from '../theme';
-import { BASE_URL } from '../api';
+import { BASE_URL, setAuth } from '../api';
 import { e2eSetup } from '../e2e';
 import {
   validateUsername, validatePassword, passwordStrength, normalizeUsername,
@@ -69,10 +69,11 @@ export default function AuthScreen({ onLogin }: { onLogin: () => void }) {
       }
       if (res.error) { setServerError(res.error); return; }
 
-      await AsyncStorage.setItem('token', res.token);
-      await AsyncStorage.setItem('username', res.username);
-      if (res.avatar) await AsyncStorage.setItem('avatar', res.avatar);
-      else await AsyncStorage.removeItem('avatar');
+      // Through setAuth, not straight to storage: it also holds the token in
+      // memory, which is what <Image> needs to identify itself when it asks for
+      // one of our files. Written past it, every picture 403'd until the next
+      // launch.
+      await setAuth(res.token, res.username, res.avatar ?? null);
       e2eSetup(password).catch(() => {});
       onLogin();
     } catch {

@@ -25,6 +25,7 @@ import { fmtBytes } from '../download';
 import {
   msFromTouch, fraction, clampSeek, nextSpeed, speedLabel, canChangeSpeed,
 } from '../videoControls';
+import { mediaSource } from '../mediaSource';
 
 export type VideoItem = { id: number | string; url: string; name: string };
 
@@ -207,7 +208,7 @@ export default function VideoPlayer({
     <Video
       key={`${item.url}#${attempt}`}
       ref={videoRef}
-      source={{ uri: item.url }}
+      source={mediaSource(item.url)}
       style={StyleSheet.absoluteFill}
       resizeMode={fit}
       shouldPlay

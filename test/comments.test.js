@@ -202,14 +202,16 @@ test('a comment is delivered as a comment, never as a message', () => {
   assert.ok(/const deliver = parent\s*\n?\s*\? \(id\) => io\.to\('user:' \+ id\)\.emit\('comment_added'/.test(fn),
     'a comment is broadcast as an ordinary message');
   assert.ok(/count: commentCount/.test(fn), 'the badge cannot move without a reload');
-  assert.ok(/comment: outMsg/.test(fn), 'an open thread does not see the comment arrive');
+  // Signed per recipient now — media urls name the person they were issued
+  // to — so the comment is built inside `deliver`, which knows the id.
+  assert.ok(/comment: outFor\(id\)/.test(fn), 'an open thread does not see the comment arrive');
 });
 
 test('the thread comes back with the message it is about', () => {
   const fn = server.slice(server.indexOf("app.get('/comments/:roomId/:msgId'"), server.indexOf('// Messages AROUND one particular message.'));
   assert.ok(fn.length > 0, 'there is no way to read a thread');
   assert.ok(/includeComments: true/.test(fn), 'the comments are filtered out of their own list');
-  assert.ok(/res\.json\(\{ parent: signMessage\(parent\), comments:/.test(fn),
+  assert.ok(/res\.json\(\{ parent: signMessage\(parent, req\.user\.id\), comments:/.test(fn),
     'the screen would open on a list with no sight of what is being commented on');
   assert.ok(/canAccessRoom\(req\.user\.id, room\)/.test(fn), 'anybody can read any thread');
   assert.ok(/if \(!parent\) return res\.status\(404\)/.test(fn),

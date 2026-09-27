@@ -80,11 +80,52 @@ function waitFor(sock, event, match = () => true, ms = 3000) {
 // Media URLs are signed by the server (see signPath in server.js). Tests that
 // fetch an upload directly need a valid signature; this mirrors the server's,
 // using the same JWT_SECRET set at the top of this file.
-function signUpload(name, ttlMs = 60000) {
+// A signed media query, as the server now makes them.
+//
+// `viewer` is not optional any more, and that is the whole change: a signature
+// covers the id of the person it was issued to, so a url handed to one account
+// is not a url for any other. Omitting it produces a url that is refused,
+// which is what a link made before this change looks like.
+function signUpload(name, viewer, ttlMs = 60000) {
   const exp = Date.now() + ttlMs;
   const sig = require('crypto').createHmac('sha256', process.env.JWT_SECRET)
-    .update(`${name}:${exp}`).digest('base64url').slice(0, 32);
-  return `?e=${exp}&s=${sig}`;
+    .update(`${name}:${exp}:${viewer}`).digest('base64url').slice(0, 32);
+  return `?e=${exp}&s=${sig}&u=${viewer}`;
+}
+
+/**
+ * A file this account is entitled to attach, and its path.
+ *
+ * These tests used to pass '/uploads/a.jpg' for a file that had never been
+ * uploaded by anyone. The server now refuses that, because accepting it was
+ * how knowing a filename could be turned into a freshly signed url for
+ * somebody else's photo — so the tests say who uploaded it, which is what
+ * really happens.
+ */
+function attach(name, token) {
+  ownUpload(name, token);
+  return '/uploads/' + name;
+}
+
+/** The account id inside a token, for the tests that need to name a viewer. */
+function idOf(token) {
+  return JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()).id;
+}
+
+/**
+ * Register a file written straight to uploads/ as belonging to someone.
+ *
+ * Several tests fabricate bytes on disk rather than going through /upload,
+ * which is reasonable — they need a specific JPEG, or specific non-JPEG. What
+ * is no longer reasonable is ATTACHING a file nobody uploaded: the server now
+ * refuses that, because accepting it was how a filename alone could be turned
+ * into a freshly signed url for somebody else's photo. This does what /upload
+ * does, so those tests describe a real situation again.
+ */
+function ownUpload(name, token) {
+  require('../db').prepare(
+    'INSERT OR IGNORE INTO uploads (name, user_id, created_at) VALUES (?, ?, ?)'
+  ).run(name, idOf(token), Date.now());
 }
 
 // Raw fetch (status + headers), since api() only returns parsed JSON.
@@ -96,6 +137,18 @@ async function raw(pathname, method = 'GET', body = null, token = null) {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+}
+
+/**
+ * A media fetch the way a BROWSER makes one: no Authorization header, only the
+ * cookie. This is the shape that matters, because an <img> tag cannot send a
+ * header — it is the reason signed urls existed at all — so a rule that only
+ * holds for header-carrying requests does not protect the web client.
+ */
+async function imgFetch(pathname, token) {
+  return fetch(baseUrl + pathname, {
+    headers: token ? { Cookie: `mt=${encodeURIComponent(token)}` } : {},
   });
 }
 
@@ -435,8 +488,9 @@ test('thumbnails are generated, cached, and path-traversal safe', async () => {
   await sharpLib({
     create: { width: 900, height: 600, channels: 3, background: { r: 10, g: 120, b: 200 } },
   }).jpeg().toFile(require('path').join('uploads', name));
+  ownUpload(name, u.token);
 
-  const res = await raw(`/thumb/${name}?w=200&${signUpload(name).slice(1)}`, 'GET', null, u.token);
+  const res = await raw(`/thumb/${name}?w=200&${signUpload(name, idOf(u.token)).slice(1)}`, 'GET', null, u.token);
   assert.strictEqual(res.status, 200, `thumb request failed: ${res.status}`);
   assert.strictEqual(res.headers.get('content-type'), 'image/jpeg');
   assert.strictEqual(res.headers.get('x-content-type-options'), 'nosniff');
@@ -453,7 +507,7 @@ test('thumbnails are generated, cached, and path-traversal safe', async () => {
   // An older client builds the thumb url by stripping "/uploads/" off the
   // signed message path, so the signature lands INSIDE the encoded name.
   // Those builds are already installed; they must keep working.
-  const legacy = `/thumb/${encodeURIComponent(name + signUpload(name))}?w=200`;
+  const legacy = `/thumb/${encodeURIComponent(name + signUpload(name, idOf(u.token)))}?w=200`;
   const legacyRes = await raw(legacy, 'GET', null, u.token);
   assert.strictEqual(legacyRes.status, 200,
     `a pre-signing client's thumbnail url was refused: ${legacyRes.status}`);
@@ -466,7 +520,7 @@ test('thumbnails are generated, cached, and path-traversal safe', async () => {
   // Traversal must be rejected by the name guard itself — 400, specifically.
   // (Asserting merely ">= 400" would pass even with the guard removed, since
   // sharp fails on a non-image anyway and returns 415.)
-  const bad = await raw(`/thumb/..%2F..%2Fserver.js${signUpload('server.js')}`, 'GET', null, u.token);
+  const bad = await raw(`/thumb/..%2F..%2Fserver.js${signUpload('server.js', idOf(u.token))}`, 'GET', null, u.token);
   assert.strictEqual(bad.status, 400, `traversal not rejected by the name guard: ${bad.status}`);
 
   fsMod.rmSync(require('path').join('uploads', name), { force: true });
@@ -502,8 +556,9 @@ test('thumbnails fall back to the original instead of a blank grid', async () =>
   const name = `not-an-image-${Date.now()}.jpg`;
   fsMod.mkdirSync('uploads', { recursive: true });
   fsMod.writeFileSync(require('path').join('uploads', name), 'this is definitely not a JPEG');
+  ownUpload(name, u.token);
 
-  const res = await fetch(`${baseUrl}/thumb/${name}?w=200&${signUpload(name).slice(1)}`, {
+  const res = await fetch(`${baseUrl}/thumb/${name}?w=200&${signUpload(name, idOf(u.token)).slice(1)}`, {
     redirect: 'manual',
     headers: { Authorization: `Bearer ${u.token}` },
   });
@@ -526,6 +581,7 @@ test('SECURITY: uploads need a valid, unexpired signature', async () => {
   const name = `sig-test-${Date.now()}.txt`;
   fsMod.mkdirSync('uploads', { recursive: true });
   fsMod.writeFileSync(require('path').join('uploads', name), 'secret audio bytes');
+  ownUpload(name, u.token);
 
   // Bare URL — this is exactly what used to work for anyone who had the link.
   const bare = await raw(`/uploads/${name}`, 'GET', null, u.token);
@@ -533,7 +589,7 @@ test('SECURITY: uploads need a valid, unexpired signature', async () => {
 
   // The server hands out signed paths with the message, so fetch one back.
   await emit(sock, 'send_message',
-    { roomId: room.id, type: 'file', content: '', filePath: `/uploads/${name}`, fileName: name });
+    { roomId: room.id, type: 'file', content: '', filePath: attach(`${name}`, u.token), fileName: name });
   const history = await api(`/messages/${room.id}`, 'GET', null, u.token);
   const msg = history.find(m => m.file_name === name);
   assert.ok(msg, 'message not found');
@@ -569,7 +625,7 @@ test('a media URL is STABLE, so caches can actually hold on to it', async () => 
   fsMod.writeFileSync(require('path').join('uploads', name), 'bytes');
 
   await emit(sock, 'send_message',
-    { roomId: room.id, type: 'file', content: '', filePath: `/uploads/${name}`, fileName: name });
+    { roomId: room.id, type: 'file', content: '', filePath: attach(`${name}`, u.token), fileName: name });
 
   const first = (await api(`/messages/${room.id}`, 'GET', null, u.token))
     .find(m => m.file_name === name);
@@ -584,8 +640,16 @@ test('a media URL is STABLE, so caches can actually hold on to it', async () => 
   // Still a working, unexpired link — stability must not have cost validity.
   assert.strictEqual((await raw(first.file_path, 'GET', null, u.token)).status, 200);
   const exp = Number(/[?&]e=(\d+)/.exec(first.file_path)[1]);
-  assert.ok(exp > Date.now() + 6 * 24 * 3600 * 1000,
-    'the link expires sooner than the week it promises');
+  // A day, not the week it used to be. The expiry is no longer what protects
+  // the file — the url names its viewer and access is checked on every
+  // request — so the window only has to be long enough to stay cacheable.
+  assert.ok(exp > Date.now(), 'the link is born expired');
+  assert.ok(exp <= Date.now() + 2 * 24 * 3600 * 1000,
+    'a link outlives its usefulness by days');
+  // And it names the person it was issued to: that is what makes a forwarded
+  // url useless to anybody else.
+  assert.ok(/[?&]u=\d+/.test(first.file_path),
+    'the url does not say who it was issued to, so it is a bearer token again');
 
   fsMod.rmSync(require('path').join('uploads', name), { force: true });
 });
@@ -604,7 +668,7 @@ test('the media browser marks what a device may NOT keep', async () => {
   const open = await api('/rooms', 'POST', { name: 'cache-open-21' }, owner.token);
   await emit(guestSock, 'accept_invite', { roomId: open.id });
   await emit(ownerSock, 'send_message',
-    { roomId: open.id, type: 'image', content: '', filePath: '/uploads/ok.jpg', fileName: 'ok.jpg' });
+    { roomId: open.id, type: 'image', content: '', filePath: attach('ok.jpg', owner.token), fileName: 'ok.jpg' });
 
   let media = await api(`/room-media/${open.id}`, 'GET', null, guest.token);
   assert.strictEqual(media.images.length, 1);
@@ -614,7 +678,7 @@ test('the media browser marks what a device may NOT keep', async () => {
   // ── The same room with disappearing messages on.
   assert.ok((await emit(ownerSock, 'set_disappearing', { roomId: open.id, seconds: 30 })).ok);
   await emit(ownerSock, 'send_message',
-    { roomId: open.id, type: 'image', content: '', filePath: '/uploads/gone.jpg', fileName: 'gone.jpg' });
+    { roomId: open.id, type: 'image', content: '', filePath: attach('gone.jpg', owner.token), fileName: 'gone.jpg' });
 
   media = await api(`/room-media/${open.id}`, 'GET', null, guest.token);
   const vanishing = media.images.find(i => i.url.includes('gone.jpg'));
@@ -630,7 +694,7 @@ test('the media browser marks what a device may NOT keep', async () => {
   await emit(ownerSock, 'invite_to_room', { roomId: priv.id, username: 'cacheguest21' });
   await emit(guestSock, 'accept_invite', { roomId: priv.id });
   await emit(ownerSock, 'send_message',
-    { roomId: priv.id, type: 'image', content: '', filePath: '/uploads/mine.jpg', fileName: 'mine.jpg' });
+    { roomId: priv.id, type: 'image', content: '', filePath: attach('mine.jpg', owner.token), fileName: 'mine.jpg' });
 
   const asAuthor = await api(`/room-media/${priv.id}`, 'GET', null, owner.token);
   assert.strictEqual(asAuthor.images[0].cacheable, true,
@@ -1564,7 +1628,7 @@ test('shared media carries the message it came from, for "Show in chat"', async 
   const room = await api('/rooms', 'POST', { name: 'media-jump' }, u.token);
   const sock = await connect(u.token);
   await emit(sock, 'send_message', {
-    roomId: room.id, type: 'image', filePath: '/uploads/pic-1.jpg', fileName: 'pic-1.jpg',
+    roomId: room.id, type: 'image', filePath: attach('pic-1.jpg', u.token), fileName: 'pic-1.jpg',
   });
   await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: 'see https://example.com/x' });
   await new Promise(r => setTimeout(r, 150));
@@ -2009,9 +2073,9 @@ test('room-media returns images for the gallery counter', async () => {
   const sock = await connect(u.token);
   const room = await api('/rooms', 'POST', { name: 'room-9' }, u.token);
   await emit(sock, 'send_message',
-    { roomId: room.id, type: 'image', filePath: '/uploads/a.jpg', fileName: 'a.jpg' });
+    { roomId: room.id, type: 'image', filePath: attach('a.jpg', u.token), fileName: 'a.jpg' });
   await emit(sock, 'send_message',
-    { roomId: room.id, type: 'image', filePath: '/uploads/b.jpg', fileName: 'b.jpg' });
+    { roomId: room.id, type: 'image', filePath: attach('b.jpg', u.token), fileName: 'b.jpg' });
   const media = await api(`/room-media/${room.id}`, 'GET', null, u.token);
   assert.strictEqual(media.images.length, 2, 'image list wrong length');
 });
@@ -2208,7 +2272,7 @@ test('SECURITY: uploads are served as attachments with nosniff', async () => {
 
   // /upload returns the raw path (signatures must never reach the database),
   // so sign it here the way the server does when it hands the path to a client.
-  const res = await fetch(baseUrl + up.url + signUpload(up.url.split('/').pop()));
+  const res = await imgFetch(up.url + signUpload(up.url.split('/').pop(), idOf(u.token)), u.token);
   assert.strictEqual(res.headers.get('content-disposition'), 'attachment',
     'uploaded file is not forced to download — stored XSS risk');
   assert.strictEqual((res.headers.get('x-content-type-options') || '').toLowerCase(), 'nosniff');
@@ -2252,11 +2316,11 @@ test('the gallery is paged, so opening it does not fetch the whole room', async 
   const TOTAL = 100;
   for (let i = 0; i < TOTAL; i++) {
     await emit(sock, 'send_message',
-      { roomId: room.id, type: 'image', content: '', filePath: `/uploads/g${i}.jpg`, fileName: `g${i}.jpg` });
+      { roomId: room.id, type: 'image', content: '', filePath: attach(`g${i}.jpg`, owner.token), fileName: `g${i}.jpg` });
   }
   await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: 'see https://example.com/x' });
   await emit(sock, 'send_message',
-    { roomId: room.id, type: 'file', content: '', filePath: '/uploads/doc40.pdf', fileName: 'doc40.pdf' });
+    { roomId: room.id, type: 'file', content: '', filePath: attach('doc40.pdf', owner.token), fileName: 'doc40.pdf' });
 
   const first = await api(`/room-media/${room.id}?v=2`, 'GET', null, owner.token);
   assert.ok(first.images.length > 0, 'no photos on the first page');
@@ -2300,12 +2364,12 @@ test('the gallery still answers the old way for apps already installed', async (
   const room = await api('/rooms', 'POST', { name: 'gallery-room-41' }, owner.token);
   for (let i = 0; i < 5; i++) {
     await emit(sock, 'send_message',
-      { roomId: room.id, type: 'image', content: '', filePath: `/uploads/o${i}.jpg`, fileName: `o${i}.jpg` });
+      { roomId: room.id, type: 'image', content: '', filePath: attach(`o${i}.jpg`, owner.token), fileName: `o${i}.jpg` });
   }
   // …including albums, which are one message holding several photos.
   await emit(sock, 'send_message', {
     roomId: room.id, type: 'gallery', content: '',
-    filePath: JSON.stringify(['/uploads/oa.jpg', '/uploads/ob.jpg']), fileName: 'Album',
+    filePath: JSON.stringify(['oa.jpg', 'ob.jpg'].map(n => attach(n, owner.token))), fileName: 'Album',
   });
   const media = await api(`/room-media/${room.id}`, 'GET', null, owner.token);
   assert.strictEqual(media.images.length, 7, 'the unpaged shape stopped returning everything');
@@ -2323,7 +2387,7 @@ test('a gallery message contributes all its photos, and is never split across pa
   const room = await api('/rooms', 'POST', { name: 'gallery-room-42' }, owner.token);
   await emit(sock, 'send_message', {
     roomId: room.id, type: 'gallery', content: '',
-    filePath: JSON.stringify(['/uploads/m1.jpg', '/uploads/m2.jpg', '/uploads/m3.jpg']),
+    filePath: JSON.stringify(['m1.jpg', 'm2.jpg', 'm3.jpg'].map(n => attach(n, owner.token))),
     fileName: 'Album',
   });
   const media = await api(`/room-media/${room.id}?v=2`, 'GET', null, owner.token);
@@ -2338,7 +2402,7 @@ test('the gallery refuses a room the viewer is not in', async () => {
   const sock = await connect(owner.token);
   const room = await api('/rooms', 'POST', { name: 'gallery-room-43', isPrivate: true }, owner.token);
   await emit(sock, 'send_message',
-    { roomId: room.id, type: 'image', content: '', filePath: '/uploads/p43.jpg', fileName: 'p43.jpg' });
+    { roomId: room.id, type: 'image', content: '', filePath: attach('p43.jpg', owner.token), fileName: 'p43.jpg' });
   const r = await api(`/room-media/${room.id}?v=2`, 'GET', null, stranger.token);
   assert.ok(r.error, 'a stranger was handed a private room\'s photos');
 });
@@ -2388,7 +2452,7 @@ test('a file sent in chunks arrives byte-for-byte identical', async () => {
   const fin = await api(`/upload/session/${open.id}/finish`, 'POST', null, u.token);
   assert.ok(fin.url, `finish failed: ${JSON.stringify(fin)}`);
   const name = fin.url.replace('/uploads/', '');
-  const res = await fetch(baseUrl + fin.url + signUpload(name));
+  const res = await imgFetch(fin.url + signUpload(name, idOf(u.token)), u.token);
   assert.strictEqual(res.status, 200, 'the finished upload is not readable');
   const got = Buffer.from(await res.arrayBuffer());
   assert.strictEqual(got.length, data.length, 'the reassembled file is the wrong length');
@@ -2487,7 +2551,7 @@ test('THE BUG: finishing twice returns the same file, not "no such upload"', asy
   assert.strictEqual(again.mimetype, first.mimetype);
   // …and it is still the file that was sent, not a second empty one.
   const name = first.url.replace('/uploads/', '');
-  const res = await fetch(baseUrl + first.url + signUpload(name));
+  const res = await imgFetch(first.url + signUpload(name, idOf(u.token)), u.token);
   const got = Buffer.from(await res.arrayBuffer());
   assert.ok(got.equals(data), 'the file changed under a repeated finish');
 });
@@ -2560,7 +2624,7 @@ test('base64 chunks reassemble to the same bytes as raw ones', async () => {
     at = (await r.json()).offset;
   }
   const fin = await api(`/upload/session/${open.id}/finish`, 'POST', null, u.token);
-  const res = await fetch(baseUrl + fin.url + signUpload(fin.url.replace('/uploads/', '')));
+  const res = await imgFetch(fin.url + signUpload(fin.url.replace('/uploads/', ''), idOf(u.token)), u.token);
   assert.ok(Buffer.from(await res.arrayBuffer()).equals(data), 'base64 round trip changed the bytes');
 });
 
@@ -2748,7 +2812,7 @@ test('an undelivered message stays out of search, media and jumps', async () => 
   const nSock = await connect(nuisance.token);
   await emit(nSock, 'send_message', { roomId: dm.id, type: 'text', content: 'a secret word' });
   await emit(nSock, 'send_message',
-    { roomId: dm.id, type: 'image', content: '', filePath: '/uploads/b85.jpg', fileName: 'b85.jpg' });
+    { roomId: dm.id, type: 'image', content: '', filePath: attach('b85.jpg', nuisance.token), fileName: 'b85.jpg' });
   await emit(nSock, 'send_message', { roomId: dm.id, type: 'text', content: 'e2e:AAAAblocked' });
 
   const mine = await api(`/messages/${dm.id}`, 'GET', null, nuisance.token);
@@ -2898,7 +2962,7 @@ test('THE LEAK THIS PREVENTS: cleared history is gone from EVERY way of reading 
 
   await emit(aSock, 'send_message', { roomId: dm.id, type: 'text', content: 'a secret plan' });
   await emit(aSock, 'send_message',
-    { roomId: dm.id, type: 'image', content: '', filePath: '/uploads/c77.jpg', fileName: 'c77.jpg' });
+    { roomId: dm.id, type: 'image', content: '', filePath: attach('c77.jpg', a.token), fileName: 'c77.jpg' });
   await emit(aSock, 'send_message', { roomId: dm.id, type: 'text', content: 'e2e:AAAAsecret' });
   const before = await api(`/messages/${dm.id}`, 'GET', null, a.token);
   const targetId = before[0].id;
@@ -3056,7 +3120,7 @@ test('a chunk can be sent by POST or by PATCH, and they behave identically', asy
     }
     const fin = await api(`/upload/session/${id}/finish`, 'POST', null, u.token);
     assert.ok(fin.url, `${method}: finish failed`);
-    const res = await fetch(baseUrl + fin.url + signUpload(fin.url.replace('/uploads/', '')));
+    const res = await imgFetch(fin.url + signUpload(fin.url.replace('/uploads/', ''), idOf(u.token)), u.token);
     assert.ok(Buffer.from(await res.arrayBuffer()).equals(data),
       `${method} produced a different file`);
   }
@@ -3371,6 +3435,315 @@ test('a manifest whose APK has gone is not advertised', async () => {
   assert.strictEqual((await raw('/app/latest.json')).status, 404);
   assert.strictEqual((await raw('/app/download')).status, 404);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+
+// ── Nobody sees a file they do not have access to ───────────────────────────
+//
+// The old model, in server.js's own words: "Access is therefore decided when
+// the message is DELIVERED". That is a bearer token — it proves somebody was
+// once allowed to be handed the link, and says nothing about who is asking
+// now. These are the tests for what replaced it.
+
+test('SECURITY: a media url issued to one person is refused for another', async () => {
+  // The heart of it. Both accounts are in the room and both may see the photo
+  // — but the url Ali was given is Ali's url. Without this, forwarding the
+  // link out of the app hands the file to anybody, account or no account.
+  const ali = await signUp('mediabind1');
+  const sara = await signUp('mediabind2');
+  const sock = await connect(ali.token);
+  const sSock = await connect(sara.token);
+  const room = await api('/rooms', 'POST', { name: 'bind-room-1' }, ali.token);
+  await emit(sSock, 'accept_invite', { roomId: room.id });
+
+  const fsMod = require('fs');
+  const name = `bound-${Date.now()}.txt`;
+  fsMod.mkdirSync('uploads', { recursive: true });
+  fsMod.writeFileSync(require('path').join('uploads', name), 'private bytes');
+  await emit(sock, 'send_message',
+    { roomId: room.id, type: 'file', content: '', filePath: attach(name, ali.token), fileName: name });
+
+  const mine = (await api(`/messages/${room.id}`, 'GET', null, ali.token))
+    .find(m => m.file_name === name);
+  assert.ok(mine, 'the message was not stored');
+  // Ali's own url works.
+  assert.strictEqual((await raw(mine.file_path, 'GET', null, ali.token)).status, 200,
+    'the recipient of a url cannot use it');
+
+  // Sara gets her OWN url for the same file, and it differs.
+  const hers = (await api(`/messages/${room.id}`, 'GET', null, sara.token))
+    .find(m => m.file_name === name);
+  assert.notStrictEqual(hers.file_path, mine.file_path,
+    'both accounts were handed the same url, so it names nobody');
+  assert.strictEqual((await raw(hers.file_path, 'GET', null, sara.token)).status, 200);
+
+  // THE POINT: Ali's url does not work for Sara — not even with her token,
+  // and not for somebody with no token at all.
+  assert.strictEqual((await raw(mine.file_path, 'GET', null, sara.token)).status, 403,
+    "one member's signed url was accepted for another member");
+  assert.strictEqual((await raw(mine.file_path)).status, 403,
+    'a forwarded url served the file to an anonymous stranger');
+  fsMod.rmSync(require('path').join('uploads', name), { force: true });
+});
+
+test('SECURITY: leaving a private room takes its photos with you', async () => {
+  // The scenario the old design could not express at all. The url was valid
+  // for a week from issue, so somebody removed from a private room kept every
+  // link they had saved — and the server had no way to refuse them.
+  const owner = await signUp('mediaevict1');
+  const guest = await signUp('mediaevict2');
+  const oSock = await connect(owner.token);
+  const gSock = await connect(guest.token);
+  const priv = await api('/rooms', 'POST', { name: 'evict-room', isPrivate: true }, owner.token);
+  await emit(oSock, 'invite_to_room', { roomId: priv.id, username: 'mediaevict2' });
+  await emit(gSock, 'accept_invite', { roomId: priv.id });
+
+  const fsMod = require('fs');
+  const name = `evict-${Date.now()}.txt`;
+  fsMod.mkdirSync('uploads', { recursive: true });
+  fsMod.writeFileSync(require('path').join('uploads', name), 'room secrets');
+  await emit(oSock, 'send_message',
+    { roomId: priv.id, type: 'file', content: '', filePath: attach(name, owner.token), fileName: name });
+
+  const asGuest = (await api(`/messages/${priv.id}`, 'GET', null, guest.token))
+    .find(m => m.file_name === name);
+  assert.ok(asGuest, 'the guest never received the message');
+  assert.strictEqual((await raw(asGuest.file_path, 'GET', null, guest.token)).status, 200,
+    'a member of the room could not fetch its media');
+
+  // Removed — and the url they already hold stops working, with no change to
+  // the url itself.
+  const removed = await emit(oSock, 'remove_member', { roomId: priv.id, userId: idOf(guest.token) });
+  assert.ok(removed && !removed.error, `removal failed: ${JSON.stringify(removed)}`);
+  assert.strictEqual((await raw(asGuest.file_path, 'GET', null, guest.token)).status, 403,
+    'a removed member kept the url and kept the photo');
+  // The owner is unaffected.
+  const asOwner = (await api(`/messages/${priv.id}`, 'GET', null, owner.token))
+    .find(m => m.file_name === name);
+  assert.strictEqual((await raw(asOwner.file_path, 'GET', null, owner.token)).status, 200);
+  fsMod.rmSync(require('path').join('uploads', name), { force: true });
+});
+
+test('SECURITY: a thumbnail is the picture, so it answers to the same rule', async () => {
+  // /thumb re-encodes through sharp and serves inline. If it checked only the
+  // signature it would be a way to see any photo on the server at 400px.
+  const a = await signUp('thumbbind1');
+  const b = await signUp('thumbbind2');
+  const sock = await connect(a.token);
+  const room = await api('/rooms', 'POST', { name: 'thumb-bind', isPrivate: true }, a.token);
+
+  const fsMod = require('fs');
+  const name = `tb-${Date.now()}.jpg`;
+  fsMod.mkdirSync('uploads', { recursive: true });
+  fsMod.writeFileSync(require('path').join('uploads', name), 'not really a jpeg');
+  await emit(sock, 'send_message',
+    { roomId: room.id, type: 'image', content: '', filePath: attach(name, a.token), fileName: name });
+
+  const q = signUpload(name, idOf(a.token));
+  assert.notStrictEqual((await raw(`/thumb/${name}${q}&w=200`, 'GET', null, a.token)).status, 403,
+    'the uploader was refused their own thumbnail');
+  // b is not in the room, and a correctly signed url for b is still refused.
+  const qb = signUpload(name, idOf(b.token));
+  assert.strictEqual((await raw(`/thumb/${name}${qb}&w=200`, 'GET', null, b.token)).status, 403,
+    'a stranger read the photo through the thumbnailer');
+  fsMod.rmSync(require('path').join('uploads', name), { force: true });
+});
+
+test('SECURITY: you cannot attach a file you never uploaded', async () => {
+  // This is what made everything else worse: filePath arrived from the client
+  // and the server SIGNED whatever was stored. So knowing a filename — from a
+  // room you were thrown out of, or a message since deleted — was enough to be
+  // handed a fresh, valid url for it.
+  const owner = await signUp('mintowner');
+  const thief = await signUp('mintthief');
+  const oSock = await connect(owner.token);
+  const tSock = await connect(thief.token);
+  const priv = await api('/rooms', 'POST', { name: 'mint-priv', isPrivate: true }, owner.token);
+
+  const fsMod = require('fs');
+  const name = `mint-${Date.now()}.txt`;
+  fsMod.mkdirSync('uploads', { recursive: true });
+  fsMod.writeFileSync(require('path').join('uploads', name), 'not yours');
+  await emit(oSock, 'send_message',
+    { roomId: priv.id, type: 'file', content: '', filePath: attach(name, owner.token), fileName: name });
+
+  // The thief knows the filename and posts it in their own room.
+  const theirs = await api('/rooms', 'POST', { name: 'mint-thief-room' }, thief.token);
+  const res = await emit(tSock, 'send_message',
+    { roomId: theirs.id, type: 'file', content: '', filePath: `/uploads/${name}`, fileName: name });
+  assert.ok(res && res.error, 'a filename alone was enough to be signed a url for it');
+  const history = await api(`/messages/${theirs.id}`, 'GET', null, thief.token);
+  assert.strictEqual(history.filter(m => m.file_name === name).length, 0,
+    'the stolen reference was stored anyway');
+  fsMod.rmSync(require('path').join('uploads', name), { force: true });
+});
+
+test('SECURITY: a filename cannot walk out of uploads/ and delete the server', async () => {
+  // The worst of the lot. destroyMessage unlinked the stored path guarded only
+  // by startsWith('/uploads/'), and path.join normalises '..' away — so
+  // '/uploads/../../../etc/crontab' resolved outside the directory entirely.
+  // Any account could delete any file the service could write, including the
+  // database. Refused at the point the path enters, which is why the delete
+  // side never sees it.
+  const u = await signUp('traversal1');
+  const sock = await connect(u.token);
+  const room = await api('/rooms', 'POST', { name: 'traversal-room' }, u.token);
+
+  const canaryName = `canary-${Date.now()}`;
+  const canary = require('path').join(__dirname, '..', canaryName);
+  require('fs').writeFileSync(canary, 'do not delete me');
+
+  for (const evil of ['/uploads/../server.js', '/uploads/../../etc/crontab',
+                      '/uploads/./../db.js', `/uploads/../${canaryName}`,
+                      JSON.stringify(['/uploads/../package.json'])]) {
+    const res = await emit(sock, 'send_message',
+      { roomId: room.id, type: 'image', content: '', filePath: evil,
+        fileName: 'x.jpg', oneTimeSeconds: 1 });
+    assert.ok(res && res.error, `a traversing path was accepted: ${evil}`);
+  }
+  // Everything that mattered is still here.
+  assert.ok(require('fs').existsSync('server.js'), 'server.js was deleted');
+  assert.ok(require('fs').existsSync('db.js'), 'db.js was deleted');
+  assert.ok(require('fs').existsSync(canary), 'a file outside uploads/ was deleted');
+  require('fs').rmSync(canary, { force: true });
+});
+
+test('SECURITY: the delete side refuses a traversing path on its own', async () => {
+  // The send side already refuses these, so this can only be reached by a
+  // message-insert path that does not go through send_message — one added
+  // later, or a row written by hand. Worth its own test precisely because the
+  // first layer hides the second: removing the guard in destroyMessage broke
+  // nothing in this suite, which is how a defence rots.
+  const u = await signUp('deltraverse1');
+  const room = await api('/rooms', 'POST', { name: 'del-traverse' }, u.token);
+  const db = require('../db');
+
+  // In the project root, one level up from uploads/ — the shape of the real
+  // exploit, which was '/uploads/../server.js'. A canary in /tmp would need
+  // more '..' than the payload has and would survive for the wrong reason.
+  const canaryName = `delcanary-${Date.now()}`;
+  const canary = require('path').join(__dirname, '..', canaryName);
+  require('fs').writeFileSync(canary, 'do not delete me');
+
+  // Straight into the table, bypassing every check on the way in.
+  const evil = `/uploads/../${canaryName}`;
+  const row = db.prepare(`
+    INSERT INTO messages (room_id, user_id, type, content, file_path, file_name, one_time_seconds)
+    VALUES (?, ?, 'image', '', ?, 'x.jpg', 1)
+  `).run(room.id, idOf(u.token), evil);
+
+  const msg = db.prepare('SELECT * FROM messages WHERE id = ?').get(row.lastInsertRowid);
+  require('../server');   // already loaded; destroyMessage is reached via the socket path
+  // Drive the same deletion the expiry would: hide-then-destroy is internal, so
+  // use the one entry point a client has, which runs the same function.
+  const sock = await connect(u.token);
+  sock.emit('delete_message', { messageId: msg.id });
+  await new Promise(r => setTimeout(r, 200));
+
+  assert.ok(require('fs').existsSync(canary),
+    'destroyMessage unlinked a path that escaped uploads/ — any file the service can write');
+  require('fs').rmSync(canary, { force: true });
+});
+
+test('SECURITY: deleting a message deletes the photo, not just the row', async () => {
+  // Only one-time and disappearing messages used to have their files removed.
+  // An ordinary "delete for everyone" left the bytes on disk for good, so
+  // anybody holding a url still had the photo.
+  const u = await signUp('delbytes1');
+  const sock = await connect(u.token);
+  const room = await api('/rooms', 'POST', { name: 'del-bytes' }, u.token);
+
+  const fsMod = require('fs');
+  const pathMod = require('path');
+  const name = `delme-${Date.now()}.txt`;
+  fsMod.mkdirSync('uploads', { recursive: true });
+  fsMod.writeFileSync(pathMod.join('uploads', name), 'these bytes should go');
+  await emit(sock, 'send_message',
+    { roomId: room.id, type: 'file', content: '', filePath: attach(name, u.token), fileName: name });
+  const msg = (await api(`/messages/${room.id}`, 'GET', null, u.token))
+    .find(m => m.file_name === name);
+  assert.ok(msg, 'the message was not stored');
+  assert.ok(fsMod.existsSync(pathMod.join('uploads', name)), 'the file was never there');
+
+  sock.emit('delete_message', { messageId: msg.id });
+  // fs.unlink is async with a swallowed callback; give it a tick.
+  await new Promise(r => setTimeout(r, 120));
+  assert.ok(!fsMod.existsSync(pathMod.join('uploads', name)),
+    'the photo survived the deletion of its message');
+});
+
+test('SECURITY: a stranger cannot join a room\'s voice call', async () => {
+  // voice_join had no check at all, and the consequence was not a metadata
+  // leak: it tells every participant a peer arrived, and both clients answer
+  // that by automatically sending the newcomer a WebRTC offer with their
+  // microphone. Emitting it for any room id put a stranger on the call.
+  const member = await signUp('voicemem1');
+  const outsider = await signUp('voiceout1');
+  const mSock = await connect(member.token);
+  const oSock = await connect(outsider.token);
+  const priv = await api('/rooms', 'POST', { name: 'voice-priv', isPrivate: true }, member.token);
+
+  mSock.emit('voice_join', { roomId: priv.id });
+  await new Promise(r => setTimeout(r, 120));
+
+  // The outsider is told nothing…
+  let gotPeers = false;
+  oSock.once('voice_peers', () => { gotPeers = true; });
+  // …and, more importantly, the member is never told to dial them.
+  let gotJoin = false;
+  mSock.once('voice_peer_joined', () => { gotJoin = true; });
+  oSock.emit('voice_join', { roomId: priv.id });
+  await new Promise(r => setTimeout(r, 300));
+  assert.strictEqual(gotPeers, false, 'an outsider was handed the call\'s participant list');
+  assert.strictEqual(gotJoin, false,
+    'the room was told to send a stranger an offer — they would be listening');
+});
+
+test('SECURITY: a stranger cannot sit in a private room\'s presence channel', async () => {
+  // join_room had no check. Message bodies were safe (delivery is per member
+  // over user:<id>), but the room channel carries message_edited WITH ITS NEW
+  // TEXT, plus reactions, read receipts and the online list — and the intruder
+  // shows up in that list to everybody else.
+  const member = await signUp('presmem1');
+  const outsider = await signUp('presout1');
+  const mSock = await connect(member.token);
+  const oSock = await connect(outsider.token);
+  const priv = await api('/rooms', 'POST', { name: 'pres-priv', isPrivate: true }, member.token);
+
+  const got = waitFor(mSock, 'message_received', m => m.room_id === priv.id);
+  mSock.emit('join_room', String(priv.id));
+  await emit(mSock, 'send_message', { roomId: priv.id, type: 'text', content: 'secret' });
+  const msg = await got;
+
+  let edited = null;
+  oSock.on('message_edited', (p) => { edited = p; });
+  oSock.emit('join_room', String(priv.id));
+  await new Promise(r => setTimeout(r, 150));
+  mSock.emit('edit_message', { messageId: msg.id, content: 'still secret' });
+  await new Promise(r => setTimeout(r, 250));
+  assert.strictEqual(edited, null,
+    'an outsider in the presence channel received the edited message text');
+});
+
+test('SECURITY: reactions cannot be read out of a room you are not in', async () => {
+  // Message ids are sequential, so without a room check this endpoint listed
+  // who reacted to what across every private room and DM on the server —
+  // which is also a list of who talks to whom.
+  const member = await signUp('reactmem1');
+  const outsider = await signUp('reactout1');
+  const mSock = await connect(member.token);
+  const priv = await api('/rooms', 'POST', { name: 'react-priv', isPrivate: true }, member.token);
+  const got = waitFor(mSock, 'message_received', m => m.room_id === priv.id);
+  await emit(mSock, 'send_message', { roomId: priv.id, type: 'text', content: 'react here' });
+  const msg = await got;
+  mSock.emit('toggle_reaction', { messageId: msg.id, emoji: '❤️' });
+  await waitFor(mSock, 'reactions_updated', p => String(p.messageId) === String(msg.id));
+
+  const mine = await api(`/reactions/${msg.id}`, 'GET', null, member.token);
+  assert.strictEqual(mine.length, 1, 'a member could not read the reactions');
+  const res = await raw(`/reactions/${msg.id}`, 'GET', null, outsider.token);
+  assert.strictEqual(res.status, 403,
+    'anybody could list who reacted to a message in a private room');
 });
 
 main().catch(err => { console.error(err); process.exit(1); });

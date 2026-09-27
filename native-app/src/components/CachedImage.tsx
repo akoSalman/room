@@ -10,6 +10,8 @@
 import React, { useEffect, useState } from 'react';
 import { Image, ImageProps } from 'react-native';
 import * as mediaCache from '../mediaCache';
+import { mediaSource } from '../mediaSource';
+
 
 type Props = Omit<ImageProps, 'source'> & {
   uri: string;
@@ -43,5 +45,5 @@ export default function CachedImage({ uri, cache = true, ...rest }: Props) {
   // the remote URL first and swapping to the local file would load the same
   // image twice and flicker.
   if (!src) return null;
-  return <Image {...rest} source={{ uri: src }} />;
+  return <Image {...rest} source={mediaSource(src)} />;
 }
