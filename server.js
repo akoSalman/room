@@ -345,7 +345,7 @@ function mayViewUpload(viewerId, name) {
   // Your own upload, before it has been sent anywhere. Without this the
   // preview of a photo you are about to send is refused.
   const own = db.prepare('SELECT user_id FROM uploads WHERE name = ?').get(name);
-  if (own && String(own.user_id) === String(viewerId)) return true;
+  if (own && numericId(own.user_id) !== null && numericId(own.user_id) === viewerId) return true;
   for (const roomId of roomsHoldingUpload(name)) {
     const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId);
     if (room && canAccessRoom(viewerId, room)) return true;
@@ -360,6 +360,17 @@ function mayViewUpload(viewerId, name) {
 // log line below is what says whether it is still needed.
 const ALLOW_LEGACY_MEDIA = process.env.ALLOW_LEGACY_MEDIA === '1';
 let legacyMediaHits = 0;
+
+/**
+ * An account id as a number, or null — never a string, and never 0 standing in
+ * for "absent". Every access check compares ids with `===` against integers
+ * from the database, so a string here silently denies everything.
+ */
+function numericId(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
 
 /** Record who put a file on the server, at both places a file can arrive. */
 function rememberUpload(filename, userId) {
@@ -524,8 +535,15 @@ const requireRequestIdentity = () => process.env.REQUIRE_REQUEST_IDENTITY === '1
 function mediaDecision(req, name, e, s, u) {
   // Who is asking, preferred from the request — a header or the cookie — which
   // is the only source a forwarded url cannot fake.
-  const who = viewerFromRequest(req);
-  let viewerId = who === null || who === undefined ? null : String(who);
+  // A NUMBER, not a string — and this is not a detail.
+  //
+  // Account ids are integers everywhere else, and canAccessRoom compares a
+  // DM's members with `parseInt(parts[1]) === userId`. Handed a string that is
+  // false for everybody, always, so no photo ever crossed a DM: each person
+  // saw their own (the uploader check compares as strings) and neither saw the
+  // other's. That is exactly how it was reported.
+  const who = numericId(viewerFromRequest(req));
+  let viewerId = who;
 
   // Nothing on the request. Fall back to the identity the URL claims, but only
   // when the signature proves we issued it to that person.
@@ -544,9 +562,8 @@ function mediaDecision(req, name, e, s, u) {
   // whatever viewerId ends up being, so a url with a forged or absent `u` is
   // refused there. Checking it twice was tried and no mutation could tell the
   // difference.
-  if (viewerId === null && !requireRequestIdentity()
-      && u !== undefined && u !== null && u !== '') {
-    viewerId = String(u);
+  if (viewerId === null && !requireRequestIdentity()) {
+    viewerId = numericId(u);
   }
   // No separate check that `u` matches the requester: the signature is
   // verified against whoever `viewerId` ended up being, so a url minted for

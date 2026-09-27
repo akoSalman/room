@@ -3520,6 +3520,81 @@ test('SECURITY: a media url issued to one person is refused for another', async 
   fsMod.rmSync(require('path').join('uploads', name), { force: true });
 });
 
+test('THE ONE THAT BROKE IT: each side can see the OTHER\'S photo in a DM', async () => {
+  // Reported as "I cannot see images sent by my friend, he cannot see mine,
+  // we can each see our own" — which names the bug precisely.
+  //
+  // mayViewUpload lets the UPLOADER through by comparing ids as strings, so
+  // your own photos loaded. Everything else goes through canAccessRoom, and
+  // for a DM that reads:
+  //
+  //     parseInt(parts[1]) === userId
+  //
+  // a strict comparison against a number. The gate was handing it a STRING,
+  // so it was false for everybody, always, and no photo ever crossed a DM.
+  //
+  // Every earlier test here used a public room, where canAccessRoom returns
+  // true before reaching any comparison. That is why none of them noticed.
+  const ali = await signUp('dmphoto1');
+  const sara = await signUp('dmphoto2');
+  const aSock = await connect(ali.token);
+  const sSock = await connect(sara.token);
+  const dm = await api(`/dm/${idOf(sara.token)}`, 'POST', null, ali.token);
+  assert.ok(dm && dm.id, `could not open the DM: ${JSON.stringify(dm)}`);
+
+  const fsMod = require('fs');
+  const pathMod = require('path');
+  const send = async (from, sock, name) => {
+    fsMod.mkdirSync('uploads', { recursive: true });
+    fsMod.writeFileSync(pathMod.join('uploads', name), 'photo bytes');
+    await emit(sock, 'send_message',
+      { roomId: dm.id, type: 'image', content: '', filePath: attach(name, from.token), fileName: name });
+  };
+  const aliPhoto = `dm-ali-${Date.now()}.jpg`;
+  const saraPhoto = `dm-sara-${Date.now()}.jpg`;
+  await send(ali, aSock, aliPhoto);
+  await send(sara, sSock, saraPhoto);
+
+  const urlFor = async (who, name) =>
+    (await api(`/messages/${dm.id}`, 'GET', null, who.token)).find(m => m.file_name === name);
+
+  // Each can see their own — this never broke, and is what made the failure
+  // look like something else.
+  assert.strictEqual((await raw((await urlFor(ali, aliPhoto)).file_path, 'GET', null, ali.token)).status, 200,
+    'the sender cannot see their own photo');
+  assert.strictEqual((await raw((await urlFor(sara, saraPhoto)).file_path, 'GET', null, sara.token)).status, 200,
+    'the sender cannot see their own photo');
+
+  // THE POINT: each can see the other's.
+  const saraSeesAli = await urlFor(sara, aliPhoto);
+  assert.ok(saraSeesAli, 'the photo never reached the other side of the DM');
+  assert.strictEqual((await raw(saraSeesAli.file_path, 'GET', null, sara.token)).status, 200,
+    "the other person's photo in a DM is refused — this is the reported bug");
+
+  const aliSeesSara = await urlFor(ali, saraPhoto);
+  assert.ok(aliSeesSara, 'the photo never reached the other side of the DM');
+  assert.strictEqual((await raw(aliSeesSara.file_path, 'GET', null, ali.token)).status, 200,
+    "the other person's photo in a DM is refused — this is the reported bug");
+
+  // THE PATH THE INSTALLED APP ACTUALLY USES: no header, no cookie.
+  //
+  // <Image> in the builds people have sends neither, so every real request for
+  // one of these photos arrives anonymous and falls back to the identity the
+  // url proves. Asserting only the header path is what let a string id reach
+  // canAccessRoom unnoticed in the first place — the tests all sent a token
+  // and the phones never do.
+  assert.strictEqual((await raw(saraSeesAli.file_path)).status, 200,
+    'the app as installed still cannot load the other side\'s DM photo');
+  assert.strictEqual((await raw(aliSeesSara.file_path)).status, 200,
+    'the app as installed still cannot load the other side\'s DM photo');
+
+  // …and somebody outside the DM still is not.
+  const nosy = await signUp('dmphoto3');
+  assert.strictEqual((await raw(saraSeesAli.file_path, 'GET', null, nosy.token)).status, 403,
+    'a stranger could read a DM photo');
+  for (const n of [aliPhoto, saraPhoto]) fsMod.rmSync(pathMod.join('uploads', n), { force: true });
+});
+
 test('SECURITY: leaving a private room takes its photos with you', async () => {
   // The scenario the old design could not express at all. The url was valid
   // for a week from issue, so somebody removed from a private room kept every
