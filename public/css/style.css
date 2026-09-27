@@ -1730,11 +1730,25 @@ body.commenting #install-hint { display: none; }
   font-size: 12px; font-weight: 700; letter-spacing: 0.4px;
   opacity: 0.6; margin: 12px 0 6px; text-transform: uppercase;
 }
+/* Padded, and capped so a room of thirty does not push the card off the
+   screen with no way back to the ✕. */
+.msginfo-card { max-width: 340px; }
+.msginfo-content { padding: 14px 20px 18px; max-height: 60vh; overflow-y: auto; }
 .msginfo-row {
   display: flex; align-items: baseline; justify-content: space-between;
   gap: 10px; padding: 4px 0;
 }
-.msginfo-name { font-size: 14px; }
+/* The avatar gets a column of its own.
+   It used to be glued onto the front of the username in the same text node,
+   so a person with an emoji had their name pushed right and a person without
+   one started at the edge — and since emoji are not all the same width, even
+   two avatars did not agree with each other. Names never formed a column. */
+.msginfo-person { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.msginfo-avatar { flex: none; width: 1.5em; text-align: center; }
+.msginfo-name {
+  font-size: 14px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 /* The time is secondary to the name — you look for the person first. */
 .msginfo-when { font-size: 12px; opacity: 0.6; white-space: nowrap; }
 .msginfo-empty { font-size: 13px; opacity: 0.6; padding: 2px 0; }

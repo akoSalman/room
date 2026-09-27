@@ -568,12 +568,20 @@
 <!-- ── Message info: who has seen it ──────────────── -->
 <!-- Names, not a count: "3 of 5" is not an answer to "who has seen it". -->
 <div id="msginfo-modal" class="modal-overlay hidden" onclick="closeMsgInfo()">
-  <div class="modal-card" style="max-width:340px" onclick="event.stopPropagation()">
-    <h3 style="margin:0 0 4px">Message info</h3>
-    <div id="msginfo-sent" class="msginfo-when"></div>
-    <div id="msginfo-body"></div>
-    <div class="modal-actions">
-      <button onclick="closeMsgInfo()">Close</button>
+  <!-- Built like every other modal here: a padded header with the ✕, and a
+       padded body. It used to put a bare <h3> and its rows straight into
+       .modal-card, which has no padding of its own — so the heading, the
+       names and the button all sat hard against the card's edges, and the
+       button's class (.modal-actions) was never defined in the stylesheet at
+       all, leaving it unstyled in the bottom corner. -->
+  <div class="modal-card msginfo-card" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h2>Message info</h2>
+      <button class="icon-btn" onclick="closeMsgInfo()">✕</button>
+    </div>
+    <div class="msginfo-content">
+      <div id="msginfo-sent" class="msginfo-when"></div>
+      <div id="msginfo-body"></div>
     </div>
   </div>
 </div>

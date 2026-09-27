@@ -5443,10 +5443,24 @@ function openMsgInfo(messageId) {
     const person = (p, when) => {
       const row = document.createElement('div');
       row.className = 'msginfo-row';
+      // The avatar is its OWN element, in a fixed-width column.
+      //
+      // It used to be concatenated onto the username in one text node, so a
+      // person with an emoji had their name pushed right by however wide that
+      // emoji happened to be and a person without one started at the edge.
+      // The names never lined up with each other.
+      const who = document.createElement('span');
+      who.className = 'msginfo-person';
+      const av = document.createElement('span');
+      av.className = 'msginfo-avatar';
+      // textContent, not innerHTML: an avatar is whatever the account stored.
+      av.textContent = p.avatar || '';
+      who.appendChild(av);
       const name = document.createElement('span');
       name.className = 'msginfo-name';
-      name.textContent = (p.avatar ? p.avatar + ' ' : '') + p.username;
-      row.appendChild(name);
+      name.textContent = p.username;
+      who.appendChild(name);
+      row.appendChild(who);
       if (when) {
         const t = document.createElement('span');
         t.className = 'msginfo-when';

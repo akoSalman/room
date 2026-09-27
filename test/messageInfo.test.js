@@ -149,6 +149,77 @@ test('THE APP USES THE SHARED RULES, rather than its own copy', () => {
   assert.ok(!/Number\(m\.id\) > 0 &&/.test(code), 'the old inline check is still there');
 });
 
+// This modal's markup and nothing else. An earlier version of these tests
+// sliced to the next '</div>\n</div>', which runs past the end of it and into
+// the modal that follows — so the assertions were reading the wrong element.
+function msgInfoMarkup(html) {
+  const i = html.indexOf('id="msginfo-modal"');
+  if (i < 0) return '';
+  // Past this modal's OWN opening tag first — it carries modal-overlay too,
+  // so searching from `i` matched itself and returned almost nothing.
+  const after = html.indexOf('>', i) + 1;
+  const next = html.indexOf('class="modal-overlay', after);
+  const slice = html.slice(i, next < 0 ? html.length : next);
+  // Comments stripped: this is a test about MARKUP, and the comment above
+  // this modal explains what it no longer does by naming it, which the
+  // assertion below then read as the thing still being there.
+  return slice.replace(/<!--[\s\S]*?-->/g, '');
+}
+
+// ── The web's layout ────────────────────────────────────────────────────────
+
+test('THE NAMES FORM A COLUMN, avatar or no avatar', () => {
+  // Reported from a screenshot: the names in this panel did not line up. The
+  // avatar was concatenated onto the front of the username in ONE text node,
+  // so a person with an emoji had their name pushed right by however wide
+  // that emoji happened to be, and a person without one started at the edge.
+  // Emoji are not all the same width either, so even two avatars disagreed.
+  const app = fs.readFileSync(path.join(ROOT, 'public', 'js', 'app.js'), 'utf8');
+  assert.ok(!/textContent = \(p\.avatar \? p\.avatar \+ ' ' : ''\) \+ p\.username/.test(app),
+    'the avatar is glued onto the username again, so the names go ragged');
+  const i = app.indexOf("row.className = 'msginfo-row'");
+  assert.ok(i > 0, 'the rows are gone');
+  const body = app.slice(i, i + 900);
+  assert.ok(/className = 'msginfo-avatar'/.test(body), 'the avatar has no column of its own');
+  assert.ok(/name\.textContent = p\.username/.test(body), 'the name is not on its own');
+
+  const css = fs.readFileSync(path.join(ROOT, 'public', 'css', 'style.css'), 'utf8');
+  const slot = /\.msginfo-avatar\s*\{[^}]*\}/.exec(css);
+  assert.ok(slot, 'the avatar column is not styled');
+  assert.ok(/width:/.test(slot[0]), 'the avatar column has no fixed width, so names still go ragged');
+  assert.ok(/flex:\s*none/.test(slot[0]), 'the avatar column can be squeezed, which moves the names');
+});
+
+test('THE PANEL IS PADDED, and its button is one the stylesheet knows', () => {
+  // .modal-card has no padding of its own — every other modal supplies it
+  // with .modal-header and a padded section. This one put a bare <h3> and its
+  // rows straight into the card, so everything sat hard against the edges,
+  // and its button carried a class (.modal-actions) that the stylesheet never
+  // defined at all.
+  const html = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
+  const i = html.indexOf('id="msginfo-modal"');
+  assert.ok(i > 0, 'the panel is gone');
+  const card = msgInfoMarkup(html);
+  assert.ok(/class="modal-header"/.test(card), 'the panel does not use the padded header every other modal has');
+  assert.ok(/class="msginfo-content"/.test(card), 'the body is unpadded, so the text touches the card edge');
+  assert.ok(!/modal-actions/.test(card), 'the button is back on a class the stylesheet does not define');
+
+  const css = fs.readFileSync(path.join(ROOT, 'public', 'css', 'style.css'), 'utf8');
+  const content = /\.msginfo-content\s*\{[^}]*\}/.exec(css);
+  assert.ok(content, 'the padded body is not styled');
+  assert.ok(/padding:/.test(content[0]), 'the body has no padding');
+  // A room of thirty must not push the close button off the screen.
+  assert.ok(/max-height:/.test(content[0]) && /overflow-y:\s*auto/.test(content[0]),
+    'a long list grows the card instead of scrolling, so there is no way back to the ✕');
+});
+
+test('…and the panel can still be closed', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
+  const card = msgInfoMarkup(html);
+  assert.ok((card.match(/closeMsgInfo\(\)/g) || []).length >= 2,
+    'the ✕ or the tap-outside close was lost');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }
