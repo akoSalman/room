@@ -71,6 +71,47 @@ test('NOTHING IS A KEY WHEN THERE IS NO NAME', () => {
   }
 });
 
+// ── The origin (the black-screen bug) ───────────────────────────────────────
+
+test('A PATH FROM THE SERVER IS MADE ABSOLUTE', () => {
+  // Reported as: opening an image and swiping to older photos that are not
+  // loaded in the chat gives a black screen. Every media route in this API
+  // answers with a PATH, and each caller prepends the origin itself — the
+  // media grid does, the chat does when building its own list. The viewer's
+  // whole-room list did not, so the photos that existed only in that list
+  // reached <Image> with no origin and could not be fetched at all.
+  const B = 'https://chat.example.com';
+  assert.strictEqual(V.absoluteUrl('/uploads/a.jpg?e=1&s=2&u=3', B),
+    'https://chat.example.com/uploads/a.jpg?e=1&s=2&u=3');
+  assert.strictEqual(V.absoluteUrl('uploads/a.jpg', B), 'https://chat.example.com/uploads/a.jpg');
+  // A trailing slash on the origin must not double up.
+  assert.strictEqual(V.absoluteUrl('/uploads/a.jpg', B + '/'), 'https://chat.example.com/uploads/a.jpg');
+});
+
+test('…and one that is ALREADY absolute is left exactly alone', () => {
+  // The two lists being merged are not the same shape. Prefixing an absolute
+  // url would produce nonsense, and would also break the merge, which matches
+  // photos by filename.
+  const B = 'https://chat.example.com';
+  for (const u of ['https://chat.example.com/uploads/a.jpg?e=1',
+                   'http://other.example/x.jpg',
+                   'file:///data/user/0/app/cache/staged.jpg',
+                   'content://media/external/images/1',
+                   'data:image/png;base64,AAAA']) {
+    assert.strictEqual(V.absoluteUrl(u, B), u, u);
+  }
+});
+
+test('nothing usable produces null, not a broken url', () => {
+  const B = 'https://chat.example.com';
+  for (const u of [null, undefined, '', 42, {}]) {
+    assert.strictEqual(V.absoluteUrl(u, B), null, JSON.stringify(u));
+  }
+  // No origin to prepend is not an excuse to hand back a bare path.
+  assert.strictEqual(V.absoluteUrl('/uploads/a.jpg', ''), null);
+  assert.strictEqual(V.absoluteUrl('/uploads/a.jpg', null), null);
+});
+
 // ── The merge ───────────────────────────────────────────────────────────────
 
 test('THE WHOLE CHAT IS BROWSABLE, which is the bug', () => {
@@ -247,6 +288,16 @@ test('THE GALLERY IS REPOSITIONED WHEN THE LIST GROWS', () => {
   assert.ok(/galleryRef\.current[\s\S]{0,40}setIndex\(/.test(chatCode),
     'the list can grow under the gallery without the strip being moved with it');
   assert.ok(/ref=\{galleryRef\}/.test(chatCode), 'the handle is never attached');
+});
+
+test('THE FETCHED LIST IS ABSOLUTE BEFORE IT REACHES THE VIEWER', () => {
+  // The bug above, asserted where it actually happened. The server answers
+  // with paths; <Image> needs an origin.
+  const i = chatCode.indexOf('async function loadFullImages');
+  assert.ok(i > 0, 'the whole-room list is no longer fetched');
+  const body = chatCode.slice(i, chatCode.indexOf('\n  }', i));
+  assert.ok(/absoluteUrl\(u, BASE_URL\)/.test(body),
+    'paths from the server go to <Image> without an origin, which renders black');
 });
 
 test('THE FULL LIST IS FETCHED ONCE PER CHAT', () => {

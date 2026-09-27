@@ -68,7 +68,7 @@ import * as messageInfo from '../messageInfo';
 import * as live from '../liveIndicator';
 import * as saveTarget from '../saveTarget';
 import * as reactionBurst from '../reactionBurst';
-import { mergeViewerList } from '../viewerList';
+import { mergeViewerList, absoluteUrl } from '../viewerList';
 import ReactionBurst from '../components/ReactionBurst';
 import * as pick from '../locationPick';
 import { uploadResumable } from '../chunkedUpload';
@@ -336,8 +336,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     fullImagesPending.current = true;
     try {
       const res = await apiFetch(`/room-images/${roomId}`);
+      // Absolute, because the server answers with PATHS and <Image> cannot
+      // fetch one. The chat's own list is already absolute and the media grid
+      // prepends the origin itself; this list did neither, so every photo that
+      // existed only here rendered as a black screen.
       const images = res && !res.error && Array.isArray(res.images)
-        ? res.images.filter((u: any) => typeof u === 'string' && u) : [];
+        ? res.images
+            .map((u: any) => absoluteUrl(u, BASE_URL))
+            .filter((u: string | null): u is string => !!u)
+        : [];
       fullImagesRef.current = { roomId, images };
       if (images.length) upgradeViewer(images);
     } catch {

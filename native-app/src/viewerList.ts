@@ -128,3 +128,26 @@ function place(images: string[], current: string | null): { images: string[]; in
   if (idx >= 0) return { images, index: idx };
   return { images: [current, ...images], index: 0 };
 }
+
+/**
+ * An absolute url for a path the server gave us.
+ *
+ * Every media route in this API answers with a path — '/uploads/x.jpg?e=..'
+ * — and each caller prepends the origin itself. The media grid does it
+ * (`openViewer(`${BASE_URL}${images[idx]}`, …)`); the chat does it when it
+ * builds its own list. The viewer's whole-room list did not, so the photos
+ * that existed ONLY in that list went to <Image> with no origin on them and
+ * rendered as a black screen, while every photo the chat had already loaded
+ * was fine. That is precisely how it was reported.
+ *
+ * Idempotent, because the two lists being merged are not the same shape and
+ * the one that is already absolute must survive untouched.
+ */
+export function absoluteUrl(u: unknown, baseUrl: unknown): string | null {
+  if (typeof u !== 'string' || !u) return null;
+  // Already absolute, or a local file being previewed before it is sent.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(u)) return u;
+  if (typeof baseUrl !== 'string' || !baseUrl) return null;
+  const root = baseUrl.replace(/\/+$/, '');
+  return u.startsWith('/') ? root + u : root + '/' + u;
+}
