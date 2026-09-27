@@ -219,6 +219,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
 }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [reactions, setReactions] = useState<Record<number, Reaction[]>>({});
+  // The live reactions, for the socket listener — which is created once and
+  // would otherwise compare against a snapshot from when the chat opened.
+  const reactionsRef = useRef<Record<number, Reaction[]>>({});
+  reactionsRef.current = reactions;
   // messageId -> the emoji currently flying up on it. Keyed by message so two
   // people reacting to different messages both get their animation.
   const [bursts, setBursts] = useState<Record<string, string>>({});
@@ -2174,15 +2178,29 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         // These now also arrive on our personal channel (so they reach us even
         // when backgrounded), which means updates for OTHER rooms land here too.
         if (roomId != null && roomId !== room.id) return;
-        setReactions(prev => {
-          // Worked out HERE, inside the updater, because it needs the list as
-          // it was a moment ago — and reading that from `reactions` outside
-          // would be a stale closure, which is how this would silently stop
-          // animating anything after the first time.
-          const added = reactionBurst.addedEmoji({ prev: prev[messageId], next: r });
-          if (added) setBursts(b => ({ ...b, [String(messageId)]: added }));
-          return { ...prev, [messageId]: r };
+        // Read from a ref rather than from `reactions`, which would be a stale
+        // closure — this listener is created once and would otherwise compare
+        // against whatever the reactions were when the chat opened, and stop
+        // animating anything after the first time.
+        //
+        // `|| []` is the fix for "it only animates sometimes".
+        //
+        // No entry for a message means it had NO reactions, which is exactly
+        // the state a FIRST reaction arrives into — much the commonest case
+        // there is. Treating it as "never seen, so say nothing" meant the
+        // first reaction on any message never animated, for anybody, and the
+        // second one did. Tried against a message that had already been
+        // reacted to, it worked; tried against a fresh one, it did not — which
+        // is why it was reported as only working for some emoji, and as
+        // showing for one person and not the other.
+        //
+        // Opening a chat still cannot burst the whole history: that path sets
+        // the reactions straight from /room-reactions and never comes here.
+        const added = reactionBurst.addedEmoji({
+          prev: reactionsRef.current[messageId] || [], next: r,
         });
+        if (added) setBursts(b => ({ ...b, [String(messageId)]: added }));
+        setReactions(prev => ({ ...prev, [messageId]: r }));
       });
       onSock('room_online', ({ users }: any) => setOnline(users));
       // Only about THIS chat. Reported on the web as a stranger's "is typing"

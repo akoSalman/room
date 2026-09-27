@@ -103,17 +103,65 @@ test('three seconds, as asked for', () => {
 const chat = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
 const chatCode = chat.split('\n').filter(l => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
 
-test('THE COMPARISON USES THE LIST AS IT WAS, not a stale copy', () => {
-  // It has to run inside the state updater. Reading the previous reactions
-  // from the component's own `reactions` would capture whatever they were
-  // when the listener was created — so it would animate once and then
-  // silently never again, which is a bug that looks like a flaky animation.
+test('THE FIRST REACTION ON A MESSAGE ANIMATES — reported as "only some emoji"', () => {
+  // The bug. A message with no reactions has no entry in the map, and the
+  // handler passed that `undefined` straight through, which addedEmoji reads
+  // as "never seen, say nothing". So the FIRST reaction on any message never
+  // animated — for anybody — and the second one did.
+  //
+  // Tried on a message that had already been reacted to it worked; tried on a
+  // fresh one it did not. That is why it came back as "should work for all
+  // emojis" and "should show for both sender and receiver": both are the same
+  // fact, seen from two angles.
   const i = chatCode.indexOf("onSock('reactions_updated'");
   assert.ok(i > 0, 'the app no longer listens for reactions');
   const body = chatCode.slice(i, chatCode.indexOf('});', i));
-  assert.ok(/setReactions\(prev =>/.test(body), 'the update no longer reads the previous list');
-  assert.ok(/addedEmoji\(\{ prev: prev\[messageId\]/.test(body),
-    'the comparison is made against something other than the live previous list');
+  assert.ok(/reactionsRef\.current\[messageId\] \|\| \[\]/.test(body),
+    'a message with no reactions yet is still treated as never seen, so its first reaction is silent');
+});
+
+test('THE COMPARISON USES THE LIST AS IT IS, not a stale copy', () => {
+  // This listener is created once. Reading the previous reactions from the
+  // component's own `reactions` would capture whatever they were when the
+  // chat opened — so it would animate once and then silently never again,
+  // which is a bug that looks like a flaky animation. A ref is always
+  // current; the state variable is not.
+  const i = chatCode.indexOf("onSock('reactions_updated'");
+  const body = chatCode.slice(i, chatCode.indexOf('});', i));
+  assert.ok(/reactionsRef\.current/.test(body),
+    'the comparison is made against something other than the live list');
+  assert.ok(/reactionsRef\.current = reactions/.test(chatCode),
+    'the ref is never kept in step, so it is stale from the first render');
+  // And no setState from inside another setState's updater: React may run an
+  // updater more than once, which would fire the animation twice.
+  assert.ok(!/setReactions\(prev => \{[\s\S]{0,400}setBursts/.test(chatCode),
+    'the animation is triggered from inside a state updater, which may run twice');
+});
+
+test('OPENING A CHAT STILL CANNOT BURST THE WHOLE HISTORY', () => {
+  // The protection the old guard was believed to provide. It does not live in
+  // addedEmoji — it lives in the fact that the bulk load sets the reactions
+  // directly and never asks whether anything was added.
+  const i = chatCode.indexOf('/room-reactions/');
+  assert.ok(i > 0, 'reactions are no longer loaded on open');
+  const body = chatCode.slice(i, i + 400);
+  assert.ok(/setReactions\(/.test(body), 'the bulk load no longer sets the reactions');
+  assert.ok(!/addedEmoji|setBursts/.test(body),
+    'loading a chat now animates every reaction in its history at once');
+});
+
+test('BOTH PEOPLE ARE TOLD, including whoever reacted', () => {
+  // "It should show for both sender and receiver." Nothing can animate on a
+  // device that is never told, so the server has to reach both — and it must
+  // be io.to, not socket.to, which excludes the sender.
+  const server = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const i = server.indexOf("socket.on('toggle_reaction'");
+  assert.ok(i > 0, 'reactions can no longer be toggled');
+  const body = server.slice(i, server.indexOf('\n  });', i));
+  assert.ok(/io\.to\(String\(msg\.room_id\)\)\.emit\('reactions_updated'/.test(body),
+    'the reaction is not broadcast to the room, or is sent with socket.to, which skips the sender');
+  assert.ok(/getRoomMemberIds\(room\)\.forEach\(id => io\.to\('user:' \+ id\)/.test(body),
+    'a member whose app is backgrounded is never told');
 });
 
 test('THE EMOJI IS ACTUALLY DRAWN, on the message', () => {
