@@ -505,18 +505,54 @@ function setMediaCookie(res, token) {
  * url-encoded inside the filename. validMediaSig already took its arguments
  * explicitly for this reason; taking them here keeps that true one level up.
  */
+/**
+ * Require the identity to come from the REQUEST, refusing a url that can only
+ * prove who it was issued to.
+ *
+ * Off until the app that sends the header is in people's hands.
+ *
+ * It was on for about two hours, and every phone stopped loading pictures: the
+ * installed builds send no Authorization header on an <Image> and evidently no
+ * cookie either, so every request was unidentified and every photo 403'd. That
+ * is the whole reason this is a switch and not a constant.
+ */
+// Read per request rather than captured at startup, so it can be turned on
+// the moment the new build is out without restarting and dropping every
+// socket — and so a test can exercise both modes.
+const requireRequestIdentity = () => process.env.REQUIRE_REQUEST_IDENTITY === '1';
+
 function mediaDecision(req, name, e, s, u) {
-  // The authenticated requester. `u` is only ever compared against this, never
-  // trusted in its place.
+  // Who is asking, preferred from the request — a header or the cookie — which
+  // is the only source a forwarded url cannot fake.
   const who = viewerFromRequest(req);
-  const viewerId = who === null || who === undefined ? null : String(who);
-  // No separate check that the url's `u` matches: the signature is verified
-  // against the AUTHENTICATED viewer, so a url minted for somebody else simply
-  // fails to verify. Comparing `u` as well was tried, and no test could tell
-  // the difference — which is the definition of a line that only looks like a
-  // safeguard. `u` is therefore what it appears to be: a cache key, and a note
-  // to a human reading a log.
-  void u;
+  let viewerId = who === null || who === undefined ? null : String(who);
+
+  // Nothing on the request. Fall back to the identity the URL claims, but only
+  // when the signature proves we issued it to that person.
+  //
+  // This is weaker, and the weakness is exactly one thing: a url forwarded out
+  // of the app works for whoever receives it, because `u` is self-asserted and
+  // nothing else contradicts it. Everything else still holds — the room is
+  // checked on every request, so being removed from a private room still stops
+  // the pictures, and a url still cannot be minted for a file you have no
+  // claim to.
+  //
+  // It is here because the alternative, for the weeks until the new app is
+  // installed, is that nobody sees any photograph at all.
+  //
+  // The signature is NOT re-checked here: `sigValid` below is computed against
+  // whatever viewerId ends up being, so a url with a forged or absent `u` is
+  // refused there. Checking it twice was tried and no mutation could tell the
+  // difference.
+  if (viewerId === null && !requireRequestIdentity()
+      && u !== undefined && u !== null && u !== '') {
+    viewerId = String(u);
+  }
+  // No separate check that `u` matches the requester: the signature is
+  // verified against whoever `viewerId` ended up being, so a url minted for
+  // somebody else simply fails to verify. Comparing `u` as well was tried and
+  // no test could tell the difference — the definition of a line that only
+  // looks like a safeguard.
   return mediaAccess.decide({
     name,
     viewerId,

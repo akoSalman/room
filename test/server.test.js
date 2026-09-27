@@ -3479,10 +3479,44 @@ test('SECURITY: a media url issued to one person is refused for another', async 
 
   // THE POINT: Ali's url does not work for Sara — not even with her token,
   // and not for somebody with no token at all.
+  // Sara's request DOES carry identity, so the fallback never applies: the
+  // signature is checked against Sara and Ali's url fails.
   assert.strictEqual((await raw(mine.file_path, 'GET', null, sara.token)).status, 403,
     "one member's signed url was accepted for another member");
-  assert.strictEqual((await raw(mine.file_path)).status, 403,
-    'a forwarded url served the file to an anonymous stranger');
+  // A request carrying NOTHING — no header, no cookie — is the shape every
+  // already-installed app makes, because <Image> sends neither. Until the
+  // build that does is in people's hands, such a request falls back to the
+  // identity the url proves, and is still access-checked against the room.
+  //
+  // This is the one thing the fallback costs: a url forwarded out of the app
+  // works for whoever receives it. It is deliberate, temporary, and switched.
+  assert.strictEqual((await raw(mine.file_path)).status, 200,
+    'the fallback is gone, and every installed app has stopped showing photos');
+
+  // The fallback is not a way in. A request with no credentials and a url
+  // whose signature does not hold is refused, and so is one that simply names
+  // a user without proving anything — otherwise `?u=<any id>` would be enough
+  // to read any file that user can see.
+  const tamperedAnon = mine.file_path.replace(/s=(.)/, (m, c) => 's=' + (c === 'A' ? 'B' : 'A'));
+  assert.strictEqual((await raw(tamperedAnon)).status, 403,
+    'a tampered signature was accepted from an anonymous request');
+  const bare = mine.file_path.split('?')[0] + `?u=${idOf(ali.token)}`;
+  assert.strictEqual((await raw(bare)).status, 403,
+    'naming a user was enough to read their media, with no signature at all');
+
+  // …and with the switch thrown, which is the end state, it is refused.
+  process.env.REQUIRE_REQUEST_IDENTITY = '1';
+  try {
+    assert.strictEqual((await raw(mine.file_path)).status, 403,
+      'a forwarded url still served the file to an anonymous stranger');
+    // The person it belongs to is unaffected, because they send a header.
+    assert.strictEqual((await raw(mine.file_path, 'GET', null, ali.token)).status, 200,
+      'the owner of the url was refused in strict mode');
+    assert.strictEqual((await raw(mine.file_path, 'GET', null, sara.token)).status, 403,
+      "one member's url was accepted for another in strict mode");
+  } finally {
+    delete process.env.REQUIRE_REQUEST_IDENTITY;
+  }
   fsMod.rmSync(require('path').join('uploads', name), { force: true });
 });
 
