@@ -3595,6 +3595,45 @@ test('THE ONE THAT BROKE IT: each side can see the OTHER\'S photo in a DM', asyn
   for (const n of [aliPhoto, saraPhoto]) fsMod.rmSync(pathMod.join('uploads', n), { force: true });
 });
 
+test('a private GROUP room: an invited member sees the others\' photos', async () => {
+  // The third shape of canAccessRoom, and the one still untested after the DM
+  // failure. A public room returns true before any comparison; a DM compares
+  // ids in JavaScript; this one falls through to a room_members lookup, where
+  // a string id is coerced by the column's affinity and therefore works by
+  // accident rather than by design. Worth pinning either way — and worth
+  // running down the ANONYMOUS path, because that is the one the phones take.
+  const owner = await signUp('grpphoto1');
+  const guest = await signUp('grpphoto2');
+  const oSock = await connect(owner.token);
+  const gSock = await connect(guest.token);
+  const priv = await api('/rooms', 'POST', { name: 'grp-priv-photos', isPrivate: true }, owner.token);
+  await emit(oSock, 'invite_to_room', { roomId: priv.id, username: 'grpphoto2' });
+  await emit(gSock, 'accept_invite', { roomId: priv.id });
+
+  const fsMod = require('fs');
+  const pathMod = require('path');
+  const name = `grp-${Date.now()}.jpg`;
+  fsMod.mkdirSync('uploads', { recursive: true });
+  fsMod.writeFileSync(pathMod.join('uploads', name), 'group photo bytes');
+  await emit(oSock, 'send_message',
+    { roomId: priv.id, type: 'image', content: '', filePath: attach(name, owner.token), fileName: name });
+
+  const asGuest = (await api(`/messages/${priv.id}`, 'GET', null, guest.token))
+    .find(m => m.file_name === name);
+  assert.ok(asGuest, 'the photo never reached the invited member');
+  assert.strictEqual((await raw(asGuest.file_path, 'GET', null, guest.token)).status, 200,
+    'an invited member cannot see a photo in their own private room');
+  // The path every installed build actually takes.
+  assert.strictEqual((await raw(asGuest.file_path)).status, 200,
+    'the app as installed cannot load a private group room\'s photos');
+
+  // And somebody never invited still cannot.
+  const outsider = await signUp('grpphoto3');
+  assert.strictEqual((await raw(asGuest.file_path, 'GET', null, outsider.token)).status, 403,
+    'a stranger could read a private group room\'s photo');
+  fsMod.rmSync(pathMod.join('uploads', name), { force: true });
+});
+
 test('SECURITY: leaving a private room takes its photos with you', async () => {
   // The scenario the old design could not express at all. The url was valid
   // for a week from issue, so somebody removed from a private room kept every
