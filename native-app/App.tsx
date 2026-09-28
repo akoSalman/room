@@ -38,6 +38,7 @@ import { BUILD_VERSION } from './src/version';
 import * as storage from './src/storage';
 import * as socketNotifier from './src/socketNotifier';
 import { C } from './src/theme';
+import * as notifyOnce from './src/notifyOnce';
 
 // Keep the app layout LTR even on RTL locales (Persian/Arabic): mirroring the
 // whole UI made screens look broken; message text itself still renders RTL.
@@ -77,8 +78,24 @@ I18nManager.forceRTL(false);
 Notifications.setNotificationHandler({
   // Playback controls are no longer a notification we draw — the media session
   // owns that now — so nothing here needs an exception.
-  handleNotification: async () => {
+  handleNotification: async (notification: any) => {
     const inApp = AppState.currentState === 'active';
+    // Has the socket already drawn this one?
+    //
+    // Reported as: sometimes both the socket notification and the Firebase
+    // one arrive for the same message. They carry the same tag and were
+    // supposed to collapse — they cannot, because expo posts with the Android
+    // id 0 and notifee with String.hashCode(), and Android keys a
+    // notification by (tag, id). So the two routes agree in JavaScript
+    // instead: whichever asks first draws it. See notifyOnce.ts.
+    //
+    // A push with no msgId — a call, an update — has nothing to key on and is
+    // always allowed through.
+    const msgId = notification?.request?.content?.data?.msgId;
+    if (!notifyOnce.claim(msgId)) {
+      notifyDiag.record('handler', false);
+      return { shouldShowAlert: false, shouldPlaySound: false, shouldSetBadge: false };
+    }
     // Recorded so the diagnostics screen can say whether messages are arriving
     // and being refused, rather than not arriving at all. Those two look
     // identical from outside and need opposite fixes.

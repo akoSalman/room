@@ -30,6 +30,7 @@ import * as Notifications from 'expo-notifications';
 import { AppState } from 'react-native';
 import * as pushReg from './pushRegistration';
 import * as notifyDiag from './notifyDiag';
+import * as notifyOnce from './notifyOnce';
 
 /** The channel the server names in every push. Kept in step with App.tsx. */
 export const MESSAGES_CHANNEL = 'messages-v3';
@@ -202,9 +203,19 @@ export function attach(socket: any, opts?: { pushRegistered?: () => boolean }): 
       notifyDiag.record('socket-skipped', undefined, decision.reason);
       return;
     }
+    // The push may already have drawn this one.
+    //
+    // The shared tag was supposed to make them collapse and cannot: expo posts
+    // with the Android id 0 and notifee with String.hashCode(), and Android
+    // keys a notification by (tag, id). So the two routes agree here instead —
+    // whichever asks first draws it. See notifyOnce.ts.
+    if (!notifyOnce.claim(msg.id)) {
+      notifyDiag.record('socket-skipped', undefined, 'already-notified');
+      return;
+    }
     notifee.displayNotification({
-      // The same tag the server puts on its push, so whichever arrives first
-      // is shown and the other replaces it rather than stacking.
+      // Still the server's tag, so a delete can pull it from the tray by name
+      // whichever route drew it.
       id: pushReg.notificationTag(msg.id),
       title: msg.username,
       body: bodyFor(msg?.type),
