@@ -279,15 +279,42 @@ test('THE VIEWER OPENS AT ONCE, and is corrected after', () => {
   assert.ok(!/await /.test(body), 'opening a photo now waits on the network');
 });
 
-test('THE GALLERY IS REPOSITIONED WHEN THE LIST GROWS', () => {
-  // The library renders `data` directly and its offset is index * width, so
-  // growing the list moves every photo after the insertion point WITHOUT
-  // moving the strip: the photo on screen silently becomes a different one.
-  // Its imperative setIndex is the only thing that repositions atomically.
-  assert.ok(/galleryRef/.test(chatCode), 'there is no handle on the gallery');
-  assert.ok(/galleryRef\.current[\s\S]{0,40}setIndex\(/.test(chatCode),
-    'the list can grow under the gallery without the strip being moved with it');
-  assert.ok(/ref=\{galleryRef\}/.test(chatCode), 'the handle is never attached');
+test('THE LIST NEVER GROWS UNDER AN OPEN VIEWER', () => {
+  // Reported as: the counter shows the loaded-window total, the screen goes
+  // black for an instant, then the counter corrects itself and the picture
+  // comes back.
+  //
+  // That black frame was structural, not a slow load. Splicing a longer list
+  // into the open viewer renumbers every photo after the insertion point, so
+  // the gallery has to be jumped to the current photo's NEW index — and it
+  // keys its children by position, so the jump unmounts the loaded image and
+  // mounts a fresh one, which starts blank. Caching could never have fixed
+  // it.
+  //
+  // So the list is complete before the viewer opens and is not touched while
+  // it is open. No handle on the gallery, no setIndex, no re-splice.
+  assert.ok(!/upgradeViewer/.test(chatCode),
+    'the list is spliced into the open viewer again, which costs a black frame');
+  assert.ok(!/galleryRef/.test(chatCode), 'the gallery is being repositioned again');
+  assert.ok(!/setViewer\(next\)/.test(chatCode), 'the viewer is rebuilt while it is open');
+});
+
+test('…so the whole list is fetched BEFORE anybody opens a photo', () => {
+  assert.ok(/useEffect\(\(\) => \{[\s\S]{0,400}loadFullImages\(room\.id\)/.test(chatCode),
+    'the list is still fetched on the first tap, which is what caused the flash');
+  const i = chatCode.indexOf('function openViewer');
+  const body = chatCode.slice(i, chatCode.indexOf('\n  }', i));
+  assert.ok(!/loadFullImages/.test(body), 'opening a photo still triggers the fetch');
+});
+
+test('…and a chat with no photos costs no request at all', () => {
+  // These connections are paid for by the megabyte. A conversation that is
+  // only text must not fetch a photo list.
+  const i = chatCode.indexOf('const asked = fullImagesRef.current');
+  assert.ok(i > 0, 'the guard is gone');
+  const body = chatCode.slice(i, i + 220);
+  assert.ok(/!chatImageUrls\(\)\.length/.test(body),
+    'a text-only chat asks the server for its photos anyway');
 });
 
 test('THE FETCHED LIST IS ABSOLUTE BEFORE IT REACHES THE VIEWER', () => {

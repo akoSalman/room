@@ -304,14 +304,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   // out rather than left open underneath.)
   const [viewerFromMedia, setViewerFromMedia] = useState(false);
   const viewerUrl = viewer ? viewer.images[viewerIdx] ?? null : null;
-  // Read back by the code that grows the list under the open viewer, which
-  // must see where the swiping has got to rather than where it started.
-  const viewerRef = useRef<{ images: string[]; index: number } | null>(null);
-  viewerRef.current = viewer;
-  const viewerIdxRef = useRef(0);
-  viewerIdxRef.current = viewerIdx;
-  // A handle on the gallery, needed for one thing only: see upgradeViewer.
-  const galleryRef = useRef<any>(null);
   // The room's whole photo list, asked for once.
   //
   // An entry for this room means the question has been ASKED; an empty list
@@ -328,12 +320,27 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   }
 
   /**
-   * The room's whole photo list.
+   * The room's whole photo list, fetched BEFORE anybody opens a photo.
    *
-   * ~75 bytes a photo on a connection paid for by the megabyte, so: once per
-   * chat, and only after a photo has actually been opened. Nothing here can
-   * fail loudly — every way it can go wrong leaves the viewer exactly as it
-   * was, which is the behaviour that shipped before this existed.
+   * It used to be fetched on the first tap and spliced into the viewer while
+   * it was open. That is what produced the reported sequence: the counter
+   * showed the loaded-window total, then the screen went black, then the
+   * counter corrected itself and the picture came back.
+   *
+   * The black frame was not a loading failure. Growing the list renumbers
+   * every photo after the insertion point, so the gallery had to be jumped to
+   * the current photo's NEW index — and that gallery keys its children by
+   * position, so the jump unmounts the loaded image and mounts a fresh one,
+   * which starts blank. The flash was structural and no amount of caching
+   * would have removed it.
+   *
+   * So the list is now complete before the viewer ever opens, and never
+   * changes underneath it. Asked for once per room, in the background, and
+   * only when the chat is known to contain photos at all — no request for a
+   * conversation that is only text, on connections paid for by the megabyte.
+   *
+   * Nothing here can fail loudly: every way it can go wrong leaves the viewer
+   * exactly as it behaved before this existed.
    */
   async function loadFullImages(roomId: any) {
     if (fullImagesPending.current) return;
@@ -350,7 +357,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
             .filter((u: string | null): u is string => !!u)
         : [];
       fullImagesRef.current = { roomId, images };
-      if (images.length) upgradeViewer(images);
     } catch {
       // Asked, nothing to be had. Remembered so it is not asked again.
       fullImagesRef.current = { roomId, images: [] };
@@ -359,38 +365,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     }
   }
 
-  /**
-   * Grow the list under a viewer that is already open, without moving the
-   * photo being looked at.
-   *
-   * The gallery renders its `data` prop directly and positions the strip at
-   * `index * width`. So inserting the chat's older photos ahead of the current
-   * one shifts every photo along while the strip stays put — the picture on
-   * screen silently becomes a different picture. Its imperative `setIndex` is
-   * the only thing that moves state, shared value and offset together, so it
-   * has to be told, and one frame later, after the new `data` has rendered.
-   */
-  function upgradeViewer(full: string[]) {
-    const prev = viewerRef.current;
-    if (!prev) return;
-    const current = prev.images[viewerIdxRef.current] ?? null;
-    const next = mergeViewerList({ local: prev.images, full, current });
-    if (next.images.length === prev.images.length && next.index === viewerIdxRef.current) return;
-    setViewer(next);
-    setViewerIdx(next.index);
-    requestAnimationFrame(() => {
-      try { galleryRef.current?.setIndex(next.index, false); } catch {}
-    });
-  }
-
   // `list` lets a caller supply the exact set being browsed (the media
   // gallery's own images, in its own order). Without it the media gallery's
   // urls often weren't found in the chat's list, so the viewer opened at
   // index 0 — the wrong image — and swiping went somewhere unrelated.
   //
-  // Opening never waits on the network. A tap that holds the screen for a
-  // round trip on these connections reads as the app having ignored it, so the
-  // viewer opens with whatever is known and is corrected a moment later.
+  // Opening never waits on the network, and never changes its mind afterwards.
+  // A tap that holds the screen for a round trip reads as the app having
+  // ignored it; a list that grows while you are looking at it costs a black
+  // frame, because the gallery keys its children by position and renumbering
+  // them remounts the one on screen. So the list is whatever is known at this
+  // moment, and it stays that way until the viewer closes.
   function openViewer(url: string, list?: string[]) {
     const base = list ?? chatImageUrls();
     // A caller that supplied its own set is browsing that set — the media
@@ -400,10 +385,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     setViewerIdx(index);
     setViewerNoCache(noCacheUrls());
     setViewer({ images, index });
-    // Keyed by room, so a cached answer for the previous chat is not mistaken
-    // for an answer about this one.
-    const asked = fullImagesRef.current && fullImagesRef.current.roomId === room.id;
-    if (!list && !asked) void loadFullImages(room.id);
+    // No fetch from here any more — see loadFullImages. If it has not arrived
+    // yet this view gets the chat's own list, which is what it had before this
+    // feature existed, and the next one gets all of them.
   }
   function closeViewer() {
     // Remember the image being looked at, not the scroll offset — the grid
@@ -2593,6 +2577,27 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     });
     return urls;
   }
+
+  /**
+   * Ask for the room's whole photo list in the background, once.
+   *
+   * Before anybody opens a photo, deliberately: fetching it on the first tap
+   * meant splicing a longer list into an open viewer, which renumbers the
+   * photos, forces the gallery to jump, and remounts the picture on screen as
+   * a black frame. That was the reported "counter is wrong, then black, then
+   * it corrects itself".
+   *
+   * Gated on the chat actually having photos, so a conversation that is only
+   * text costs nothing. Runs again on each batch of messages until it fires,
+   * which is how a chat whose first screen happens to be all text still gets
+   * its list once the user scrolls to a photo.
+   */
+  useEffect(() => {
+    const asked = fullImagesRef.current && fullImagesRef.current.roomId === room.id;
+    if (asked || !chatImageUrls().length) return;
+    void loadFullImages(room.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages.length, room.id]);
 
   function revealOneTime(msg: Message) {
     setRevealedOneTime(prev => new Set(prev).add(msg.id));
@@ -5458,7 +5463,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
           {viewer && (
             <>
               <AwesomeGallery
-                ref={galleryRef}
                 data={viewer.images}
                 initialIndex={viewer.index}
                 numToRender={3}
