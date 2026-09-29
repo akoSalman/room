@@ -230,10 +230,6 @@
       <button onclick="composerRecord()">🎙 Voice</button>
       <button id="composer-one-time" onclick="composerOneTime()">🔥 One-time</button>
       <button onclick="LocPicker.open()">📍 Location</button>
-      <!-- Hidden until we know the browser can be asked for the clipboard.
-           Ctrl+V and drag-and-drop already work; neither exists on a phone. -->
-      <button id="composer-paste" class="hidden" onclick="composerPaste()"
-              title="Paste an image or file">📋 Paste</button>
       <button id="composer-emoji" class="hidden" onclick="openQuickEmoji()" title="Quick emojis">😊</button>
     </div>
     <!-- Staged media preview (media is sent only when the user hits send) -->
@@ -249,11 +245,17 @@
     <!-- Normal input bar -->
     <div id="input-bar">
       <input type="file" id="file-input" style="display:none" multiple onchange="stageFile()" />
-      <input id="msg-input" type="text" placeholder="Message..." name="chat-message"
+      <!-- A TEXTAREA, not an <input type="text">.
+           A single-line input scrolls sideways: once the message is wider than
+           the box, everything typed earlier is pushed out of sight and there
+           is no way to see it while writing. Reported as the composer hiding
+           the text. This grows down to a few lines instead, and Shift+Enter
+           makes a new line — Enter still sends. -->
+      <textarea id="msg-input" placeholder="Message..." name="chat-message" rows="1"
         dir="auto"
         autocomplete="off" autocorrect="off" autocapitalize="sentences" spellcheck="false"
         data-lpignore="true" data-form-type="other" data-1p-ignore
-        onkeydown="handleInputKey(event)" oninput="onTypingInput()" />
+        onkeydown="handleInputKey(event)" oninput="onTypingInput(); resizeComposer()"></textarea>
       <button id="send-btn" onclick="sendOrSave()" class="send-btn">➤</button>
     </div>
 

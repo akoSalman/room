@@ -347,22 +347,25 @@ test('…and neither is an empty clipboard', () => {
   assert.ok(broke && !/allow/i.test(broke), broke);
 });
 
-test('the web has a paste button, and it reads the clipboard in the click', () => {
+test('THE PASTE BUTTON IS GONE, and pasting still works without it', () => {
+  // Asked for: remove the Paste button. It was only ever offered where the
+  // clipboard could be read on demand — never on a phone — and it duplicated
+  // Ctrl+V, which works everywhere and needed no button.
+  //
+  // What this test guards is that removing the BUTTON did not remove the
+  // FEATURE with it. The handlers below are what actually do the work.
   const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'app.js'), 'utf8');
   const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
-  assert.ok(/id="composer-paste"[^>]*onclick="composerPaste\(\)"/.test(html),
-    'there is no way to paste without a keyboard');
-  assert.ok(/PasteDrop\.clipboardReadable\(navigator\)/.test(src),
-    'the button is shown in browsers that cannot read the clipboard');
-  const fn = src.slice(src.indexOf('async function composerPaste()'), src.indexOf('function setupPasteAndDrop('));
-  assert.ok(fn.length > 0, 'composerPaste is gone — this check would be vacuous');
-  // Safari grants the clipboard only to a read inside the user gesture, and
-  // any await before it spends that gesture.
-  assert.ok(!/await [\s\S]*?await navigator\.clipboard\.read\(\)/.test(fn),
-    'something is awaited before the clipboard read, which loses the user gesture in Safari');
-  assert.ok(fn.includes('PasteDrop.pickType('), 'the button takes the text beside a copied image');
-  assert.ok(fn.includes('stageFiles(files)'), 'a pasted file is never staged');
-  assert.ok(/input\.value \+= text/.test(fn), 'a clipboard holding only text is refused');
+  assert.ok(!/composer-paste/.test(html), 'the Paste button is back');
+  assert.ok(!/composerPaste/.test(src), 'its handler is still here, unreachable');
+  // Ctrl+V does the work now, through a different pair of rules — the button
+  // read the clipboard on demand (pickType/pastedName), the handler is HANDED
+  // it by the browser (pasteCarriesFiles/filesFrom). Removing the button
+  // therefore left pickType and pastedName with no caller in the web, and
+  // that is fine: they are pure, tested above, and the app still uses them.
+  assert.ok(/PasteDrop\.pasteCarriesFiles\(/.test(src), 'Ctrl+V no longer recognises a file');
+  assert.ok(/PasteDrop\.filesFrom\(/.test(src), 'Ctrl+V no longer extracts the file');
+  assert.ok(/stageFiles\(/.test(src), 'a pasted or dropped file is never staged');
 });
 
 // ── The wiring, which no unit test can reach ────────────────────────────────

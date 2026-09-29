@@ -1257,6 +1257,9 @@ function restoreDraft(roomId) {
   el.value = TextDraft.restoredText(saved, el.value);
   draftWritten = el.value;
   Bidi.applyDirection(el, el.value);
+  // A restored draft can be several lines long, and the box is only one line
+  // until something measures it.
+  resizeComposer();
   updateComposerButtons();
 }
 
@@ -1789,13 +1792,35 @@ function joinCurrentRoom() {
 
 function leaveCurrentRoom() {
   if (!currentRoomId) return;
+  leaveRoom(currentRoomId);
+}
+
+/** My own account id, read out of the token — for "is this my room?". */
+function myUserId() {
+  try { return JSON.parse(atob(String(token).split('.')[1])).id ?? null; }
+  catch (e) { return null; }
+}
+
+/**
+ * Leave a room, from wherever it was asked for.
+ *
+ * It used to be reachable only through the room-info panel, and only for the
+ * room you already had open — so leaving a chat meant opening it first, which
+ * is the thing somebody leaving it does not want to do. It is on the chat
+ * list's long-press menu as well now, like the app.
+ */
+function leaveRoom(roomId) {
+  if (!roomId) return;
   if (!confirm('Leave this room? You will stop receiving its messages.')) return;
-  const roomId = currentRoomId;
   socket.emit('leave_room_membership', { roomId }, (res) => {
     if (res?.error) return alert(res.error);
     closeRoomInfo();
     const li = document.querySelector(`[data-room-id="${roomId}"]`);
     if (li) li.remove();
+    // Only tear the chat pane down if the room being left is the one on
+    // screen — leaving a different one from the list must not close the
+    // conversation somebody is reading.
+    if (String(currentRoomId) !== String(roomId)) return;
     forgetRoom();
     document.getElementById('messages').innerHTML = '';
     document.getElementById('room-title').textContent = 'Select a room';
@@ -2030,7 +2055,7 @@ function paintUsernameEditor() {
 function closeUsernameEditor() {
   hide('username-editor');
   const input = document.getElementById('prof-username');
-  if (input) input.value = '';
+  if (input) { input.value = ''; resizeComposer(); }
 }
 
 async function saveUsername() {
@@ -2080,7 +2105,18 @@ function disappearingMarker(room) {
   return m;
 }
 
+/**
+ * The rooms the list is showing, by id.
+ *
+ * Kept so a menu can ask something about a room without a request — right now
+ * only "did I create it", which decides whether Leave is offered.
+ */
+const knownRooms = {};
+
 function addRoomToList(room) {
+  // Recorded even when the row already exists, so a room whose details
+  // changed is not remembered as it first arrived.
+  knownRooms[String(room.id)] = room;
   if (document.querySelector(`[data-room-id="${room.id}"]`)) return;
   const li = document.createElement('li');
   li.dataset.roomId = room.id;
@@ -2117,10 +2153,20 @@ function addRoomMenu(li, roomId, label) {
       rows.push(['✓ Mark as read', () => markRoomRead(roomId)]);
     }
     rows.push(['💬 Open chat', () => li.click()]);
+    // Not for a room you created: the server refuses that, and an option that
+    // always fails is worse than none.
+    if (!isMyRoom(roomId)) rows.push(['🚪 Leave room', () => leaveRoom(roomId)]);
     showSheet(label, rows);
   };
   addLongPress(li, open);
   li.oncontextmenu = (e) => { e.preventDefault(); open(); };
+}
+
+/** Did I create this room? The server will not let its creator leave it. */
+function isMyRoom(roomId) {
+  const me = myUserId();
+  const room = knownRooms[String(roomId)];
+  return me != null && room != null && String(room.created_by) === String(me);
 }
 
 /** Clear a chat's badge without opening it. */
@@ -2475,7 +2521,26 @@ function handleInputKey(e) {
     if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); chooseMention(mentionPick); return; }
     if (e.key === 'Escape') { closeMentionBox(); return; }
   }
-  if (e.key === 'Enter') sendOrSave();
+  // Shift+Enter is a new line now that this is a textarea; Enter still sends,
+  // which is what everybody expects from a chat box and what the app does.
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendOrSave();
+  }
+}
+
+/**
+ * Grow the composer to fit what is in it, up to the cap in the stylesheet.
+ *
+ * Reset to 'auto' first or it can only ever get taller: scrollHeight is
+ * measured against the height already set, so without this a box that grew to
+ * four lines stays four lines after the message is sent.
+ */
+function resizeComposer() {
+  const el = document.getElementById('msg-input');
+  if (!el) return;
+  el.style.height = 'auto';
+  el.style.height = el.scrollHeight + 'px';
 }
 
 // ─── @mentions ───────────────────────────────────────────────────────────────
@@ -2607,6 +2672,9 @@ function sendText() {
   const oneTimeSeconds = pendingOneTimeSeconds || undefined;
   clearOneTime();
   input.value = '';
+  // Back to one line with it, or the box keeps the height of a message that
+  // has already gone.
+  resizeComposer();
   // The message is on its way, so there is no longer a draft of it.
   clearDraft(roomId);
   updateComposerButtons();
@@ -2932,6 +3000,7 @@ function saveEdit() {
 function cancelEdit() {
   editingMsgId = null;
   document.getElementById('msg-input').value = '';
+  resizeComposer();
   updateComposerButtons();
   hide('edit-banner');
 }
@@ -3236,60 +3305,10 @@ function stageFiles(files, opts) {
   return true;
 }
 
-/**
- * Paste, from a button.
- *
- * Ctrl+V and drag-and-drop are keyboard-and-mouse gestures, so on a phone the
- * paste support below — which works — could not be reached at all. This asks
- * the browser for the clipboard instead of waiting to be handed it. The app's
- * attachment sheet has had the same option all along.
- *
- * Must stay in the click: Safari grants clipboard access only to a read that
- * happens inside a user gesture, and an `await` before it spends that gesture.
- */
-async function composerPaste() {
-  if (!currentRoomId) return;
-  let items = [];
-  try {
-    items = await navigator.clipboard.read();
-  } catch (e) {
-    showToast(PasteDrop.clipboardProblem({ items: 0, error: e }));
-    return;
-  }
-  const at = Date.now();
-  const files = [];
-  let text = '';
-  for (const item of items) {
-    const type = PasteDrop.pickType([...(item.types || [])]);
-    if (!type) {
-      // Only text on the clipboard: put it in the message box rather than
-      // refuse. Somebody who copied a link and tapped Paste meant this.
-      try { text += await item.getType('text/plain').then(b => b.text()); } catch {}
-      continue;
-    }
-    try {
-      const blob = await item.getType(type);
-      files.push(new File([blob], PasteDrop.pastedName(type, at, ''), { type }));
-    } catch {}
-  }
-  if (files.length) { stageFiles(files); return; }
-  if (text) {
-    const input = document.getElementById('msg-input');
-    input.value += text;
-    input.focus();
-    onTypingInput();
-    return;
-  }
-  const problem = PasteDrop.clipboardProblem({ items: items.length });
-  if (problem) showToast(problem);
-}
-
 function setupPasteAndDrop() {
-  // The button is offered only where the clipboard can actually be read.
-  // Firefox cannot, and an option that always fails is worse than none.
-  if (PasteDrop.clipboardReadable(navigator)) {
-    document.getElementById('composer-paste')?.classList.remove('hidden');
-  }
+  // The Paste BUTTON is gone, asked for. Ctrl+V anywhere on the page and
+  // drag-and-drop both still work and are set up below — this only removes a
+  // button that duplicated them on the one platform that had it.
 
   // Paste anywhere in the page: the composer rarely has focus when somebody
   // takes a screenshot and hits Ctrl+V, and requiring them to click into the
