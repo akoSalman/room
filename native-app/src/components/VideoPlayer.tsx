@@ -138,8 +138,12 @@ export default function VideoPlayer({
     // that never opened, and the spinner sat over a working picture until the
     // app was killed. See videoControls.videoIsOpen.
     if (videoIsOpen(st)) setReady(true);
-    if (st.didJustFinish && hasNext) onSelect(playlist[index + 1]);
-  }, [scrubbing, hasNext, index, playlist, onSelect]);
+    // Finishing does NOT start the next one. Asked for, and right: a video
+    // running on from the one somebody chose spends their data on something
+    // they did not ask to watch, and on these connections that is the
+    // expensive kind of surprise. The skip button beside the play button is
+    // how you get to the next one.
+  }, [scrubbing]);
 
   const togglePlay = useCallback(() => {
     if (playing) videoRef.current?.pauseAsync().catch(() => {});

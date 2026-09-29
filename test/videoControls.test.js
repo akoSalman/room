@@ -320,6 +320,20 @@ test('THE PLAYER USES THE RULE, and the callback made for this', () => {
     'the one callback that means "the picture is ready" is still unused');
 });
 
+test('FINISHING A VIDEO DOES NOT START THE NEXT ONE', () => {
+  // Asked for. A video that runs on into the next one spends somebody's data
+  // on something they did not choose to watch, and these connections are paid
+  // for by the megabyte.
+  assert.ok(!/didJustFinish/.test(vp),
+    'the player advances to the next video by itself again');
+  // The skip buttons stay: choosing the next one is not the same as being
+  // given it.
+  assert.ok(/hasNext && onSelect\(playlist\[index \+ 1\]\)/.test(vp),
+    'the manual skip-forward button went with it');
+  assert.ok(/hasPrev && onSelect\(playlist\[index - 1\]\)/.test(vp),
+    'the manual skip-back button went with it');
+});
+
 test('…and gives up rather than spinning for ever', () => {
   assert.ok(/openTimedOut|OPEN_TIMEOUT_MS/.test(vp), 'there is still no way out of a stuck open');
   // Cleared, or the deadline fires into a video that opened perfectly.
