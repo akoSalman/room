@@ -225,7 +225,38 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   reactionsRef.current = reactions;
   // messageId -> the emoji currently flying up on it. Keyed by message so two
   // people reacting to different messages both get their animation.
-  const [bursts, setBursts] = useState<Record<string, string>>({});
+  // { emoji, at } — the timestamp is what ends the burst, NOT the component.
+  //
+  // It used to be just the emoji, and ReactionBurst removed its own entry on a
+  // three-second timer it cleared on unmount. A message scrolling out of the
+  // list therefore took the only thing that would ever remove it: the entry
+  // stayed for the life of the screen, and every time that message came back
+  // the component mounted and animated again. See reactionBurst.stillBursting.
+  const [bursts, setBursts] = useState<Record<string, { emoji: string; at: number }>>({});
+  // Held outside React so an unmounting message cannot cancel them.
+  const burstTimers = useRef<Record<string, any>>({});
+
+  /** Start a burst on a message, and make sure it ends whatever happens. */
+  function startBurst(messageId: number | string, emoji: string) {
+    const key = String(messageId);
+    setBursts(b => ({ ...b, [key]: { emoji, at: Date.now() } }));
+    clearTimeout(burstTimers.current[key]);
+    burstTimers.current[key] = setTimeout(() => {
+      delete burstTimers.current[key];
+      setBursts(b => {
+        if (!b[key]) return b;
+        const n = { ...b };
+        delete n[key];
+        return n;
+      });
+    }, reactionBurst.BURST_MS);
+  }
+
+  // Nothing left running when the chat closes.
+  useEffect(() => () => {
+    Object.values(burstTimers.current).forEach(t => clearTimeout(t));
+    burstTimers.current = {};
+  }, []);
   // The draft lives in a ref, NOT state: keystrokes and emoji taps must not
   // re-render the whole message list (that's what made typing/sending laggy).
   // Controlled composer state: React owns the value, so clearing after send is
@@ -2183,7 +2214,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         const added = reactionBurst.addedEmoji({
           prev: reactionsRef.current[messageId] || [], next: r,
         });
-        if (added) setBursts(b => ({ ...b, [String(messageId)]: added }));
+        if (added) startBurst(messageId, added);
         setReactions(prev => ({ ...prev, [messageId]: r }));
       });
       onSock('room_online', ({ users }: any) => setOnline(users));
@@ -4697,15 +4728,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         {/* The emoji that flies up when somebody reacts. Inside the wrapper so
             it is positioned against THIS message, and it takes no touches —
             see components/ReactionBurst.tsx. */}
-        {bursts[String(msg.id)] && (
-          <ReactionBurst
-            emoji={bursts[String(msg.id)]}
-            onDone={() => setBursts(b => {
-              const n = { ...b };
-              delete n[String(msg.id)];
-              return n;
-            })}
-          />
+        {reactionBurst.stillBursting(bursts[String(msg.id)]) && (
+          <ReactionBurst emoji={bursts[String(msg.id)].emoji} />
         )}
         {!mine && (
           room.is_dm ? (

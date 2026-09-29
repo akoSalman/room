@@ -21,17 +21,22 @@ import React, { useEffect, useRef } from 'react';
 import { Animated, Easing, StyleSheet, Text } from 'react-native';
 import { BURST_MS } from '../reactionBurst';
 
-export default function ReactionBurst({ emoji, onDone }: {
+/**
+ * Only the motion. It does NOT decide when it ends.
+ *
+ * It used to: a three-second timer whose callback asked the screen to drop it,
+ * cleared on unmount like any other timer. But these are mounted and thrown
+ * away constantly by a virtualised list, so a message scrolling out of view
+ * cancelled the only thing that would ever have removed its entry — which then
+ * sat there for the life of the screen, re-mounting and re-animating every
+ * time that message scrolled back. The screen owns the lifetime now.
+ */
+export default function ReactionBurst({ emoji }: {
   emoji: string;
-  /** Called when the three seconds are up, so the caller can drop it. */
-  onDone: () => void;
 }) {
   const scale = useRef(new Animated.Value(0)).current;
   const lift = useRef(new Animated.Value(0)).current;
   const fade = useRef(new Animated.Value(0)).current;
-  const doneRef = useRef(onDone);
-  doneRef.current = onDone;
-
   useEffect(() => {
     const anim = Animated.parallel([
       // In quickly, with a little overshoot: the arrival is the part that
@@ -53,9 +58,7 @@ export default function ReactionBurst({ emoji, onDone }: {
       ]),
     ]);
     anim.start();
-    const t = setTimeout(() => doneRef.current(), BURST_MS);
     return () => {
-      clearTimeout(t);
       // Stopped rather than left to finish: this component is unmounted every
       // time the message scrolls out of the window, and an animation running
       // against a dead view is wasted work on a phone that has little to spare.

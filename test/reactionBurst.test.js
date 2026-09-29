@@ -98,6 +98,38 @@ test('three seconds, as asked for', () => {
   assert.strictEqual(B.BURST_MS, 3000);
 });
 
+test('A BURST EXPIRES ON THE CLOCK, not on the component staying mounted', () => {
+  // The leak. The component owned its own removal: a three-second timer whose
+  // callback dropped the entry, cleared on unmount. A message scrolling out of
+  // a virtualised list unmounts it, so the timer was cancelled and the entry
+  // stayed for the life of the screen — and every time that message scrolled
+  // back, the component mounted again and started another three-second
+  // animation. Reported as the whole app slowing down after a few reactions.
+  const NOW = 1_800_000_000_000;
+  assert.strictEqual(B.stillBursting({ at: NOW, now: NOW }), true);
+  assert.strictEqual(B.stillBursting({ at: NOW, now: NOW + B.BURST_MS - 1 }), true);
+  assert.strictEqual(B.stillBursting({ at: NOW, now: NOW + B.BURST_MS }), false,
+    'a burst outlives its three seconds');
+  assert.strictEqual(B.stillBursting({ at: NOW, now: NOW + 60_000 }), false);
+});
+
+test('…and a burst with no timestamp is over', () => {
+  // A decoration with something wrong with it is not drawn. Number(null) is 0
+  // and 0 is finite, so this needs saying rather than assuming.
+  for (const at of [null, undefined, 0, '', NaN, 'x', -1]) {
+    assert.strictEqual(B.stillBursting({ at, now: 1_800_000_000_000 }), false, String(at));
+  }
+  assert.strictEqual(B.stillBursting(null), false);
+  assert.strictEqual(B.stillBursting({}), false);
+});
+
+test('a clock that moved backwards does not swallow the animation', () => {
+  const NOW = 1_800_000_000_000;
+  assert.strictEqual(B.stillBursting({ at: NOW + 5000, now: NOW }), true);
+  // No `now` at all falls back to the real clock rather than refusing.
+  assert.strictEqual(B.stillBursting({ at: Date.now() }), true);
+});
+
 // ── The wiring ──────────────────────────────────────────────────────────────
 
 const chat = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
@@ -187,7 +219,40 @@ test('…and it stops when the message scrolls away', () => {
   const code = src.split('\n').filter(l => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
   assert.ok(/return \(\) => \{/.test(code), 'the effect has no cleanup');
   assert.ok(/anim\.stop\(\)/.test(code), 'the animation is left running after unmount');
-  assert.ok(/clearTimeout\(t\)/.test(code), 'the three-second timer outlives the component');
+});
+
+test('THE COMPONENT DOES NOT OWN WHEN IT ENDS — that was the leak', () => {
+  // It used to remove its own entry on a three-second timer, cleared on
+  // unmount. A message scrolling out of the virtualised list therefore
+  // cancelled the only thing that would ever have removed it, the entry
+  // stayed for the life of the screen, and every time the message scrolled
+  // back the component mounted and animated again. A few reactions and the
+  // list animates continuously whenever it moves — reported as the whole app
+  // being slow.
+  const src = fs.readFileSync(path.join(NAT, 'src', 'components', 'ReactionBurst.tsx'), 'utf8');
+  assert.ok(!/onDone/.test(src), 'the component asks to be removed again, which unmounting cancels');
+  assert.ok(!/setTimeout/.test(src), 'the component owns a timer again');
+});
+
+test('THE SCREEN ENDS IT INSTEAD, and cleans up after itself', () => {
+  assert.ok(/function startBurst/.test(chatCode), 'nothing starts a burst with a lifetime');
+  const i = chatCode.indexOf('function startBurst');
+  const body = chatCode.slice(i, chatCode.indexOf('\n  }', i));
+  assert.ok(/at: Date\.now\(\)/.test(body), 'a burst carries no timestamp, so nothing can expire it');
+  assert.ok(/burstTimers\.current\[key\] = setTimeout/.test(body),
+    'the removal is not scheduled outside the component');
+  // Held in a ref, so an unmounting message cannot cancel it.
+  assert.ok(/burstTimers = useRef/.test(chatCode), 'the timers live in React state and die with the row');
+  // And nothing is left running when the chat closes.
+  assert.ok(/Object\.values\(burstTimers\.current\)\.forEach\(t => clearTimeout\(t\)\)/.test(chatCode),
+    'the timers outlive the screen');
+});
+
+test('…and a stale burst is not drawn even if one is left behind', () => {
+  // Belt as well as braces: the render asks the clock, so an entry that
+  // somehow survives its timer still does not animate.
+  assert.ok(/stillBursting\(bursts\[String\(msg\.id\)\]\)/.test(chatCode),
+    'the burst is drawn on presence alone, so a stranded entry animates for ever');
 });
 
 let passed = 0, failed = 0;

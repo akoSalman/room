@@ -80,3 +80,33 @@ function countByEmoji(list: Reaction[] | null | undefined): Record<string, numbe
   }
   return out;
 }
+
+/**
+ * Is this burst still within its three seconds?
+ *
+ * The burst's lifetime belongs to the STATE, not to the component that draws
+ * it, and this is the rule that decides it.
+ *
+ * It was the other way round and it leaked. The component started a
+ * three-second timer whose callback removed the entry, and cleared that timer
+ * on unmount — so a message scrolling out of a virtualised list took the only
+ * thing that would ever have removed it. The entry stayed for the life of the
+ * screen, and every time that message scrolled back into view the component
+ * mounted again and started another three-second animation. A few reactions
+ * and the list is animating continuously whenever it moves, which is reported
+ * as the whole app being slow.
+ *
+ * A burst with no timestamp is over: something is wrong with it, and the safe
+ * answer for a decoration is not to draw it.
+ */
+export function stillBursting(o: { at?: unknown; now?: unknown }): boolean {
+  if (!o) return false;
+  const at = Number(o.at);
+  if (!Number.isFinite(at) || at <= 0) return false;
+  const raw = Number(o.now);
+  const now = Number.isFinite(raw) && raw > 0 ? raw : Date.now();
+  // A timestamp from the future is a clock that moved, not a burst that has
+  // expired — show it rather than swallowing it.
+  if (at > now) return true;
+  return now - at < BURST_MS;
+}
