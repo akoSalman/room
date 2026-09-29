@@ -279,6 +279,103 @@ test('every message push carries it, not just the first one found', () => {
   }
 });
 
+// ── Tapping a notification while another chat is open ───────────────────────
+//
+// Reported as: with a chat open, close the app, get a notification from a
+// DIFFERENT chat, tap it — and the app opens the old chat.
+//
+// Two notifications can be drawn for one message: the server's push, and the
+// one the app draws itself from its socket. Tapping the PUSH always worked,
+// because expo hands its data to a response listener. Tapping the app's own
+// did nothing at all — it carried no data saying which chat it was about, and
+// notifee's plain press was never handled for a message. So the app simply
+// launched and restored whatever chat had been open.
+//
+// Always broken; it became the COMMON case once the two routes started
+// agreeing on who draws, because the socket usually wins that race.
+
+test('A TAP IS KEPT UNTIL THERE IS SOMETHING TO ACT ON IT', () => {
+  // These handlers run at module scope, before any screen exists — on a cold
+  // start there is no React tree at all yet.
+  O.takeParkedPush();   // start clean
+  O.parkPush({ roomId: '42' });
+  const got = O.takeParkedPush();
+  assert.ok(got, 'the tap was dropped because nothing was ready for it');
+  assert.strictEqual(O.roomIdFromPush(got), 42);
+});
+
+test('…and taking it clears it', () => {
+  // Otherwise every later launch reopens the chat of a notification tapped
+  // days ago.
+  O.takeParkedPush();
+  O.parkPush({ roomId: '7' });
+  assert.ok(O.takeParkedPush());
+  assert.strictEqual(O.takeParkedPush(), null, 'the same tap is acted on twice');
+});
+
+test('NOTHING USABLE IS NOT PARKED', () => {
+  // Parking something that names no chat would displace a real tap that
+  // arrived beside it.
+  O.takeParkedPush();
+  O.parkPush({ roomId: '9' });
+  for (const junk of [null, undefined, {}, { roomId: '' }, { fromUserId: '3' }, 'nope']) {
+    O.parkPush(junk);
+  }
+  const got = O.takeParkedPush();
+  assert.strictEqual(O.roomIdFromPush(got), 9, 'a real tap was displaced by an unusable one');
+});
+
+test('the newest tap wins', () => {
+  O.takeParkedPush();
+  O.parkPush({ roomId: '1' });
+  O.parkPush({ roomId: '2' });
+  assert.strictEqual(O.roomIdFromPush(O.takeParkedPush()), 2,
+    'an older notification beats the one just tapped');
+});
+
+// ── The wiring ──────────────────────────────────────────────────────────────
+
+const fsw = require('fs');
+const NATDIR = require('path').join(__dirname, '..', 'native-app');
+const rd = (...p) => fsw.readFileSync(require('path').join(NATDIR, ...p), 'utf8');
+
+test('THE APP\'S OWN NOTIFICATION SAYS WHICH CHAT IT IS ABOUT', () => {
+  // The root of it. No roomId on the notification means nothing downstream
+  // can possibly know where to go.
+  const sn = rd('src', 'socketNotifier.ts');
+  const i = sn.indexOf('notifee.displayNotification({');
+  assert.ok(i > 0, 'the app no longer draws its own notification');
+  const body = sn.slice(i, sn.indexOf('android: {', i));
+  assert.ok(/roomId: String\(msg\?\.room_id/.test(body),
+    'the notification carries no room, so tapping it cannot open the right chat');
+});
+
+test('ALL THREE WAYS IN ARE HANDLED', () => {
+  const app = rd('App.tsx');
+  // Running: notifee's foreground event. Only ACTION_PRESS was handled, so a
+  // plain press on a message did nothing.
+  assert.ok(/type === EventType\.PRESS/.test(app), 'a plain press is still ignored');
+  // Cold start: notifee's own initial notification. expo knows nothing about
+  // a notifee notification, so its getLastNotificationResponse never sees it.
+  assert.ok(/notifee\.getInitialNotification\(\)/.test(app),
+    'a cold start from the app\'s own notification opens the last chat');
+  // Anything parked by the background handler before a screen existed.
+  assert.ok(/takeParkedPush\(\)/.test(app), 'a parked tap is never collected');
+});
+
+test('…including the background handler, where there is only one', () => {
+  // Notifee allows exactly one background event handler, and callPush owns
+  // it. The message case has to be handled there or nowhere.
+  const cp = rd('src', 'callPush.ts');
+  // The CALL, not the import and not the comment mentioning it.
+  assert.ok(/parkPush\(d\);/.test(cp),
+    'a notification tapped with the app not running is still dropped');
+  // And it must not fall through into the call handling below it.
+  const i = cp.indexOf('parkPush(d);');
+  assert.ok(/return;/.test(cp.slice(i, i + 120)),
+    'a tapped message goes on to be treated as a call');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

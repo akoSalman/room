@@ -181,3 +181,37 @@ export function intentStillWanted(o: {
   const age = o.now - o.at;
   return age >= 0 && age <= ttl;
 }
+
+// ── A tap the app was not running to hear ──────────────────────────────────
+//
+// Reported as: with a chat open, close the app, get a notification from a
+// DIFFERENT chat, tap it — and the app opens the old chat.
+//
+// Two notifications can be drawn for one message: the server's push, and the
+// one the app draws itself from its socket (see notifyOnce.ts). Tapping the
+// PUSH works, because expo hands its data to a response listener. Tapping the
+// app's own did nothing at all: it carried no data to say which chat it was
+// about, and notifee's press was never handled for a message — so the app
+// simply launched and restored whatever chat was last open.
+//
+// That was always broken; it became the common case when the two routes
+// started agreeing on who draws, because the socket usually wins the race.
+//
+// These handlers run at module scope, long before the screen that can act on
+// them exists — on a cold start there may be no React tree at all yet. So the
+// tap is PARKED here and collected when there is something to collect it.
+let parked: PushData | null = null;
+
+/** Remember a tapped notification until the app is ready to act on it. */
+export function parkPush(data: PushData | null | undefined) {
+  // Only if it actually names a chat: parking something unusable would
+  // displace a real tap that arrived beside it.
+  if (roomIdFromPush(data)) parked = data as PushData;
+}
+
+/** Take the parked tap, if there is one. Reading it clears it. */
+export function takeParkedPush(): PushData | null {
+  const p = parked;
+  parked = null;
+  return p;
+}

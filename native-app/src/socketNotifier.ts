@@ -219,6 +219,14 @@ export function attach(socket: any, opts?: { pushRegistered?: () => boolean }): 
       id: pushReg.notificationTag(msg.id),
       title: msg.username,
       body: bodyFor(msg?.type),
+      // Which chat this is about. Without it, tapping this notification only
+      // launched the app, which then restored whatever chat was last open —
+      // so a message from one conversation opened a different one.
+      data: {
+        type: 'message',
+        roomId: String(msg?.room_id ?? ''),
+        msgId: String(msg?.id ?? ''),
+      },
       android: {
         ...notificationIcon.iconFields(),
         channelId: MESSAGES_CHANNEL,

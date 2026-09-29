@@ -99,6 +99,19 @@ export function registerCallPush() {
       return;
     }
 
+    // A tapped MESSAGE notification, drawn by the app itself from its socket.
+    // Notifee allows exactly one background handler and this is it, so the
+    // message case has to be handled here or nowhere. Parked rather than
+    // acted on: there is no React tree in a background process to navigate.
+    const d: any = detail.notification?.data || {};
+    if (d.type === 'message' || (d.roomId && !d.fromUserId)) {
+      try {
+        const { parkPush } = require('./openIntent');
+        parkPush(d);
+      } catch {}
+      return;
+    }
+
     await stopRinging();
     if (detail.pressAction?.id === 'decline') {
       // Best effort: the socket may not be up in a background process, so the

@@ -20,6 +20,7 @@ import {
   roomIdFromPush, roomFromPush, resolveRoom, screenFor, commentTargetFromPush,
   shouldKeepTrying, retryDelay, intentStillWanted, RoomRef, PushData,
 } from './src/openIntent';
+import * as openIntentStore from './src/openIntent';
 import AuthScreen from './src/screens/AuthScreen';
 import RoomsScreen from './src/screens/RoomsScreen';
 import CallOverlay from './src/components/CallOverlay';
@@ -181,6 +182,14 @@ onEndFromShade(() => { try { callManager.end(); } catch {} });
 notifee.onForegroundEvent(async ({ type, detail }) => {
   // "End call" in the shade, and the press that brings the app back.
   if (handleNotifeeEvent(type, detail as any)) return;
+  // A tapped MESSAGE notification, drawn by the app itself. Only ACTION_PRESS
+  // was handled here, so a plain press on one of these did nothing and the
+  // app just came forward on whatever chat was last open.
+  if (type === EventType.PRESS) {
+    const d: any = detail.notification?.data || {};
+    if (d.type === 'message' || d.roomId) openIntentStore.parkPush(d);
+    return;
+  }
   if (type !== EventType.ACTION_PRESS) return;
   if (detail.pressAction?.id === 'stop-location') {
     try {
@@ -478,10 +487,19 @@ export default function App() {
       }
       openChatFromPush(data);
     });
-    // Cold start from a tapped notification
+    // Cold start from a tapped notification — expo's, and notifee's.
     Notifications.getLastNotificationResponseAsync().then(resp => {
       openChatFromPush(resp?.notification?.request?.content?.data);
     }).catch(() => {});
+    // The app's own notification is notifee's, and expo knows nothing about
+    // it. Without this, tapping one on a cold start opened the app on the
+    // last chat it happened to be showing.
+    notifee.getInitialNotification().then(initial => {
+      if (initial?.notification?.data) openChatFromPush(initial.notification.data as any);
+    }).catch(() => {});
+    // Anything a handler parked before there was a screen to act on it.
+    const parked = openIntentStore.takeParkedPush();
+    if (parked) openChatFromPush(parked);
     return () => { sub.remove(); respSub.remove(); recvSub.remove(); };
   }, []);
 
