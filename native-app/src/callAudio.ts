@@ -115,3 +115,67 @@ export function outgoingStatus(s: OutgoingState): string {
   // "Connecting…" is for — somebody with no internet at all.
   return 'Connecting…';
 }
+
+// ── Hanging up before it was answered ──────────────────────────────────────
+//
+// Reported as: the caller's side ends the call, and the other phone goes on
+// ringing for ever.
+//
+// `call_end` arrived and was handled like this:
+//
+//     this.dropPeer(fromUserId);
+//     if (this.mode?.startsWith('dm')) this.teardown();
+//
+// Neither line does anything to an UNANSWERED call. There is no peer
+// connection yet, so dropPeer has nothing to drop; and `mode` is only set when
+// a call is ACCEPTED, so for a phone that is merely ringing it is null and the
+// teardown — which is what stops the tone and cancels the notification — never
+// ran. The one case where hanging up matters most was the one case nothing
+// handled.
+
+/**
+ * Does this `call_end` stop what is happening on this device?
+ *
+ * Yes for a call in progress with that person, and yes for a call from them
+ * that is still ringing here. The second is the one that was missing.
+ */
+export function endStopsCall(o: {
+  /** Who the ending applies to, from the event. */
+  fromUserId?: unknown;
+  /** The call currently in progress, if any. */
+  mode?: string | null;
+  /** Who we are in a call with, when there is one. */
+  peerId?: unknown;
+  /** Who is ringing this phone right now, if anybody. */
+  incomingFrom?: unknown;
+}): boolean {
+  if (!o) return false;
+  const from = idOf(o.fromUserId);
+  if (from === null) return false;
+  // Still ringing, unanswered — the reported case.
+  if (idOf(o.incomingFrom) === from) return true;
+  // In a direct call with them. Room calls are not ended this way: a room
+  // call has many peers and one leaving is not the call ending.
+  if (typeof o.mode === 'string' && o.mode.startsWith('dm')) {
+    const peer = idOf(o.peerId);
+    return peer === null || peer === from;
+  }
+  return false;
+}
+
+/**
+ * How long this phone rings before giving up on its own.
+ *
+ * A backstop, not the normal path: normally the caller gives up after 45s and
+ * sends `call_end`. But if their app is killed, or their network drops, that
+ * event never comes — and with nothing here to stop it the phone rang until
+ * somebody noticed. Longer than the caller's 45s so the ordinary ending still
+ * wins and this only fires when something has genuinely gone wrong.
+ */
+export const RING_TIMEOUT_MS = 60000;
+
+function idOf(v: unknown): string | null {
+  if (v === null || v === undefined || v === '') return null;
+  const s = String(v).trim();
+  return s === '' ? null : s;
+}

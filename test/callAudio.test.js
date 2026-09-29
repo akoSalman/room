@@ -216,6 +216,96 @@ test('both clients keep the "their phone is alerting them" flag from the ack', (
     'the web throws away the ack\'s pushed flag');
 });
 
+// ── Hanging up before it was answered ──────────────────────────────────────
+//
+// Reported as: the caller ends the call and the other phone rings for ever.
+//
+// call_end was handled as `dropPeer(from)` plus `if (mode.startsWith('dm'))
+// teardown()`. Neither touches an UNANSWERED call: there is no peer connection
+// yet, and `mode` is only set once a call is ACCEPTED — so for a phone that is
+// merely ringing it is null, the teardown never ran, and nothing stopped the
+// tone or cancelled the notification.
+
+test('THE REPORTED CASE: a ringing phone is stopped by the caller hanging up', () => {
+  assert.strictEqual(A.endStopsCall({ fromUserId: 7, incomingFrom: 7, mode: null }), true,
+    'the caller hung up and this phone goes on ringing — the reported bug');
+  // mode is null precisely because it has not been answered. That was the
+  // whole reason the old check missed it.
+  assert.strictEqual(A.endStopsCall({ fromUserId: 7, incomingFrom: 7 }), true);
+  // Ids compare across types: one side of this is a socket payload.
+  assert.strictEqual(A.endStopsCall({ fromUserId: '7', incomingFrom: 7 }), true);
+});
+
+test('…and a call in progress still ends, as it already did', () => {
+  assert.strictEqual(A.endStopsCall({ fromUserId: 7, mode: 'dm-voice', peerId: 7 }), true);
+  assert.strictEqual(A.endStopsCall({ fromUserId: 7, mode: 'dm-video', peerId: 7 }), true);
+});
+
+test('SOMEBODY ELSE HANGING UP DOES NOT STOP THIS CALL', () => {
+  // A stale end from a previous call, or a third party. Acting on it would
+  // cut off a conversation that is happily in progress.
+  assert.strictEqual(A.endStopsCall({ fromUserId: 9, incomingFrom: 7, mode: null }), false);
+  assert.strictEqual(A.endStopsCall({ fromUserId: 9, mode: 'dm-voice', peerId: 7 }), false);
+});
+
+test('A ROOM CALL IS NOT ENDED BY ONE PERSON LEAVING', () => {
+  // A room call is a mesh. One peer going is dropPeer's business, not the
+  // call's — ending it would throw everybody else out.
+  assert.strictEqual(A.endStopsCall({ fromUserId: 7, mode: 'room-voice', peerId: 7 }), false);
+  assert.strictEqual(A.endStopsCall({ fromUserId: 7, mode: 'room-voice', incomingFrom: null }), false);
+});
+
+test('nothing is stopped by an event that names nobody', () => {
+  for (const from of [null, undefined, '', '  ']) {
+    assert.strictEqual(A.endStopsCall({ fromUserId: from, incomingFrom: 7, mode: 'dm-voice', peerId: 7 }),
+      false, JSON.stringify(from));
+  }
+  assert.strictEqual(A.endStopsCall(null), false);
+  assert.strictEqual(A.endStopsCall({}), false);
+  // …and id 0 is somebody, not nobody.
+  assert.strictEqual(A.endStopsCall({ fromUserId: 0, incomingFrom: 0 }), true);
+});
+
+test('THE PHONE GIVES UP ON ITS OWN, if the ending never arrives', () => {
+  // The backstop. If the caller's app is killed or their network drops, no
+  // call_end is ever sent and there was nothing else to stop the ring.
+  // Longer than the caller's own 45s give-up so the ordinary path still wins.
+  assert.ok(A.RING_TIMEOUT_MS > 45000, 'the backstop fires before the caller has given up');
+  assert.ok(A.RING_TIMEOUT_MS <= 120000, 'a phone nobody is answering rings for minutes');
+});
+
+// ── The wiring ──────────────────────────────────────────────────────────────
+
+const fsMod = require('fs');
+const cm = fsMod.readFileSync(require('path').join(__dirname, '..', 'native-app', 'src', 'callManager.ts'), 'utf8');
+
+test('THE HANDLER ASKS THE RULE', () => {
+  const i = cm.indexOf("s.on('call_end'");
+  assert.ok(i > 0, 'the app no longer listens for the other side hanging up');
+  const body = cm.slice(i, cm.indexOf('});', i));
+  assert.ok(/if \(endStopsCall\(\{[\s\S]*?\}\)\) \{[\s\S]*?teardown\(\)/.test(body),
+    'the rule is present but is not what decides whether the ring stops');
+  // The old condition must be gone, not merely joined by the new one: it is
+  // false for a ringing phone, which is the whole bug.
+  assert.ok(!/this\.mode\?\.startsWith\('dm'\)\) \{?\s*this\.teardown/.test(body),
+    'the mode-only check is back, so an unanswered call is not stopped');
+  // …and the rule must be given who is ringing, or it cannot answer.
+  assert.ok(/incomingFrom: this\.incoming\?\.fromUserId/.test(body),
+    'the rule is never told who is ringing this phone');
+});
+
+test('…and the ring is given a deadline when it starts', () => {
+  const i = cm.indexOf('private async onOffer');
+  assert.ok(i > 0, 'incoming calls are no longer handled');
+  const body = cm.slice(i, cm.indexOf('\n  }', i));
+  assert.ok(/this\.ringTimeout = setTimeout\([\s\S]*?RING_TIMEOUT_MS\)/.test(body),
+    'an incoming call rings with no deadline, so a caller who vanishes rings for ever');
+  // Kept on the instance, or answering the call cannot cancel it and the
+  // backstop fires in the middle of a conversation.
+  assert.ok(/clearTimeout\(this\.ringTimeout\)/.test(cm),
+    'the ring deadline is never cleared, so it fires during an answered call');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

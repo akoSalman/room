@@ -7,7 +7,7 @@ import { Audio } from 'expo-av';
 import { mediaDevices, RTCPeerConnection, MediaStream } from 'react-native-webrtc';
 import { apiFetch, getSocket } from './api';
 import { stopRinging } from './incomingCall';
-import { routeFor, outgoingStatus, CallMode, CallPhase, OutgoingState } from './callAudio';
+import { routeFor, outgoingStatus, endStopsCall, RING_TIMEOUT_MS, CallMode, CallPhase, OutgoingState } from './callAudio';
 import { toneFor, toneVolume, toneLoops, toneStillWanted } from './callTones';
 import { canMinimize, canSwapVideos, CallPhase as WindowPhase } from './callWindow';
 import * as ongoing from './ongoingCall';
@@ -257,6 +257,8 @@ class CallManager {
   private listeners = new Set<Listener>();
   private initPromise: Promise<void> | null = null;
   private noAnswerTimer: any = null;
+  /** Backstop for an incoming ring nobody ever cancels. See onOffer. */
+  private ringTimeout: any = null;
 
   subscribe(fn: Listener) {
     this.listeners.add(fn);
@@ -320,7 +322,19 @@ class CallManager {
     });
     s.on('call_end', ({ fromUserId }: any) => {
       this.dropPeer(fromUserId);
-      if (this.mode?.startsWith('dm')) this.teardown();
+      // `mode` is only set once a call is ACCEPTED, so asking whether it
+      // starts with 'dm' missed the case that matters most: a phone that is
+      // merely RINGING. There is no peer connection to drop and no mode to
+      // match, so the caller hanging up did nothing at all here and the ring
+      // went on for ever. See endStopsCall.
+      if (endStopsCall({
+        fromUserId,
+        mode: this.mode,
+        peerId: this.peerId,
+        incomingFrom: this.incoming?.fromUserId,
+      })) {
+        this.teardown();
+      }
     });
     s.on('voice_peer_joined', async ({ roomId, userId }: any) => {
       if (this.mode === 'room-voice' && String(roomId) === String(this.roomVoiceId)) {
@@ -501,6 +515,7 @@ class CallManager {
     this.connectedAt = null;
     this.peerId = null;
     clearTimeout(this.noAnswerTimer);
+    clearTimeout(this.ringTimeout);
     this.stopRing();
     this.emit();
   }
@@ -536,6 +551,19 @@ class CallManager {
     Audio.setAudioModeAsync({ playThroughEarpieceAndroid: false, staysActiveInBackground: true })
       .catch(() => {});
     this.startTone('callee');
+    // A deadline on the ring itself.
+    //
+    // The caller gives up after 45s and sends call_end, and that is the
+    // ordinary ending. But if their app is killed or their network drops, no
+    // such event is ever sent — and with nothing here to stop it the phone
+    // rang until somebody noticed. Longer than their 45s so the ordinary path
+    // still wins and this only fires when something has gone wrong.
+    clearTimeout(this.ringTimeout);
+    this.ringTimeout = setTimeout(() => {
+      if (this.incoming && String(this.incoming.fromUserId) === String(offer.fromUserId)) {
+        this.teardown();
+      }
+    }, RING_TIMEOUT_MS);
     this.syncOngoing();
     // Tell the caller their phone is actually ringing here. Without this the
     // caller's screen has nothing to go on but hope.
