@@ -206,6 +206,83 @@ test('THE DRIFT CHECK: web and app place and describe the pin identically', () =
   assert.deepStrictEqual(bad, [], `the web copy has drifted:\n      ${bad.join('\n      ')}`);
 });
 
+// ── When this position was last heard ──────────────────────────────────────
+//
+// Asked for: show the last time a live location was updated.
+//
+// The card said how long the share has left — a promise about the future. It
+// said nothing about the past, and the past is the question somebody has: is
+// this where they are NOW, or where they were before the phone lost signal
+// twenty minutes ago? A live pin that has silently stopped moving looks
+// exactly like one that is moving.
+
+const NOWL = 1_800_000_000_000;
+
+test('UNDER A MINUTE IS "just now"', () => {
+  assert.strictEqual(P.formatUpdated(NOWL, NOWL), 'updated just now');
+  assert.strictEqual(P.formatUpdated(NOWL - 59_000, NOWL), 'updated just now');
+});
+
+test('…and after that it says how stale it is', () => {
+  assert.strictEqual(P.formatUpdated(NOWL - 60_000, NOWL), 'updated 1 min ago');
+  assert.strictEqual(P.formatUpdated(NOWL - 4 * 60_000, NOWL), 'updated 4 min ago');
+  assert.strictEqual(P.formatUpdated(NOWL - 59 * 60_000, NOWL), 'updated 59 min ago');
+  assert.strictEqual(P.formatUpdated(NOWL - 60 * 60_000, NOWL), 'updated 1 h ago');
+  assert.strictEqual(P.formatUpdated(NOWL - 23 * 3600_000, NOWL), 'updated 23 h ago');
+  assert.strictEqual(P.formatUpdated(NOWL - 25 * 3600_000, NOWL), 'updated 1 d ago');
+});
+
+test('RELATIVE, not a clock time', () => {
+  // A clock time has to be read and subtracted from the current one before it
+  // answers anything, and the question is always "how stale is this".
+  const out = P.formatUpdated(NOWL - 7 * 60_000, NOWL);
+  assert.ok(/ago/.test(out), 'the time is shown as a clock reading');
+  assert.ok(!/:/.test(out), 'the time is shown as a clock reading');
+});
+
+test('A CLOCK THAT DISAGREES DOES NOT READ AS THE FUTURE', () => {
+  // The two devices' clocks need not agree, and "updated in 3 minutes" is
+  // nonsense. The honest thing to say is that it is current.
+  assert.strictEqual(P.formatUpdated(NOWL + 5 * 60_000, NOWL), 'updated just now');
+});
+
+test('nothing is said about a timestamp there is not', () => {
+  // An empty string so the caller can render nothing rather than a line
+  // reading "updated NaN min ago".
+  for (const v of [null, undefined, 0, '', NaN, 'x', {}, -1]) {
+    assert.strictEqual(P.formatUpdated(v, NOWL), '', JSON.stringify(v));
+  }
+  assert.strictEqual(P.formatUpdated(NOWL, 'x'), '');
+});
+
+test('THE PAYLOAD CARRIES THE TIME, which is why nothing had to be added', () => {
+  const out = P.locationPayload({
+    chosen: { lat: 1, lng: 2 }, fix: null, liveUntil: NOWL + 60_000, now: NOWL,
+  });
+  assert.strictEqual(out.updatedAt, NOWL, 'a share records no time, so nothing can be said about it');
+});
+
+// ── The wiring ──────────────────────────────────────────────────────────────
+
+const fsL = require('fs');
+const chatSrc = fsL.readFileSync(require('path').join(__dirname, '..', 'native-app',
+  'src', 'screens', 'ChatScreen.tsx'), 'utf8');
+
+test('THE CARD SHOWS IT, for a live share', () => {
+  assert.ok(/formatUpdated\(p\.updatedAt/.test(chatSrc),
+    'the last update time is never shown');
+  // Only for a live one: a pin dropped once was never going to move, so how
+  // long ago it was dropped is the message timestamp's job.
+  assert.ok(/live && !!p\.updatedAt/.test(chatSrc),
+    'a one-off pin claims to be "updated", which it never is');
+});
+
+test('…and it does not freeze at whatever it said when drawn', () => {
+  // "4 min ago" is only true for a minute. Something has to re-render it.
+  assert.ok(/setClockTick\(n => n \+ 1\), 30000\)/.test(chatSrc),
+    'nothing re-renders the card, so the age is stuck at what it was');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

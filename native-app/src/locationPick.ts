@@ -113,3 +113,46 @@ export function chosenLabel(fix: Fix, chosen: LatLng): string {
   const away = distanceMeters({ lat: fix.lat, lng: fix.lng }, chosen);
   return `Chosen point · ${formatDistance(away)} from your position`;
 }
+
+// ── When this position was last heard ──────────────────────────────────────
+//
+// Asked for: show the last time a live location was updated.
+//
+// The card already said how long the share has left to run — "for 12 min" —
+// which is a promise about the future. It said nothing about the past, and the
+// past is the question somebody actually has: is this where they are NOW, or
+// where they were before the phone lost signal twenty minutes ago? A live pin
+// that has silently stopped moving looks exactly like one that is moving, and
+// that is the one thing this card must not be ambiguous about.
+//
+// The payload has carried `updatedAt` all along, refreshed by the server on
+// every move, so nothing had to be added to have the answer.
+
+/** Under a minute is "just now": a clock would be noise at that scale. */
+export const JUST_NOW_MS = 60_000;
+
+/**
+ * "updated just now", "updated 4 min ago", "updated 2 h ago".
+ *
+ * Deliberately relative rather than a clock time. A clock time has to be read
+ * and subtracted from the current one before it answers anything, and the
+ * question is always "how stale is this".
+ */
+export function formatUpdated(updatedAt: unknown, now: unknown = Date.now()): string {
+  const at = Number(updatedAt);
+  const t = Number(now);
+  if (!Number.isFinite(at) || at <= 0 || !Number.isFinite(t)) return '';
+  // A timestamp from the future is two clocks disagreeing, not a position
+  // from tomorrow, and it falls out as "just now" on its own: a negative age
+  // is below the just-now threshold. Clamping it to zero as well was tried and
+  // no test could tell the difference, which is the definition of a line that
+  // only looks like care.
+  const ago = t - at;
+  if (ago < JUST_NOW_MS) return 'updated just now';
+  const mins = Math.floor(ago / 60_000);
+  if (mins < 60) return `updated ${mins} min ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `updated ${hours} h ago`;
+  const days = Math.floor(hours / 24);
+  return `updated ${days} d ago`;
+}

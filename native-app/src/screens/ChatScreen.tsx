@@ -117,6 +117,7 @@ import LocationView, { LocationPin } from '../components/LocationView';
 import * as locationManager from '../locationManager';
 import {
   parseLocation, isLiveNow, formatRemaining, formatCoords, distanceMeters, formatDistance,
+  formatUpdated,
   type LatLng,
 } from '../geo';
 import CameraScreen from './CameraScreen';
@@ -5075,6 +5076,19 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
                         {live ? formatRemaining(p.liveUntil || 0) : formatCoords(p)}
                         {away != null ? ` · ${formatDistance(away)} away` : ''}
                       </Text>
+                      {/* How long the share has left is a promise about the
+                          future; this is the question somebody actually has —
+                          is that where they are NOW, or where they were before
+                          the signal went? On its own line because the line
+                          above is already full on a narrow card. */}
+                      {live && !!p.updatedAt && (
+                        <Text style={s.locUpdated} numberOfLines={1}>
+                          {/* Re-read on every render; clockTick above ticks
+                              every 30s, which is what keeps "4 min ago" from
+                              freezing at whatever it said when drawn. */}
+                          {formatUpdated(p.updatedAt, Date.now())}
+                        </Text>
+                      )}
                     </View>
                   </View>
                 </View>
@@ -7113,6 +7127,9 @@ const s = StyleSheet.create({
   locFoot: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 9 },
   locTitle: { color: C.text, fontSize: 13.5, fontWeight: '700' },
   locSub: { color: C.muted, fontSize: 11.5, marginTop: 1 },
+  // Dimmer and smaller than the line above it: it is a qualifier on what that
+  // line says, not a fact of its own.
+  locUpdated: { color: C.muted, fontSize: 10.5, marginTop: 1, opacity: 0.8 },
 
   renameCard: {
     alignSelf: 'center', width: '86%', maxWidth: 420, borderRadius: 14, padding: 16,
