@@ -24,6 +24,7 @@ import { C } from '../theme';
 import { fmtBytes } from '../download';
 import {
   msFromTouch, fraction, clampSeek, nextSpeed, speedLabel, canChangeSpeed,
+  videoIsOpen, openTimedOut, OPEN_TIMEOUT_MS,
 } from '../videoControls';
 import { mediaSource } from '../mediaSource';
 
@@ -97,6 +98,22 @@ export default function VideoPlayer({
     setPosition(0); setDuration(0); setPlayableMs(0); setAttempt(0);
   }, [item?.url]);
 
+  // A deadline on opening.
+  //
+  // If nothing loads then nothing errors either, so without this the spinner
+  // stays for the life of the screen with no Retry to press — killing the app
+  // was the only way out, which is what was reported. Failing is a poor
+  // outcome; it is a poor outcome somebody can act on.
+  useEffect(() => {
+    if (!item?.url || ready || failed) return;
+    const t = setTimeout(() => {
+      if (openTimedOut({ ready: false, failed: false, waitedMs: OPEN_TIMEOUT_MS })) {
+        setFailed(true);
+      }
+    }, OPEN_TIMEOUT_MS);
+    return () => clearTimeout(t);
+  }, [item?.url, attempt, ready, failed]);
+
   // Auto-hide the controls while playing, so they don't sit over the picture.
   useEffect(() => {
     if (!controls || !playing || minimized) return;
@@ -115,7 +132,12 @@ export default function VideoPlayer({
     if (!scrubbing) setPosition(st.positionMillis || 0);
     setDuration(st.durationMillis || 0);
     setPlayableMs((st as any).playableDurationMillis ?? 0);
-    if ((st.positionMillis || 0) > 0 || st.isPlaying) setReady(true);
+    // Open means LOADED. Asking whether it had started playing meant a video
+    // that opened but did not begin — audio focus held elsewhere, the play
+    // call refused, simply paused at zero — was indistinguishable from one
+    // that never opened, and the spinner sat over a working picture until the
+    // app was killed. See videoControls.videoIsOpen.
+    if (videoIsOpen(st)) setReady(true);
     if (st.didJustFinish && hasNext) onSelect(playlist[index + 1]);
   }, [scrubbing, hasNext, index, playlist, onSelect]);
 
@@ -215,6 +237,10 @@ export default function VideoPlayer({
       isLooping={false}
       progressUpdateIntervalMillis={300}
       onPlaybackStatusUpdate={onStatus}
+      // The one callback that means "the first frame can be shown". It was
+      // not being used at all, which is why a loaded-but-paused video had
+      // nothing to announce itself with.
+      onReadyForDisplay={() => setReady(true)}
       onError={() => setFailed(true)}
     />
   );

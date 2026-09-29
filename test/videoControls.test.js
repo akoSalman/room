@@ -254,6 +254,78 @@ test('the speed control is wired to the player, not just to the rule', () => {
   assert.ok(/speedLabel\(rate\)/.test(vp), 'the label is written by hand');
 });
 
+// ── "Opening…" that never ends ──────────────────────────────────────────────
+//
+// Reported as: after downloading a video it sometimes sticks on opening and
+// will not play until the app is closed and reopened — and the same happens to
+// videos that were already downloaded.
+
+test('A VIDEO IS OPEN WHEN IT IS LOADED, not when it starts playing', () => {
+  // The bug. The player asked `positionMillis > 0 || isPlaying`, which is a
+  // question about PLAYBACK. A video that loads fine but does not begin — the
+  // audio focus is held elsewhere, the play call was refused, it is paused at
+  // zero — looked exactly like one that never opened, so the spinner stayed
+  // over a working picture for ever.
+  assert.strictEqual(V.videoIsOpen({ isLoaded: true, isPlaying: false, positionMillis: 0 }), true,
+    'a loaded video that has not started is still reported as not open');
+  assert.strictEqual(V.videoIsOpen({ isLoaded: true, isPlaying: true, positionMillis: 400 }), true);
+  assert.strictEqual(V.videoIsOpen({ isLoaded: false, error: 'boom' }), false);
+  assert.strictEqual(V.videoIsOpen({ isLoaded: false }), false);
+});
+
+test('…and nothing else counts as open', () => {
+  for (const st of [null, undefined, 'loaded', 42, {}, { isLoaded: 'yes' }, { isLoaded: 1 }]) {
+    assert.strictEqual(V.videoIsOpen(st), false, JSON.stringify(st));
+  }
+});
+
+test('THERE IS A WAY OUT if it really never opens', () => {
+  // Without a deadline the spinner stays for the life of the screen: nothing
+  // loaded, so nothing errored, so no Retry was ever offered. Killing the app
+  // was the only exit, which is what was reported.
+  assert.strictEqual(V.openTimedOut({ waitedMs: V.OPEN_TIMEOUT_MS }), true);
+  assert.strictEqual(V.openTimedOut({ waitedMs: V.OPEN_TIMEOUT_MS - 1 }), false);
+});
+
+test('…but not once it has opened, or already failed', () => {
+  // Firing after success would replace a playing video with an error screen.
+  assert.strictEqual(V.openTimedOut({ ready: true, waitedMs: 999999 }), false);
+  assert.strictEqual(V.openTimedOut({ failed: true, waitedMs: 999999 }), false);
+});
+
+test('the deadline is long enough for a big video on a slow line', () => {
+  // Turning a legitimately slow load into a false failure would be its own
+  // bug, and these connections are slow.
+  assert.ok(V.OPEN_TIMEOUT_MS >= 15000, 'a slow but working load is called a failure');
+  assert.ok(V.OPEN_TIMEOUT_MS <= 60000, 'a stuck video leaves the viewer waiting a minute');
+});
+
+test('a clock that cannot be read never fires the deadline', () => {
+  for (const w of [null, undefined, NaN, 'x', {}]) {
+    assert.strictEqual(V.openTimedOut({ waitedMs: w }), false, String(w));
+  }
+  assert.strictEqual(V.openTimedOut(null), false);
+});
+
+// ── The wiring ──────────────────────────────────────────────────────────────
+
+test('THE PLAYER USES THE RULE, and the callback made for this', () => {
+  assert.ok(/videoIsOpen\(st\)/.test(vp),
+    'readiness is inferred from playback again, so a paused video reads as unopened');
+  assert.ok(!/st\.positionMillis \|\| 0\) > 0 \|\| st\.isPlaying\) setReady/.test(vp),
+    'the old playback-based test is back');
+  // expo-av says explicitly when the first frame can be shown. Not using it
+  // was why a loaded-but-paused video had nothing to announce itself with.
+  assert.ok(/onReadyForDisplay=\{\(\) => setReady\(true\)\}/.test(vp),
+    'the one callback that means "the picture is ready" is still unused');
+});
+
+test('…and gives up rather than spinning for ever', () => {
+  assert.ok(/openTimedOut|OPEN_TIMEOUT_MS/.test(vp), 'there is still no way out of a stuck open');
+  // Cleared, or the deadline fires into a video that opened perfectly.
+  assert.ok(/clearTimeout/.test(vp), 'the deadline is never cancelled');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

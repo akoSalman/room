@@ -103,3 +103,62 @@ export function speedLabel(rate: number): string {
 export function canChangeSpeed(durationMs: number): boolean {
   return (Number(durationMs) || 0) > 0;
 }
+
+// ── "Opening…" that never ends ──────────────────────────────────────────────
+//
+// Reported as: after downloading a video it sometimes sticks on opening and
+// will not play at all until the app is closed and reopened — and the same
+// happens to videos that were already downloaded.
+//
+// The player decided it was open like this:
+//
+//     if ((st.positionMillis || 0) > 0 || st.isPlaying) setReady(true);
+//
+// which is not "is this video open", it is "has it started playing". A video
+// that LOADS perfectly well but does not begin — because something else holds
+// the audio focus, because the play call was refused, because it is simply
+// paused at zero — is indistinguishable, under that test, from one that never
+// opened at all. So the spinner sat over a working video for ever, and since
+// nothing had errored there was no Retry either: the only way out was killing
+// the process, which is exactly what was reported.
+//
+// A local file makes it worse rather than better, which is the other half of
+// the report: it loads instantly, so there is no buffering to watch and the
+// only thing standing between the viewer and the picture is a flag that never
+// gets set.
+
+/**
+ * Has the video actually opened?
+ *
+ * `isLoaded` is the answer to that question. Whether it is PLAYING is a
+ * different question and belongs to the play button.
+ */
+export function videoIsOpen(st: unknown): boolean {
+  if (!st || typeof st !== 'object') return false;
+  return (st as any).isLoaded === true;
+}
+
+/**
+ * How long to wait before admitting it is not going to open.
+ *
+ * Without this there is no way out at all: if nothing loads and nothing
+ * errors, the spinner stays up for the life of the screen. On a timeout the
+ * player shows its failure and its Retry button — which is a poor outcome, but
+ * a poor outcome the viewer can act on.
+ *
+ * Generous, because a large video on a slow connection is a legitimately long
+ * wait and turning that into a false failure would be its own bug.
+ */
+export const OPEN_TIMEOUT_MS = 30000;
+
+/** Should the player give up waiting and offer Retry? */
+export function openTimedOut(o: {
+  ready?: boolean;
+  failed?: boolean;
+  waitedMs?: unknown;
+}): boolean {
+  if (!o || o.ready || o.failed) return false;
+  const waited = Number(o.waitedMs);
+  if (!Number.isFinite(waited)) return false;
+  return waited >= OPEN_TIMEOUT_MS;
+}
