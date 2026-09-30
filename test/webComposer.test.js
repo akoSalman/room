@@ -61,6 +61,32 @@ test('THE GROWTH IS MEASURED, and can shrink again', () => {
   assert.ok(/scrollHeight/.test(body), 'the height is guessed rather than measured');
 });
 
+test('A HEIGHT IS NEVER PINNED FROM A MEASUREMENT OF NOTHING', () => {
+  // Reported from a screenshot: the composer looked half-rendered, with the
+  // placeholder cut through the middle.
+  //
+  // A textarea that is not laid out yet — the chat pane still hidden, the
+  // fonts not settled — measures scrollHeight 0. That was written straight
+  // into the inline height, leaving a box one padding tall, and because it is
+  // inline it stayed that way afterwards.
+  const i = code.indexOf('function resizeComposer');
+  const body = code.slice(i, code.indexOf('\n}', i));
+  assert.ok(/const next = el\.scrollHeight/.test(body), 'the measurement is not held to be checked');
+  assert.ok(/if \(next > 0\)/.test(body),
+    'a zero measurement is written into the height, collapsing the composer');
+  assert.ok(/else el\.style\.height = '';/.test(body),
+    'a bad measurement leaves the previous height pinned instead of clearing it');
+});
+
+test('…and the stylesheet has a floor under it either way', () => {
+  // Belt as well as braces: the height comes from JS, so the one thing CSS
+  // can do is refuse to go under a line.
+  const rule = /#msg-input \{[^}]*\}/.exec(css);
+  assert.ok(rule, 'the composer is not styled');
+  assert.ok(/min-height:/.test(rule[0]),
+    'nothing stops the composer collapsing to less than one line');
+});
+
 test('…and everything that empties the box also resizes it', () => {
   // Sending, and switching away from a chat. Miss one and the composer keeps
   // the height of text that is no longer in it.

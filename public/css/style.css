@@ -415,8 +415,13 @@ body.kb-open #install-hint { display: none; }
    which scrolls sideways — so a long message pushed everything typed earlier
    out of sight with no way to read it back. max-height stops it eating the
    chat; past that it scrolls, which is the right trade for a very long one.
-   resize:none because the drag handle would sit over the send button. */
-#msg-input { flex: 1; min-width: 0; background: var(--input-bg); border: 1px solid var(--border); border-radius: 20px; padding: 10px 16px; color: var(--text); font-size: 16px; outline: none; -webkit-appearance: none; resize: none; overflow-y: auto; max-height: 8.5em; line-height: 1.35; font-family: inherit; }
+   resize:none because the drag handle would sit over the send button.
+
+   min-height is a floor nothing can go under: the height is set from JS, and a
+   measurement taken before the element is laid out comes back zero. Pinning
+   that left a composer one padding tall with the placeholder cut through the
+   middle, which is how it was reported. */
+#msg-input { flex: 1; min-width: 0; background: var(--input-bg); border: 1px solid var(--border); border-radius: 20px; padding: 10px 16px; color: var(--text); font-size: 16px; outline: none; -webkit-appearance: none; resize: none; overflow-y: auto; min-height: 44px; max-height: 8.5em; line-height: 1.35; font-family: inherit; }
 #msg-input:focus { border-color: var(--accent); }
 
 .send-btn { background: var(--accent); border: none; color: #fff; border-radius: 50%; width: 42px; height: 42px; cursor: pointer; font-size: 1rem; display: flex; align-items: center; justify-content: center; flex-shrink: 0; -webkit-appearance: none; }

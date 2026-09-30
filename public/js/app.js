@@ -2540,7 +2540,17 @@ function resizeComposer() {
   const el = document.getElementById('msg-input');
   if (!el) return;
   el.style.height = 'auto';
-  el.style.height = el.scrollHeight + 'px';
+  const next = el.scrollHeight;
+  // A textarea that is not laid out yet — the chat pane still hidden, the
+  // fonts not settled — measures ZERO. Pinning that as an inline height left a
+  // box one padding tall with the placeholder clipped through the middle, and
+  // because the height is inline it stayed that way afterwards. Reported as
+  // the composer looking half-rendered.
+  //
+  // Nothing is better than a wrong number here: cleared, the stylesheet's
+  // min-height decides, which is right until there is something to measure.
+  if (next > 0) el.style.height = next + 'px';
+  else el.style.height = '';
 }
 
 // ─── @mentions ───────────────────────────────────────────────────────────────
