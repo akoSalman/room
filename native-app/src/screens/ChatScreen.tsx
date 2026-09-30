@@ -67,6 +67,7 @@ import * as peerActions from '../peerActions';
 import * as messageInfo from '../messageInfo';
 import * as live from '../liveIndicator';
 import * as saveTarget from '../saveTarget';
+import * as saveConfirm from '../saveConfirm';
 import * as reactionBurst from '../reactionBurst';
 import { mergeViewerList, absoluteUrl } from '../viewerList';
 import ReactionBurst from '../components/ReactionBurst';
@@ -3319,6 +3320,24 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       ? (() => { try { return JSON.parse(msg.file_path!); } catch { return []; } })()
       : [msg.file_path];
     if (!urls.length) return;
+
+    // Ask before writing a whole album to the device. Saving all of them is
+    // what this already did; what it never did was say so, and one tap on a
+    // menu item called "Download" quietly fetched eleven files on a connection
+    // paid for by the megabyte. One photo is not asked about — a confirmation
+    // whose answer is always yes teaches people to dismiss confirmations.
+    const count = saveConfirm.fileCount(urls);
+    if (saveConfirm.needsConfirm(count)) {
+      const t = saveConfirm.confirmText(count);
+      const go = await new Promise<boolean>(resolve => {
+        Alert.alert(t.title, t.body, [
+          { text: t.cancel, style: 'cancel', onPress: () => resolve(false) },
+          { text: t.confirm, onPress: () => resolve(true) },
+        // Dismissing by tapping outside is a no, not a yes.
+        ], { cancelable: true, onDismiss: () => resolve(false) });
+      });
+      if (!go) return;
+    }
 
     // Decided per FILE below, not from msg.type — a photo in a private room
     // was being taken for a document, which is why it never reached the

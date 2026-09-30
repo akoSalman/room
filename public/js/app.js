@@ -5411,14 +5411,24 @@ function ctxDownload() {
   if (ctxTarget.type === 'gallery') {
     try { paths = JSON.parse(ctxTarget.filePath); } catch {}
   }
+  // Ask before writing a whole album to somebody's device. Saving all of them
+  // is what this already did; what it never did was say so, and one tap on a
+  // menu item called "Download" quietly fetched eleven files on a connection
+  // paid for by the megabyte. One photo is not asked about — see saveConfirm.
+  const count = SaveConfirm.fileCount(paths);
+  const target = ctxTarget;
+  closeCtxMenu();
+  if (SaveConfirm.needsConfirm(count)) {
+    const t = SaveConfirm.confirmText(count);
+    if (!confirm(t.title + '\n\n' + t.body)) return;
+  }
   // One at a time: the share sheet is modal, so firing several at once would
   // stack sheets on top of each other and lose all but the last.
   (async () => {
     for (const pth of paths) {
-      await saveToDevice(pth, ctxTarget?.fileName || '', ctxTarget?.mime || '');
+      await saveToDevice(pth, target?.fileName || '', target?.mime || '');
     }
   })();
-  closeCtxMenu();
 }
 
 function ctxCopy() {

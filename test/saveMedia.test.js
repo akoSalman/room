@@ -134,8 +134,11 @@ test('a refusal is never shared as if it were the file', () => {
 test('a gallery is saved one at a time', () => {
   // The share sheet is modal: firing several at once stacks sheets and loses
   // all but the last.
-  const fn = app.slice(app.indexOf('function ctxDownload('),
-    app.indexOf('function ctxDownload(') + 900);
+  // Sliced to the END of the function rather than a fixed number of
+  // characters: a confirmation added ahead of the loop pushed it past the
+  // window and this read as the loop having gone.
+  const start = app.indexOf('function ctxDownload(');
+  const fn = app.slice(start, app.indexOf('\nfunction ', start + 1));
   assert.ok(/for \(const pth of paths\)/.test(fn) && /await saveToDevice/.test(fn),
     'the downloads are fired together again');
 });
