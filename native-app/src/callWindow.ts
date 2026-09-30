@@ -223,3 +223,56 @@ export function canSwapVideos(o: {
 export function mirrors(pane: 'remote' | 'local', frontCamera: boolean): boolean {
   return pane === 'local' && !!frontCamera;
 }
+
+// ── A camera that has been switched off ────────────────────────────────────
+//
+// Reported as: closing the camera on a video call shows a black screen.
+//
+// It does, and the reason is that switching the camera off does not remove
+// the stream — `toggleCamera` only disables the video TRACK:
+//
+//     this.localStream.getVideoTracks().forEach(t => { t.enabled = !off });
+//
+// The audio track carries on, so `remoteStream`/`localStream` are still there
+// and the overlay renders an RTCView over a track with nothing in it. The
+// placeholder it already has only appears when there is no stream AT ALL,
+// which is a different situation — waiting for someone to arrive, not someone
+// who has covered their camera.
+//
+// The other half is that the far end has no way to know. Disabling a track is
+// a local act; nothing about it reaches the peer, who just sees black and
+// cannot tell it from a broken connection. So it is signalled, the same way
+// everything else about a call is.
+
+/**
+ * Is this pane showing a camera that is off?
+ *
+ * Asked per pane because the two are known differently: your own camera is a
+ * fact you hold, the other person's is something you were told.
+ */
+export function cameraOffFor(
+  pane: 'remote' | 'local' | null | undefined,
+  o: { cameraOff?: boolean; remoteCameraOff?: boolean },
+): boolean {
+  if (!pane || !o) return false;
+  return pane === 'local' ? !!o.cameraOff : !!o.remoteCameraOff;
+}
+
+/**
+ * Should the big pane show the placeholder rather than a video?
+ *
+ * True when there is nothing to show — no stream yet — and equally when there
+ * is a stream whose camera is off. Both are "no picture"; only one of them was
+ * being treated that way.
+ */
+export function showBigPlaceholder(o: {
+  isVideo?: boolean;
+  hasRemote?: boolean;
+  bigPane?: 'remote' | 'local' | null;
+  cameraOff?: boolean;
+  remoteCameraOff?: boolean;
+}): boolean {
+  if (!o) return true;
+  if (!o.isVideo || !o.hasRemote) return true;
+  return cameraOffFor(o.bigPane, o);
+}

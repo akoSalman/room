@@ -448,6 +448,114 @@ test('the web puts the two videos where the rule says, and hides the empty one',
     "the other side's video is not the corner by default");
 });
 
+// ── A camera that has been switched off ────────────────────────────────────
+//
+// Reported as: closing the camera on a video call shows a black screen.
+//
+// Switching the camera off does not remove the stream — toggleCamera only
+// disables the video TRACK, and the audio track keeps the stream alive. So an
+// RTCView was drawn over a track with nothing in it. The placeholder the
+// overlay already had appears only when there is NO stream, which is a
+// different situation: waiting for somebody to arrive, not somebody who has
+// covered their camera.
+
+test('WHOSE CAMERA IS OFF DEPENDS ON WHICH PANE', () => {
+  // Known differently: your own camera is a fact you hold, theirs is
+  // something you were told.
+  assert.strictEqual(W.cameraOffFor('local', { cameraOff: true, remoteCameraOff: false }), true);
+  assert.strictEqual(W.cameraOffFor('remote', { cameraOff: true, remoteCameraOff: false }), false,
+    "your own camera being off blanked the OTHER person's picture");
+  assert.strictEqual(W.cameraOffFor('remote', { cameraOff: false, remoteCameraOff: true }), true);
+  assert.strictEqual(W.cameraOffFor('local', { cameraOff: false, remoteCameraOff: true }), false);
+});
+
+test('…and nothing is blank without a pane', () => {
+  assert.strictEqual(W.cameraOffFor(null, { cameraOff: true, remoteCameraOff: true }), false);
+  assert.strictEqual(W.cameraOffFor(undefined, { cameraOff: true }), false);
+  assert.strictEqual(W.cameraOffFor('local', null), false);
+});
+
+test('THE PLACEHOLDER COVERS BOTH KINDS OF "no picture"', () => {
+  // No stream yet, and a stream whose camera is off. Only the first was being
+  // treated as no picture.
+  assert.strictEqual(W.showBigPlaceholder({ isVideo: true, hasRemote: false }), true);
+  assert.strictEqual(W.showBigPlaceholder({
+    isVideo: true, hasRemote: true, bigPane: 'remote', remoteCameraOff: true,
+  }), true, 'a camera that is off still shows a black rectangle');
+  assert.strictEqual(W.showBigPlaceholder({
+    isVideo: true, hasRemote: true, bigPane: 'local', cameraOff: true,
+  }), true);
+});
+
+test('…and stays out of the way when there IS a picture', () => {
+  assert.strictEqual(W.showBigPlaceholder({
+    isVideo: true, hasRemote: true, bigPane: 'remote', cameraOff: true, remoteCameraOff: false,
+  }), false, 'covering your own camera hid the other person');
+  assert.strictEqual(W.showBigPlaceholder({
+    isVideo: true, hasRemote: true, bigPane: 'local', cameraOff: false, remoteCameraOff: true,
+  }), false);
+});
+
+test('a voice call is always the placeholder, as it was', () => {
+  assert.strictEqual(W.showBigPlaceholder({ isVideo: false, hasRemote: true }), true);
+  assert.strictEqual(W.showBigPlaceholder(null), true);
+});
+
+// ── The wiring ──────────────────────────────────────────────────────────────
+
+const fsc = require('fs');
+const rdn = (...p) => fsc.readFileSync(require('path').join(__dirname, '..', 'native-app', 'src', ...p), 'utf8');
+
+test('THE OTHER SIDE IS TOLD, or they only ever see black', () => {
+  // Disabling a track is a LOCAL act; nothing about it reaches the peer, who
+  // cannot tell a covered camera from a connection that has died.
+  const cmSrc = rdn('callManager.ts');
+  assert.ok(/emit\('call_camera'/.test(cmSrc), 'turning the camera off tells nobody');
+  assert.ok(/s\.on\('call_camera'/.test(cmSrc), 'being told is never listened for');
+  assert.ok(/remoteCameraOff = !!off/.test(cmSrc), 'what they said is not remembered');
+  // A stale event from a previous call must not black out this one.
+  const i = cmSrc.indexOf("s.on('call_camera'");
+  assert.ok(/this\.peerId == null \|\| String\(this\.peerId\) !== String\(fromUserId\)\) return/
+    .test(cmSrc.slice(i, i + 400)), 'an event from anybody at all blanks the picture');
+  // …and forgotten when the call ends, or the next call starts blank.
+  assert.ok(/this\.remoteCameraOff = false/.test(cmSrc), 'it is remembered into the next call');
+
+  const server = fsc.readFileSync(require('path').join(__dirname, '..', 'server.js'), 'utf8');
+  assert.ok(/socket\.on\('call_camera'/.test(server), 'the server does not pass it on');
+});
+
+test('THE PANE IS LIGHT, not another black rectangle', () => {
+  // The whole point: black is what a dead connection looks like, and this is
+  // the opposite — everything is fine, there is just nothing to look at.
+  const ov = rdn('components', 'CallOverlay.tsx');
+  assert.ok(/cameraOffPane/.test(ov), 'there is no camera-off pane');
+  const style = /cameraOffPane: \{[\s\S]*?\}/.exec(ov);
+  assert.ok(style && /backgroundColor: '#f1f5f9'/.test(style[0]),
+    'the camera-off pane is dark, which is what it replaced');
+  assert.ok(/cameraOffEmoji/.test(ov), 'nothing on it says what happened');
+});
+
+test('A CALL DISMISSES THE KEYBOARD', () => {
+  // Asked for: a call arriving over an open keyboard leaves it across the
+  // bottom of the screen with Accept and Decline behind it.
+  const ov = rdn('components', 'CallOverlay.tsx');
+  assert.ok(/Keyboard\.dismiss\(\)/.test(ov), 'a call arrives over an open keyboard');
+  assert.ok(/const callUp = !!cm\.mode \|\| !!cm\.incoming/.test(ov),
+    'only one of calling and being called dismisses it');
+});
+
+test('BOTH CALL NOTIFICATIONS CARRY THE APP ICON', () => {
+  // The call bar had no icon at all, and the incoming-call notification named
+  // 'ic_notification' — a drawable this app does not have, so Android drew a
+  // blank square. The plugin generates 'notification_icon'.
+  for (const f of ['ongoingCall.ts', 'incomingCall.ts']) {
+    const src = rdn(f);
+    assert.ok(/notificationIcon\.iconFields\(\)/.test(src), `${f} draws no app icon`);
+    assert.ok(!/'ic_notification'/.test(src.replace(/\/\/.*$/gm, '')),
+      `${f} names a drawable that does not exist`);
+  }
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

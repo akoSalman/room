@@ -31,6 +31,8 @@ class CallManager {
   remoteStream: MediaStream | null = null; // dm-video only
   muted = false;
   cameraOff = false;
+  /** The OTHER side's camera, as last reported by them. */
+  remoteCameraOff = false;
   speakerOn = false;    // voice calls: earpiece by default, toggle to speaker
   frontCamera = true;   // video calls: front/back camera
   /** Shrunk to a bubble, so the chat underneath can be used. */
@@ -320,6 +322,13 @@ class CallManager {
       }
       pc.addIceCandidate(candidate).catch(() => {});
     });
+    s.on('call_camera', ({ fromUserId, off }: any) => {
+      // Only about the person we are actually in a call with; a stale event
+      // from a previous call must not black out this one's picture.
+      if (this.peerId == null || String(this.peerId) !== String(fromUserId)) return;
+      this.remoteCameraOff = !!off;
+      this.emit();
+    });
     s.on('call_end', ({ fromUserId }: any) => {
       this.dropPeer(fromUserId);
       // `mode` is only set once a call is ACCEPTED, so asking whether it
@@ -500,6 +509,7 @@ class CallManager {
     this.incoming = null;
     this.muted = false;
     this.cameraOff = false;
+    this.remoteCameraOff = false;
     this.speakerOn = false;
     this.minimized = false;
     this.videoSwapped = false;
@@ -739,6 +749,11 @@ class CallManager {
     if (!this.localStream) return;
     this.cameraOff = !this.cameraOff;
     this.localStream.getVideoTracks().forEach(t => { t.enabled = !this.cameraOff; });
+    // Say so. Disabling a track is a LOCAL act — nothing about it reaches the
+    // peer, who just sees black and cannot tell it from a broken connection.
+    if (this.peerId != null) {
+      this.sock?.emit('call_camera', { toUserId: this.peerId, off: this.cameraOff });
+    }
     this.emit();
   }
 }

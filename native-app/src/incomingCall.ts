@@ -20,6 +20,7 @@
 import notifee, {
   AndroidCategory, AndroidImportance, AndroidVisibility, EventType,
 } from '@notifee/react-native';
+import * as notificationIcon from './notificationIcon';
 
 export const CALL_CHANNEL = 'calls-v3';
 /** One notification id, so a second offer replaces the first rather than stacking. */
@@ -134,7 +135,11 @@ export async function showLiveLocation(chatName: string, untilMs: number): Promi
         ongoing: true,
         autoCancel: false,
         onlyAlertOnce: true,
-        smallIcon: 'ic_notification',
+        // 'ic_notification' is not a drawable this app has. The
+        // expo-notifications plugin generates 'notification_icon', and
+        // Android falls back to a blank square for a name it cannot
+        // resolve — which is what was on these.
+        ...notificationIcon.iconFields(),
         pressAction: { id: 'default', launchActivity: 'default' },
         actions: [
           { title: 'Stop sharing', pressAction: { id: 'stop-location' } },

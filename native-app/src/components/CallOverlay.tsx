@@ -2,7 +2,7 @@
 // call, in the spirit of Telegram/WhatsApp — big avatar, name, live timer,
 // round controls at the bottom.
 import React, { useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Dimensions, PanResponder } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Dimensions, PanResponder, Keyboard } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { RTCView } from 'react-native-webrtc';
 import { C } from '../theme';
@@ -10,6 +10,7 @@ import { callManager } from '../callManager';
 import {
   canMinimize, clampToScreen, snapToEdge, defaultPosition, isDrag,
   videoPanes, canSwapVideos, mirrors,
+  showBigPlaceholder, cameraOffFor,
 } from '../callWindow';
 
 /** The bubble a minimized call shrinks to. */
@@ -33,6 +34,26 @@ export default function CallOverlay() {
   useEffect(() => callManager.subscribe(forceUpdate), []);
 
   const cm = callManager;
+
+  // A call arriving over an open keyboard leaves it sitting across the bottom
+  // of the screen with Accept and Decline behind it. Dismissed whenever a call
+  // starts or arrives — nobody is typing into a chat they are about to answer
+  // a call from, and it costs nothing when there is no keyboard up.
+  const callUp = !!cm.mode || !!cm.incoming;
+  useEffect(() => {
+    if (callUp) Keyboard.dismiss();
+  }, [callUp]);
+
+  // Which video goes in which pane. Computed here rather than inside the
+  // video branch because the placeholder below needs to know which side the
+  // big pane is showing before it can say whose camera is off.
+  const panesFor = videoPanes({
+    swapped: cm.videoSwapped,
+    hasRemote: !!cm.remoteStream,
+    hasLocal: !!cm.localStream,
+    cameraOff: cm.cameraOff,
+  });
+
 
   // Tick the timer once a second while connected
   useEffect(() => {
@@ -150,12 +171,7 @@ export default function CallOverlay() {
           and your own camera turned off while you are the big pane — are
           decided in one place rather than in three conditions here. */}
       {isVideo && (() => {
-        const panes = videoPanes({
-          swapped: cm.videoSwapped,
-          hasRemote: !!cm.remoteStream,
-          hasLocal: !!cm.localStream,
-          cameraOff: cm.cameraOff,
-        });
+        const panes = panesFor;
         const streamOf = (p: 'remote' | 'local') => (p === 'remote' ? cm.remoteStream : cm.localStream);
         const bigStream = streamOf(panes.big);
         const wantSmall = panes.small ? streamOf(panes.small) : null;
@@ -210,10 +226,29 @@ export default function CallOverlay() {
         );
       })()}
 
-      {!(isVideo && cm.remoteStream) && (
-        <View style={[s.bigAvatar, { marginTop: H * 0.16 }]}>
-          <Text style={s.bigAvatarText}>{initialsOf(cm.title)}</Text>
-        </View>
+      {/* A camera that is OFF is not the same as a call with no video, but it
+          looked the same: the stream is still there (the audio track keeps it
+          alive), so an RTCView was drawn over a track with nothing in it and
+          the screen went black. Black is also what a dead connection looks
+          like, which is the part that matters. */}
+      {showBigPlaceholder({
+        isVideo, hasRemote: !!cm.remoteStream, bigPane: panesFor.big,
+        cameraOff: cm.cameraOff, remoteCameraOff: cm.remoteCameraOff,
+      }) && (
+        cameraOffFor(panesFor.big, { cameraOff: cm.cameraOff, remoteCameraOff: cm.remoteCameraOff })
+          ? (
+            <View style={s.cameraOffPane}>
+              <Text style={s.cameraOffEmoji}>🙈</Text>
+              <Text style={s.cameraOffText}>
+                {panesFor.big === 'local' ? 'Your camera is off' : 'Camera is off'}
+              </Text>
+            </View>
+          )
+          : (
+            <View style={[s.bigAvatar, { marginTop: H * 0.16 }]}>
+              <Text style={s.bigAvatarText}>{initialsOf(cm.title)}</Text>
+            </View>
+          )
       )}
       <View style={isVideo && cm.remoteStream ? s.infoOnVideo : s.info}>
         <Text style={s.callerName} numberOfLines={1}>{cm.title.replace(/^[^ ]+ /, '')}</Text>
@@ -299,6 +334,16 @@ const s = StyleSheet.create({
   incomingKindRow: { flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 64 },
   incomingKind: { color: 'rgba(255,255,255,0.75)', fontSize: 14, fontWeight: '600' },
   endIcon: { transform: [{ rotate: '135deg' }] },
+  // Light, not black: a dark rectangle is indistinguishable from a call that
+  // has died, and this is the opposite — everything is fine, there is just
+  // nothing to look at.
+  cameraOffPane: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#f1f5f9',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  cameraOffEmoji: { fontSize: 64 },
+  cameraOffText: { marginTop: 10, color: '#475569', fontSize: 15, fontWeight: '600' },
   bigAvatar: {
     width: 128, height: 128, borderRadius: 64, backgroundColor: C.accent,
     alignItems: 'center', justifyContent: 'center',

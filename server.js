@@ -3649,6 +3649,14 @@ io.on('connection', (socket) => {
   });
   // The callee's app reporting that it is alerting — the only thing that
   // entitles the caller's screen to say "Ringing…".
+  // One side turning their camera off. Disabling a track is local and tells
+  // the peer nothing, so they saw a black rectangle and could not tell it from
+  // a connection that had died.
+  socket.on('call_camera', ({ toUserId, off }) => {
+    io.to('user:' + toUserId).emit('call_camera', {
+      fromUserId: socket.user.id, off: !!off,
+    });
+  });
   socket.on('call_ringing', ({ toUserId }) => {
     io.to('user:' + toUserId).emit('call_ringing', { fromUserId: socket.user.id });
   });

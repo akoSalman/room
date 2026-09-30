@@ -25,6 +25,7 @@ import notifee, {
 } from '@notifee/react-native';
 import { Platform, PermissionsAndroid } from 'react-native';
 import { ongoingText, showsChronometer, CallPhase } from './callWindow';
+import * as notificationIcon from './notificationIcon';
 
 export const ONGOING_CHANNEL = 'call-ongoing';
 export const ONGOING_ID = 'ongoing-call';
@@ -190,6 +191,10 @@ export async function startOngoing(info: OngoingInfo): Promise<void> {
       title: info.title,
       body: ongoingText({ phase: info.phase, kind: info.kind, connected: info.connected }),
       android: {
+        // The app's icon. Missing here entirely, so the call bar — the one
+        // notification that sits on screen for the whole call — was the only
+        // thing in the shade with no icon on it.
+        ...notificationIcon.iconFields(),
         channelId: ONGOING_CHANNEL,
         // The declaration that keeps the process alive — but ONLY when a type
         // can be backed up. A foreground service with no valid type is
