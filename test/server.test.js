@@ -3894,4 +3894,48 @@ test('SECURITY: reactions cannot be read out of a room you are not in', async ()
     'anybody could list who reacted to a message in a private room');
 });
 
+test('ONE CALL IS ONE LOG, even though both ends report it', async () => {
+  // Every call tears down on both sides and both emit call_log, so one call
+  // put two identical rows in the chat. Nothing could pick a side: either end
+  // can be the one that hangs up, either can be an older build, either can
+  // lose the network before it reports.
+  const a = await signUp('calllog1');
+  const b = await signUp('calllog2');
+  const aSock = await connect(a.token);
+  const bSock = await connect(b.token);
+  const dm = await api(`/dm/${idOf(b.token)}`, 'POST', null, a.token);
+  assert.ok(dm && dm.id, 'could not open the DM');
+
+  // Both ends, moments apart, exactly as a real call ends.
+  aSock.emit('call_log', { peerId: idOf(b.token), kind: 'voice', outcome: 'completed', duration: 42 });
+  await new Promise(r => setTimeout(r, 150));
+  bSock.emit('call_log', { peerId: idOf(a.token), kind: 'voice', outcome: 'completed', duration: 42 });
+  await new Promise(r => setTimeout(r, 300));
+
+  const history = await api(`/messages/${dm.id}`, 'GET', null, a.token);
+  const logs = history.filter(m => m.type === 'call');
+  assert.strictEqual(logs.length, 1, `one call produced ${logs.length} log entries`);
+  // …and the one that was kept is the real one, not an empty placeholder.
+  const c = JSON.parse(logs[0].content || '{}');
+  assert.strictEqual(c.outcome, 'completed');
+  assert.strictEqual(c.duration, 42);
+});
+
+test('…but a DIFFERENT outcome is a different call', async () => {
+  // A missed call and then a completed one are two events, and collapsing
+  // them would lose the missed one entirely.
+  const a = await signUp('calllog3');
+  const b = await signUp('calllog4');
+  const aSock = await connect(a.token);
+  const dm = await api(`/dm/${idOf(b.token)}`, 'POST', null, a.token);
+  aSock.emit('call_log', { peerId: idOf(b.token), kind: 'voice', outcome: 'missed', duration: 0 });
+  await new Promise(r => setTimeout(r, 150));
+  aSock.emit('call_log', { peerId: idOf(b.token), kind: 'voice', outcome: 'completed', duration: 12 });
+  await new Promise(r => setTimeout(r, 300));
+
+  const history = await api(`/messages/${dm.id}`, 'GET', null, a.token);
+  const logs = history.filter(m => m.type === 'call');
+  assert.strictEqual(logs.length, 2, 'two different calls were collapsed into one');
+});
+
 main().catch(err => { console.error(err); process.exit(1); });

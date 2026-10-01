@@ -832,6 +832,10 @@ body.kb-open #install-hint { display: none; }
 .msg-wrapper { display: flex; flex-direction: column; max-width: 72%; min-width: 0; }
 .msg-wrapper.mine { align-self: flex-end; align-items: flex-end; }
 .msg-wrapper.theirs { align-self: flex-start; align-items: flex-start; }
+/* A system notice or a call log is about the conversation rather than
+   about one side of it, so it sits in the middle whoever reported it.
+   After the two rules above, so it wins over both. */
+.msg-wrapper.centred { align-self: center; align-items: center; max-width: 86%; }
 .msg-sender {
   font-size: 0.74rem; color: var(--accent); margin-bottom: 3px; padding: 0 4px;
   display: inline-flex; align-items: center; gap: 5px; font-weight: 600;

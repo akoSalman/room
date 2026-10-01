@@ -3627,6 +3627,37 @@ io.on('connection', (socket) => {
       duration: Math.max(0, parseInt(duration, 10) || 0),
       by: socket.user.id, // who logged it (the one who ended/declined)
     });
+    // ONE log per call, not one per participant.
+    //
+    // Both ends run teardown when a call finishes, and both emit this — so a
+    // single call put two identical entries in the chat. Deduplicated here
+    // rather than by picking a side to log it, because either side can be the
+    // one that hangs up, either can be an older build, and either can lose the
+    // network before it reports. The server is the only place that sees both.
+    //
+    // Matched on what the two reports have in common: same chat, same kind,
+    // same outcome, moments apart. Fifteen seconds is comfortably longer than
+    // the gap between two teardowns and shorter than any real redial anybody
+    // would want logged separately.
+    const twin = db.prepare(`
+      SELECT id, content FROM messages
+      WHERE room_id = ? AND type = 'call'
+        AND created_at > datetime('now', '-15 seconds')
+      ORDER BY id DESC LIMIT 5
+    `).all(dm.id).find(m => {
+      try {
+        const c = JSON.parse(m.content || '{}');
+        const mine = JSON.parse(content);
+        return c.kind === mine.kind && c.outcome === mine.outcome;
+      } catch { return false; }
+    });
+    if (twin) {
+      // The first report wins. The second is the same call seen from the
+      // other end, and the one with a duration is no more correct than the
+      // one without — they are the same number.
+      return;
+    }
+
     const result = db.prepare(
       'INSERT INTO messages (room_id, user_id, type, content) VALUES (?, ?, ?, ?)'
     ).run(dm.id, socket.user.id, 'call', content);

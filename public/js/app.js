@@ -4545,7 +4545,13 @@ function buildMessageElement(msg) {
   const isMine = msg.username === username;
 
   const wrapper = document.createElement('div');
-  wrapper.className = 'msg-wrapper ' + (isMine ? 'mine' : 'theirs');
+  // A call log belongs to the conversation, not to either side of it: it is a
+  // record of something that happened between two people, so it sits in the
+  // middle like a system notice rather than hanging off whoever's app happened
+  // to report it. (Which was arbitrary — both ends used to report it.)
+  const centred = msg.type === 'system' || msg.type === 'call';
+  wrapper.className = 'msg-wrapper ' + (isMine ? 'mine' : 'theirs')
+    + (centred ? ' centred' : '');
   wrapper.dataset.msgId = msg.id;
   // The deadline travels with the bubble, so the sweep below can find it
   // without keeping a parallel list of what is on screen.
@@ -4564,7 +4570,7 @@ function buildMessageElement(msg) {
 
   // System notices carry their own centered text; they must not get a
   // clickable sender header above them.
-  if (!isMine && msg.type !== 'system') {
+  if (!isMine && !centred) {
     const sender = document.createElement('div');
     sender.className = 'msg-sender';
     const senderAvatar = document.createElement('span');

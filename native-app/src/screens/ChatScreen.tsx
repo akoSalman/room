@@ -4680,6 +4680,41 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     // System notices (a member joined, or was removed) render as a centered
     // line rather than a chat bubble, with the affected username tappable so
     // you can open a DM with them straight from the announcement.
+    // A call log is about the conversation, not about either side of it: a
+    // record of something that happened between two people. It used to hang
+    // off whoever's app reported it, which was arbitrary — both ends reported
+    // it — so it sits in the middle now, like a system notice, in its place in
+    // the order.
+    if (msg.type === 'call') {
+      let c: any = {};
+      try { c = JSON.parse(msg.content || '{}'); } catch {}
+      const fmtDur = (n: number) => n >= 60 ? `${Math.floor(n / 60)}m ${n % 60}s` : `${n}s`;
+      const label = c.outcome === 'completed'
+        ? `${c.kind === 'video' ? 'Video' : 'Voice'} call · ${fmtDur(c.duration || 0)}`
+        : c.outcome === 'declined' ? 'Call declined'
+        : c.outcome === 'missed' ? 'Missed call'
+        : 'Call failed';
+      const bad = c.outcome !== 'completed';
+      const color = bad ? '#f87171' : C.accent;
+      return (
+        <View style={s.systemRow}>
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onLongPress={() => onMessageLongPress(msg)}
+            delayLongPress={350}
+          >
+            <View style={s.callLog}>
+              <View style={[s.callLogIconWrap, {
+                backgroundColor: bad ? 'rgba(248,113,113,0.15)' : 'rgba(59,125,216,0.15)',
+              }]}>
+                <Ionicons name={c.kind === 'video' ? 'videocam' : 'call'} size={16} color={color} />
+              </View>
+              <Text style={[s.callLogText, bad && { color: '#f87171' }]}>{label}</Text>
+            </View>
+          </TouchableOpacity>
+        </View>
+      );
+    }
     if (msg.type === 'system') {
       let d: any = {};
       try { d = JSON.parse(msg.content || '{}'); } catch {}
@@ -4927,25 +4962,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
           {msg.type === 'text' && !!msg.content && (
             <LinkCard content={msg.content} onPress={run => tokenPress(run)} />
           )}
-          {msg.type === 'call' && (() => {
-            let c: any = {};
-            try { c = JSON.parse(msg.content || '{}'); } catch {}
-            const fmtDur = (n: number) => n >= 60 ? `${Math.floor(n / 60)}m ${n % 60}s` : `${n}s`;
-            const label = c.outcome === 'completed' ? `${c.kind === 'video' ? 'Video' : 'Voice'} call · ${fmtDur(c.duration || 0)}`
-              : c.outcome === 'declined' ? 'Call declined'
-              : c.outcome === 'missed' ? 'Missed call'
-              : 'Call failed';
-            const bad = c.outcome !== 'completed';
-            const color = bad ? '#f87171' : C.accent;
-            return (
-              <View style={s.callLog}>
-                <View style={[s.callLogIconWrap, { backgroundColor: bad ? 'rgba(248,113,113,0.15)' : 'rgba(59,125,216,0.15)' }]}>
-                  <Ionicons name={c.kind === 'video' ? 'videocam' : 'call'} size={16} color={color} />
-                </View>
-                <Text style={[s.callLogText, bad && { color: '#f87171' }]}>{label}</Text>
-              </View>
-            );
-          })()}
           {msg.type === 'invite' && (() => {
             let inv: any = null;
             try { inv = JSON.parse(msg.content || ''); } catch {}
