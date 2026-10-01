@@ -155,12 +155,28 @@ test('both clients jump through the rule, and mark the seam', () => {
   assert.ok(/unreadInfo && unreadInfo\.anchorId === String\(msg\.id\)/.test(chatScreen),
     'the app draws no divider');
   // Drawn inside a row, so a row that never re-renders never grows one.
-  assert.ok(/selectMode, e2ePhase, unreadInfo \}\)/.test(chatScreen),
+  // Matched against the extraData block rather than against one exact spelling
+  // of it: this used to pin unreadInfo to being the LAST key, so adding
+  // anything after it failed a test about the divider.
+  const extra = /const rowExtraData = useMemo\([\s\S]{0,1600}?\)\s*;/.exec(chatScreen);
+  assert.ok(extra, 'could not find rowExtraData');
+  // The OBJECT specifically. Searching the whole block would be satisfied by
+  // the dependency list below, which is a different thing: a dependency that
+  // is never put in the object recomputes the memo without telling the rows
+  // anything.
+  const obj = /\(\s*\)\s*=>\s*\(\s*\{([\s\S]*?)\}\s*\)/.exec(extra[0]);
+  assert.ok(obj, 'could not find the rowExtraData object');
+  assert.ok(/\bunreadInfo\b/.test(obj[1]),
     'the app rows are not told where the seam is');
   // The LABEL travels with it, not just the position: passing only the anchor
   // means a row does not re-render when the count beneath it changes, which is
   // the stale label with extra steps.
-  assert.ok(/e2ePhase, unreadInfo\],/.test(chatScreen),
+  // Checked in the DEPENDENCY list specifically: being in the object alone
+  // would mean the memo never recomputes, so the rows would still be handed
+  // the stale label.
+  const deps = /\]\s*,\s*\[([\s\S]*?)\]\s*,?\s*\)\s*;|\}\s*\)\s*,\s*\[([\s\S]*?)\]\s*,?\s*\)\s*;/.exec(extra[0]);
+  assert.ok(deps, 'could not find the rowExtraData dependency list');
+  assert.ok(/\bunreadInfo\b/.test(deps[1] || deps[2] || ''),
     'the rows are not redrawn when the count below the line changes');
 });
 

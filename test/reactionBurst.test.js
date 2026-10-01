@@ -255,6 +255,96 @@ test('…and a stale burst is not drawn even if one is left behind', () => {
     'the burst is drawn on presence alone, so a stranded entry animates for ever');
 });
 
+test('THE SAME ANNOUNCEMENT TWICE IS NOT A CHANGE', () => {
+  // The server sends every reaction twice: once on the room channel, once on
+  // each member's personal channel. A phone looking at the chat gets both.
+  const payload = [
+    { emoji: '❤️', username: 'sara', user_id: 7 },
+    { emoji: '🔥', username: 'ako', user_id: 9 },
+  ];
+  assert.strictEqual(B.sameReactions(payload, payload.slice()), true);
+  // …and the two copies may list them in either order.
+  assert.strictEqual(B.sameReactions(payload, payload.slice().reverse()), true);
+});
+
+test('ORDER IS IGNORED EVEN WHEN IT IS NOT ALREADY SORTED', () => {
+  // Deliberately listed highest id first, so that a comparison which forgot
+  // to sort one side cannot pass by luck — which is exactly how an earlier
+  // version of this test passed against a broken rule.
+  const a = [
+    { emoji: '🔥', username: 'ako', user_id: 9 },
+    { emoji: '❤️', username: 'sara', user_id: 7 },
+  ];
+  assert.strictEqual(B.sameReactions(a, a.slice().reverse()), true);
+  assert.strictEqual(B.sameReactions(a.slice().reverse(), a), true);
+});
+
+test('WHO reacted is part of the comparison, not just WHAT', () => {
+  // Same two emoji, same count — but the people swapped. Comparing emoji
+  // alone calls this unchanged, and Sara's reaction would never update.
+  const before = [
+    { emoji: '❤️', username: 'sara', user_id: 7 },
+    { emoji: '🔥', username: 'ako', user_id: 9 },
+  ];
+  const after = [
+    { emoji: '🔥', username: 'sara', user_id: 7 },
+    { emoji: '❤️', username: 'ako', user_id: 9 },
+  ];
+  assert.strictEqual(B.sameReactions(before, after), false);
+});
+
+test('…but a REAL change still is one', () => {
+  const before = [{ emoji: '❤️', username: 'sara', user_id: 7 }];
+  // someone else joins in
+  assert.strictEqual(B.sameReactions(before,
+    before.concat([{ emoji: '❤️', username: 'ako', user_id: 9 }])), false);
+  // same person, different emoji
+  assert.strictEqual(B.sameReactions(before,
+    [{ emoji: '🔥', username: 'sara', user_id: 7 }]), false);
+  // the LAST reaction removed — the list going empty must not read as "same"
+  assert.strictEqual(B.sameReactions(before, []), false);
+});
+
+test('TWO PEOPLE WITH THE SAME EMOJI ARE TWO REACTIONS', () => {
+  // Keying on the emoji alone would make Sara's heart and Ako's heart one
+  // entry, and removing one of them would look like no change at all.
+  const two = [
+    { emoji: '❤️', username: 'sara', user_id: 7 },
+    { emoji: '❤️', username: 'ako', user_id: 9 },
+  ];
+  assert.strictEqual(B.sameReactions(two, [two[0]]), false);
+});
+
+test('ROWS WITH NO ID DO NOT COLLAPSE INTO ONE ANOTHER', () => {
+  // The fallback to username exists so that a row missing user_id is still
+  // distinguishable. If both fell back to the same empty key, losing one
+  // reaction would read as no change and the chips would stop updating.
+  const a = [{ emoji: '❤️', username: 'sara' }, { emoji: '❤️', username: 'ako' }];
+  assert.strictEqual(B.sameReactions(a, [a[0]]), false);
+});
+
+test('NOTHING AT ALL IS NOT "UNCHANGED"', () => {
+  // prev is undefined for a message nobody has reacted to yet, which is where
+  // the FIRST reaction lands — much the commonest case. Reading that as "the
+  // same" would mean first reactions never appeared.
+  assert.strictEqual(B.sameReactions(undefined, [{ emoji: '❤️', user_id: 7 }]), false);
+  assert.strictEqual(B.sameReactions(null, []), false);
+});
+
+test('THE SCREEN ACTUALLY SKIPS THE DUPLICATE WRITE', () => {
+  // The rule is worth nothing if the handler does not consult it.
+  const chat = fs.readFileSync(
+    path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8')
+    .replace(/\/\/[^\n]*/g, '');
+  assert.ok(/sameReactions\(\s*prev\[messageId\]\s*,\s*r\s*\)/.test(chat),
+    'reactions_updated writes state without checking whether anything changed');
+  // …and the burst must no longer rely on that write to be drawn.
+  const extra = /const rowExtraData = useMemo\([\s\S]{0,1400}?\)\s*;/.exec(chat);
+  assert.ok(extra, 'could not find rowExtraData');
+  assert.ok(/\bbursts\b/.test(extra[0]),
+    'bursts is not in the list extraData, so a burst only shows when something else changed');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

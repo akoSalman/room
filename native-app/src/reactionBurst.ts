@@ -110,3 +110,32 @@ export function stillBursting(o: { at?: unknown; now?: unknown }): boolean {
   if (at > now) return true;
   return now - at < BURST_MS;
 }
+
+/**
+ * Are these two reaction lists the same set of reactions?
+ *
+ * The server announces a reaction twice: once on the room's channel, and once
+ * on each member's personal channel so it reaches a phone whose app is in the
+ * background and has left the room channel. Both arrive, a moment apart, on a
+ * phone that is looking at the chat.
+ *
+ * The second one carries no news, but it used to be written into state
+ * anyway, and `reactions` is part of what tells the message list its rows
+ * have changed — so every reaction re-rendered every visible row twice
+ * instead of once, for nothing.
+ *
+ * Order is ignored. Two announcements of the same state can list the same
+ * reactions in either order, and treating that as a change is exactly the
+ * mistake this is here to stop.
+ */
+export function sameReactions(a: unknown, b: unknown): boolean {
+  if (!Array.isArray(a) || !Array.isArray(b)) return false;
+  if (a.length !== b.length) return false;
+  // Keyed on WHO and WHAT. The server sends user_id alongside the username;
+  // the username is the fallback, because a row that somehow lacks an id must
+  // not collapse into every other row that lacks one.
+  const key = (r: any) => `${(r && (r.user_id ?? r.username)) ?? ''}\u0000${(r && r.emoji) ?? ''}`;
+  const left = a.map(key).sort();
+  const right = b.map(key).sort();
+  return left.every((k, i) => k === right[i]);
+}

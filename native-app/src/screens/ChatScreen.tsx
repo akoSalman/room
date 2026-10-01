@@ -1259,8 +1259,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     // and the rows have to be told.
     // unreadFrom too: it is drawn INSIDE a row, so a row that never re-renders
     // never grows the divider.
-    () => ({ maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode, e2ePhase, unreadInfo }),
-    [maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode, e2ePhase, unreadInfo],
+    // bursts for the same reason: the flying emoji is drawn inside a row, and
+    // it used to appear only because `reactions` changed in the same breath.
+    // Now that an unchanged announcement is dropped, that no longer happens.
+    () => ({ maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode, e2ePhase, unreadInfo, bursts }),
+    [maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode, e2ePhase, unreadInfo, bursts],
   );
 
   const scrollBottom = useCallback(() => {
@@ -2217,7 +2220,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
           prev: reactionsRef.current[messageId] || [], next: r,
         });
         if (added) startBurst(messageId, added);
-        setReactions(prev => ({ ...prev, [messageId]: r }));
+        // The same announcement arrives twice — once on the room channel and
+        // once on our personal one, so it reaches us when backgrounded — and
+        // writing it twice re-rendered every visible row twice for no news.
+        // `bursts` is in the list's extraData, so the animation no longer
+        // depends on this write happening to change something.
+        setReactions(prev => (
+          reactionBurst.sameReactions(prev[messageId], r)
+            ? prev
+            : { ...prev, [messageId]: r }
+        ));
       });
       onSock('room_online', ({ users }: any) => setOnline(users));
       // Only about THIS chat. Reported on the web as a stranger's "is typing"
