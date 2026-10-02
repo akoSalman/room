@@ -155,6 +155,7 @@ import { marksRead, opensAsRead } from '../readPosition';
 import { isForRoom } from '../presence';
 import { safeName, cacheName, renamed, editableStem } from '../fileName';
 import { mediaHeaders } from '../mediaSource';
+import * as renderCount from '../renderCount';
 
 type Message = {
   id: number | string; room_id: number; user_id: number; username: string; avatar?: string | null;
@@ -219,6 +220,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   /** A tapped comment notification: the thread to open, and the comment in it. */
   initialCommentTarget?: { parentId: number; commentId: number | null } | null;
 }) {
+  // Counted, not reasoned about. The reaction slowdown has survived four
+  // readings of this file; these two numbers say whether the screen is
+  // redrawing too often or redrawing too much each time, which no amount of
+  // reading has settled. See src/renderCount.ts.
+  renderCount.noteScreen();
   const [messages, setMessages] = useState<Message[]>([]);
   const [reactions, setReactions] = useState<Record<number, Reaction[]>>({});
   // The live reactions, for the socket listener — which is created once and
@@ -1283,7 +1289,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     requestAnimationFrame(() => {
       if (isNearBottomRef.current) scrollBottom();
     });
-    const t = setTimeout(() => { if (isNearBottomRef.current) scrollBottom(); }, 180);
+    // Forgotten as soon as it has run. These are remembered only so a finger
+    // on the list can cancel them, and one is added for every message that
+    // arrives — so a list that was never touched held a dead timer id for
+    // every message of the conversation, and every touch then walked all of
+    // them. Nothing visible, and it grew for as long as the chat stayed open.
+    const t = setTimeout(() => {
+      settleTimers.current = settleTimers.current.filter(x => x !== t);
+      if (isNearBottomRef.current) scrollBottom();
+    }, 180);
     settleTimers.current.push(t);
   }, [scrollBottom]);
 
@@ -4688,6 +4702,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   }
 
   function renderMessage({ item: msg }: { item: Message }) {
+    renderCount.noteRow();
     msg = decrypted(msg);
     // System notices (a member joined, or was removed) render as a centered
     // line rather than a chat bubble, with the affected username tappable so

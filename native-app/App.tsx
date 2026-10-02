@@ -34,6 +34,7 @@ import { audioManager } from './src/audioManager';
 import * as outbox from './src/outbox';
 import * as pushReg from './src/pushRegistration';
 import * as notifyDiag from './src/notifyDiag';
+import * as renderCount from './src/renderCount';
 import * as keepAlive from './src/keepAlive';
 import { BUILD_VERSION } from './src/version';
 import * as storage from './src/storage';
@@ -428,6 +429,10 @@ export default function App() {
           failed: d.socketFailedCount,
           msgs: d.socketMsgCount,
           skipped: d.socketSkippedCount,
+          // How hard the chat screen has been working. Two integers, for the
+          // reaction slowdown — see src/renderCount.ts.
+          renders: renderCount.snapshot().screens,
+          rows: renderCount.snapshot().rows,
           skipReason: d.lastSkipReason,
           lastError: d.lastSocketError ? String(d.lastSocketError).slice(0, 80) : null,
         })).catch(() => {});

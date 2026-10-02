@@ -256,8 +256,17 @@ test('the follow happens AFTER the row exists, not during the socket handler', (
     path.join(__dirname, '..', 'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
   const fn = src.slice(src.indexOf('const followNewMessage'), src.indexOf('useEffect(() => { messagesRef'));
   assert.ok(fn.includes('requestAnimationFrame'), 'the scroll is still attempted in the same tick');
-  assert.ok(/setTimeout\(\(\) => \{ if \(isNearBottomRef\.current\) scrollBottom\(\); \}, \d+\)/.test(fn),
-    'nothing corrects a row whose height settles later — an image, a reply preview');
+  // The delayed correction must exist and must still be CONDITIONAL on the
+  // user being at the bottom — scrolling someone who has read back up to an
+  // old message down to the end is worse than not following at all. Matched
+  // on those two facts rather than on one exact spelling of the callback,
+  // which is how this failed when a line was added inside it.
+  const delayed = /setTimeout\(\(\) => \{([\s\S]*?)\},\s*\d+\)/.exec(fn);
+  assert.ok(delayed, 'nothing corrects a row whose height settles later — an image, a reply preview');
+  assert.ok(/isNearBottomRef\.current/.test(delayed[1]),
+    'the delayed scroll is unconditional, so it drags the user away from what they were reading');
+  assert.ok(/scrollBottom\(\)/.test(delayed[1]),
+    'the delayed correction does not actually scroll');
   assert.ok((fn.match(/isNearBottomRef\.current/g) || []).length >= 2,
     'the deferred scroll does not re-check that the user is still at the bottom');
 });

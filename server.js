@@ -3293,6 +3293,10 @@ io.on('connection', (socket) => {
       + ` keepalive=${word(h && h.keepAlive)} state=${word(h && h.state)}`
       + ` received=${n(h && h.received)} msgs=${n(h && h.msgs)}`
       + ` raised=${n(h && h.raised)} skipped=${n(h && h.skipped)}`
+      // Chat-screen redraws, and rows redrawn with them. For the reaction
+      // slowdown: the RATIO says whether the screen renders too often or
+      // each render costs too much. Counts only, like everything else here.
+      + ` renders=${n(h && h.renders)} rows=${n(h && h.rows)}`
       + (h && h.skipReason ? ` why=${word(h.skipReason)}` : '')
       + ` failed=${n(h && h.failed)}`
       + (h && h.lastError ? ` err="${String(h.lastError).replace(/["\n]/g, ' ').slice(0, 80)}"` : ''));
