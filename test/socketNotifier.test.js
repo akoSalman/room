@@ -367,6 +367,40 @@ test('both files name the SAME channel', () => {
   assert.strictEqual(a[1], b[1], `channels disagree: ${a[1]} vs ${b[1]}`);
 });
 
+test('A CHAT BEING READ ON ANOTHER DEVICE DOES NOT BUZZ THIS ONE', () => {
+  // Only the server can know this, so it stamps it on the delivery. Without
+  // it, reading a conversation on a laptop made the phone in your pocket buzz
+  // for every message you had just read.
+  assert.strictEqual(S.shouldRaise({ ...base, seenElsewhere: true }), false);
+  assert.strictEqual(S.raiseDecision({ ...base, seenElsewhere: true }).reason, 'read-elsewhere');
+});
+
+test('...and it does not swallow everything else', () => {
+  // The flag absent or false must change nothing: a rule that silenced
+  // messages either way would be indistinguishable from notifications being
+  // broken, which is how this app has been diagnosed wrongly before.
+  assert.strictEqual(S.shouldRaise({ ...base, seenElsewhere: false }), true);
+  assert.strictEqual(S.shouldRaise({ ...base, seenElsewhere: undefined }), true);
+});
+
+test('A MUTE STILL WINS over being read elsewhere', () => {
+  // Both silence it, so the reported reason is what distinguishes them —
+  // "muted" and "read elsewhere" are very different answers to "why did my
+  // phone not ring", and the diagnostics screen shows this string.
+  assert.strictEqual(
+    S.raiseDecision({ ...base, muted: true, seenElsewhere: true }).reason, 'muted');
+});
+
+test('THE NOTIFIER ACTUALLY PASSES THE FLAG ON', () => {
+  // The rule is worth nothing if the listener does not read it off the
+  // message. This has been the real fault twice: a correct rule, never
+  // consulted.
+  const src = fs.readFileSync(
+    path.join(NAT, 'src', 'socketNotifier.ts'), 'utf8').replace(/\/\/[^\n]*/g, '');
+  assert.ok(/seenElsewhere:\s*!!msg\?\.seenElsewhere/.test(src),
+    'raiseDecision is called without seenElsewhere, so the rule never fires');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

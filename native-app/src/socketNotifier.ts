@@ -64,6 +64,11 @@ export function raiseDecision(o: {
   pushRegistered?: boolean;
   /** Has this person muted the room it arrived in? Stamped by the server. */
   muted?: boolean;
+  /**
+   * Is another of this person's own devices reading this chat right now?
+   * Stamped by the server, which is the only place that can know.
+   */
+  seenElsewhere?: boolean;
 }): RaiseDecision {
   if (!o) return { raise: false, reason: 'no-message' };
   // ── A muted room is muted HERE too ──────────────────────────────────────
@@ -79,6 +84,16 @@ export function raiseDecision(o: {
   // First, before anything else: nothing about who sent it or where you are
   // changes the answer once you have asked for a room to be quiet.
   if (o.muted) return { raise: false, reason: 'muted' };
+  // ── Somebody is already reading this, on another of their own devices ────
+  //
+  // Only the server can know this, so it says so on the delivery. Without it,
+  // reading a conversation on a laptop made the phone in your pocket buzz for
+  // every message you had just read.
+  //
+  // It sits beside the mute rather than further down because, like the mute,
+  // it is a fact about the person and not about this device: nothing about
+  // which screen is in front of you changes the answer.
+  if (o.seenElsewhere) return { raise: false, reason: 'read-elsewhere' };
   // No id means no tag, and without the tag this and the server's push are
   // two notifications rather than one replacing the other.
   if (!pushReg.socketRaiseAllowed({ msgId: o.msgId, pushRegistered: o.pushRegistered })) {
@@ -192,6 +207,8 @@ export function attach(socket: any, opts?: { pushRegistered?: () => boolean }): 
       // The server stamps this per recipient, because a mute is one person's
       // decision and the phone's copy of the room list can be hours stale.
       muted: !!msg?.muted,
+      // Another of this person's devices has this chat open.
+      seenElsewhere: !!msg?.seenElsewhere,
       me,
       appState: AppState.currentState,
       viewingRoomId,

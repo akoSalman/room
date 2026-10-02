@@ -7,7 +7,8 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { recipientsFor, tokenIsDead, notificationTag, collapseKeyFor, presenceLine } = require('./notify');
+const { recipientsFor, tokenIsDead, notificationTag, collapseKeyFor, presenceLine,
+  silencedFor } = require('./notify');
 const najva = require('./najva');
 const mviews = require('./messageViews');
 const { seenByAllUpTo } = require('./readReceipts');
@@ -3111,9 +3112,46 @@ function insertSystemMessage(roomId, userId, kind, data) {
  * mute a room on your laptop and the phone would go on ringing until it next
  * refreshed. The server always knows.
  */
+/**
+ * Is any of this user's connections looking at this room right now?
+ *
+ * "Looking at" and "connected to" are different. A backgrounded app and a
+ * hidden tab both say so, and a device that is merely sitting on a room with
+ * the screen off is not reading it — without that distinction a laptop left
+ * open would silence the user's phone for ever.
+ */
+function isViewingRoom(userId, roomId) {
+  if (!userId || roomId === null || roomId === undefined) return false;
+  const want = String(roomId);
+  for (const u of onlineUsers.values()) {
+    if (u && u.userId === userId && u.roomId === want && u.focused !== false) return true;
+  }
+  return false;
+}
+
 function emitMessageTo(userId, out, roomId) {
-  io.to('user:' + userId).emit('message_received',
-    hasMutedRoom(userId, roomId) ? { ...out, muted: true } : out);
+  // Both ways of silencing a conversation, not just the room. See
+  // silencedFor in notify.js: muting a PERSON stopped the push and left the
+  // browser tab raising its own notification for everything they sent.
+  const silenced = silencedFor({
+    roomMuted: hasMutedRoom(userId, roomId),
+    senderMuted: hasMuted(userId, numericId(out && out.user_id)),
+  });
+  // Another of this person's devices is reading this chat right now, so no
+  // other device of theirs should buzz. Both clients raise their own
+  // notification off this event, which no server-side push filter can reach.
+  //
+  // Decided HERE rather than by the caller, for the same reason the mute is:
+  // there are six places that deliver a message and only ONE of them had ever
+  // stamped this. A forwarded message, an invitation, a call log and
+  // everything that goes out through broadcastRoomMessage all arrived
+  // unstamped — so reading a chat on the phone stopped the phone buzzing and
+  // left the laptop notifying for every one of them.
+  const seen = isViewingRoom(userId, roomId);
+  const extra = (silenced || seen)
+    ? { ...out, ...(silenced ? { muted: true } : {}), ...(seen ? { seenElsewhere: true } : {}) }
+    : out;
+  io.to('user:' + userId).emit('message_received', extra);
 }
 
 // Deliver a message to every member of a room over their personal channels.
@@ -3430,8 +3468,9 @@ io.on('connection', (socket) => {
       ? (id) => io.to('user:' + id).emit('comment_added', {
         parentId: parent.id, roomId: room.id, count: commentCount, comment: outFor(id),
       })
-      : (id) => emitMessageTo(id,
-        viewingUserIds.has(id) ? { ...outFor(id), seenElsewhere: true } : outFor(id), room.id);
+      // seenElsewhere is stamped by emitMessageTo now, for every delivery
+      // path rather than only this one.
+      : (id) => emitMessageTo(id, outFor(id), room.id);
     // Undelivered by design: it goes back to its author and nowhere else.
     if (blockedDelivery) {
       deliver(socket.user.id);

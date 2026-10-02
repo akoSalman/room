@@ -3938,4 +3938,101 @@ test('…but a DIFFERENT outcome is a different call', async () => {
   assert.strictEqual(logs.length, 2, 'two different calls were collapsed into one');
 });
 
+test('MUTING A PERSON SILENCES THE WEB TAB TOO, not just the push', async () => {
+  // Both clients raise their OWN notification off the socket and decide from
+  // the `muted` flag. The push honoured a muted person; this flag did not --
+  // so muting someone left the laptop buzzing for every message they sent.
+  const me = await signUp('mutepers1');
+  const them = await signUp('mutepers2');
+  const dm = await api(`/dm/${idOf(them.token)}`, 'POST', null, me.token);
+  const theirSock = await connect(them.token);
+  const mySock = await connect(me.token);
+
+  const unmuted = waitFor(mySock, 'message_received', m => m.room_id === dm.id);
+  theirSock.emit('send_message', { roomId: dm.id, type: 'text', content: 'before the mute' });
+  const before = await unmuted;
+  assert.ok(!before.muted, 'an unmuted sender arrived already marked as silenced');
+
+  const r = await api(`/mute/${idOf(them.token)}`, 'POST', {}, me.token);
+  assert.ok(r && !r.error, `could not mute the person: ${JSON.stringify(r)}`);
+
+  const after = waitFor(mySock, 'message_received', m => m.content === 'after the mute');
+  theirSock.emit('send_message', { roomId: dm.id, type: 'text', content: 'after the mute' });
+  const got = await after;
+  assert.strictEqual(got.muted, true,
+    'a message from a muted person is not marked, so the web raises a notification for it');
+});
+
+test('...and a muted ROOM is still marked, as it always was', async () => {
+  const me = await signUp('muteroom1');
+  const them = await signUp('muteroom2');
+  const dm = await api(`/dm/${idOf(them.token)}`, 'POST', null, me.token);
+  const theirSock = await connect(them.token);
+  const mySock = await connect(me.token);
+  const r = await api(`/room-mute/${dm.id}`, 'POST', {}, me.token);
+  assert.ok(r && !r.error, `could not mute the room: ${JSON.stringify(r)}`);
+
+  const seen = waitFor(mySock, 'message_received', m => m.room_id === dm.id);
+  theirSock.emit('send_message', { roomId: dm.id, type: 'text', content: 'in a muted room' });
+  assert.strictEqual((await seen).muted, true, 'a muted room is no longer marked');
+});
+
+test('READING A CHAT ON ONE DEVICE STOPS THE OTHERS BUZZING -- on every path', async () => {
+  // Both clients raise their own notification from this event, so the only way
+  // to stop a laptop notifying for a chat being read on a phone is to say so
+  // on the delivery. Exactly ONE of the six delivery paths used to say it.
+  // This checks one of the five that did not.
+  const me = await signUp('seenelse1');
+  const them = await signUp('seenelse2');
+  const dm = await api(`/dm/${idOf(them.token)}`, 'POST', null, me.token);
+
+  // My phone: connected AND sitting in this chat.
+  const phone = await connect(me.token);
+  phone.emit('join_room', dm.id);
+  await new Promise(r => setTimeout(r, 200));
+
+  // My laptop: connected, not in the chat -- it is the one that used to buzz.
+  const laptop = await connect(me.token);
+  const seen = waitFor(laptop, 'message_received', m => m.type === 'call');
+  const theirSock = await connect(them.token);
+  theirSock.emit('call_log', { peerId: idOf(me.token), kind: 'voice', outcome: 'missed', duration: 0 });
+
+  assert.strictEqual((await seen).seenElsewhere, true,
+    'delivered without seenElsewhere, so the other device raises a notification');
+});
+
+test('...but NOT when none of their devices is in that chat', async () => {
+  // The flag must not be stamped unconditionally: that would mean nobody ever
+  // got a notification for anything.
+  const me = await signUp('seenelse3');
+  const them = await signUp('seenelse4');
+  const dm = await api(`/dm/${idOf(them.token)}`, 'POST', null, me.token);
+  const laptop = await connect(me.token);   // connected, but in no chat
+  const seen = waitFor(laptop, 'message_received', m => m.type === 'call');
+  const theirSock = await connect(them.token);
+  theirSock.emit('call_log', { peerId: idOf(me.token), kind: 'voice', outcome: 'missed', duration: 0 });
+  assert.ok(!(await seen).seenElsewhere,
+    'marked as being read elsewhere while nothing was reading it');
+});
+
+test('...and a chat open on a HIDDEN tab is not being read', async () => {
+  // A tab left open on a room for a week is not somebody reading it. Without
+  // this, one forgotten tab silences every notification the user would get.
+  const me = await signUp('seenelse5');
+  const them = await signUp('seenelse6');
+  const dm = await api(`/dm/${idOf(them.token)}`, 'POST', null, me.token);
+  const tab = await connect(me.token);
+  tab.emit('join_room', dm.id);
+  await new Promise(r => setTimeout(r, 150));
+  tab.emit('app_focus', false);           // the tab went to the background
+  await new Promise(r => setTimeout(r, 150));
+
+  const laptop = await connect(me.token);
+  const seen = waitFor(laptop, 'message_received', m => m.type === 'call');
+  const theirSock = await connect(them.token);
+  theirSock.emit('call_log', { peerId: idOf(me.token), kind: 'voice', outcome: 'declined', duration: 0 });
+  assert.ok(!(await seen).seenElsewhere,
+    'a hidden tab counted as reading the chat, which would silence everything');
+});
+
 main().catch(err => { console.error(err); process.exit(1); });

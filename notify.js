@@ -202,6 +202,32 @@ function presenceLine(o) {
   return parts.join(' ');
 }
 
+
+/**
+ * Should this delivery be marked as one the recipient has silenced?
+ *
+ * Both clients raise a notification for themselves off the socket, as well as
+ * receiving the server's push — and they decide whether to do it from this one
+ * flag, because the phone's or tab's own idea of what is muted is a list it
+ * loaded at some point. Mute something on your laptop and a stale list would
+ * go on ringing until the other device happened to refresh.
+ *
+ * There are TWO ways to silence a conversation and only one of them was being
+ * reported. A muted ROOM was marked; a muted PERSON was not. The push the
+ * server sends had always honoured both, so muting someone stopped the push
+ * and left the browser tab raising its own notification for every message
+ * they sent — silenced on the phone, still buzzing on the laptop.
+ *
+ * Either reason is enough. They are different decisions ("not this room" and
+ * "not this person") that a recipient can make separately, and both mean the
+ * same thing to whoever is about to buzz.
+ */
+function silencedFor(o) {
+  const e = o || {};
+  return !!(e.roomMuted || e.senderMuted);
+}
+
 module.exports = {
   recipientsFor, tokenIsDead, notificationTag, collapseKeyFor, presenceLine,
+  silencedFor,
 };
