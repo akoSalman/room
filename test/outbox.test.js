@@ -135,7 +135,29 @@ test('deleting a failed message tombstones it against a retry re-persisting', as
 });
 
 (async () => {
-  // ── The failed-message controls ────────────────────────────────────────────
+  test('A MESSAGE THE SERVER HAS NEVER SEEN IS KNOWN BY ITS ID', () => {
+  // The flags were not enough. Photographed: a bubble stuck at "100%
+  // Cancelled" that was still marked as UPLOADING -- the upload had been
+  // cancelled but nothing had marked the message failed. It matched neither
+  // the failed case nor the ordinary one, and there was no way to be rid of
+  // it. The id cannot lie about this.
+  assert.strictEqual(outbox.neverSent({ id: 'tmp-1712345-abc', _uploading: true }), true);
+  assert.strictEqual(outbox.neverSent({ id: 'tmp-1712345-abc', _uploadFailed: true }), true);
+  // ...including the state that had no way out: neither flag set.
+  assert.strictEqual(outbox.neverSent({ id: 'tmp-1712345-abc' }), true);
+});
+
+test('...and a real message is NOT thrown away locally', () => {
+  // Getting this wrong is far worse than the bug: it would silently drop
+  // other people's messages from the chat instead of deleting them properly.
+  assert.strictEqual(outbox.neverSent({ id: 4821 }), false);
+  assert.strictEqual(outbox.neverSent({ id: '4821' }), false, 'a numeric id as a string is still a real message');
+  assert.strictEqual(outbox.neverSent({}), false);
+  assert.strictEqual(outbox.neverSent(null), false);
+  assert.strictEqual(outbox.neverSent(undefined), false);
+});
+
+// ── The failed-message controls ────────────────────────────────────────────
 
 // Comments stripped -- BOTH kinds. These assertions are about running code,
 // and a test that is satisfied by a sentence someone wrote about the code
@@ -173,13 +195,15 @@ test('...and an ordinary message still gets its menu', () => {
     'ordinary messages lost their menu button');
 });
 
-test('SWIPING A FAILED SEND DISCARDS IT LOCALLY', () => {
-  // It has no id on the server, so the ordinary delete would ask the server
-  // to remove a message it has never heard of.
-  assert.ok(/onSwipeLeft=\{msg\._uploadFailed \? \(\) => discardFailed\(msg\)/.test(CHAT),
-    'swiping a failed send away does not discard it');
+test('SWIPING A REAL MESSAGE STILL DELETES IT PROPERLY', () => {
+  // The local-removal branch must not swallow the ordinary one. If it did,
+  // deleting a message would quietly drop it from this phone and leave it
+  // standing in the conversation for everybody else.
   assert.ok(/: mine \? \(\) => deleteMsg\(msg\.id, true\)/.test(CHAT),
     'swiping a real message of mine no longer deletes it');
+  // ...and somebody else's message is still not swipe-deletable.
+  assert.ok(/: undefined\}/.test(CHAT),
+    'a message that is not mine now has a left-swipe action');
 });
 
 test('OPENING A CHAT RETRIES EVERY FAILED SEND, not the first three', () => {
@@ -191,6 +215,29 @@ test('OPENING A CHAT RETRIES EVERY FAILED SEND, not the first three', () => {
   // What must NOT be retried is a send whose file was only ever a cache path.
   assert.ok(/\^\(file\|content\):/.test(CHAT),
     'a send with no local file left is retried, which can only ever fail');
+});
+
+test('SWIPING AND DELETING ASK THE SAME QUESTION', () => {
+  // Both used to ask whether the message was FAILED, which left a cancelled
+  // upload -- still marked as uploading -- matching neither branch.
+  assert.ok(/onSwipeLeft=\{outbox\.neverSent\(msg\) \? \(\) => abandonSend\(msg\)/.test(CHAT),
+    'swiping still asks about the failed flag, so a stuck upload cannot be removed');
+  assert.ok(/if \(outbox\.neverSent\(m\)\) \{/.test(CHAT),
+    'the long-press menu still asks about the failed flag');
+  // And the menu it reaches must do the LOCAL removal, not the server one.
+  assert.ok(/onPress: \(\) => abandonSend\(m\)/.test(CHAT),
+    'the menu deletes through a path that cannot remove an unsent message');
+});
+
+test('ABANDONING A SEND STOPS THE TRANSFER FIRST', () => {
+  // Otherwise the bytes keep going out, on a metered connection, for a
+  // message that is no longer on screen.
+  const fn = /function abandonSend\(msg: Message\) \{([\s\S]*?)\n  \}/.exec(CHAT);
+  assert.ok(fn, 'could not find abandonSend');
+  assert.ok(/up\.cancel\(String\(msg\.id\)\)/.test(fn[1]),
+    'the upload is left running after the message is thrown away');
+  assert.ok(/discardFailed\(msg\)/.test(fn[1]),
+    'the message is not actually removed');
 });
 
 let passed = 0, failed = 0;

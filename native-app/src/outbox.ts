@@ -159,3 +159,27 @@ export async function init() {
     bound = false; // allow a retry once the socket is available
   }
 }
+
+/**
+ * Has this message never reached the server?
+ *
+ * Decided from the ID, which is the only thing that cannot lie about it. A
+ * send that has been accepted comes back with the server's numeric id; until
+ * then it carries the local `tmp-…` one it was given when the bubble appeared.
+ *
+ * The flags are not good enough. Reported with a photograph: a bubble stuck
+ * at "100% Cancelled" that could not be swiped away or deleted. It was still
+ * marked as uploading — the upload had been cancelled but nothing had marked
+ * the message as failed — so it matched neither the "failed" case, which has
+ * a local delete, nor the ordinary case, whose delete asks the server to
+ * remove a message it has never heard of. It fell between the two and there
+ * was no way to be rid of it.
+ *
+ * Asking about the id instead covers every one of those states, including the
+ * ones nobody has thought of yet: whatever went wrong, a message the server
+ * has never seen can only be thrown away locally.
+ */
+export function neverSent(msg: unknown): boolean {
+  const id = msg && (msg as any).id;
+  return typeof id === 'string' && id.startsWith('tmp-');
+}

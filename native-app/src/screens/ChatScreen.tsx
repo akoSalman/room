@@ -3478,6 +3478,24 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     }
   }
 
+  /**
+   * Get rid of a message the server has never seen, whatever state it is in.
+   *
+   * Photographed: a bubble stuck at "100% Cancelled" that could not be swiped
+   * away or deleted. It was still marked as uploading, so it matched neither
+   * the failed case (which has a local delete) nor the ordinary case (whose
+   * delete asks the server to remove a message it has never heard of). It
+   * fell between the two with no way out.
+   *
+   * Any transfer still running is stopped first — otherwise the bytes keep
+   * going out on a metered connection for a message that is no longer on
+   * screen.
+   */
+  function abandonSend(msg: Message) {
+    up.cancel(String(msg.id));
+    discardFailed(msg);
+  }
+
   // Remove a failed message for good. outbox.discard tombstones it, so a retry
   // still in flight cannot re-persist it under its new clientId when it fails.
   function discardFailed(msg: Message) {
@@ -4878,10 +4896,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
             selectionEvent({ type: 'swipe', id: msg.id });
           }}
           onSwipeRight={() => { setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type }); composerRef.current?.focus(); }}
-          // A failed send has no id on the server, so the ordinary delete
-          // would ask it to remove a message it has never heard of. This
-          // throws away the local copy, which is the only copy there is.
-          onSwipeLeft={msg._uploadFailed ? () => discardFailed(msg)
+          // A message the server has never seen has no id there, so the
+          // ordinary delete would ask it to remove something it has never
+          // heard of. This throws away the local copy, which is the only copy
+          // there is. Decided from the id rather than from _uploadFailed,
+          // which left a cancelled-but-not-failed upload with no way out.
+          onSwipeLeft={outbox.neverSent(msg) ? () => abandonSend(msg)
             : mine ? () => deleteMsg(msg.id, true) : undefined}
         >
         {(() => {
@@ -6155,8 +6175,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
               </Pressable>
             );
 
-            // A failed (never-sent) message only supports local actions.
-            if (m._uploadFailed) {
+            // A message the server has never seen only supports local
+            // actions. Asked of the id, so an upload that was cancelled
+            // without ever being marked failed gets this sheet too — it used
+            // to get the ordinary one, whose Delete does nothing for it.
+            if (outbox.neverSent(m)) {
               return (
                 <View style={s.actionSheet}>
                   <View style={s.sheetGrip} />
@@ -6165,7 +6188,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
                     close();
                     Alert.alert('Delete message?', '', [
                       { text: 'Cancel', style: 'cancel' },
-                      { text: 'Delete', style: 'destructive', onPress: () => discardFailed(m) },
+                      { text: 'Delete', style: 'destructive', onPress: () => abandonSend(m) },
                     ]);
                   }} />
                 </View>
