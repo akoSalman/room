@@ -17,7 +17,7 @@ import { BASE_URL } from '../api';
 import {
   LatLng, TILE_SIZE, MIN_ZOOM, MAX_ZOOM,
   tilesForViewport, pointToScreen, panCenter, tileUrl,
-  clampZoom, pinchZoomDelta, zoomAbout,
+  clampZoom, pinchZoomDelta, zoomAbout, tilesUnavailable,
 } from '../geo';
 
 export type Marker = { at: LatLng; label: string; mine?: boolean; live?: boolean };
@@ -89,6 +89,16 @@ export default function TileMap({
   const pinchBase = useRef(zoom);
   // The previous tap, for spotting a double tap.
   const lastTap = useRef<{ x: number; y: number; at: number } | null>(null);
+
+  // Whether the pictures are arriving at all.
+  //
+  // A map whose tiles never load is a grey rectangle that does not move when
+  // you push it — which is indistinguishable from a map that ignores your
+  // fingers, and was reported as exactly that three times running. The
+  // gestures were never the problem. Saying so on the map is what turns this
+  // into something anybody can see at a glance.
+  const [tileCounts, setTileCounts] = useState({ loaded: 0, failed: 0 });
+  const noTiles = tilesUnavailable(tileCounts);
 
   const touchDistance = (touches: any[]) => {
     const dx = touches[0].pageX - touches[1].pageX;
@@ -280,6 +290,8 @@ export default function TileMap({
               width: TILE_SIZE,
               height: TILE_SIZE,
             }}
+            onLoad={() => setTileCounts(c => (c.loaded > 0 ? c : { ...c, loaded: c.loaded + 1 }))}
+            onError={() => setTileCounts(c => ({ ...c, failed: c.failed + 1 }))}
           />
         ))}
       </View>
@@ -322,6 +334,19 @@ export default function TileMap({
         </View>
       )}
 
+      {/* Said plainly, over the map, when no picture has arrived. Without
+          this the map is a grey rectangle that does not respond to being
+          pushed — which is not what is wrong with it, and is the wrong thing
+          to go looking for. It takes no touches, so the map underneath can
+          still be panned while it is up. */}
+      {noTiles && (
+        <View style={s.noTiles} pointerEvents="none">
+          <Ionicons name="cloud-offline-outline" size={22} color="#334155" />
+          <Text style={s.noTilesText}>Map images could not be loaded</Text>
+          <Text style={s.noTilesHint}>The map still moves — it just has nothing to draw.</Text>
+        </View>
+      )}
+
       {/* OpenStreetMap's licence requires attribution. */}
       <Text style={s.attribution}>© OpenStreetMap</Text>
     </View>
@@ -346,6 +371,13 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.88)', borderRadius: 4,
     paddingHorizontal: 4, paddingVertical: 1, overflow: 'hidden',
   },
+  noTiles: {
+    position: 'absolute', left: 16, right: 16, top: '40%',
+    alignItems: 'center', gap: 4,
+    backgroundColor: 'rgba(255,255,255,0.92)', borderRadius: 10, padding: 12,
+  },
+  noTilesText: { fontSize: 13, fontWeight: '700', color: '#0f172a', textAlign: 'center' },
+  noTilesHint: { fontSize: 11.5, color: '#475569', textAlign: 'center' },
   zoomCol: { position: 'absolute', right: 10, top: 10, gap: 6 },
   zoomBtn: {
     width: 34, height: 34, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.92)',

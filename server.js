@@ -7,6 +7,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const mapTiles = require('./mapTiles');
 const { recipientsFor, tokenIsDead, notificationTag, collapseKeyFor, presenceLine,
   silencedFor } = require('./notify');
 const najva = require('./najva');
@@ -632,10 +633,16 @@ app.use('/uploads', express.static('uploads', {
 //
 // TILE_UPSTREAM can point somewhere else entirely (an Iranian provider, a
 // mirror) without touching the app: {z}/{x}/{y} are substituted.
-const TILE_UPSTREAM = process.env.TILE_UPSTREAM
-  || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+// A LIST, not one host. See mapTiles.js: one unreachable provider used to
+// take the whole map with it, silently, and the symptom that reached me was
+// "pinch and zoom do not work".
+const TILE_UPSTREAMS = mapTiles.upstreamsFrom(process.env);
 const TILE_DIR = path.join('uploads', '.tiles');
 const TILE_MAX_ZOOM = 19;
+// Counted so a map that is quietly failing says so in the log instead of
+// being reported, three times, as a broken gesture.
+let tileMisses = 0;
+let tileHits = 0;
 
 app.get('/tiles/:z/:x/:y.png', async (req, res) => {
   const z = parseInt(req.params.z, 10);
@@ -643,10 +650,7 @@ app.get('/tiles/:z/:x/:y.png', async (req, res) => {
   const y = parseInt(req.params.y, 10);
   // Strictly bounded: this endpoint must never become an open proxy that will
   // fetch an arbitrary URL on request.
-  if (!Number.isInteger(z) || !Number.isInteger(x) || !Number.isInteger(y)) return res.status(400).end();
-  if (z < 0 || z > TILE_MAX_ZOOM) return res.status(400).end();
-  const n = Math.pow(2, z);
-  if (x < 0 || x >= n || y < 0 || y >= n) return res.status(400).end();
+  if (!mapTiles.tileInRange(z, x, y, TILE_MAX_ZOOM)) return res.status(400).end();
 
   const file = path.join(TILE_DIR, `${z}_${x}_${y}.png`);
   const serve = () => {
@@ -657,22 +661,44 @@ app.get('/tiles/:z/:x/:y.png', async (req, res) => {
   };
   if (fs.existsSync(file)) return serve();
 
-  try {
-    const url = TILE_UPSTREAM.replace('{z}', z).replace('{x}', x).replace('{y}', y);
-    // OSM refuses requests without a real User-Agent identifying the app.
-    const upstream = await fetch(url, { headers: { 'User-Agent': 'ChatRoom/1.0 (self-hosted chat)' } });
-    if (!upstream.ok) return res.status(502).end();
-    const buf = Buffer.from(await upstream.arrayBuffer());
-    fs.mkdirSync(TILE_DIR, { recursive: true });
-    // Written via a temp name so a half-downloaded tile is never cached: a
-    // truncated PNG would be served from disk forever afterwards.
-    const tmp = `${file}.${Date.now()}.part`;
-    fs.writeFileSync(tmp, buf);
-    fs.renameSync(tmp, file);
-    serve();
-  } catch {
-    res.status(502).end();
+  // Each host in turn. A network that drops one of these rarely drops them
+  // all, and the cost of trying the next is one request here — never one on
+  // somebody's phone.
+  let lastWhy = 'none tried';
+  for (const template of TILE_UPSTREAMS) {
+    try {
+      const url = mapTiles.tileUrlFrom(template, z, x, y);
+      // OSM refuses requests without a real User-Agent identifying the app.
+      const upstream = await fetch(url, {
+        headers: { 'User-Agent': 'ChatRoom/1.0 (self-hosted chat)' },
+        // Bounded, for the same reason every other fetch here is: a request
+        // that never settles holds the tile, and the map, open for ever.
+        signal: AbortSignal.timeout(12000),
+      });
+      if (!upstream.ok) { lastWhy = `http ${upstream.status}`; continue; }
+      const buf = Buffer.from(await upstream.arrayBuffer());
+      fs.mkdirSync(TILE_DIR, { recursive: true });
+      // Written via a temp name so a half-downloaded tile is never cached: a
+      // truncated PNG would be served from disk forever afterwards.
+      const tmp = `${file}.${Date.now()}.part`;
+      fs.writeFileSync(tmp, buf);
+      fs.renameSync(tmp, file);
+      tileHits++;
+      return serve();
+    } catch (err) {
+      lastWhy = (err && err.message) ? String(err.message).slice(0, 60) : 'error';
+    }
   }
+  // Said out loud. A map that draws nothing and reports nothing is how this
+  // was mistaken for a gesture bug three times over. No host names beyond the
+  // count — this log is read into a repository that has been public.
+  tileMisses++;
+  if (tileMisses === 1 || tileMisses % 50 === 0) {
+    console.error(`[tiles] no upstream could serve a tile (${TILE_UPSTREAMS.length} tried,`
+      + ` last: ${lastWhy}) — misses=${tileMisses} hits=${tileHits}.`
+      + ' Maps will be blank wherever nothing is cached.');
+  }
+  res.status(502).end();
 });
 
 // ── Link previews ────────────────────────────────────────────────────────────

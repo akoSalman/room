@@ -26,6 +26,7 @@ on:
       - 'roomDownloads.js'
       - 'inputLimits.js'
       - 'mediaAccess.js'
+      - 'mapTiles.js'
       - 'webPush.js'
       - 'linkMeta.js'
       - 'package.json'

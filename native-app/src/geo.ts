@@ -263,7 +263,7 @@ export function dedupePins<T extends { id: number | string; username: string; mi
 
   for (const p of pins) {
     // The viewer is one person however their messages are labelled.
-    const key = p.mine ? ' me' : p.username;
+    const key = p.mine ? '\u0000me' : p.username;
     const cur = best.get(key);
     if (!cur) { best.set(key, p); continue; }
     const a = score(p), b = score(cur);
@@ -283,4 +283,27 @@ export function formatRemaining(untilMs: number, now = Date.now()): string {
   if (h) return `${h}h ${m}m left`;
   if (m) return `${m}m left`;
   return `${s}s left`;
+}
+
+/**
+ * Should the map say its pictures are missing?
+ *
+ * Reported three times as "pinch and zoom and move do not work". They did
+ * work. The tiles were not arriving, so the map state changed and not one
+ * pixel did — which from the outside is exactly a map that ignores your
+ * fingers. A blank grey rectangle that says nothing is why three rounds of
+ * looking at the gesture code found nothing.
+ *
+ * Only once SEVERAL have failed and NONE has arrived. One failed tile is
+ * ordinary — the edge of the world, a gap at the coast, a request that lost
+ * its race with a pan — and a map that cries off at the first miss would be
+ * its own kind of lie. If even one tile has drawn, the map is working and
+ * whatever is missing is a hole in it, not a broken map.
+ */
+export function tilesUnavailable(o: { failed?: unknown; loaded?: unknown }): boolean {
+  const e = o || {};
+  const failed = Number(e.failed);
+  const loaded = Number(e.loaded);
+  if (!Number.isFinite(failed) || failed < 3) return false;
+  return !(Number.isFinite(loaded) && loaded > 0);
 }

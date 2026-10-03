@@ -597,6 +597,47 @@ test('the app knows how to open another chat on a given message', () => {
     'nothing acts on the pending jump, so the chat opens at the bottom');
 });
 
+test('A MAP WITH NO PICTURES SAYS SO', () => {
+  // The whole reason this exists. Reported three times as "pinch and zoom and
+  // move do not work"; they worked, and the map had nothing to draw. A grey
+  // rectangle that does not move when pushed is indistinguishable from a map
+  // that ignores your fingers, and sent three rounds of looking at the wrong
+  // code.
+  assert.strictEqual(G.tilesUnavailable({ failed: 3, loaded: 0 }), true);
+  assert.strictEqual(G.tilesUnavailable({ failed: 40, loaded: 0 }), true);
+});
+
+test('...but ONE picture arriving means the map is fine', () => {
+  // A gap at the coast, the edge of the world, a request that lost its race
+  // with a pan -- those are holes in a working map, not a broken one. Crying
+  // off then would be its own kind of lie.
+  assert.strictEqual(G.tilesUnavailable({ failed: 40, loaded: 1 }), false);
+  assert.strictEqual(G.tilesUnavailable({ failed: 3, loaded: 9 }), false);
+});
+
+test('...and it does not panic at the first miss', () => {
+  assert.strictEqual(G.tilesUnavailable({ failed: 0, loaded: 0 }), false);
+  assert.strictEqual(G.tilesUnavailable({ failed: 1, loaded: 0 }), false);
+  assert.strictEqual(G.tilesUnavailable({ failed: 2, loaded: 0 }), false);
+  // Nonsense is not an outage either.
+  assert.strictEqual(G.tilesUnavailable({}), false);
+  assert.strictEqual(G.tilesUnavailable(null), false);
+});
+
+test('THE MAP ACTUALLY COUNTS ITS TILES AND SHOWS THE NOTICE', () => {
+  // The rule is worth nothing if nothing feeds it or nothing draws it.
+  const map = fs.readFileSync(path.join(__dirname, '..',
+    'native-app', 'src', 'components', 'TileMap.tsx'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  assert.ok(/onError=\{\(\) => setTileCounts/.test(map), 'failed tiles are not counted');
+  assert.ok(/onLoad=\{\(\) => setTileCounts/.test(map), 'loaded tiles are not counted');
+  assert.ok(/tilesUnavailable\(tileCounts\)/.test(map), 'the rule is never consulted');
+  assert.ok(/noTiles && \(/.test(map), 'the notice is never drawn');
+  // It must not eat the gestures it exists to explain.
+  assert.ok(/style=\{s\.noTiles\} pointerEvents="none"/.test(map),
+    'the notice takes touches, so it would break the panning it is explaining');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }
