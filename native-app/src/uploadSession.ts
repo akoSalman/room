@@ -395,3 +395,26 @@ export const FINISH_TIMEOUT_MS = 45000;
 export function shouldRetryFinish(attempt: number, status?: number): boolean {
   return shouldRetry(attempt, status);
 }
+
+/**
+ * Has this send been cancelled, whatever the transport is doing?
+ *
+ * Reported with a photograph: a bubble stuck at "100%  Cancelled", which
+ * could not be got rid of and which no retry or restart cleared.
+ *
+ * Cancelling used to work by rejecting the upload's promise, so the caller
+ * unwound and took the bubble with it. At 100% there is frequently no promise
+ * left to reject: every byte has arrived and the send is waiting on the one
+ * request that turns the pieces into a file, or on the server's reply to the
+ * message itself. Rejecting a promise that has already settled does nothing
+ * at all — so the phase was set to cancelled, the overlay drew the word, and
+ * nothing else ever happened. The cancel button had been honoured in the only
+ * way the user could see and in no way that mattered.
+ *
+ * So the phase is now the authority, and it is consulted after every step
+ * that can take time. A cancel is a decision about the message, not a request
+ * to the network, and it must hold even when the network has already finished.
+ */
+export function cancelledNow(phase: unknown): boolean {
+  return phase === 'cancelled';
+}

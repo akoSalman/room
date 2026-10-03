@@ -135,7 +135,65 @@ test('deleting a failed message tombstones it against a retry re-persisting', as
 });
 
 (async () => {
-  let passed = 0, failed = 0;
+  // ── The failed-message controls ────────────────────────────────────────────
+
+// Comments stripped -- BOTH kinds. These assertions are about running code,
+// and a test that is satisfied by a sentence someone wrote about the code
+// proves nothing. This file has been fooled that way three times: by an HTML
+// comment naming a selector, by a CSS comment quoting a rule, and by an
+// import line. Block comments matter here because JSX explanations are
+// written as {/* ... */} and sit right beside the thing they describe.
+const CHAT = require('fs').readFileSync(require('path').join(__dirname, '..',
+  'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8')
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/\/\/[^\n]*/g, '');
+
+test('THE RETRY LINK UNDER THE MESSAGE IS GONE', () => {
+  // Reported: tapping it ALSO opened the message menu. A bubble watches its
+  // own touches, and those fire whether or not the bubble owns the responder,
+  // so the tap that retried went on to open the menu over it.
+  assert.ok(!/tap to retry/i.test(CHAT), 'the retry link is still there');
+  assert.ok(!/uploadRetryText/.test(CHAT), 'the retry link style is still referenced');
+});
+
+test('THE CORNER BUTTON IS THE RETRY, for a send that failed', () => {
+  // One thing is worth offering on a failed send, so the button is that
+  // thing rather than a menu of everything else.
+  assert.ok(/msg\._uploadFailed \?[\s\S]{0,400}?name="refresh"/.test(CHAT),
+    'a failed message does not offer a retry icon in its corner');
+  // Through tokenPress, which is how this file says a touch is already
+  // answered -- without it the retry also opens the menu, which is the bug.
+  assert.ok(/tokenPress\(\(\) => retryUpload\(msg, true\)\)/.test(CHAT),
+    'the retry is not routed through tokenPress, so it opens the menu too');
+});
+
+test('...and an ordinary message still gets its menu', () => {
+  // The failed case must not swallow the normal one.
+  assert.ok(/setActionsMsg\(\{ msg, x: e\.nativeEvent\.pageX/.test(CHAT),
+    'ordinary messages lost their menu button');
+});
+
+test('SWIPING A FAILED SEND DISCARDS IT LOCALLY', () => {
+  // It has no id on the server, so the ordinary delete would ask the server
+  // to remove a message it has never heard of.
+  assert.ok(/onSwipeLeft=\{msg\._uploadFailed \? \(\) => discardFailed\(msg\)/.test(CHAT),
+    'swiping a failed send away does not discard it');
+  assert.ok(/: mine \? \(\) => deleteMsg\(msg\.id, true\)/.test(CHAT),
+    'swiping a real message of mine no longer deletes it');
+});
+
+test('OPENING A CHAT RETRIES EVERY FAILED SEND, not the first three', () => {
+  // Asked for in those words. The cap it replaces existed because a send
+  // that could never succeed looped for ever with no way out -- the way out
+  // now is that a failed message shows a retry button and can be swiped away.
+  assert.ok(!/MAX_AUTO_RETRIES/.test(CHAT),
+    'the attempt cap still gates the retry on open');
+  // What must NOT be retried is a send whose file was only ever a cache path.
+  assert.ok(/\^\(file\|content\):/.test(CHAT),
+    'a send with no local file left is retried, which can only ever fail');
+});
+
+let passed = 0, failed = 0;
   for (const { n, f } of tests) {
     try { await f(); console.log(`  ✓ ${n}`); passed++; }
     catch (e) { console.error(`  ✗ ${n}\n      ${e.message}`); failed++; }

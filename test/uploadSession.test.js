@@ -301,6 +301,47 @@ test('the overlay asks uploadDeterminate rather than deciding for itself', () =>
     'the percentage is shown even when there is no byte count behind it');
 });
 
+test('A CANCEL IS A DECISION, and holds once the bytes have all gone', () => {
+  // Photographed: a bubble stuck at "100%  Cancelled" that nothing cleared.
+  // Cancelling worked by rejecting the upload's promise; at 100% there is
+  // usually no promise left to reject, so the word appeared and the message
+  // stayed for ever. The phase is the authority now.
+  assert.strictEqual(U.cancelledNow('cancelled'), true);
+});
+
+test('...and nothing else counts as cancelled', () => {
+  // A rule that said yes to anything would delete messages that were merely
+  // slow, which is far worse than the bug it replaces.
+  for (const p of ['uploading', 'processing', 'paused', 'failed', 'done', '', null, undefined]) {
+    assert.strictEqual(U.cancelledNow(p), false, `${String(p)} was treated as cancelled`);
+  }
+});
+
+test('THE SEND ACTUALLY ASKS, after the upload and before the message goes out', () => {
+  // The rule is worth nothing if the send does not consult it at the one
+  // moment it matters: between the upload finishing and the message being
+  // emitted. That gap is exactly where the stuck bubble lived.
+  const chat = fs.readFileSync(path.join(__dirname, '..',
+    'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8').replace(/\/\/[^\n]*/g, '');
+  const guards = chat.match(/cancelledNow\(up\.get\(clientId\)\?\.phase\)/g) || [];
+  assert.ok(guards.length >= 2,
+    `the send emits without checking for a cancel (${guards.length} guards found)`);
+  // Each guard must actually take the message off the screen, not just return.
+  assert.ok(/cancelledNow\(up\.get\(clientId\)\?\.phase\)\)\s*\{\s*removeCancelled\(clientId\);\s*return;/.test(chat),
+    'a cancelled send returns without removing the bubble, which is the bug');
+});
+
+test('CANCELLING TEARS THE SEND DOWN ITSELF, not via the promise', () => {
+  // The whole point: the teardown must not depend on a promise that may
+  // already have settled.
+  const chat = fs.readFileSync(path.join(__dirname, '..',
+    'native-app', 'src', 'screens', 'ChatScreen.tsx'), 'utf8').replace(/\/\/[^\n]*/g, '');
+  const handler = /cancel:\s*\(\)\s*=>\s*\{([\s\S]*?)\},/.exec(chat);
+  assert.ok(handler, 'could not find the cancel handler');
+  assert.ok(/removeCancelled\(clientId\)/.test(handler[1]),
+    'cancelling only rejects a promise, so a finished upload leaves the bubble stranded');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

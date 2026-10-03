@@ -156,6 +156,7 @@ import { isForRoom } from '../presence';
 import { safeName, cacheName, renamed, editableStem } from '../fileName';
 import { mediaHeaders } from '../mediaSource';
 import * as renderCount from '../renderCount';
+import { cancelledNow } from '../uploadSession';
 
 type Message = {
   id: number | string; room_id: number; user_id: number; username: string; avatar?: string | null;
@@ -1945,13 +1946,22 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
             const keep = failed.filter((f: any) =>
               !prev.some(p => p.id === f.id) && !delivered(f) && !outbox.isInFlight(f.id));
             failed.filter((f: any) => delivered(f)).forEach((f: any) => removeFailedMsg(f.id));
-            // Whatever is genuinely stalled (the process died mid-send) resumes
-            // automatically, since a JS upload cannot outlive the process —
-            // but only a bounded number of times. A send that can never
-            // succeed used to retry on EVERY open and re-persist itself on
-            // every failure, looping forever with no way out.
+            // Everything that failed goes out again, every time the chat is
+            // opened. Asked for in those words.
+            //
+            // There used to be a cap of three, because a send that could never
+            // succeed retried on every open, re-persisted itself on every
+            // failure, and looped with no way out. The cap is gone and the way
+            // out is not: a failed message now shows a retry button in its
+            // corner and can be swiped away, so a send that is never going to
+            // work is visible and removable rather than silently retrying for
+            // ever behind a bubble nobody can get rid of.
+            //
+            // What is still refused is a send that CANNOT be retried: one
+            // whose file was only ever a cache path, which is gone by now.
+            // Retrying that is not persistence, it is a guaranteed failure on
+            // a metered connection.
             const resumable = keep.filter((f: any) =>
-              (f._attempts || 0) < outbox.MAX_AUTO_RETRIES &&
               (f.type === 'text' || (f.file_path && /^(file|content):\/\//.test(String(f.file_path)))));
             if (resumable.length) {
               setTimeout(() => resumable.forEach((f: any) => {
@@ -2972,7 +2982,19 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         // Cancelling is a decision, not a failure: the promise is rejected so
         // the caller unwinds, and the bubble is removed rather than left
         // sitting there offering a retry nobody asked for.
-        cancel: () => { handle.cancel(); reject(new UploadCancelled()); },
+        // The teardown is done HERE, not left to the rejection below.
+        //
+        // Photographed: a bubble stuck at "100%  Cancelled" that nothing
+        // would clear. At 100% there is usually no promise left to reject —
+        // every byte has arrived and the send is waiting on the request that
+        // assembles the file, or on the server's reply — and rejecting a
+        // settled promise does nothing. The word appeared and the message
+        // stayed for ever.
+        cancel: () => {
+          handle.cancel();
+          removeCancelled(clientId);
+          reject(new UploadCancelled());
+        },
       });
     });
   }
@@ -3101,6 +3123,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     try {
       const res = await uploadWithProgress(clientId, uri, name, mime,
         (f, sent, total) => up.report(clientId, 'uploading', f, sent, total));
+      // Cancelled while the last bytes were going out. The upload finished
+      // anyway — it was already almost done — but the person said no, and
+      // sending it regardless is the one outcome a cancel button must never
+      // produce.
+      if (cancelledNow(up.get(clientId)?.phase)) { removeCancelled(clientId); return; }
       pendingUploadPaths.current[clientId] = res.url;
       socketRef.current?.emit('send_message', {
         roomId: room.id, type, content: caption, filePath: res.url, fileName: name, replyToId, clientId, oneTimeSeconds: oneTime,
@@ -3151,6 +3178,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
           });
         urls.push(res.url);
       }
+      if (cancelledNow(up.get(clientId)?.phase)) { removeCancelled(clientId); return; }
       const filePath = JSON.stringify(urls);
       pendingUploadPaths.current[clientId] = filePath;
       socketRef.current?.emit('send_message', {
@@ -4850,7 +4878,11 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
             selectionEvent({ type: 'swipe', id: msg.id });
           }}
           onSwipeRight={() => { setReplyTo({ id: msg.id, username: msg.username, content: msg.content, type: msg.type }); composerRef.current?.focus(); }}
-          onSwipeLeft={mine ? () => deleteMsg(msg.id, true) : undefined}
+          // A failed send has no id on the server, so the ordinary delete
+          // would ask it to remove a message it has never heard of. This
+          // throws away the local copy, which is the only copy there is.
+          onSwipeLeft={msg._uploadFailed ? () => discardFailed(msg)
+            : mine ? () => deleteMsg(msg.id, true) : undefined}
         >
         {(() => {
         const textual = isTextual(msg);
@@ -5211,13 +5243,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
             </TouchableOpacity>
           ) : null}
           {msg._uploading && <UploadOverlay msgId={msg.id} />}
-          {msg._uploadFailed && (
-            <View style={s.failedRow}>
-              <TouchableOpacity onPress={() => retryUpload(msg, true)}>
-                <Text style={s.uploadRetryText}>⚠️ Failed — tap to retry</Text>
-              </TouchableOpacity>
-            </View>
-          )}
         {/* Telegram's comments strip: full width along the bottom of the
             message, inside its outline and separated by a hairline, in the
             app's own accent. It replaced a green circle on the corner — that
@@ -5297,7 +5322,22 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
               {msg.id <= maxOtherReadMsgId ? '✓✓' : '✓'}
             </Text>
           )}
-          {!msg._uploading && !msg._uploadFailed && (
+          {/* A send that failed has ONE thing worth offering, so the button
+              in the corner is that thing rather than a menu of everything
+              else. It used to be a "Failed — tap to retry" line under the
+              message AND a hidden menu button, and tapping the line opened
+              the menu over it: a bubble watches its own touches, and those
+              fire whether or not the bubble owns the responder. Routed
+              through tokenPress for exactly that reason — it is how this file
+              says a touch has already been answered. Swipe to be rid of it. */}
+          {msg._uploadFailed ? (
+            <TouchableOpacity
+              onPress={() => tokenPress(() => retryUpload(msg, true))}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityLabel="Send again">
+              <Ionicons name="refresh" size={15} color={C.danger} />
+            </TouchableOpacity>
+          ) : !msg._uploading && (
             <TouchableOpacity onPress={(e) => setActionsMsg({ msg, x: e.nativeEvent.pageX, y: e.nativeEvent.pageY })} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
               <Text style={s.footerBtn}>😊</Text>
             </TouchableOpacity>
@@ -7059,8 +7099,6 @@ const s = StyleSheet.create({
     borderRadius: 10, backgroundColor: 'rgba(59,125,216,0.16)', overflow: 'hidden',
   },
   bubble: { borderRadius: 12, padding: 10, maxWidth: '100%', overflow: 'hidden' },
-  uploadRetryText: { color: '#f87171', fontSize: 12, marginTop: 6, textDecorationLine: 'underline' },
-  failedRow: { flexDirection: 'row', alignItems: 'center', gap: 14, marginTop: 6 },
   callLog: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 },
   callLogIconWrap: { width: 30, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
   callLogText: { color: C.text, fontSize: 14, fontWeight: '600' },
