@@ -1,0 +1,152 @@
+name: Map Report
+
+# Why this exists.
+#
+# "The location picker does not work on zoom and pinch and move" has now been
+# reported four times. Three of those I answered by reading the gesture code,
+# finding it correct, and saying so. The fourth I answered by reasoning that
+# the tiles must be failing — which is a better theory, and still a theory. It
+# was deployed and it did not fix anything.
+#
+# Four rounds of reasoning from source is enough. This asks the server.
+#
+# It answers the questions that actually separate the possibilities, and none
+# of them can be answered from here: does the tile endpoint serve a picture at
+# all, does it serve one it has never cached before, can this machine reach
+# any upstream, and what has it been logging. Whatever comes back, the next
+# move follows from it rather than from another guess.
+#
+# NOTHING SECRET IS WRITTEN. Status codes, byte counts and file counts. No
+# tokens, no usernames, no message content, no host names beyond the public
+# tile providers already named in mapTiles.js. The report is committed to a
+# repository that has been public, so it is written as if anyone will read it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      brand:
+        description: 'Which server to inspect'
+        required: false
+        default: 'bistbarg'
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Ask the server
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST_B: ${{ secrets.DEPLOY_HOST_BISTBARG }}
+          DIR_B: ${{ secrets.DEPLOY_DIR_BISTBARG }}
+          SVC_B: ${{ secrets.DEPLOY_SERVICE_BISTBARG }}
+          HOST_A: ${{ secrets.DEPLOY_HOST_AKOSALMAN }}
+          DIR_A: ${{ secrets.DEPLOY_DIR_AKOSALMAN }}
+          SVC_A: ${{ secrets.DEPLOY_SERVICE_AKOSALMAN }}
+          BRAND: ${{ inputs.brand }}
+        run: |
+          set -u
+          if [ "$BRAND" = "akosalman" ]; then
+            HOST="$HOST_A"; APP_DIR="$DIR_A"; SERVICE="$SVC_A"
+          else
+            HOST="$HOST_B"; APP_DIR="$DIR_B"; SERVICE="$SVC_B"
+          fi
+          if [ -z "${HOST:-}" ] || [ -z "${SSH_KEY:-}" ]; then
+            echo "Secrets for $BRAND are not configured." | tee report.txt
+            exit 0
+          fi
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/k && chmod 600 ~/.ssh/k
+          ssh -i ~/.ssh/k -o StrictHostKeyChecking=accept-new "root@$HOST" \
+            APP_DIR="$APP_DIR" SERVICE="$SERVICE" bash -s > report.txt 2>&1 <<'EOF'
+          set +e
+          cd "$APP_DIR" 2>/dev/null || { echo "APP_DIR missing"; exit 0; }
+
+          echo "### is the fix even running here"
+          # The deploy is scp, not git, so git HEAD lies. The file is the
+          # evidence. See push-report.yml for the time that nearly misled us.
+          echo -n "mapTiles.js present: "
+          [ -f mapTiles.js ] && echo yes || echo "NO  <-- the deploy did not carry it"
+          echo -n "server.js tries a LIST of upstreams: "
+          grep -q 'for (const template of TILE_UPSTREAMS)' server.js 2>/dev/null \
+            && echo yes || echo "NO  <-- still the single-host version"
+          echo -n "TILE_UPSTREAM(S) set in the environment: "
+          systemctl show "$SERVICE" -p Environment 2>/dev/null \
+            | grep -o 'TILE_UPSTREAMS\?=' | head -1 || echo "(not in the unit)"
+          [ -f .env ] && grep -c '^TILE_UPSTREAM' .env 2>/dev/null | sed 's/^/.env entries: /'
+          echo ""
+
+          echo "### can the SERVER reach a tile provider at all"
+          # The question the whole feature rests on, and the one that cannot be
+          # asked from anywhere else. Status only, never the bytes.
+          for U in \
+            "https://tile.openstreetmap.org/15/21061/12900.png" \
+            "https://a.tile.openstreetmap.fr/osmfr/15/21061/12900.png" \
+            "https://tile.openstreetmap.de/15/21061/12900.png" ; do
+            printf '%s -> ' "$(echo "$U" | sed 's#https://##; s#/.*##')"
+            curl -s -o /dev/null -m 20 \
+              -w 'http=%{http_code} bytes=%{size_download} time=%{time_total}s\n' \
+              -A 'ChatRoom/1.0 (self-hosted chat)' "$U" 2>&1 || echo "curl failed"
+          done
+          echo ""
+
+          echo "### does OUR OWN endpoint serve a tile"
+          # Twice: a tile that is probably cached, then one with a random x/y
+          # that cannot be. If the first works and the second does not, the
+          # map draws where it opens and goes blank the moment you move it --
+          # which is exactly how this was reported.
+          PORT=$(grep -oE 'PORT=[0-9]+' .env 2>/dev/null | head -1 | cut -d= -f2)
+          PORT=${PORT:-3000}
+          echo "(asking 127.0.0.1:$PORT)"
+          R=$((RANDOM % 1000))
+          for T in "15/21061/12900" "15/2106$((R % 10))/1290$((R % 10))" "16/42122/25800"; do
+            printf 'tiles/%s -> ' "$T"
+            curl -s -o /dev/null -m 30 \
+              -w 'http=%{http_code} bytes=%{size_download} time=%{time_total}s\n' \
+              "http://127.0.0.1:$PORT/tiles/$T.png" 2>&1 || echo "curl failed"
+          done
+          echo ""
+
+          echo "### the tile cache on disk"
+          echo -n "cached tiles: "
+          find uploads/.tiles -name '*.png' 2>/dev/null | wc -l
+          echo -n "cached in the last hour: "
+          find uploads/.tiles -name '*.png' -mmin -60 2>/dev/null | wc -l
+          echo -n "half-written leftovers (.part): "
+          find uploads/.tiles -name '*.part' 2>/dev/null | wc -l
+          echo -n "zoom levels present: "
+          find uploads/.tiles -name '*.png' 2>/dev/null \
+            | sed 's#.*/##; s#_.*##' | sort -n -u | tr '\n' ' '
+          echo ""
+          echo -n "disk free on this filesystem: "
+          df -h . 2>/dev/null | awk 'NR==2 {print $4" free of "$2}'
+          echo ""
+
+          echo "### what the service has logged about tiles"
+          journalctl -u "$SERVICE" --since '24 hours ago' --no-pager 2>/dev/null \
+            | grep -a '\[tiles\]' | tail -20
+          echo "(end of tile log lines)"
+          EOF
+
+      - name: Commit the report
+        run: |
+          mkdir -p diagnostics
+          {
+            echo "# Map report — ${{ inputs.brand }}"
+            echo ""
+            echo "Generated $(date -u +%Y-%m-%dT%H:%MZ) by .github/workflows/map-report.yml"
+            echo ""
+            echo '```'
+            cat report.txt
+            echo '```'
+          } > "diagnostics/map-report.md"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add diagnostics/map-report.md
+          git commit -m "Map report for ${{ inputs.brand }} [skip ci]" || echo "no change"
+          git push origin HEAD:${{ github.ref_name }} || echo "push failed"
