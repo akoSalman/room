@@ -112,6 +112,24 @@ jobs:
           done
           echo ""
 
+          echo "### THE PUBLIC URL -- the one the app actually asks for"
+          # The loopback check above bypasses whatever sits in front of node:
+          # nginx, a CDN, a firewall. The app never talks to 127.0.0.1. A tile
+          # that is served on the loopback and refused on the public hostname
+          # is a blank map with a perfectly healthy backend behind it, which
+          # is precisely the shape of this bug.
+          DOM=$(grep -oE 'BASE_URL=[^ ]+' .env 2>/dev/null | head -1 | cut -d= -f2-)
+          DOM=${DOM:-https://chat.bistbarg.com}
+          echo "(asking $DOM from the server itself)"
+          R2=$((RANDOM % 1000))
+          for T in "15/21061/12900" "14/1053$((R2 % 10))/645$((R2 % 10))"; do
+            printf 'GET %s/tiles/%s.png -> ' "$DOM" "$T"
+            curl -s -o /dev/null -m 30 \
+              -w 'http=%{http_code} bytes=%{size_download} type=%{content_type}\n' \
+              "$DOM/tiles/$T.png" 2>&1 || echo "curl failed"
+          done
+          echo ""
+
           echo "### the tile cache on disk"
           echo -n "cached tiles: "
           find uploads/.tiles -name '*.png' 2>/dev/null | wc -l
@@ -132,6 +150,22 @@ jobs:
             | grep -a '\[tiles\]' | tail -20
           echo "(end of tile log lines)"
           EOF
+
+      - name: And from outside, which is a third network
+        run: |
+          {
+            echo ""
+            echo "### THE PUBLIC URL, asked from GitHub's runner"
+            echo "# A different network again. If the server can fetch its own"
+            echo "# public URL but nobody else can, that is a firewall; if both"
+            echo "# work, the tiles are reachable and the fault is in the app."
+            for T in "15/21061/12900" "13/5265/3225"; do
+              printf 'GET /tiles/%s.png -> ' "$T"
+              curl -s -o /dev/null -m 30 \
+                -w 'http=%{http_code} bytes=%{size_download} type=%{content_type}\n' \
+                "https://chat.bistbarg.com/tiles/$T.png" 2>&1 || echo "curl failed"
+            done
+          } >> report.txt
 
       - name: Commit the report
         run: |
