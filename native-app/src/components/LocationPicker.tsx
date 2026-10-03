@@ -16,6 +16,7 @@ import React, { useEffect, useState } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, Modal, ActivityIndicator, useWindowDimensions,
 } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import { C } from '../theme';
 import TileMap from './TileMap';
@@ -67,6 +68,13 @@ export default function LocationPicker({
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onCancel}>
+      {/* A Modal is a separate window on Android, and the root one at the top
+          of the app does not reach inside it — so gestures in here need their
+          own. Without it the map could not be dragged or pinched at all,
+          which is what was reported four times. The photo viewer's Modal has
+          had one all along, which is why pinching a photo has always worked
+          and pinching the map never has. */}
+      <GestureHandlerRootView style={{ flex: 1 }}>
       <View style={s.screen}>
         <View style={s.header}>
           <TouchableOpacity onPress={onCancel} style={s.iconBtn} hitSlop={hit}>
@@ -123,6 +131,7 @@ export default function LocationPicker({
           </TouchableOpacity>
         </View>
       </View>
+      </GestureHandlerRootView>
     </Modal>
   );
 }

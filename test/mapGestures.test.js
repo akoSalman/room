@@ -122,6 +122,63 @@ test('the page loads it before the two files that use it', () => {
   assert.ok(html.indexOf('mapGestures.js') < html.indexOf('js/app.js'));
 });
 
+// ── The APP's map, which is a different problem with the same words ────────
+//
+// Reported four times as "the location picker does not work on zoom and pinch
+// and move". Three times I read the gesture code, found it correct -- it IS
+// correct -- and said so. Once I blamed the tiles, and a report from the
+// server proved them healthy from three networks, cached and uncached.
+//
+// What settled it: TileMap and LocationPicker arrived in ONE commit, so the
+// gestures never worked on a device. Not a regression; never right. And this
+// app has pinch and pan working inside a Modal a few files away -- the photo
+// viewer -- through react-native-gesture-handler, whose Modal is wrapped in a
+// GestureHandlerRootView because on Android a Modal is a separate window the
+// app's root one does not reach. The picker had neither.
+
+const NATIVE = path.join(ROOT, 'native-app', 'src');
+const strip = (f) => fs.readFileSync(f, 'utf8')
+  .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+
+test("THE PICKER'S MODAL HAS ITS OWN GESTURE ROOT", () => {
+  // The one Android actually requires. The photo viewer's Modal has had one
+  // all along, which is why pinching a photo has always worked.
+  const picker = strip(path.join(NATIVE, 'components', 'LocationPicker.tsx'));
+  assert.ok(/GestureHandlerRootView/.test(picker),
+    'gestures inside this Modal cannot reach the app root, so the map takes no touches');
+  // It must be INSIDE the Modal -- one outside it is the one that does not
+  // reach, which is the whole point.
+  const inside = /<Modal[\s\S]*?<GestureHandlerRootView/.test(picker);
+  assert.ok(inside, 'the gesture root is not inside the Modal, so it covers nothing');
+});
+
+test('THE MAP READS FINGERS WITH THE LIBRARY THAT WORKS HERE', () => {
+  const map = strip(path.join(NATIVE, 'components', 'TileMap.tsx'));
+  assert.ok(!/PanResponder/.test(map),
+    'still the hand-rolled responder that never moved the map on a device');
+  for (const h of ['PanGestureHandler', 'PinchGestureHandler', 'TapGestureHandler']) {
+    assert.ok(new RegExp('<' + h).test(map), `${h} is imported but never used`);
+  }
+});
+
+test('...and the three run TOGETHER, not one blocking the rest', () => {
+  // Without this the first handler to claim the touch wins outright: putting
+  // a second finger down mid-drag would do nothing, which is half the report.
+  const map = strip(path.join(NATIVE, 'components', 'TileMap.tsx'));
+  const sim = map.match(/simultaneousHandlers=/g) || [];
+  assert.ok(sim.length >= 3,
+    `each handler must recognise alongside the others (${sim.length} declared)`);
+});
+
+test('A MAP IN A MESSAGE STILL DOES NOT EAT THE CHAT SCROLL', () => {
+  // The non-interactive case. A map in a bubble that grabbed vertical drags
+  // would make the conversation unscrollable wherever someone shared a pin --
+  // a worse bug than the one being fixed.
+  const map = strip(path.join(NATIVE, 'components', 'TileMap.tsx'));
+  assert.ok(/if \(!interactive\) return body;/.test(map),
+    'a non-interactive map is still wrapped in gesture handlers');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

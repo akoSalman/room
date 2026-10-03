@@ -7,10 +7,34 @@
 // never could be from here.
 //
 // Draggable, with zoom buttons and one marker per person.
+//
+// ── Why the gestures are react-native-gesture-handler and not PanResponder ──
+//
+// They were PanResponder, and the map did not respond to a finger at all. It
+// was reported four times; three times I read that code and said it looked
+// correct, which it did, and once I blamed the tiles, which turned out to be
+// healthy — the server serves them from three networks, cached and uncached.
+//
+// What settled it was the history: this component and the picker arrived in
+// one commit and the gestures have never worked on a device. So the question
+// was not what broke, but what was never right.
+//
+// This app already has pinch and pan working inside a Modal, on these phones:
+// ZoomableImage, in the photo viewer, through react-native-gesture-handler —
+// and the viewer's Modal wraps its contents in a GestureHandlerRootView,
+// which Android requires because a Modal is a separate window that the root
+// one at the top of the app does not cover. The picker had neither. So rather
+// than keep reasoning about why one hand-rolled responder loses its touches,
+// this now uses the library that is demonstrably working a few files away.
+//
+// The maths is untouched. Only the thing that reads fingers changed.
 import React, { useMemo, useRef, useState } from 'react';
 import {
-  View, Text, Image, StyleSheet, PanResponder, TouchableOpacity,
+  View, Text, Image, StyleSheet, TouchableOpacity,
 } from 'react-native';
+import {
+  PanGestureHandler, PinchGestureHandler, TapGestureHandler, State as GHState,
+} from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import { C } from '../theme';
 import { BASE_URL } from '../api';
@@ -58,9 +82,8 @@ export default function TileMap({
   // one finger lifts early, which used to fling the map sideways.
   const mode = useRef<'none' | 'pan' | 'pinch'>('none');
   const pinchStart = useRef({ dist: 0, fx: 0, fy: 0 });
-  // The PanResponder is built once, so its handlers close over the FIRST
-  // render's state forever. Anything they need to read at gesture time lives
-  // in a ref instead — reading `pinch` here would always have found null.
+  // Read at gesture time, so it lives in a ref: reading the `pinch` state
+  // inside a handler is a snapshot from whenever that handler was made.
   const liveScale = useRef(1);
 
   // Where the map sits on screen, so a touch's page coordinates can be turned
@@ -130,125 +153,100 @@ export default function TileMap({
     onZoomChange?.(next);
   };
 
-  const pan = useRef(
-    PanResponder.create({
-      // Two fingers down is a pinch immediately — waiting for movement lets
-      // an ancestor list claim the gesture first.
-      onStartShouldSetPanResponderCapture: (e) =>
-        interactive && e.nativeEvent.touches.length === 2,
-      onMoveShouldSetPanResponderCapture: (e, g) =>
-        interactive && (e.nativeEvent.touches.length === 2
-          || Math.abs(g.dx) > 3 || Math.abs(g.dy) > 3),
-      // Once the map has the gesture it keeps it. Without this the message
-      // list underneath reclaims the drag and the map never moves — which is
-      // exactly why dragging appeared to do nothing.
-      onPanResponderTerminationRequest: () => false,
-      onShouldBlockNativeResponder: () => true,
+  // ── The gestures ──────────────────────────────────────────────────────────
+  //
+  // Three handlers that run together: drag with one finger, pinch with two,
+  // double tap to zoom in. They are declared with refs so each can be told to
+  // recognise alongside the others — without that, the first one to claim the
+  // touch would block the rest, and putting a second finger down mid-drag
+  // would do nothing.
+  const panRef = useRef(null);
+  const pinchRef = useRef(null);
+  const tapRef = useRef(null);
 
-      onPanResponderGrant: (e) => {
-        measure();
+  /** Drag: the map follows the finger, and the move is committed on release. */
+  const onPanEvent = (e: any) => {
+    if (mode.current === 'pinch') return;   // two fingers own it
+    mode.current = 'pan';
+    setDragOffset({ x: e.nativeEvent.translationX, y: e.nativeEvent.translationY });
+  };
+
+  const onPanState = (e: any) => {
+    const { state, oldState, translationX, translationY } = e.nativeEvent;
+    if (state === GHState.BEGAN) {
+      applied.current = { zoom: zoomRef.current, center: centerRef.current };
+      return;
+    }
+    if (oldState !== GHState.ACTIVE) return;
+    // A pinch that began mid-drag has already moved the map; committing the
+    // drag as well would move it twice.
+    if (mode.current !== 'pinch') {
+      onCenterChange?.(panCenter(
+        applied.current.center, applied.current.zoom, translationX, translationY));
+    }
+    mode.current = 'none';
+    setDragOffset({ x: 0, y: 0 });
+  };
+
+  /**
+   * Pinch: zoom about the point between the fingers.
+   *
+   * Levels are committed AS THEY ARE CROSSED rather than saved for the
+   * release. A small pinch used to do nothing at all, because the level was
+   * rounded and anything short of a full doubling rounded back to where it
+   * started. What is left over after the levels already taken stays as the
+   * visible scale, which is what stops the map jumping each time one commits:
+   * the tiles sharpen and nothing moves.
+   *
+   * focalX/focalY arrive relative to this view, which is the coordinate space
+   * the maths wants. The old code had to measure the view's position on screen
+   * and subtract it, and got that wrong with two fingers down.
+   */
+  const onPinchEvent = (e: any) => {
+    const { scale, focalX, focalY } = e.nativeEvent;
+    if (mode.current !== 'pinch') return;
+    liveScale.current = scale;
+    const f = { x: focalX, y: focalY };
+    const want = clampZoom(pinchBase.current + pinchZoomDelta(scale));
+    if (want !== applied.current.zoom) applyZoom(want, f);
+    const residual = scale / Math.pow(2, applied.current.zoom - pinchBase.current);
+    setPinch({ scale: residual, fx: focalX, fy: focalY });
+  };
+
+  const onPinchState = (e: any) => {
+    const { state, oldState, focalX, focalY } = e.nativeEvent;
+    if (state === GHState.BEGAN || state === GHState.ACTIVE) {
+      if (mode.current !== 'pinch') {
+        mode.current = 'pinch';
         applied.current = { zoom: zoomRef.current, center: centerRef.current };
-        const t = e.nativeEvent.touches;
-        if (t.length === 2) {
-          mode.current = 'pinch';
-          const f = touchFocal(t);
-          pinchStart.current = { dist: touchDistance(t), fx: f.x, fy: f.y };
-          pinchBase.current = zoomRef.current;
-          liveScale.current = 1;
-          setPinch({ scale: 1, fx: f.x, fy: f.y });
-        } else {
-          mode.current = 'pan';
-        }
-      },
-
-      onPanResponderMove: (e, g) => {
-        const t = e.nativeEvent.touches;
-        if (t.length >= 2) {
-          // A second finger landing mid-drag switches to pinching.
-          if (mode.current !== 'pinch') {
-            mode.current = 'pinch';
-            const f = touchFocal(t);
-            pinchStart.current = { dist: touchDistance(t), fx: f.x, fy: f.y };
-            pinchBase.current = applied.current.zoom;
-            liveScale.current = 1;
-            setDragOffset({ x: 0, y: 0 });
-          }
-          const p = pinchStart.current;
-          const scale = touchDistance(t) / p.dist;
-          liveScale.current = scale;
-
-          // Cross a zoom level and take it NOW, rather than saving the whole
-          // gesture for the release. Small pinches used to do nothing at all,
-          // because the level was rounded and anything short of a full 2x
-          // rounded back to where it started.
-          const want = clampZoom(pinchBase.current + pinchZoomDelta(scale));
-          if (want !== applied.current.zoom) {
-            applyZoom(want, { x: p.fx, y: p.fy });
-          }
-          // Whatever is left over after the levels already taken. Keeping this
-          // as the visible scale is what stops the map jumping each time a
-          // level commits — the tiles get sharper, nothing moves.
-          const residual = scale / Math.pow(2, applied.current.zoom - pinchBase.current);
-          setPinch({ scale: residual, fx: p.fx, fy: p.fy });
-          return;
-        }
-        if (mode.current === 'pan') setDragOffset({ x: g.dx, y: g.dy });
-      },
-
-      onPanResponderRelease: (e, g) => {
-        // Double tap zooms in, about the spot that was tapped — the ordinary
-        // one-handed way to zoom a map, and the only one available while
-        // holding a phone in one hand.
-        //
-        // Recognised here rather than with a Touchable, because the map has to
-        // keep the responder for panning; a Touchable layered over it would
-        // take the drag away.
-        const moved = Math.abs(g.dx) > TAP_SLOP || Math.abs(g.dy) > TAP_SLOP;
-        if (mode.current === 'pan' && !moved) {
-          const now = Date.now();
-          const at = {
-            x: e.nativeEvent.pageX - origin.current.x,
-            y: e.nativeEvent.pageY - origin.current.y,
-          };
-          const prev = lastTap.current;
-          const near = prev
-            && Math.abs(at.x - prev.x) < DOUBLE_TAP_SLOP
-            && Math.abs(at.y - prev.y) < DOUBLE_TAP_SLOP;
-          if (prev && near && now - prev.at < DOUBLE_TAP_MS) {
-            lastTap.current = null;
-            applyZoom(clampZoom(applied.current.zoom + 1), at);
-            mode.current = 'none';
-            setDragOffset({ x: 0, y: 0 });
-            return;
-          }
-          lastTap.current = { x: at.x, y: at.y, at: now };
-          mode.current = 'none';
-          setDragOffset({ x: 0, y: 0 });
-          return;
-        }
-        if (mode.current === 'pinch') {
-          // Any final part-level is decided here: half a level up rounds up,
-          // so a deliberate small pinch is not silently discarded.
-          const p = pinchStart.current;
-          const want = clampZoom(pinchBase.current + pinchZoomDelta(liveScale.current));
-          if (want !== applied.current.zoom) applyZoom(want, { x: p.fx, y: p.fy });
-        } else if (mode.current === 'pan') {
-          onCenterChange?.(panCenter(applied.current.center, applied.current.zoom, g.dx, g.dy));
-        }
-        mode.current = 'none';
+        pinchBase.current = zoomRef.current;
         liveScale.current = 1;
+        pinchStart.current = { dist: 1, fx: focalX, fy: focalY };
+        // Whatever the drag had shown is now the pinch's business.
         setDragOffset({ x: 0, y: 0 });
-        setPinch(null);
-      },
+        setPinch({ scale: 1, fx: focalX, fy: focalY });
+      }
+      return;
+    }
+    if (oldState !== GHState.ACTIVE) return;
+    // Any final part-level is decided here: half a level up rounds up, so a
+    // deliberate small pinch is not silently discarded.
+    const want = clampZoom(pinchBase.current + pinchZoomDelta(liveScale.current));
+    if (want !== applied.current.zoom) {
+      applyZoom(want, { x: pinchStart.current.fx, y: pinchStart.current.fy });
+    }
+    mode.current = 'none';
+    liveScale.current = 1;
+    setPinch(null);
+  };
 
-      onPanResponderTerminate: () => {
-        mode.current = 'none';
-        liveScale.current = 1;
-        setDragOffset({ x: 0, y: 0 });
-        setPinch(null);
-      },
-    }),
-  ).current;
+  /** Double tap: zoom in one level about the spot that was tapped. */
+  const onTapState = (e: any) => {
+    if (e.nativeEvent.state !== GHState.ACTIVE) return;
+    applied.current = { zoom: zoomRef.current, center: centerRef.current };
+    applyZoom(clampZoom(zoomRef.current + 1), { x: e.nativeEvent.x, y: e.nativeEvent.y });
+  };
+
 
   // Scaling about the fingers rather than the middle of the view: shift the
   // focal point to the centre, scale, shift it back.
@@ -267,12 +265,14 @@ export default function TileMap({
     [center.lat, center.lng, zoom, width, height],
   );
 
-  return (
+  // The map itself, with everything drawn on it. Wrapped below in the three
+  // gesture handlers when it is interactive, and rendered bare when it is not
+  // — a map in a message bubble must not eat the scroll of the chat it sits in.
+  const body = (
     <View
       ref={wrapRef}
       onLayout={measure}
       style={[s.wrap, { width, height }]}
-      {...(interactive ? pan.panHandlers : {})}
     >
       {/* Tiles and markers scale together during a pinch, so the pins stay on
           the streets they belong to while the fingers are still moving. */}
@@ -350,6 +350,47 @@ export default function TileMap({
       {/* OpenStreetMap's licence requires attribution. */}
       <Text style={s.attribution}>© OpenStreetMap</Text>
     </View>
+  );
+
+  if (!interactive) return body;
+
+  // Nested rather than siblings, and each told to run alongside the others.
+  // A single finger drags, a second one starts a pinch without the drag
+  // having to end first, and two quick taps zoom in.
+  return (
+    <TapGestureHandler
+      ref={tapRef}
+      numberOfTaps={2}
+      maxDelayMs={300}
+      maxDist={40}
+      onHandlerStateChange={onTapState}
+      simultaneousHandlers={[panRef, pinchRef]}
+    >
+      <View>
+        <PinchGestureHandler
+          ref={pinchRef}
+          onGestureEvent={onPinchEvent}
+          onHandlerStateChange={onPinchState}
+          simultaneousHandlers={[panRef, tapRef]}
+        >
+          <View>
+            <PanGestureHandler
+              ref={panRef}
+              minPointers={1}
+              maxPointers={2}
+              // Enough to tell a drag from a tap, and small enough that the
+              // map starts following before the finger feels ignored.
+              minDist={4}
+              onGestureEvent={onPanEvent}
+              onHandlerStateChange={onPanState}
+              simultaneousHandlers={[pinchRef, tapRef]}
+            >
+              {body}
+            </PanGestureHandler>
+          </View>
+        </PinchGestureHandler>
+      </View>
+    </TapGestureHandler>
   );
 }
 
