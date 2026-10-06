@@ -136,13 +136,13 @@ export default function CallOverlay() {
         <Text style={s.callState}>is calling you…</Text>
         <View style={s.incomingActions}>
           <View style={s.actionCol}>
-            <TouchableOpacity style={[s.roundBtn, s.declineBtn]} onPress={() => cm.decline()}>
+            <TouchableOpacity style={[s.roundBtn, s.callBtn, s.declineBtn]} onPress={() => cm.decline()}>
               <Ionicons name="call" size={30} color="#fff" style={s.endIcon} />
             </TouchableOpacity>
             <Text style={s.actionLabel}>Decline</Text>
           </View>
           <View style={s.actionCol}>
-            <TouchableOpacity style={[s.roundBtn, s.acceptBtn]} onPress={() => cm.accept()}>
+            <TouchableOpacity style={[s.roundBtn, s.callBtn, s.acceptBtn]} onPress={() => cm.accept()}>
               <Ionicons name="call" size={30} color="#fff" />
             </TouchableOpacity>
             <Text style={s.actionLabel}>Accept</Text>
@@ -258,7 +258,7 @@ export default function CallOverlay() {
       <View style={s.controls}>
         <View style={s.actionCol}>
           <TouchableOpacity style={[s.roundBtn, s.ctrlBtn, cm.muted && s.ctrlActive]} onPress={() => cm.toggleMute()}>
-            <Ionicons name={cm.muted ? 'mic-off' : 'mic'} size={26} color="#fff" />
+            <Ionicons name={cm.muted ? 'mic-off' : 'mic'} size={25} color={cm.muted ? '#111827' : '#fff'} />
           </TouchableOpacity>
           <Text style={s.actionLabel}>{cm.muted ? 'Unmute' : 'Mute'}</Text>
         </View>
@@ -266,7 +266,7 @@ export default function CallOverlay() {
         {!isVideo && (
           <View style={s.actionCol}>
             <TouchableOpacity style={[s.roundBtn, s.ctrlBtn, cm.speakerOn && s.ctrlActive]} onPress={() => cm.toggleSpeaker()}>
-              <Ionicons name={cm.speakerOn ? 'volume-high' : 'ear'} size={26} color="#fff" />
+              <Ionicons name={cm.speakerOn ? 'volume-high' : 'ear'} size={25} color={cm.speakerOn ? '#111827' : '#fff'} />
             </TouchableOpacity>
             <Text style={s.actionLabel}>{cm.speakerOn ? 'Speaker' : 'Earpiece'}</Text>
           </View>
@@ -274,7 +274,7 @@ export default function CallOverlay() {
         {isVideo && (
           <View style={s.actionCol}>
             <TouchableOpacity style={[s.roundBtn, s.ctrlBtn, cm.cameraOff && s.ctrlActive]} onPress={() => cm.toggleCamera()}>
-              <Ionicons name={cm.cameraOff ? 'videocam-off' : 'videocam'} size={26} color="#fff" />
+              <Ionicons name={cm.cameraOff ? 'videocam-off' : 'videocam'} size={25} color={cm.cameraOff ? '#111827' : '#fff'} />
             </TouchableOpacity>
             <Text style={s.actionLabel}>Camera</Text>
           </View>
@@ -284,7 +284,7 @@ export default function CallOverlay() {
         {isVideo && !cm.sharingScreen && (
           <View style={s.actionCol}>
             <TouchableOpacity style={[s.roundBtn, s.ctrlBtn]} onPress={() => cm.switchCamera()}>
-              <Ionicons name="camera-reverse" size={26} color="#fff" />
+              <Ionicons name="camera-reverse" size={25} color="#fff" />
             </TouchableOpacity>
             <Text style={s.actionLabel}>Flip</Text>
           </View>
@@ -306,13 +306,13 @@ export default function CallOverlay() {
             <TouchableOpacity
               style={[s.roundBtn, s.ctrlBtn, cm.sharingScreen && s.ctrlActive]}
               onPress={() => cm.toggleScreenShare()}>
-              <Ionicons name={cm.sharingScreen ? 'stop-circle' : 'phone-portrait'} size={26} color="#fff" />
+              <Ionicons name={cm.sharingScreen ? 'stop-circle' : 'phone-portrait'} size={25} color={cm.sharingScreen ? '#111827' : '#fff'} />
             </TouchableOpacity>
             <Text style={s.actionLabel}>{cm.sharingScreen ? 'Stop' : 'Share'}</Text>
           </View>
         )}
         <View style={s.actionCol}>
-          <TouchableOpacity style={[s.roundBtn, s.declineBtn]} onPress={() => cm.end()}>
+          <TouchableOpacity style={[s.roundBtn, s.callBtn, s.declineBtn]} onPress={() => cm.end()}>
             <Ionicons name="call" size={28} color="#fff" style={s.endIcon} />
           </TouchableOpacity>
           <Text style={s.actionLabel}>End</Text>
@@ -406,15 +406,33 @@ const s = StyleSheet.create({
     flexDirection: 'row', justifyContent: 'space-evenly',
   },
   actionCol: { alignItems: 'center', gap: 8 },
+  // No shadow here. It used to be on EVERY button, including the translucent
+  // ones, and on Android `elevation` paints a grey halo around a semi
+  // transparent circle — which is the "shade" these were reported for. The
+  // lift now belongs only to the two solid buttons that answer and end a
+  // call, where it means something: they are the primary actions and they are
+  // opaque, so a shadow reads as a raised button rather than as dirt.
   roundBtn: {
-    width: 68, height: 68, borderRadius: 34,
+    width: 62, height: 62, borderRadius: 31,
     alignItems: 'center', justifyContent: 'center',
-    elevation: 8, shadowColor: '#000', shadowOpacity: 0.35, shadowRadius: 10, shadowOffset: { width: 0, height: 4 },
   },
   roundBtnIcon: { fontSize: 26, color: '#fff' },
+  // The two that act on the call itself: solid, slightly larger, and lifted.
+  callBtn: {
+    width: 68, height: 68, borderRadius: 34,
+    elevation: 8, shadowColor: '#000', shadowOpacity: 0.35,
+    shadowRadius: 10, shadowOffset: { width: 0, height: 4 },
+  },
   acceptBtn: { backgroundColor: '#22c55e' },
   declineBtn: { backgroundColor: '#ef4444' },
-  ctrlBtn: { backgroundColor: 'rgba(255,255,255,0.16)' },
-  ctrlActive: { backgroundColor: 'rgba(255,255,255,0.45)' },
+  // The toggles: flat, with a hairline instead of a shadow. Same treatment as
+  // the rest of the app's controls, which are an icon font on a plain surface.
+  ctrlBtn: {
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.22)',
+  },
+  // On, not merely pressed: filled rather than brightened, so "my microphone
+  // is off" is legible at a glance instead of being a shade of grey.
+  ctrlActive: { backgroundColor: '#fff', borderColor: '#fff' },
   actionLabel: { color: 'rgba(255,255,255,0.7)', fontSize: 13, fontWeight: '600' },
 });

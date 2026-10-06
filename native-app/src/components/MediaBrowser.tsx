@@ -45,6 +45,8 @@ import {
   toRows, rowOf, cellSize, shouldLoadMore, restoreToken, shouldRestore, restoreOffset,
 } from '../roomMedia';
 import { mediaSource } from '../mediaSource';
+import * as videoCoverStore from '../videoCoverStore';
+import { coverKindFor, coverLabel, coverTint } from '../fileCover';
 
 export type { MediaItem, MediaTab } from '../roomMedia';
 export type MediaAction = 'open' | 'download' | 'share' | 'showInChat';
@@ -130,6 +132,77 @@ const Row = memo(function Row({ row, first, size, thumb, onOpen, onMenu }: {
     </View>
   );
 });
+
+/**
+ * A file, with a picture of what is in it where there can be one.
+ *
+ * Asked for: show files with a cover so you know the content before opening.
+ * The tab listed a video, a photo sent as a document, a PDF and a zip as four
+ * identical rows of the same emoji — and on a metered connection "open it and
+ * see" costs the whole file.
+ *
+ * Which cover a file gets is decided in src/fileCover.ts. A video's frame
+ * comes from the store the chat bubbles already use, so it is usually the
+ * picture that has been extracted once already rather than a second decode.
+ */
+function FileRow({ item, thumb, onOpen, onMenu }: {
+  item: MediaItem;
+  thumb: (path: string, w: number) => string;
+  onOpen: (i: MediaItem) => void;
+  onMenu: (i: MediaItem) => void;
+}) {
+  const kind = coverKindFor({ name: item.name, kind: (item as any).kind });
+  const [, force] = useState(0);
+  useEffect(() => {
+    if (kind !== 'video') return;
+    // Only now that this row is on screen. A tab of two hundred files must
+    // not decode two hundred videos because somebody opened it.
+    // local: false, and no size — so shouldExtract refuses unless a cover for
+    // this video has already been made somewhere else, which hydrate then
+    // adopts from disk. That is deliberate: the files tab must never pull
+    // down a video to draw a picture of it. In practice the chat has usually
+    // extracted it already and this is free.
+    videoCoverStore.ensureCover({ url: item.url, source: item.url, local: false })
+      .catch(() => {});
+    return videoCoverStore.subscribe(() => force(n => n + 1));
+  }, [kind, item.url]);
+
+  const cover = kind === 'video' ? videoCoverStore.get(item.url) : null;
+  const coverUri = cover && cover.status === 'done' ? cover.uri : null;
+
+  return (
+    <Pressable style={s.row} onPress={() => onOpen(item)} onLongPress={() => onMenu(item)} delayLongPress={300}>
+      <View style={[s.cover, kind === 'typed' && { backgroundColor: coverTint(item.name) }]}>
+        {kind === 'image' && (
+          <Image source={mediaSource(thumb(item.url, 200))} style={s.coverImg} contentFit="cover" />
+        )}
+        {kind === 'video' && !!coverUri && (
+          <Image source={{ uri: coverUri }} style={s.coverImg} contentFit="cover" />
+        )}
+        {/* The play badge sits over the frame, and stands in for it until the
+            frame arrives — so a video is recognisable as one immediately,
+            whether or not its cover has been extracted yet. */}
+        {kind === 'video' && (
+          <View style={s.coverPlay}>
+            <Ionicons name="play" size={16} color="#fff" />
+          </View>
+        )}
+        {kind === 'typed' && (
+          <Text style={s.coverLabel} numberOfLines={1}>{coverLabel(item.name)}</Text>
+        )}
+      </View>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text style={s.rowTitle} numberOfLines={1}>{item.name || item.url}</Text>
+        <Text style={s.rowSub} numberOfLines={1}>
+          {kind === 'video' ? 'Video' : coverLabel(item.name)}
+        </Text>
+      </View>
+      <Pressable onPress={() => onMenu(item)} hitSlop={hit} style={s.rowMore}>
+        <Ionicons name="ellipsis-vertical" size={18} color={C.muted} />
+      </Pressable>
+    </Pressable>
+  );
+}
 
 function ListRow({ item, icon, sub, onOpen, onMenu }: {
   item: MediaItem;
@@ -321,15 +394,29 @@ export default function MediaBrowser({
     />
   );
 
+  const fileList = (
+    <FlatList
+      data={files}
+      style={{ width: W }}
+      keyExtractor={(i, n) => `${i.url}#${n}`}
+      renderItem={({ item }) => (
+        <FileRow item={item} thumb={thumbUrl}
+          onOpen={(it) => onAction('open', it)} onMenu={openMenu} />
+      )}
+      initialNumToRender={14}
+      windowSize={5}
+      removeClippedSubviews
+      ListEmptyComponent={<Text style={s.empty}>No files yet</Text>}
+      contentContainerStyle={{ paddingBottom: 30 }}
+    />
+  );
+
   function page(key: MediaTab) {
     // Not visited yet: an empty slot of the right width so the pager still
     // measures correctly, and nothing rendered into it.
     if (!visited.has(key)) return <View style={{ width: W }} />;
     if (key === 'images') return photos;
-    if (key === 'files') {
-      return simpleList(files, i => fileIcon(i.name || '', null),
-        i => (extOf(i.name || '') || 'file').toUpperCase(), 'No files yet');
-    }
+    if (key === 'files') return fileList;
     if (key === 'music') return simpleList(music, () => '🎵', () => 'Audio', 'No audio yet');
     return simpleList(links, () => '🔗', i => i.url, 'No links yet');
   }
@@ -477,6 +564,20 @@ const s = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border,
   },
   rowIcon: { fontSize: 22 },
+  // A square the size of the row, so the list reads as a column of covers
+  // rather than a column of text with pictures stuck on it.
+  cover: {
+    width: 44, height: 44, borderRadius: 8, overflow: 'hidden',
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: '#1f2937', marginRight: 10,
+  },
+  coverImg: { width: '100%', height: '100%' },
+  // Over the frame, and standing in for it until it arrives.
+  coverPlay: {
+    position: 'absolute', width: 26, height: 26, borderRadius: 13,
+    backgroundColor: 'rgba(0,0,0,0.45)', alignItems: 'center', justifyContent: 'center',
+  },
+  coverLabel: { color: '#fff', fontSize: 12, fontWeight: '800', letterSpacing: 0.3 },
   rowMore: { paddingHorizontal: 6, paddingVertical: 4 },
   rowTitle: { color: C.text, fontSize: 14.5, fontWeight: '600' },
   rowSub: { color: C.muted, fontSize: 11.5, marginTop: 1 },

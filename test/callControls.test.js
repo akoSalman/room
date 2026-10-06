@@ -367,6 +367,68 @@ test('THE DISPLAY STREAM IS HELD, not just its track', () => {
   assert.ok(/screenStream\?\.release\?\.\(\)/.test(cm), 'the stream is never released');
 });
 
+// ── The call screen's buttons ──────────────────────────────────────────────
+//
+// Reported as: the icons on the call screen do not look good, they look like
+// they have a shade, and not as modern as the rest of the app.
+//
+// They did. One style gave EVERY button `elevation: 8` and a drop shadow,
+// including the translucent toggles — and on Android elevation paints a grey
+// halo around a semi-transparent circle. That is the shade.
+
+const OVERLAY = strip(path.join(ROOT, 'native-app', 'src', 'components', 'CallOverlay.tsx'));
+const styleBlock = (name) => {
+  const m = new RegExp('\\b' + name + ':\\s*\\{([^}]*(?:\\{[^}]*\\}[^}]*)*)\\}').exec(OVERLAY);
+  return m ? m[1] : null;
+};
+
+test('THE TRANSLUCENT TOGGLES CARRY NO SHADOW', () => {
+  // The shade. A shadow under a see-through circle is dirt, not depth.
+  const base = styleBlock('roundBtn');
+  assert.ok(base, 'could not find roundBtn');
+  assert.ok(!/elevation/.test(base), 'every call button still has elevation');
+  assert.ok(!/shadow/i.test(base), 'every call button still has a drop shadow');
+});
+
+test('…but ANSWER AND END still look like raised buttons', () => {
+  // They are opaque and they are the primary actions; a lift means something
+  // there. Removing it everywhere would have been the other mistake.
+  const call = styleBlock('callBtn');
+  assert.ok(call, 'the call-action buttons lost their own style');
+  assert.ok(/elevation/.test(call) && /shadow/i.test(call),
+    'answer and end no longer stand out from the toggles');
+  assert.ok(/style=\{\[s\.roundBtn, s\.callBtn, s\.declineBtn\]\}/.test(OVERLAY),
+    'the end button does not use the raised style');
+  assert.ok(/style=\{\[s\.roundBtn, s\.callBtn, s\.acceptBtn\]\}/.test(OVERLAY),
+    'the answer button does not use the raised style');
+});
+
+test('A TOGGLE THAT IS ON IS LEGIBLE, not a shade of grey', () => {
+  // "My microphone is off" has to be readable at a glance. It used to be a
+  // slightly lighter translucent circle, which is the same problem as the
+  // shadow: everything the same colour.
+  const on = styleBlock('ctrlActive');
+  assert.ok(on, 'could not find ctrlActive');
+  assert.ok(/#fff/.test(on), 'an active toggle is still only a lighter grey');
+  // …and its icon must stop being white, or it vanishes into the fill.
+  assert.ok(/cm\.muted \? '#111827' : '#fff'/.test(OVERLAY),
+    'the icon stays white on a white fill, so an active toggle is blank');
+  assert.ok(/cm\.cameraOff \? '#111827' : '#fff'/.test(OVERLAY),
+    'the camera icon stays white on a white fill');
+});
+
+test('THE ICONS ARE ONE FAMILY AT ONE SIZE', () => {
+  // The app's own convention, written down in the message menu: an icon font
+  // inherits size and colour, so a row of controls reads as one surface.
+  // Emoji would arrive in whatever the system font felt like.
+  const sizes = [...OVERLAY.matchAll(/<Ionicons[^>]*?size=\{(\d+)\}/g)]
+    .map(m => Number(m[1]));
+  assert.ok(sizes.length >= 5, `only found ${sizes.length} icons — the scan is broken`);
+  const inControls = sizes.filter(n => n === 25).length;
+  assert.ok(inControls >= 4,
+    `the control icons are not one size (${sizes.join(', ')})`);
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }
