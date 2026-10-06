@@ -158,7 +158,10 @@ test('both clients jump through the rule, and mark the seam', () => {
   // Matched against the extraData block rather than against one exact spelling
   // of it: this used to pin unreadInfo to being the LAST key, so adding
   // anything after it failed a test about the divider.
-  const extra = /const rowExtraData = useMemo\([\s\S]{0,1600}?\)\s*;/.exec(chatScreen);
+  // Matched to where the block actually ends rather than to a character
+  // budget: the budget was 1600 and the block outgrew it, so this failed
+  // over the size of a list rather than over anything it is about.
+  const extra = /const rowExtraData = useMemo\([\s\S]*?\n  \);/.exec(chatScreen);
   assert.ok(extra, 'could not find rowExtraData');
   // The OBJECT specifically. Searching the whole block would be satisfied by
   // the dependency list below, which is a different thing: a dependency that

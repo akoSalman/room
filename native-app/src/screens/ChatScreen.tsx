@@ -1269,8 +1269,27 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     // bursts for the same reason: the flying emoji is drawn inside a row, and
     // it used to appear only because `reactions` changed in the same breath.
     // Now that an unchanged announcement is dropped, that no longer happens.
-    () => ({ maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode, e2ePhase, unreadInfo, bursts }),
-    [maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive, selectMode, e2ePhase, unreadInfo, bursts],
+    //
+    // The last seven were added when renderItem was made stable below. Until
+    // then every row re-rendered on EVERY render of this screen, so a row
+    // reading something that was not listed here still happened to update —
+    // by accident. Now that rows re-render only when this object changes,
+    // anything a row reads has to be in it or it will quietly stop updating:
+    // a long message's expanded state, a one-time message's countdown, your
+    // own name, your position (how far away a shared pin is), and the two that
+    // feed the comments strip.
+    //
+    // The list is not guessed: test/rowRenders.test.js reads this function's
+    // body and fails if a row touches state that is not here. clockTick was in
+    // this list for a few minutes because a sloppier scan of mine said rows
+    // used it — they do not, and leaving it would have redrawn every row every
+    // thirty seconds for nothing.
+    () => ({ maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive,
+      selectMode, e2ePhase, unreadInfo, bursts,
+      expandedIds, oneTimeExpiry, me, myPosition, unreadComments, commentCounts }),
+    [maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive,
+      selectMode, e2ePhase, unreadInfo, bursts,
+      expandedIds, oneTimeExpiry, me, myPosition, unreadComments, commentCounts],
   );
 
   const scrollBottom = useCallback(() => {
@@ -4747,6 +4766,32 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     return copy;
   }
 
+  /**
+   * What the list is actually given as `renderItem`, and it never changes.
+   *
+   * Measured, after four wrong guesses: 28 rows redrawn for every single
+   * render of this screen, on one phone, and 24 on another. Not a render loop
+   * — the screen was rendering a reasonable number of times, and each one was
+   * redrawing the whole visible list.
+   *
+   * The cause was that `renderItem` was `renderMessage` itself, which is a new
+   * function on every render. A changed `renderItem` re-renders every cell
+   * whatever `extraData` says, so memoising extraData — done once already, for
+   * this same symptom — had been achieving nothing.
+   *
+   * Held in a ref rather than wrapped in useCallback with a dependency list.
+   * A list long enough to be correct would change about as often as the render
+   * itself and buy nothing, and one short enough to be stable would hand the
+   * rows a stale closure. This way the identity never changes and the body is
+   * always the current one: a row re-renders when `extraData` or the messages
+   * change, and at no other time — which is the whole point, and why
+   * everything a row reads is now listed in extraData.
+   */
+  const renderMessageRef = useRef(renderMessage);
+  renderMessageRef.current = renderMessage;
+  const renderRow = useCallback(
+    (info: { item: Message }) => renderMessageRef.current(info), []);
+
   function renderMessage({ item: msg }: { item: Message }) {
     renderCount.noteRow();
     msg = decrypted(msg);
@@ -5867,11 +5912,18 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
           maxToRenderPerBatch={10}
           updateCellsBatchingPeriod={50}
           windowSize={9}
-          renderItem={renderMessage}
+          renderItem={renderRow}
           // extraData was an inline ARRAY LITERAL, which is a new object on
           // every render — so FlatList re-rendered every visible row on EVERY
           // state change anywhere in the screen, including opening a sheet.
           // That is what made the One-time menu feel slow to open and close.
+          //
+          // Memoising it was only half the cure, and the other half went
+          // unnoticed for months: `renderItem` was the render function itself,
+          // which is a NEW function on every render, and a changed renderItem
+          // re-renders every cell no matter what extraData says. So the memo
+          // above was doing nothing at all. Measured on two phones: 28 and 24
+          // rows redrawn for every single render of this screen. See renderRow.
           extraData={rowExtraData}
           contentContainerStyle={s.messagesList}
           // Scrolling wipes a native text selection — the OS does that itself,
