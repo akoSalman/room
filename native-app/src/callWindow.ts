@@ -276,3 +276,30 @@ export function showBigPlaceholder(o: {
   if (!o.isVideo || !o.hasRemote) return true;
   return cameraOffFor(o.bigPane, o);
 }
+
+/**
+ * Why a screen share did not start, in words that name the remedy.
+ *
+ * Reported as: share screen does not share anything. Every failure on that
+ * path was swallowed — a refusal, a device that returned nothing, a call that
+ * would not take the track — and from the outside all of them looked the same:
+ * nothing happened. Which one it was is the whole difference between a bug
+ * report and a diagnosis.
+ *
+ * "no-sender" is the one worth naming carefully. The capture worked and the
+ * CALL would not take the picture, which is not something anybody fixes by
+ * pressing the button again.
+ */
+export function shareFailureText(reason: unknown): string {
+  const r = String(reason || '');
+  if (r === 'no-sender') {
+    return 'The call would not accept the screen — nothing is being shared.';
+  }
+  if (r === 'no-video-track') {
+    return 'Your phone returned nothing to share.';
+  }
+  if (/NotSupported|Unsupported/i.test(r)) {
+    return 'This phone cannot share its screen.';
+  }
+  return 'The screen could not be shared.';
+}

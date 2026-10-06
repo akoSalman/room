@@ -9,7 +9,7 @@ import { C } from '../theme';
 import { callManager } from '../callManager';
 import {
   canMinimize, clampToScreen, snapToEdge, defaultPosition, isDrag,
-  videoPanes, canSwapVideos, mirrors,
+  videoPanes, canSwapVideos, mirrors, shareFailureText,
   showBigPlaceholder, cameraOffFor,
 } from '../callWindow';
 
@@ -291,7 +291,16 @@ export default function CallOverlay() {
         )}
         {/* Video: share this screen instead of the camera. The display track
             goes into the sender the camera was using, so the other end sees
-            one video throughout. */}
+            one video throughout.
+
+            A failure says so. Every one of them used to be swallowed, so a
+            share that never started and a share that was working looked
+            exactly alike — which is what "it does not share anything" was. */}
+        {isVideo && !!cm.shareFailed && (
+          <Text style={s.shareError} numberOfLines={2}>
+            {shareFailureText(cm.shareFailed)}
+          </Text>
+        )}
         {isVideo && (
           <View style={s.actionCol}>
             <TouchableOpacity
@@ -316,6 +325,11 @@ export default function CallOverlay() {
 const hit8 = { top: 8, bottom: 8, left: 8, right: 8 };
 
 const s = StyleSheet.create({
+  shareError: {
+    color: '#fca5a5', fontSize: 12, textAlign: 'center',
+    paddingHorizontal: 16, marginBottom: 6,
+  },
+
   minimizeBtn: {
     position: 'absolute', top: 44, left: 14, zIndex: 10,
     width: 40, height: 40, borderRadius: 20,

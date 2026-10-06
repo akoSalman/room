@@ -154,6 +154,44 @@
     return { track: 'camera', enabled: !o.cameraWasOff };
   }
 
+
+  /**
+   * Why a screen share did not start, in words that name the remedy.
+   *
+   * Reported as: share screen does not share anything. Every failure on this
+   * path was swallowed — a browser that cannot capture, a sender that refused
+   * the track, a page not allowed to ask — and all of them looked identical
+   * from the outside: nothing happened. A message that says which it was is
+   * the difference between a bug report and a diagnosis.
+   *
+   * "no-sender" is the one worth naming carefully: the capture worked and the
+   * call would not take the picture, which is not something the user can do
+   * anything about by trying harder.
+   */
+  function shareErrorMessage(err, opts) {
+    opts = opts || {};
+    var name = (err && (err.name || err.message)) || '';
+    if (!opts.secure) {
+      return 'Screen sharing needs a secure (https) connection, and this page '
+        + 'is not on one. Nothing was shared.';
+    }
+    if (name === 'no-sender') {
+      return 'The call would not accept the screen. Nothing is being shared — '
+        + 'try ending the call and starting it again.';
+    }
+    if (name === 'no-video-track') {
+      return 'Your device returned nothing to share. Nothing is being shared.';
+    }
+    if (name === 'NotSupportedError' || name === 'TypeError') {
+      return 'This browser cannot share a screen. On a phone, no browser can — '
+        + 'use a computer, or share from the app.';
+    }
+    if (name === 'NotReadableError') {
+      return 'Something else is already capturing the screen. Nothing was shared.';
+    }
+    return 'The screen could not be shared. Nothing is being shared.';
+  }
+
   root.CallStatus = {
     outgoingStatus: outgoingStatus,
     canMinimize: canMinimize,
@@ -166,6 +204,7 @@
     mirrors: mirrors,
     canFlipCamera: canFlipCamera,
     screenShareRestore: screenShareRestore,
+    shareErrorMessage: shareErrorMessage,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
 

@@ -239,6 +239,85 @@ test('THE MIRROR IS WHY THIS NEEDS SAYING', () => {
     'the mirror is gone — check whether the pane stacking is still needed');
 });
 
+// ── A share that shares nothing must not say it is sharing ─────────────────
+//
+// Reported as: share screen does not show anything to the other side, and
+// actually does not share anything. The defect was in how the attempt was
+// written, not in which browser or phone it ran on: every failure on the path
+// was swallowed. No sender to put the track in, a replaceTrack that rejected,
+// a capture that was refused, a device that returned nothing — all of them
+// ended looking exactly like success, and the panel said "sharing" while the
+// call carried on sending the camera.
+
+test('REPLACING THE TRACK REPORTS WHETHER ANYTHING TOOK IT', () => {
+  // Promise.all with an empty list resolves. That is the bug: no senders at
+  // all was indistinguishable from every sender accepting.
+  assert.ok(/allSettled/.test(CALLS),
+    'a rejected replaceTrack is still swallowed');
+  assert.ok(/return replaced;/.test(CALLS),
+    'useVideoTrack does not say how many senders took the track');
+  assert.ok(!/await Promise\.all\(jobs\)\.catch\(\(\) => \{\}\)/.test(CALLS),
+    'the failures are still thrown away');
+});
+
+test('A SHARE THAT NOTHING TOOK IS UNDONE AND SAID OUT LOUD', () => {
+  const fn = /async function toggleShareScreen\(\)[\s\S]*?\n  \}/.exec(CALLS);
+  assert.ok(fn, 'could not find toggleShareScreen');
+  assert.ok(/if \(!replaced\)/.test(fn[0]), 'a share that replaced nothing still claims success');
+  // …and the camera must go back, or the call is left sending nothing at all.
+  assert.ok(/if \(cam\) await useVideoTrack\(cam\)/.test(fn[0]),
+    'the camera is not restored when the share fails');
+  assert.ok(/alert\(shareFailure/.test(fn[0]), 'the failure is silent');
+});
+
+test('DISMISSING THE PICKER IS NOT AN ERROR', () => {
+  // Changing your mind must not throw an alert. Everything else must.
+  const fn = /async function toggleShareScreen\(\)[\s\S]*?\n  \}/.exec(CALLS);
+  assert.ok(/NotAllowedError/.test(fn[0]) && /AbortError/.test(fn[0]),
+    'dismissing the picker would be reported as a failure');
+});
+
+test('EACH FAILURE NAMES ITS OWN REMEDY', () => {
+  // "It did not work" is the remedy for none of them.
+  const msgs = [
+    C.shareErrorMessage({ name: 'no-sender' }, { secure: true }),
+    C.shareErrorMessage({ name: 'no-video-track' }, { secure: true }),
+    C.shareErrorMessage({ name: 'TypeError' }, { secure: true }),
+    C.shareErrorMessage({ name: 'NotReadableError' }, { secure: true }),
+    C.shareErrorMessage({}, { secure: false }),
+  ];
+  assert.strictEqual(new Set(msgs).size, msgs.length,
+    'two different failures give the same message, so the message says nothing');
+  // no-sender specifically. It is the one where the capture WORKED and the
+  // call refused the picture, so the remedy is about the call and not about
+  // the device or the browser — and it is the case that produced the original
+  // report. A generic "could not be shared" sends somebody to check their
+  // screen-recording permission for a problem that has nothing to do with it.
+  const noSender = C.shareErrorMessage({ name: 'no-sender' }, { secure: true });
+  assert.ok(/call/i.test(noSender),
+    'the one failure that is about the call does not mention the call');
+  assert.ok(/nothing is being shared/i.test(noSender),
+    'it does not say plainly that nothing is going out');
+  // The insecure-page case must win over everything: it is the one cause the
+  // user can actually do something about, and it makes the API absent
+  // entirely, which otherwise reads as "this browser cannot".
+  assert.ok(/https/.test(C.shareErrorMessage({ name: 'TypeError' }, { secure: false })),
+    'a page not allowed to ask is blamed on the browser instead');
+  // A phone browser genuinely cannot do this, and should say where to go.
+  assert.ok(/app|computer/i.test(C.shareErrorMessage({ name: 'TypeError' }, { secure: true })),
+    'a browser that cannot share does not say what would work');
+});
+
+test('THE APP DOES THE SAME, and says so in the overlay', () => {
+  const cm = strip(path.join(ROOT, 'native-app', 'src', 'callManager.ts'));
+  assert.ok(/allSettled/.test(cm), 'the app still swallows a rejected replaceTrack');
+  assert.ok(/if \(!replaced\)/.test(cm), 'the app claims to share when nothing took the track');
+  assert.ok(/shareFailed/.test(cm), 'the app has nowhere to record why it failed');
+  const overlay = strip(path.join(ROOT, 'native-app', 'src', 'components', 'CallOverlay.tsx'));
+  assert.ok(/cm\.shareFailed/.test(overlay), 'the app never shows the failure');
+  assert.ok(/shareFailureText/.test(overlay), 'the failure is shown as a raw error name');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

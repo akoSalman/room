@@ -582,7 +582,15 @@ const Calls = (() => {
     return null;
   }
 
-  /** Replace the outgoing video track everywhere, without renegotiating. */
+  /**
+   * Replace the outgoing video track everywhere, without renegotiating.
+   *
+   * Returns how many senders actually took it, which the caller has to check.
+   * This used to swallow everything: an empty list of senders and a rejected
+   * replaceTrack both ended here looking exactly like success, so the panel
+   * said "sharing" while nothing whatsoever was going out. That is what
+   * "share screen does not share anything" was.
+   */
   async function useVideoTrack(track) {
     const jobs = [];
     pcs.forEach(pc => {
@@ -590,13 +598,16 @@ const Calls = (() => {
         if (sn.track && sn.track.kind === 'video') jobs.push(sn.replaceTrack(track));
       });
     });
-    await Promise.all(jobs).catch(() => {});
+    let replaced = 0;
+    const results = await Promise.allSettled(jobs);
+    results.forEach(r => { if (r.status === 'fulfilled') replaced++; });
     // The local preview shows whatever is actually being sent.
     const old = localStream ? localStream.getVideoTracks()[0] : null;
     if (localStream && old && old !== track) localStream.removeTrack(old);
     if (localStream && track) localStream.addTrack(track);
     const v = $('call-local-video');
     if (v) v.srcObject = localStream;
+    return replaced;
   }
 
   /** Show the flip button only where there is a second camera to flip to. */
@@ -652,22 +663,50 @@ const Calls = (() => {
     return !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
   }
 
+  /** Why the share did not start, in words that name the remedy. */
+  function shareFailure(err) {
+    return window.CallStatus.shareErrorMessage(err, {
+      secure: window.CallMedia.isSecure(),
+    });
+  }
+
   async function toggleShareScreen() {
     if (!canShareScreen() || mode !== 'dm-video') return;
     if (sharedScreen) return stopShareScreen();
     let stream;
     try {
       stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
-    } catch { return; }           // the picker was dismissed; not an error
+    } catch (err) {
+      // Dismissing the picker is a decision, not a failure, and must not throw
+      // an alert at somebody who simply changed their mind. Anything else is a
+      // failure and is said out loud — a silent return here is exactly how
+      // this looked like it was working while doing nothing.
+      if (!(err && (err.name === 'NotAllowedError' || err.name === 'AbortError'))) {
+        alert(shareFailure(err));
+      }
+      return;
+    }
     const track = stream.getVideoTracks()[0];
-    if (!track) return;
+    if (!track) { alert(shareFailure(new Error('no-video-track'))); return; }
     const cam = localStream ? localStream.getVideoTracks()[0] : null;
     cameraBeforeShare = { track: cam, wasOff: !!cam && !cam.enabled };
     sharedScreen = track;
     // Stopped from the browser's own bar, which is where most people will
     // stop it. Without this the call keeps sending a dead track.
     track.onended = () => stopShareScreen();
-    await useVideoTrack(track);
+    const replaced = await useVideoTrack(track);
+    // Nothing took it. Saying "sharing" now would be a lie, and the call would
+    // sit there sending the camera while the panel claimed otherwise.
+    if (!replaced) {
+      sharedScreen = null;
+      cameraBeforeShare = null;
+      track.onended = null;
+      try { track.stop(); } catch {}
+      if (cam) await useVideoTrack(cam);
+      alert(shareFailure(new Error('no-sender')));
+      applyVideoPanes();
+      return;
+    }
     const btn = $('call-share-btn');
     if (btn) { btn.textContent = '🛑'; btn.title = 'Stop sharing'; }
     applyVideoPanes();

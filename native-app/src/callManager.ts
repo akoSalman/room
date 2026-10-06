@@ -38,6 +38,8 @@ class CallManager {
   // Screen sharing: the display track that replaced the camera, and what the
   // camera was doing before it did.
   sharingScreen = false;
+  /** Why the last share attempt failed, for the overlay to say out loud. */
+  shareFailed: string | null = null;
   private screenTrack: any = null;
   private cameraTrack: any = null;
   private cameraWasOff = false;
@@ -248,18 +250,24 @@ class CallManager {
    * to drop, and on these networks that is not a small risk — and the far end
    * would then have to work out which of two videos is which.
    */
-  private async useVideoTrack(track: any) {
+  private async useVideoTrack(track: any): Promise<number> {
     const jobs: Promise<any>[] = [];
     this.pcs.forEach((pc: any) => {
       pc.getSenders().forEach((sn: any) => {
         if (sn.track && sn.track.kind === 'video') jobs.push(sn.replaceTrack(track));
       });
     });
-    await Promise.all(jobs).catch(() => {});
+    // How many senders actually took it, which the caller has to check. This
+    // used to swallow everything: no senders at all, and a replaceTrack that
+    // rejected, both ended here looking exactly like success — so the button
+    // said "sharing" while nothing whatsoever was going out.
+    const results = await Promise.allSettled(jobs);
+    const replaced = results.filter(r => r.status === 'fulfilled').length;
     const old = this.localStream?.getVideoTracks()[0];
     if (this.localStream && old && old !== track) this.localStream.removeTrack(old);
     if (this.localStream && track) this.localStream.addTrack(track);
     this.emit();
+    return replaced;
   }
 
   /**
@@ -279,20 +287,38 @@ class CallManager {
     if (this.sharingScreen) return this.stopScreenShare();
     let stream: any;
     try {
-      stream = await (mediaDevices as any).getDisplayMedia({ video: true });
-    } catch {
-      // Refused at the system sheet, or unavailable. Not an error worth
-      // interrupting a live call for.
+      stream = await (mediaDevices as any).getDisplayMedia();
+    } catch (err: any) {
+      // Refusing at the system sheet is a decision and says nothing. Anything
+      // else is a failure, and a silent return is exactly how this looked like
+      // it was working while doing nothing at all.
+      const name = String(err?.name || err?.message || '');
+      if (!/NotAllowed|Abort|cancel/i.test(name)) this.shareFailed = name || 'failed';
+      this.emit();
       return;
     }
     const track = stream?.getVideoTracks?.()[0];
-    if (!track) return;
+    if (!track) { this.shareFailed = 'no-video-track'; this.emit(); return; }
     this.cameraTrack = this.localStream?.getVideoTracks()[0] || null;
     this.cameraWasOff = this.cameraOff;
     this.screenTrack = track;
     this.sharingScreen = true;
     track.onended = () => { this.stopScreenShare(); };
-    await this.useVideoTrack(track);
+    const replaced = await this.useVideoTrack(track);
+    // Nothing took it. Claiming to share now would be a lie, and the call
+    // would carry on sending the camera while the button said otherwise.
+    if (!replaced) {
+      this.sharingScreen = false;
+      this.screenTrack = null;
+      track.onended = null;
+      try { track.stop(); } catch {}
+      if (this.cameraTrack) await this.useVideoTrack(this.cameraTrack);
+      this.cameraTrack = null;
+      this.shareFailed = 'no-sender';
+      this.emit();
+      return;
+    }
+    this.shareFailed = null;
     // A camera that was off has a picture going out again, and the other end
     // is told so — it has been looking at the "camera off" placeholder.
     if (this.cameraOff && this.peerId != null) {
@@ -620,6 +646,7 @@ class CallManager {
     this.screenTrack = null;
     this.cameraTrack = null;
     this.cameraWasOff = false;
+    this.shareFailed = null;
     this.roomAudioStarted = false;
     this.connectedAt = null;
     this.peerId = null;
