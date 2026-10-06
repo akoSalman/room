@@ -789,6 +789,26 @@ body.kb-open #install-hint { display: none; }
    the panes cannot leave you mirrored in one and not the other. The other
    person is never mirrored — it shows their writing backwards. */
 #call-overlay video.mirrored { transform: scaleX(-1); }
+
+/* ── The corner pane sits ON TOP, always ──────────────────────────────────
+   Reported as: the other person's pane is under yours and not shown.
+
+   It was a regression from the mirror directly above. The corner pane is
+   absolutely positioned and the big one is an ordinary flex item, and a
+   positioned element paints above an unpositioned one — so the corner was on
+   top for free. Adding `transform` to the self-view changed that: a transform
+   makes an element paint in the same step as positioned ones, and the local
+   video comes later in the markup, so it began covering the corner entirely.
+
+   Said explicitly now rather than relying on paint order, which is exactly
+   the kind of accident that broke it. Whichever pane is the small one is
+   above, whichever is big is below, in both arrangements. z-index applies to
+   both without `position` because the panel is a flex container and these are
+   flex items. */
+#call-remote-video,
+#call-overlay.swapped #call-local-video { z-index: 2; }
+#call-local-video,
+#call-overlay.swapped #call-remote-video { z-index: 0; }
 #call-overlay.minimized #call-remote-video,
 #call-overlay.minimized #call-local-video { display: none; }
 #call-overlay.minimized #call-info {

@@ -188,6 +188,57 @@ test('THE APP CAN SHARE ITS SCREEN TOO', () => {
     'Android 14 will refuse the capture and nothing will say why');
 });
 
+// ── Which video is on top ──────────────────────────────────────────────────
+//
+// Reported as: the other person's pane is under yours and not shown. It was a
+// regression from the mirror in this same change — the corner pane is
+// absolutely positioned and the big one is an ordinary flex item, so the
+// corner painted above it for free. Adding a transform to the self-view
+// changed that: a transform makes an element paint in the same step as
+// positioned ones, and the local video comes later in the markup, so it
+// started covering the corner completely.
+
+// Comments stripped first: a rule preceded by an explanation is still a rule,
+// and an earlier version of this helper could not see past one.
+const CSS_CODE = CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+
+/** The z-index a selector is given, or null. Last declaration wins. */
+function zFor(selector) {
+  const re = new RegExp('(^|,|\\}|\\n)\\s*' + selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    + '\\s*(,[^{]*)?\\{([^}]*)\\}', 'g');
+  let m, z = null;
+  while ((m = re.exec(CSS_CODE))) {
+    const hit = /z-index:\s*(-?\d+)/.exec(m[3]);
+    if (hit) z = Number(hit[1]);
+  }
+  return z;
+}
+
+test('THE CORNER PANE IS ABOVE THE BIG ONE, both ways round', () => {
+  // Stated outright rather than left to paint order, which is what broke.
+  const cornerDefault = zFor('#call-remote-video');
+  const bigDefault = zFor('#call-local-video');
+  assert.ok(cornerDefault !== null && bigDefault !== null,
+    'the panes have no stacking order at all, so it depends on paint accidents');
+  assert.ok(cornerDefault > bigDefault,
+    `the other person's pane (${cornerDefault}) is not above yours (${bigDefault})`);
+
+  const cornerSwapped = zFor('#call-overlay.swapped #call-local-video');
+  const bigSwapped = zFor('#call-overlay.swapped #call-remote-video');
+  assert.ok(cornerSwapped !== null && bigSwapped !== null,
+    'swapping the panes leaves their stacking order undeclared');
+  assert.ok(cornerSwapped > bigSwapped,
+    `swapped, the corner (${cornerSwapped}) is not above the big pane (${bigSwapped})`);
+});
+
+test('THE MIRROR IS WHY THIS NEEDS SAYING', () => {
+  // If the transform ever goes away the z-indexes are harmless; while it is
+  // here they are load-bearing. This records the connection so the next person
+  // to tidy one does not quietly undo the other.
+  assert.ok(/video\.mirrored\s*\{[^}]*transform:/.test(CSS),
+    'the mirror is gone — check whether the pane stacking is still needed');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }
