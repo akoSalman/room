@@ -621,9 +621,11 @@
 </div>
 
 <div id="call-overlay" class="hidden">
-  <!-- Collapses the panel to a bar: the call keeps running and the corner of
-       the chat it was covering becomes readable again. -->
-  <button id="call-min-btn" onclick="Calls.toggleMinimize()" title="Minimize call">▾</button>
+  <!-- One button, three sizes: minimized, half and full. It was two states and
+       neither was a size — a fixed 260px box you could not watch a video call
+       in, and a bar. Which size comes next is decided in js/callStatus.js so
+       it can be tested without a browser. -->
+  <button id="call-size-btn" onclick="Calls.cycleSize()" title="Half screen">⤢</button>
   <!-- Either can be the big one: tapping swaps them. See Calls.swapVideos. -->
   <video id="call-remote-video" class="hidden" autoplay playsinline onclick="Calls.swapVideos()"></video>
   <video id="call-local-video" class="hidden" autoplay playsinline muted onclick="Calls.swapVideos()"></video>
@@ -635,6 +637,11 @@
   <div id="call-controls">
     <button id="call-mute-btn" onclick="Calls.toggleMute()" title="Mute">🎙</button>
     <button id="call-cam-btn" class="hidden" onclick="Calls.toggleCam()" title="Camera">🎥</button>
+    <!-- Both hidden until they are known to work: a flip button on a device
+         with one camera, or a share button in a browser that cannot, is a
+         control that teaches people the app is broken. -->
+    <button id="call-flip-btn" class="hidden" onclick="Calls.flipCamera()" title="Switch camera">🔄</button>
+    <button id="call-share-btn" class="hidden" onclick="Calls.toggleShareScreen()" title="Share screen">🖥</button>
     <button id="call-end-btn" onclick="Calls.end()" title="End call">📵</button>
   </div>
 </div>

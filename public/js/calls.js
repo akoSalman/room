@@ -17,6 +17,14 @@ const Calls = (() => {
   // Video call: the user has put their own camera in the big pane.
   let videoSwapped = false;
   let muted = false;
+  // Which way the camera faces, for the mirror. The web has no notion of a
+  // front lens, so it is inferred once when the stream is taken and kept:
+  // only a front camera is mirrored, and asking the track every frame would
+  // be a lot of work for an answer that cannot change without a flip.
+  let frontCamera = true;
+  // The camera track that a screen share replaced, so it can be put back.
+  let sharedScreen = null;
+  let cameraBeforeShare = null;
 
   const $ = (id) => document.getElementById(id);
 
@@ -182,23 +190,34 @@ const Calls = (() => {
   // newest messages are. Collapsing it to a bar leaves the call running and
   // the conversation readable; the choice is remembered, because somebody who
   // wants calls out of the way wants that every time.
-  function minimized() { return localStorage.getItem('callMinimized') === '1'; }
+  function callSize() {
+    const v = localStorage.getItem('callSize');
+    // An older build stored a minimize flag; honour it once rather than
+    // throwing away a preference somebody set.
+    if (!v) return localStorage.getItem('callMinimized') === '1' ? 'minimized' : 'half';
+    return CallStatus.SIZES.indexOf(v) >= 0 ? v : 'half';
+  }
 
   function applyMinimized() {
     const el = $('call-overlay');
     if (!el) return;
     const phase = !mode ? 'idle' : (connectedAt ? 'connected' : 'outgoing');
-    const on = minimized() && CallStatus.canMinimize(phase);
-    el.classList.toggle('minimized', on);
-    const btn = $('call-min-btn');
+    let size = callSize();
+    // A call that has not connected yet cannot be shrunk to a bar — there is
+    // nothing in the bar worth looking at and no way back to the controls.
+    if (size === 'minimized' && !CallStatus.canMinimize(phase)) size = 'half';
+    CallStatus.SIZES.forEach(sz => el.classList.toggle(CallStatus.callSizeClass(sz), sz === size));
+    // Kept so the old stylesheet rule still matches while both exist.
+    el.classList.toggle('minimized', size === 'minimized');
+    const btn = $('call-size-btn');
     if (btn) {
-      btn.textContent = on ? '▴' : '▾';
-      btn.title = on ? 'Expand call' : 'Minimize call';
+      btn.textContent = size === 'full' ? '⤡' : size === 'half' ? '⤢' : '▴';
+      btn.title = CallStatus.sizeButtonTitle(size);
     }
   }
 
-  function toggleMinimize() {
-    localStorage.setItem('callMinimized', minimized() ? '0' : '1');
+  function cycleSize() {
+    localStorage.setItem('callSize', CallStatus.nextCallSize(callSize()));
     applyMinimized();
   }
 
@@ -244,6 +263,10 @@ const Calls = (() => {
       if (!v) return;
       v.classList.toggle('pane-empty', !used[pane]);
       v.title = swappable ? 'Tap to swap the videos' : '';
+      // The mirror follows the STREAM, not the pane. The web had none at all,
+      // so your own face came back the wrong way round while the app showed
+      // it correctly. See CallStatus.mirrors.
+      v.classList.toggle('mirrored', CallStatus.mirrors(pane, frontCamera) && !sharedScreen);
     });
   }
 
@@ -259,8 +282,16 @@ const Calls = (() => {
     $('call-remote-video').classList.toggle('hidden', !video);
     $('call-local-video').classList.toggle('hidden', !video);
     $('call-cam-btn').classList.toggle('hidden', !video);
+    // Each shown only where it does something: a flip button on a device with
+    // one camera, or a share button in a browser without getDisplayMedia, is
+    // a control that teaches people the app is broken.
+    $('call-share-btn').classList.toggle('hidden', !(video && canShareScreen()));
+    const flip = $('call-flip-btn');
+    if (flip) flip.classList.add('hidden');
+    if (video) refreshFlipButton();
     muted = false;
     $('call-mute-btn').textContent = '🎙';
+    $('call-share-btn').textContent = '🖥';
     applyMinimized();
     applyVideoPanes();
   }
@@ -311,6 +342,12 @@ const Calls = (() => {
     if (ringAudio) { try { ringAudio.pause(); } catch {} ringAudio = null; }
   }
   let connectedAt = null, timerInterval = null;
+  // Which end of the call this is, and who it is with — for the log entry.
+  // Held separately from `mode` and `dmPeer` because teardown clears those,
+  // and because a declined call never sets `mode` at all.
+  let outgoingCall = false;
+  let callPeerId = null;
+  let callKind = 'voice';
   function markConnected() {
     stopRing();
     out = Object.assign({}, out, { connected: true });
@@ -332,7 +369,39 @@ const Calls = (() => {
     }
   }
 
+  // ── Recording the call in the chat ────────────────────────────────────────
+  //
+  // The web never did this at all. The app reports every finished call and the
+  // server writes one entry into the conversation; calling from a browser left
+  // no trace of it anywhere, so a call made from a laptop simply never
+  // happened as far as the chat was concerned.
+  //
+  // Mirrors logCall in native-app/src/callManager.ts, including the once-only
+  // guard: both ends report, and the server keeps the first. Reported BEFORE
+  // teardown clears everything it needs to describe the call.
+  let logged = false;
+  function logCall(outcome, peerId) {
+    // The call's OWN peer, not dmPeer: dmPeer is whichever conversation
+    // happens to be open, and on an incoming call that is often not the person
+    // calling. Logging against it would file the call under the wrong chat.
+    const peer = peerId != null ? peerId : callPeerId;
+    if (logged || peer == null) return;
+    logged = true;
+    const duration = connectedAt ? Math.round((Date.now() - connectedAt) / 1000) : 0;
+    try {
+      sock.emit('call_log', {
+        peerId: peer,
+        kind: callKind === 'video' ? 'video' : 'voice',
+        outcome, duration, outgoing: !!outgoingCall,
+      });
+    } catch {}
+  }
+
   function teardown() {
+    // A DM call that is ending: say what became of it. A call that connected
+    // is 'completed' however it ended; one that never did was missed. Room
+    // voice chat is not a call and is not logged.
+    if (mode && mode.indexOf('dm') === 0) logCall(connectedAt ? 'completed' : 'missed');
     pcs.forEach(pc => pc.close());
     pcs.clear();
     localStream?.getTracks().forEach(t => t.stop());
@@ -348,6 +417,13 @@ const Calls = (() => {
     incoming = null;
     out = {};
     videoSwapped = false;
+    logged = false;
+    outgoingCall = false;
+    callPeerId = null;
+    callKind = 'voice';
+    frontCamera = true;
+    sharedScreen = null;
+    cameraBeforeShare = null;
     stopRing();
     connectedAt = null;
     clearInterval(timerInterval);
@@ -368,6 +444,10 @@ const Calls = (() => {
     } catch (err) { ice.catch(() => {}); return mediaFailed(err); }
     await ice;
     mode = kind === 'video' ? 'dm-video' : 'dm-voice';
+    callPeerId = dmPeer.userId;
+    callKind = kind === 'video' ? 'video' : 'voice';
+    outgoingCall = true;
+    frontCamera = true;
     showOverlay((kind === 'video' ? '🎥 ' : '📞 ') + dmPeer.username, kind === 'video');
     out = {};
     setStatus(CallStatus.outgoingStatus(out));
@@ -422,6 +502,10 @@ const Calls = (() => {
     }
     await ice;
     mode = offer.kind === 'video' ? 'dm-video' : 'dm-voice';
+    callPeerId = offer.fromUserId;
+    callKind = offer.kind === 'video' ? 'video' : 'voice';
+    outgoingCall = false;
+    frontCamera = true;
     showOverlay((offer.kind === 'video' ? '🎥 ' : '📞 ') + offer.fromUsername, offer.kind === 'video');
     setStatus('Connecting…');
     if (offer.kind === 'video') {
@@ -437,7 +521,16 @@ const Calls = (() => {
   }
 
   function decline() {
-    if (incoming) sock.emit('call_end', { toUserId: incoming.fromUserId });
+    if (incoming) {
+      // Declining never reaches teardown, because `mode` was never set — so
+      // without this a refused call left no entry either.
+      callKind = incoming.kind === 'video' ? 'video' : 'voice';
+      outgoingCall = false;
+      logCall('declined', incoming.fromUserId);
+      sock.emit('call_end', { toUserId: incoming.fromUserId });
+      logged = false;          // the next call is a new call
+      callKind = 'voice';
+    }
     incoming = null;
     stopRing();
     $('incoming-call').classList.add('hidden');
@@ -472,6 +565,139 @@ const Calls = (() => {
     $('call-mute-btn').textContent = muted ? '🔇' : '🎙';
   }
 
+  // ── Which camera, and what is in the sender ───────────────────────────────
+
+  /** The one sender carrying video, if there is one. */
+  function videoSender() {
+    for (const pc of pcs.values()) {
+      const s = pc.getSenders().find(x => x.track && x.track.kind === 'video');
+      if (s) return s;
+    }
+    // Before any track has been added, fall back to the transceiver's sender
+    // so a flip taken very early still lands somewhere.
+    for (const pc of pcs.values()) {
+      const s = pc.getSenders().find(x => !x.track);
+      if (s) return s;
+    }
+    return null;
+  }
+
+  /** Replace the outgoing video track everywhere, without renegotiating. */
+  async function useVideoTrack(track) {
+    const jobs = [];
+    pcs.forEach(pc => {
+      pc.getSenders().forEach(sn => {
+        if (sn.track && sn.track.kind === 'video') jobs.push(sn.replaceTrack(track));
+      });
+    });
+    await Promise.all(jobs).catch(() => {});
+    // The local preview shows whatever is actually being sent.
+    const old = localStream ? localStream.getVideoTracks()[0] : null;
+    if (localStream && old && old !== track) localStream.removeTrack(old);
+    if (localStream && track) localStream.addTrack(track);
+    const v = $('call-local-video');
+    if (v) v.srcObject = localStream;
+  }
+
+  /** Show the flip button only where there is a second camera to flip to. */
+  async function refreshFlipButton() {
+    const btn = $('call-flip-btn');
+    if (!btn) return;
+    let count = 0;
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      count = devices.filter(d => d.kind === 'videoinput').length;
+    } catch { count = 0; }
+    btn.classList.toggle('hidden', !(mode === 'dm-video' && CallStatus.canFlipCamera(count)));
+  }
+
+  /**
+   * Swap between the front and back camera.
+   *
+   * The track is replaced inside the existing sender rather than renegotiated:
+   * a fresh offer mid-call is a chance for the call to drop, and on these
+   * networks that is not a small risk.
+   */
+  async function flipCamera() {
+    if (mode !== 'dm-video' || sharedScreen) return;
+    const want = frontCamera ? 'environment' : 'user';
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: want } }, audio: false,
+      });
+    } catch { return; }
+    const track = stream.getVideoTracks()[0];
+    if (!track) return;
+    const wasOff = localStream && !localStream.getVideoTracks().some(t => t.enabled);
+    // A camera that was off stays off. Flipping is not a request to be seen.
+    track.enabled = !wasOff;
+    const old = localStream ? localStream.getVideoTracks()[0] : null;
+    await useVideoTrack(track);
+    if (old) old.stop();
+    frontCamera = !frontCamera;
+    applyVideoPanes();
+  }
+
+  // ── Sharing the screen ────────────────────────────────────────────────────
+  //
+  // Asked for on both the app and the web. On the web it is one browser call;
+  // the track then goes into the SAME sender the camera was using, so the far
+  // end needs no renegotiation and no way of telling which video is which.
+  //
+  // The browser's own "stop sharing" bar is the one most people will use, so
+  // the track's `ended` event has to put the camera back too — not just our
+  // button.
+  function canShareScreen() {
+    return !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+  }
+
+  async function toggleShareScreen() {
+    if (!canShareScreen() || mode !== 'dm-video') return;
+    if (sharedScreen) return stopShareScreen();
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+    } catch { return; }           // the picker was dismissed; not an error
+    const track = stream.getVideoTracks()[0];
+    if (!track) return;
+    const cam = localStream ? localStream.getVideoTracks()[0] : null;
+    cameraBeforeShare = { track: cam, wasOff: !!cam && !cam.enabled };
+    sharedScreen = track;
+    // Stopped from the browser's own bar, which is where most people will
+    // stop it. Without this the call keeps sending a dead track.
+    track.onended = () => stopShareScreen();
+    await useVideoTrack(track);
+    const btn = $('call-share-btn');
+    if (btn) { btn.textContent = '🛑'; btn.title = 'Stop sharing'; }
+    applyVideoPanes();
+  }
+
+  async function stopShareScreen() {
+    if (!sharedScreen) return;
+    const screen = sharedScreen;
+    sharedScreen = null;
+    screen.onended = null;
+    const back = cameraBeforeShare || {};
+    cameraBeforeShare = null;
+    let cam = back.track;
+    // The camera track may have been stopped by the browser while sharing.
+    if (!cam || cam.readyState === 'ended') {
+      try {
+        const fresh = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        cam = fresh.getVideoTracks()[0];
+      } catch { cam = null; }
+    }
+    // A camera that was off before the share goes back to being off, rather
+    // than surprising somebody with their own face. See screenShareRestore.
+    if (cam) cam.enabled = CallStatus.screenShareRestore({ cameraWasOff: back.wasOff }).enabled;
+    if (cam) await useVideoTrack(cam);
+    try { screen.stop(); } catch {}
+    const btn = $('call-share-btn');
+    if (btn) { btn.textContent = '🖥'; btn.title = 'Share screen'; }
+    applyVideoPanes();
+  }
+
   function toggleCam() {
     if (!localStream) return;
     const on = localStream.getVideoTracks().some(t => t.enabled);
@@ -492,6 +718,11 @@ const Calls = (() => {
 
   return {
     bindSocket, setDMPeer, startDM, toggleRoomVoice, accept, decline, end,
-    toggleMute, toggleCam, toggleMinimize, swapVideos, inCall,
+    toggleMute, toggleCam, swapVideos, inCall,
+    cycleSize, flipCamera, toggleShareScreen,
+    // Kept so an onclick in a cached page from an older build still works
+    // rather than throwing: the stylesheet and the markup update together,
+    // but a browser may hold the old HTML.
+    toggleMinimize: cycleSize,
   };
 })();

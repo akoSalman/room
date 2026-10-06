@@ -691,6 +691,11 @@ body.kb-open #install-hint { display: none; }
 #incoming-call button { border: none; border-radius: 10px; padding: 8px 14px; cursor: pointer; font-weight: 700; }
 #incoming-call .call-accept { background: #22c55e; color: #fff; }
 #incoming-call .call-decline { background: #ef4444; color: #fff; }
+/* ── Three sizes, asked for as "full screen and half screen and minimized" ──
+   The panel was one fixed 260px box in the corner, which is not a size you
+   can watch a video call in, and there was no way to make it bigger. The
+   geometry lives here and the cycling lives in js/callStatus.js, so which
+   size comes next is testable without a browser. */
 #call-overlay {
   position: fixed; inset: auto 14px 90px auto; z-index: 190; width: 260px;
   background: var(--sidebar-bg); border: 1px solid rgba(255,255,255,0.15);
@@ -738,10 +743,52 @@ body.kb-open #install-hint { display: none; }
 }
 #call-min-btn:hover { opacity: 1; }
 
+/* HALF: a tall panel beside the conversation — wide enough to see a face,
+   narrow enough to keep reading. The default, because it is the only one of
+   the three that serves both things a video call is usually for. */
+#call-overlay.size-half { width: min(420px, 46vw); }
+#call-overlay.size-half #call-local-video,
+#call-overlay.size-half.swapped #call-remote-video { max-height: 46vh; }
+
+/* FULL: the whole window. Not a Fullscreen API call — that is a per-element
+   mode the browser can refuse, exits on Escape without telling the page, and
+   would take the chat with it. This is the same panel, sized to the viewport,
+   so every control stays where it was and nothing can drop out from under
+   the user mid-call. */
+#call-overlay.size-full {
+  inset: 0; width: auto; border-radius: 0; border: none;
+  padding: 18px; gap: 14px; justify-content: center;
+}
+#call-overlay.size-full #call-local-video,
+#call-overlay.size-full.swapped #call-remote-video {
+  max-height: calc(100vh - 190px); object-fit: contain; background: #000;
+}
+#call-overlay.size-full #call-remote-video,
+#call-overlay.size-full.swapped #call-local-video {
+  width: 180px; top: 24px; right: 24px;
+}
+
 /* Minimized: one row — who, how long, mute, hang up. Everything that only
    makes sense at full size is out of the flow rather than merely invisible,
    so the bar is the height of its contents. */
-#call-overlay.minimized { width: 210px; padding: 8px 10px 8px 26px; gap: 6px; }
+#call-overlay.minimized,
+#call-overlay.size-minimized { width: 210px; padding: 8px 10px 8px 26px; gap: 6px; }
+#call-overlay.size-minimized #call-remote-video,
+#call-overlay.size-minimized #call-local-video { display: none; }
+#call-overlay.size-minimized #call-info {
+  display: flex; align-items: baseline; gap: 8px; text-align: left; min-width: 0;
+}
+#call-overlay.size-minimized #call-title {
+  font-size: .85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#call-overlay.size-minimized #call-status { margin-top: 0; white-space: nowrap; }
+#call-overlay.size-minimized #call-controls { gap: 10px; }
+
+/* Your own face, the right way round. Follows the STREAM, not the pane: the
+   class goes on whichever element is showing the local camera, so swapping
+   the panes cannot leave you mirrored in one and not the other. The other
+   person is never mirrored — it shows their writing backwards. */
+#call-overlay video.mirrored { transform: scaleX(-1); }
 #call-overlay.minimized #call-remote-video,
 #call-overlay.minimized #call-local-video { display: none; }
 #call-overlay.minimized #call-info {

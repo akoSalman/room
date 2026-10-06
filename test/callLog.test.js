@@ -93,6 +93,51 @@ test('…and can still be long-pressed, like any other message', () => {
     'a call log cannot be deleted, because nothing opens its menu');
 });
 
+// ── The web had no call log at all ─────────────────────────────────────────
+
+const CALLS = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'calls.js'), 'utf8')
+  .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+
+test('THE WEB REPORTS ITS CALLS, which it never used to', () => {
+  // Calling from a browser left no trace anywhere: the app reported every
+  // finished call and the web reported none, so a call made from a laptop
+  // never happened as far as the conversation was concerned.
+  assert.ok(/sock\.emit\('call_log'/.test(CALLS), 'the web still never reports a call');
+  for (const outcome of ['completed', 'missed', 'declined']) {
+    assert.ok(new RegExp("'" + outcome + "'").test(CALLS), `no call ever reports ${outcome}`);
+  }
+});
+
+test('IT LOGS AGAINST THE CALL\'S OWN PEER, not whichever chat is open', () => {
+  // dmPeer is the conversation on screen. On an incoming call that is often
+  // not the person calling, and logging against it files the call under the
+  // wrong chat entirely.
+  assert.ok(/callPeerId/.test(CALLS), 'the call does not remember who it is with');
+  assert.ok(!/peerId: dmPeer\.userId/.test(CALLS),
+    'the log still uses whichever chat happens to be open');
+});
+
+test('A DECLINED CALL IS LOGGED, even though it never starts', () => {
+  // Declining never reaches teardown, because `mode` is never set -- so a
+  // refused call would leave no entry while every other outcome did.
+  const fn = /function decline\(\) \{([\s\S]*?)\n  \}/.exec(CALLS);
+  assert.ok(fn, 'could not find decline()');
+  assert.ok(/logCall\('declined'/.test(fn[1]), 'a refused call is never recorded');
+});
+
+test('ROOM VOICE CHAT IS NOT A CALL and is not logged', () => {
+  // It has no single peer to log against, and it is not a thing that belongs
+  // in a conversation's history.
+  assert.ok(/mode\.indexOf\('dm'\) === 0/.test(CALLS) || /mode\.startsWith\('dm'\)/.test(CALLS),
+    'room voice chat would be written into a chat as a call');
+});
+
+test('ONE CALL IS STILL ONE ENTRY from the web too', () => {
+  // Both ends report and the server keeps the first; the web must also not
+  // report the same call twice itself.
+  assert.ok(/if \(logged \|\|/.test(CALLS), 'the web can report the same call more than once');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

@@ -40,6 +40,7 @@
         "android.permission.MANAGE_OWN_CALLS",
         "android.permission.FOREGROUND_SERVICE_MICROPHONE",
         "android.permission.FOREGROUND_SERVICE_CAMERA",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION",
         "android.permission.WAKE_LOCK",
         "android.permission.DISABLE_KEYGUARD",
         "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"

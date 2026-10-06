@@ -279,13 +279,27 @@ export default function CallOverlay() {
             <Text style={s.actionLabel}>Camera</Text>
           </View>
         )}
-        {/* Video: flip front/back camera */}
-        {isVideo && (
+        {/* Video: flip front/back camera. Not while the screen is being
+            shared — there is no camera in the call to flip. */}
+        {isVideo && !cm.sharingScreen && (
           <View style={s.actionCol}>
             <TouchableOpacity style={[s.roundBtn, s.ctrlBtn]} onPress={() => cm.switchCamera()}>
               <Ionicons name="camera-reverse" size={26} color="#fff" />
             </TouchableOpacity>
             <Text style={s.actionLabel}>Flip</Text>
+          </View>
+        )}
+        {/* Video: share this screen instead of the camera. The display track
+            goes into the sender the camera was using, so the other end sees
+            one video throughout. */}
+        {isVideo && (
+          <View style={s.actionCol}>
+            <TouchableOpacity
+              style={[s.roundBtn, s.ctrlBtn, cm.sharingScreen && s.ctrlActive]}
+              onPress={() => cm.toggleScreenShare()}>
+              <Ionicons name={cm.sharingScreen ? 'stop-circle' : 'phone-portrait'} size={26} color="#fff" />
+            </TouchableOpacity>
+            <Text style={s.actionLabel}>{cm.sharingScreen ? 'Stop' : 'Share'}</Text>
           </View>
         )}
         <View style={s.actionCol}>

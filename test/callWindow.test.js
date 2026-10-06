@@ -371,13 +371,22 @@ test('"End call" in the shade actually ends the call', () => {
 });
 
 test('the web can collapse its call panel too', () => {
+  // Collapsing is now one of three sizes rather than a toggle of its own —
+  // the panel does minimized, half and full, and one button cycles them. What
+  // this test is actually about is that the capability still exists and still
+  // goes through the shared rule, so it asks for that rather than for one
+  // particular function name.
   const calls = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'calls.js'), 'utf8');
-  assert.ok(calls.includes('toggleMinimize'), 'the web call panel cannot be minimized');
-  assert.ok(/toggleMinimize\s*\}/.test(calls) || /toggleMinimize,/.test(calls),
-    'toggleMinimize is not exported, so the button cannot call it');
+  assert.ok(/cycleSize/.test(calls), 'the web call panel cannot be resized at all');
+  // Under its OWN name. `toggleMinimize: cycleSize` is kept as an alias for
+  // cached pages from an older build, and it satisfied a looser match here —
+  // so this requires the key itself, which is what the button calls.
+  assert.ok(/[{,]\s*cycleSize\s*[,}]/.test(calls),
+    'the size control is not exported, so the button cannot call it');
   assert.ok(calls.includes('CallStatus.canMinimize'), 'the web does not use the shared rule');
+  assert.ok(/'minimized'/.test(calls), 'minimizing is no longer one of the sizes');
   const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
-  assert.ok(html.includes('Calls.toggleMinimize()'), 'there is no button to collapse the panel');
+  assert.ok(/Calls\.cycleSize\(\)/.test(html), 'there is no button to resize the panel');
 });
 
 test('the swap is wired up on the app, and kept where it survives a re-render', () => {

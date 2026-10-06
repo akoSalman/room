@@ -35,6 +35,12 @@ class CallManager {
   remoteCameraOff = false;
   speakerOn = false;    // voice calls: earpiece by default, toggle to speaker
   frontCamera = true;   // video calls: front/back camera
+  // Screen sharing: the display track that replaced the camera, and what the
+  // camera was doing before it did.
+  sharingScreen = false;
+  private screenTrack: any = null;
+  private cameraTrack: any = null;
+  private cameraWasOff = false;
   /** Shrunk to a bubble, so the chat underneath can be used. */
   minimized = false;
   /** Video call: the user has put their own camera in the big pane. */
@@ -233,6 +239,95 @@ class CallManager {
       this.frontCamera = !this.frontCamera;
       this.emit();
     } catch {}
+  }
+
+  /**
+   * Put a different video track into the senders that already exist.
+   *
+   * Nothing is renegotiated. A fresh offer mid-call is a chance for the call
+   * to drop, and on these networks that is not a small risk — and the far end
+   * would then have to work out which of two videos is which.
+   */
+  private async useVideoTrack(track: any) {
+    const jobs: Promise<any>[] = [];
+    this.pcs.forEach((pc: any) => {
+      pc.getSenders().forEach((sn: any) => {
+        if (sn.track && sn.track.kind === 'video') jobs.push(sn.replaceTrack(track));
+      });
+    });
+    await Promise.all(jobs).catch(() => {});
+    const old = this.localStream?.getVideoTracks()[0];
+    if (this.localStream && old && old !== track) this.localStream.removeTrack(old);
+    if (this.localStream && track) this.localStream.addTrack(track);
+    this.emit();
+  }
+
+  /**
+   * Share this phone's screen instead of its camera.
+   *
+   * Asked for on both the app and the web, and done the same way on each: the
+   * display track goes into the SAME sender the camera was using, so the far
+   * end sees one video throughout and needs to be told nothing.
+   *
+   * Android shows its own permission sheet and its own recording indicator,
+   * and the user can stop it from the system bar — so the track's end has to
+   * put the camera back as well as our own button, or the call carries on
+   * sending a dead track.
+   */
+  async toggleScreenShare() {
+    if (this.mode !== 'dm-video') return;
+    if (this.sharingScreen) return this.stopScreenShare();
+    let stream: any;
+    try {
+      stream = await (mediaDevices as any).getDisplayMedia({ video: true });
+    } catch {
+      // Refused at the system sheet, or unavailable. Not an error worth
+      // interrupting a live call for.
+      return;
+    }
+    const track = stream?.getVideoTracks?.()[0];
+    if (!track) return;
+    this.cameraTrack = this.localStream?.getVideoTracks()[0] || null;
+    this.cameraWasOff = this.cameraOff;
+    this.screenTrack = track;
+    this.sharingScreen = true;
+    track.onended = () => { this.stopScreenShare(); };
+    await this.useVideoTrack(track);
+    // A camera that was off has a picture going out again, and the other end
+    // is told so — it has been looking at the "camera off" placeholder.
+    if (this.cameraOff && this.peerId != null) {
+      this.cameraOff = false;
+      this.sock?.emit('call_camera', { toUserId: this.peerId, off: false });
+    }
+    this.emit();
+  }
+
+  async stopScreenShare() {
+    if (!this.sharingScreen) return;
+    const screen = this.screenTrack;
+    this.screenTrack = null;
+    this.sharingScreen = false;
+    if (screen) screen.onended = null;
+    let cam = this.cameraTrack;
+    this.cameraTrack = null;
+    if (!cam || cam.readyState === 'ended') {
+      try {
+        const fresh: any = await (mediaDevices as any).getUserMedia({
+          video: { facingMode: this.frontCamera ? 'user' : 'environment' }, audio: false,
+        });
+        cam = fresh?.getVideoTracks?.()[0] || null;
+      } catch { cam = null; }
+    }
+    // A camera that was off before the share goes back to being off, rather
+    // than surprising somebody with their own face.
+    if (cam) cam.enabled = !this.cameraWasOff;
+    if (cam) await this.useVideoTrack(cam);
+    if (this.cameraWasOff !== this.cameraOff && this.peerId != null) {
+      this.cameraOff = this.cameraWasOff;
+      this.sock?.emit('call_camera', { toUserId: this.peerId, off: this.cameraOff });
+    }
+    try { screen?.stop(); } catch {}
+    this.emit();
   }
 
   // Record the finished call in the DM's chat history (server inserts a
@@ -521,6 +616,10 @@ class CallManager {
     Audio.setAudioModeAsync({ playThroughEarpieceAndroid: false, staysActiveInBackground: true })
       .catch(() => {});
     this.frontCamera = true;
+    this.sharingScreen = false;
+    this.screenTrack = null;
+    this.cameraTrack = null;
+    this.cameraWasOff = false;
     this.roomAudioStarted = false;
     this.connectedAt = null;
     this.peerId = null;
