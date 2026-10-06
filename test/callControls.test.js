@@ -318,6 +318,55 @@ test('THE APP DOES THE SAME, and says so in the overlay', () => {
   assert.ok(/shareFailureText/.test(overlay), 'the failure is shown as a raw error name');
 });
 
+test('THE APP DOES NOT TRUST replaceTrack\'S PROMISE', () => {
+  // Established by reading the library, not guessed. Its replaceTrack catches
+  // the native error and returns, so the promise RESOLVES having done nothing:
+  //
+  //     try { await WebRTCModule.senderReplaceTrack(...); }
+  //     catch (e) { return; }
+  //     this._track = track;      // only reached on success
+  //
+  // Counting resolved promises therefore counts failures as successes — which
+  // is what I shipped. The sender's own track is the only honest test.
+  const cm = strip(path.join(ROOT, 'native-app', 'src', 'callManager.ts'));
+  assert.ok(/sn\.track\.id === track\.id/.test(cm),
+    'the app still decides success from the promise, which this library always resolves');
+  assert.ok(!/results\.filter\(r => r\.status === 'fulfilled'\)\.length/.test(cm),
+    'the fulfilled-count check is still there');
+});
+
+test('WHAT THE SHARE DID IS REPORTED, not asked about', () => {
+  // Three numbers that separate the remaining possibilities: the capture never
+  // started, it started but no sender took the track, or the track went in and
+  // the far end froze anyway. Guessing between those has already cost rounds.
+  const cm = strip(path.join(ROOT, 'native-app', 'src', 'callManager.ts'));
+  for (const f of ['shareCaptured', 'shareSenders', 'shareSwitched']) {
+    assert.ok(new RegExp('\\b' + f + '\\b').test(cm), `${f} is never recorded`);
+  }
+  const app = strip(path.join(ROOT, 'native-app', 'App.tsx'));
+  assert.ok(/shareCap:/.test(app) && /shareSend:/.test(app) && /shareSwap:/.test(app),
+    'the share outcome never leaves the phone');
+  const server = strip(path.join(ROOT, 'server.js'));
+  assert.ok(/shareSwap=/.test(server), 'the server receives it and does not log it');
+});
+
+test('THE SHARE LOG LINE STILL CARRIES NO NAME AND NO CONTENT', () => {
+  // It goes into a log that is read into a repository that has been public.
+  const server = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const line = /\[device\] user=\$\{socket\.user\.id\}[\s\S]{0,1800}?;\n/.exec(server);
+  assert.ok(line, 'could not find the device log line');
+  assert.ok(/shareSwap=/.test(line[0]), 'the share numbers are not on that line');
+  assert.ok(!/username/.test(line[0]), 'the device log line now names the user');
+});
+
+test('THE DISPLAY STREAM IS HELD, not just its track', () => {
+  // The capturer belongs to the stream. A stream this side forgets about is
+  // one nothing is keeping alive.
+  const cm = strip(path.join(ROOT, 'native-app', 'src', 'callManager.ts'));
+  assert.ok(/this\.screenStream = stream/.test(cm), 'only the track is kept');
+  assert.ok(/screenStream\?\.release\?\.\(\)/.test(cm), 'the stream is never released');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

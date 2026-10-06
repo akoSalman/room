@@ -40,7 +40,16 @@ class CallManager {
   sharingScreen = false;
   /** Why the last share attempt failed, for the overlay to say out loud. */
   shareFailed: string | null = null;
+  // What happened the last time a video track was swapped, reported on the
+  // health event so it can be read from the server log instead of guessed at.
+  // Counts only: how many senders were found, and how many were actually
+  // holding the new track afterwards.
+  shareSenders = 0;
+  shareSwitched = 0;
+  /** Did the capture itself start, whatever the senders then did with it? */
+  shareCaptured = false;
   private screenTrack: any = null;
+  private screenStream: any = null;
   private cameraTrack: any = null;
   private cameraWasOff = false;
   /** Shrunk to a bubble, so the chat underneath can be used. */
@@ -252,17 +261,35 @@ class CallManager {
    */
   private async useVideoTrack(track: any): Promise<number> {
     const jobs: Promise<any>[] = [];
+    let senders = 0;
     this.pcs.forEach((pc: any) => {
       pc.getSenders().forEach((sn: any) => {
-        if (sn.track && sn.track.kind === 'video') jobs.push(sn.replaceTrack(track));
+        if (sn.track && sn.track.kind === 'video') { senders++; jobs.push(sn.replaceTrack(track)); }
       });
     });
-    // How many senders actually took it, which the caller has to check. This
-    // used to swallow everything: no senders at all, and a replaceTrack that
-    // rejected, both ended here looking exactly like success — so the button
-    // said "sharing" while nothing whatsoever was going out.
-    const results = await Promise.allSettled(jobs);
-    const replaced = results.filter(r => r.status === 'fulfilled').length;
+    // Counting resolved promises is NOT good enough here, and I shipped that
+    // once. react-native-webrtc's replaceTrack swallows the native error and
+    // resolves anyway:
+    //
+    //     async replaceTrack(track) {
+    //       try { await WebRTCModule.senderReplaceTrack(...); }
+    //       catch (e) { return; }        // <- resolves, having done nothing
+    //       this._track = track;         // <- only on success
+    //     }
+    //
+    // So a failure is indistinguishable from a success by the promise, and the
+    // only honest test on this platform is whether the sender is actually
+    // holding the new track afterwards. That is what the last line sets, and
+    // it is the one thing the failure path does not touch.
+    await Promise.allSettled(jobs);
+    let replaced = 0;
+    this.pcs.forEach((pc: any) => {
+      pc.getSenders().forEach((sn: any) => {
+        if (sn.track && track && sn.track.id === track.id) replaced++;
+      });
+    });
+    this.shareSenders = senders;
+    this.shareSwitched = replaced;
     const old = this.localStream?.getVideoTracks()[0];
     if (this.localStream && old && old !== track) this.localStream.removeTrack(old);
     if (this.localStream && track) this.localStream.addTrack(track);
@@ -299,6 +326,10 @@ class CallManager {
     }
     const track = stream?.getVideoTracks?.()[0];
     if (!track) { this.shareFailed = 'no-video-track'; this.emit(); return; }
+    this.shareCaptured = true;
+    // Held, not just the track. A MediaStream this side forgets about is one
+    // nothing is keeping alive, and the capturer belongs to it.
+    this.screenStream = stream;
     this.cameraTrack = this.localStream?.getVideoTracks()[0] || null;
     this.cameraWasOff = this.cameraOff;
     this.screenTrack = track;
@@ -353,6 +384,9 @@ class CallManager {
       this.sock?.emit('call_camera', { toUserId: this.peerId, off: this.cameraOff });
     }
     try { screen?.stop(); } catch {}
+    try { this.screenStream?.release?.(); } catch {}
+    this.screenStream = null;
+    this.shareCaptured = false;
     this.emit();
   }
 

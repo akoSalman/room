@@ -433,6 +433,13 @@ export default function App() {
           // reaction slowdown — see src/renderCount.ts.
           renders: renderCount.snapshot().screens,
           rows: renderCount.snapshot().rows,
+          // What the last screen share actually did. Three numbers that split
+          // the possibilities: capture refused, capture fine but no sender
+          // took the track, or the track went in and the far end still froze.
+          // Reported because guessing between those has already cost rounds.
+          shareCap: callManager.shareCaptured ? 1 : 0,
+          shareSend: callManager.shareSenders,
+          shareSwap: callManager.shareSwitched,
           skipReason: d.lastSkipReason,
           lastError: d.lastSocketError ? String(d.lastSocketError).slice(0, 80) : null,
         })).catch(() => {});

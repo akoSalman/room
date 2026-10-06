@@ -3323,6 +3323,13 @@ io.on('connection', (socket) => {
       // slowdown: the RATIO says whether the screen renders too often or
       // each render costs too much. Counts only, like everything else here.
       + ` renders=${n(h && h.renders)} rows=${n(h && h.rows)}`
+      // What the last screen share did, as three numbers: did the capture
+      // start, how many senders were carrying video, and how many ended up
+      // holding the screen track. 1/1/1 with a frozen picture at the far end
+      // means the track went in and the encoder is the problem; 1/1/0 means
+      // replaceTrack silently did nothing, which this library allows.
+      + ` shareCap=${n(h && h.shareCap)} shareSend=${n(h && h.shareSend)}`
+      + ` shareSwap=${n(h && h.shareSwap)}`
       + (h && h.skipReason ? ` why=${word(h.skipReason)}` : '')
       + ` failed=${n(h && h.failed)}`
       + (h && h.lastError ? ` err="${String(h.lastError).replace(/["\n]/g, ' ').slice(0, 80)}"` : ''));
