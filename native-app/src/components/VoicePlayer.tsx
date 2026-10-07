@@ -46,10 +46,28 @@ export default function VoicePlayer({ url, peaks: rawPeaks, mine, msgId, roomId,
   const duration = isCurrent ? audioManager.duration : 0;
   const speedIdx = Math.max(0, SPEEDS.indexOf(audioManager.rate));
 
+  // Everything the gesture reads at touch time lives in a ref: the responder
+  // is built once and its handlers keep the first render's values otherwise.
+  const selectModeRef = useRef(false);
+  selectModeRef.current = !!selectMode;
+  const isCurrentRef = useRef(false);
+  isCurrentRef.current = isCurrent;
+
   // Drag across the waveform to scrub through the voice message.
   const waveWidth = useRef(0);
+  /**
+   * Reads ONLY refs, because the PanResponder below is built once and keeps
+   * the first render's copy of this function for ever.
+   *
+   * It used to test `isCurrent`, the value — which on that first render is
+   * false, because nothing is playing when a bubble first appears. So the
+   * guard was false for the life of the component and every scrub returned
+   * immediately. The gate that decides whether to CLAIM the touch already
+   * read a ref and was right, so the waveform took the drag and then did
+   * nothing with it: the seek bar looked dead rather than inert.
+   */
   const seekAtX = (x: number) => {
-    if (!isCurrent || !waveWidth.current) return;
+    if (!isCurrentRef.current || !waveWidth.current) return;
     audioManager.seek(seekFraction(x, waveWidth.current));
   };
   // The waveform claims the touch only when it is a TIMELINE — that is, while
@@ -66,10 +84,6 @@ export default function VoicePlayer({ url, peaks: rawPeaks, mine, msgId, roomId,
       region: 'waveform', isCurrent: isCurrentRef.current, selectMode: selectModeRef.current,
     }) === 'seek';
   }
-  const selectModeRef = useRef(false);
-  selectModeRef.current = !!selectMode;
-  const isCurrentRef = useRef(false);
-  isCurrentRef.current = isCurrent;
 
   /**
    * A tap anywhere on the message.

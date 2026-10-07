@@ -149,6 +149,55 @@ test('the web plays from the row too, and does not open the menu doing it', () =
   assert.ok(html.includes('/js/voiceTap.js'), 'the rules are never loaded by the page');
 });
 
+// ── The scrub that claimed the touch and then did nothing ──────────────────
+//
+// Reported as: the seek bar on voice messages does not work.
+//
+// The waveform's gesture is a PanResponder built once, so its handlers keep
+// the FIRST render's values for ever — a trap this file had already been bitten
+// by, and had half-fixed. The gate that decides whether to claim the touch read
+// a ref and was right. The function that did the seeking read `isCurrent`, the
+// value, which on the first render is false because nothing is playing when a
+// bubble first appears.
+//
+// So the waveform took the drag and discarded it. Not an unresponsive control:
+// a control that responded and threw the answer away, which is why it looked
+// broken rather than disabled.
+
+const VP = require('fs').readFileSync(
+  require('path').join(__dirname, '..', 'native-app', 'src', 'components', 'VoicePlayer.tsx'),
+  'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+
+test('THE SCRUB READS LIVE STATE, not the first render\'s', () => {
+  const fn = /const seekAtX = \(x: number\) => \{([\s\S]*?)\n  \};/.exec(VP);
+  assert.ok(fn, 'could not find seekAtX');
+  assert.ok(/isCurrentRef\.current/.test(fn[1]),
+    'the scrub tests a value captured at the first render, so it never seeks');
+  // The bare value must not be read here at all — that is the whole bug.
+  assert.ok(!/!isCurrent\b(?!Ref)/.test(fn[1]),
+    'the stale value is still being read');
+});
+
+test('EVERYTHING THE GESTURE READS IS A REF', () => {
+  // The responder is created inside useRef, so its handlers are the first
+  // render's. Anything they read that is not a ref is frozen.
+  assert.ok(/const pan = useRef\(PanResponder\.create/.test(VP),
+    'the responder is no longer built once — re-check what its handlers capture');
+  for (const r of ['isCurrentRef', 'selectModeRef', 'waveWidth']) {
+    assert.ok(new RegExp(r + '\\.current').test(VP), `${r} is not read as a ref`);
+  }
+});
+
+test('THE REFS ARE SET BEFORE THE RESPONDER IS BUILT', () => {
+  // Order matters for reading the file, not for the runtime — but a reader
+  // who sees the responder first and the refs afterwards is being invited to
+  // make exactly the mistake that caused this.
+  const refAt = VP.indexOf('const isCurrentRef');
+  const panAt = VP.indexOf('const pan = useRef(');
+  assert.ok(refAt > 0 && panAt > 0, 'could not find both');
+  assert.ok(refAt < panAt, 'the refs are declared after the gesture that reads them');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }
