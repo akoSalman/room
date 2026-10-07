@@ -44,10 +44,19 @@ class CallManager {
   // health event so it can be read from the server log instead of guessed at.
   // Counts only: how many senders were found, and how many were actually
   // holding the new track afterwards.
+  // STICKY. These describe the last share ATTEMPT and are never cleared.
+  //
+  // They were cleared when the call tore down, and the health event that
+  // carries them is only sent when the app goes to the background — which
+  // happens after the call has ended. So they were wiped before they were
+  // ever reported, and "never tried" and "tried and failed" both arrived as
+  // zero. The first reading of them said 0/0/0 and meant nothing at all.
   shareSenders = 0;
   shareSwitched = 0;
   /** Did the capture itself start, whatever the senders then did with it? */
   shareCaptured = false;
+  /** How many share attempts this process has seen, so zero is unambiguous. */
+  shareTries = 0;
   private screenTrack: any = null;
   private screenStream: any = null;
   private cameraTrack: any = null;
@@ -309,6 +318,32 @@ class CallManager {
    * put the camera back as well as our own button, or the call carries on
    * sending a dead track.
    */
+  /**
+   * Say what a share attempt did, the moment it does it.
+   *
+   * Not left for the health event the app sends when it next goes to the
+   * background: by then the call has ended, and the first version of this
+   * cleared these numbers on teardown — so the only report I ever got was
+   * zeros, which could mean "never tried" or "tried and failed" and therefore
+   * meant nothing. Sent on its own, immediately, while the facts still exist.
+   *
+   * Counts and one word. No screen contents, no names, nothing about what was
+   * being shared — this goes into a log read into a repository that has been
+   * public.
+   */
+  private reportShare(outcome: string) {
+    try {
+      this.sock?.emit('call_diag', {
+        what: 'share',
+        outcome,
+        tries: this.shareTries,
+        captured: this.shareCaptured ? 1 : 0,
+        senders: this.shareSenders,
+        switched: this.shareSwitched,
+      });
+    } catch {}
+  }
+
   async toggleScreenShare() {
     if (this.mode !== 'dm-video') return;
     if (this.sharingScreen) return this.stopScreenShare();
@@ -320,13 +355,22 @@ class CallManager {
       // else is a failure, and a silent return is exactly how this looked like
       // it was working while doing nothing at all.
       const name = String(err?.name || err?.message || '');
+      this.shareTries++;
       if (!/NotAllowed|Abort|cancel/i.test(name)) this.shareFailed = name || 'failed';
+      this.reportShare(/NotAllowed|Abort|cancel/i.test(name) ? 'refused' : 'capture-failed');
       this.emit();
       return;
     }
     const track = stream?.getVideoTracks?.()[0];
-    if (!track) { this.shareFailed = 'no-video-track'; this.emit(); return; }
+    if (!track) {
+      this.shareTries++;
+      this.shareFailed = 'no-video-track';
+      this.reportShare('no-track');
+      this.emit();
+      return;
+    }
     this.shareCaptured = true;
+    this.shareTries++;
     // Held, not just the track. A MediaStream this side forgets about is one
     // nothing is keeping alive, and the capturer belongs to it.
     this.screenStream = stream;
@@ -346,10 +390,12 @@ class CallManager {
       if (this.cameraTrack) await this.useVideoTrack(this.cameraTrack);
       this.cameraTrack = null;
       this.shareFailed = 'no-sender';
+      this.reportShare('no-sender');
       this.emit();
       return;
     }
     this.shareFailed = null;
+    this.reportShare('ok');
     // A camera that was off has a picture going out again, and the other end
     // is told so — it has been looking at the "camera off" placeholder.
     if (this.cameraOff && this.peerId != null) {
@@ -386,7 +432,6 @@ class CallManager {
     try { screen?.stop(); } catch {}
     try { this.screenStream?.release?.(); } catch {}
     this.screenStream = null;
-    this.shareCaptured = false;
     this.emit();
   }
 
@@ -680,7 +725,9 @@ class CallManager {
     this.screenTrack = null;
     this.cameraTrack = null;
     this.cameraWasOff = false;
-    this.shareFailed = null;
+    // shareFailed/shareCaptured/shareSenders/shareSwitched are NOT cleared
+    // here: they are the record of what the last attempt did, and clearing
+    // them on teardown is what made the first report unreadable.
     this.roomAudioStarted = false;
     this.connectedAt = null;
     this.peerId = null;

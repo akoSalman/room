@@ -129,6 +129,16 @@ jobs:
           echo "(end of presence lines)"
           echo ""
 
+          echo "### what a screen share actually did, last 24 hours"
+          echo "# captured=0            -> Android refused the capture"
+          echo "# captured=1 switched=0 -> the call would not take the track"
+          echo "# captured=1 switched=1 -> the track went in; if the far end"
+          echo "#                          froze, it is the encoder"
+          journalctl -u "$SERVICE" --since '24 hours ago' --no-pager 2>/dev/null \
+            | grep -a '\[share\]' | tail -20
+          echo "(end of share lines)"
+          echo ""
+
           echo "### what the service logged about push, last 2 hours"
           journalctl -u "$SERVICE" --since '2 hours ago' --no-pager 2>/dev/null \
             | grep -aE '\[push\]|\[FCM\]|\[najva\]' | tail -40

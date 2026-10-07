@@ -208,6 +208,37 @@ function looksRTLText(t: string): boolean {
   return baseDirection(t) === 'rtl';
 }
 
+/**
+ * One message row, redrawn only when its own inputs change.
+ *
+ * Stabilising `renderItem` was necessary and NOT sufficient, and the counters
+ * said so: 27.5 rows redrawn per screen render afterwards, against 28.4 and
+ * 24.4 before — no change at all.
+ *
+ * The reason is in React Native itself. VirtualizedList's CellRenderer is a
+ * plain React.Component with no shouldComponentUpdate, so every cell
+ * re-renders whenever the list re-renders, whatever renderItem is. Nothing
+ * about the list's own props could have prevented that; the only place left
+ * to stop it is inside the cell.
+ *
+ * So the row is its own memoised component. The cell still re-renders — that
+ * is cheap, it is one element — and React then compares these three props and
+ * skips the body when none has changed. `render` is a ref so the body is
+ * always current without being a new function each time; `data` is the
+ * extraData object, which is exactly the set of things a row reads.
+ */
+const MemoRow = React.memo(
+  function MemoRow({ msg, render }: {
+    msg: Message; data: unknown; render: { current: (i: { item: Message }) => any };
+  }) {
+    return render.current({ item: msg });
+  },
+  // `data` by identity: it is a useMemo and only changes when a row input
+  // does. A message object is replaced when that message changes, so identity
+  // is the right test there too.
+  (a, b) => a.msg === b.msg && a.data === b.data && a.render === b.render,
+);
+
 export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOpenRoom, initialJumpMsgId, initialCommentTarget, initialShare, onShareConsumed }: {
   room: { id: number; name: string; is_dm: number; other_username?: string; other_avatar?: string | null; is_private?: number; created_by?: number };
   initialShare?: { files?: { path: string; mimeType?: string; fileName?: string }[]; text?: string | null } | null;
@@ -4790,7 +4821,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   const renderMessageRef = useRef(renderMessage);
   renderMessageRef.current = renderMessage;
   const renderRow = useCallback(
-    (info: { item: Message }) => renderMessageRef.current(info), []);
+    (info: { item: Message }) => (
+      <MemoRow msg={info.item} data={rowExtraData} render={renderMessageRef} />
+    ),
+    // Deliberately dependent on extraData. When it changes the rows SHOULD
+    // redraw, and this is what lets them: MemoRow below compares it by
+    // identity and skips everything else.
+    [rowExtraData],
+  );
 
   function renderMessage({ item: msg }: { item: Message }) {
     renderCount.noteRow();

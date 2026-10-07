@@ -429,6 +429,58 @@ test('THE ICONS ARE ONE FAMILY AT ONE SIZE', () => {
     `the control icons are not one size (${sizes.join(', ')})`);
 });
 
+test('THE SHARE DIAGNOSTIC IS NOT WIPED BEFORE IT IS READ', () => {
+  // The first version cleared these when the call tore down, and the event
+  // carrying them is only sent when the app goes to the background — after
+  // the call has ended. So the one report I got was 0/0/0, which could mean
+  // "never tried" or "tried and failed" and therefore meant nothing at all.
+  const cm = strip(path.join(ROOT, 'native-app', 'src', 'callManager.ts'));
+  const reset = /this\.cameraWasOff = false;[\s\S]{0,400}?this\.stopRing\(\);/.exec(cm);
+  assert.ok(reset, 'could not find the call reset');
+  for (const f of ['shareCaptured', 'shareSenders', 'shareSwitched', 'shareFailed']) {
+    assert.ok(!new RegExp('this\\.' + f + ' =').test(reset[0]),
+      `${f} is cleared on teardown, so the report is wiped before it is sent`);
+  }
+  // A try counter, so zero is unambiguous rather than ambiguous.
+  assert.ok(/shareTries\+\+/.test(cm), 'nothing counts the attempts, so 0 stays ambiguous');
+});
+
+test('EVERY EXIT FROM A SHARE SAYS WHAT HAPPENED', () => {
+  // Including the ones that fail. A path that returns silently is the whole
+  // reason this took several rounds.
+  const cm = strip(path.join(ROOT, 'native-app', 'src', 'callManager.ts'));
+  // The whole argument, not just a bare literal: one of these exits picks its
+  // word with a ternary, and a regex expecting a plain string missed it.
+  const args = [...cm.matchAll(/reportShare\(([^;]*?)\);/g)].map(m => m[1]).join(' | ');
+  for (const o of ['ok', 'refused', 'capture-failed', 'no-track', 'no-sender']) {
+    assert.ok(new RegExp("'" + o + "'").test(args),
+      `a share that ends as "${o}" is never reported`);
+  }
+  // …and there is one report per exit, so none of them returns in silence.
+  const calls = (cm.match(/this\.reportShare\(/g) || []).length;
+  assert.ok(calls >= 4, `only ${calls} of the share's exits report anything`);
+});
+
+test('IT IS REPORTED AS IT HAPPENS, not on the next background', () => {
+  const cm = strip(path.join(ROOT, 'native-app', 'src', 'callManager.ts'));
+  assert.ok(/emit\('call_diag'/.test(cm), 'the share outcome still rides on the health event');
+  const server = strip(path.join(ROOT, 'server.js'));
+  assert.ok(/socket\.on\('call_diag'/.test(server), 'the server does not receive it');
+  assert.ok(/\[share\]/.test(server), 'the server receives it and does not log it');
+  const wf = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'push-report.yml'), 'utf8');
+  assert.ok(/\\\[share\\\]/.test(wf), 'the report does not surface the share lines');
+});
+
+test('THE SHARE LOG LINE IS COUNTS AND ONE WORD', () => {
+  // It names what was on somebody's screen to nobody.
+  const server = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const block = /socket\.on\('call_diag'[\s\S]*?\n  \}\);/.exec(server);
+  assert.ok(block, 'could not find the call_diag handler');
+  assert.ok(/replace\(\/\[\^a-z-\]\/gi, ''\)/.test(block[0]),
+    'the outcome word is logged unsanitised');
+  assert.ok(!/username/.test(block[0]), 'the share log line names the user');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

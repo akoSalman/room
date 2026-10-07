@@ -37,10 +37,40 @@ test('THE LIST IS GIVEN A renderItem THAT NEVER CHANGES', () => {
   // what extraData says.
   assert.ok(/renderItem=\{renderRow\}/.test(SRC),
     'renderItem is the render function itself, so every row redraws on every render');
-  assert.ok(/const renderRow = useCallback\(\s*\([^)]*\) => renderMessageRef\.current\(info\), \[\]\)/.test(SRC),
-    'renderRow is not a stable callback over a ref');
+  // renderRow is no longer stable FOREVER — it changes with extraData, which
+  // is deliberate and tested below. What must still hold is that it does not
+  // change on every render, and that the body it calls is always current.
   assert.ok(/renderMessageRef\.current = renderMessage;/.test(SRC),
     'the ref is never refreshed, so rows would render a stale closure');
+  assert.ok(/render\.current\(\{ item: msg \}\)/.test(SRC),
+    'the row does not call through the ref, so it would hold a stale closure');
+});
+
+test('THE ROW ITSELF IS MEMOISED, because a stable renderItem is not enough', () => {
+  // Measured. After stabilising renderItem the counters came back at 27.5
+  // rows per screen render, against 28.4 and 24.4 before — no change at all.
+  //
+  // The reason is in React Native: VirtualizedList's CellRenderer is a plain
+  // React.Component with no shouldComponentUpdate, so every cell re-renders
+  // whenever the list does, whatever renderItem is. Nothing about the list's
+  // props could stop that. The only place left is inside the cell.
+  assert.ok(/const MemoRow = React\.memo\(/.test(SRC),
+    'the row body is not memoised, so every cell still redraws it');
+  assert.ok(/<MemoRow msg=\{info\.item\} data=\{rowExtraData\}/.test(SRC),
+    'renderItem does not go through the memoised row');
+  // The comparison has to be all three: msg, data and the render ref.
+  assert.ok(/a\.msg === b\.msg && a\.data === b\.data && a\.render === b\.render/.test(SRC),
+    'the memo compares the wrong things, so rows go stale or never skip');
+});
+
+test('…and renderItem CHANGES WITH extraData, deliberately', () => {
+  // The one place a stable-forever identity would be wrong. If renderRow
+  // captured the first render's extraData, the memo would compare an object
+  // that never changes and the rows would never update again.
+  const dep = /const renderRow = useCallback\([\s\S]*?\n  \);/.exec(SRC);
+  assert.ok(dep, 'could not find renderRow');
+  assert.ok(/\[rowExtraData\]/.test(dep[0]),
+    'renderRow does not depend on extraData, so rows would freeze at their first render');
 });
 
 test('EVERYTHING A ROW READS IS IN extraData', () => {

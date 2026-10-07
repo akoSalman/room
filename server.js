@@ -3335,6 +3335,24 @@ io.on('connection', (socket) => {
       + (h && h.lastError ? ` err="${String(h.lastError).replace(/["\n]/g, ' ').slice(0, 80)}"` : ''));
   });
 
+  // What a screen-share attempt actually did, reported the moment it happens.
+  //
+  // It used to ride on device_health, which the app sends when it goes to the
+  // background — by which time the call has ended and the numbers had been
+  // cleared. Every report was zeros, which could mean "never tried" or "tried
+  // and failed", so it answered nothing. On its own event it cannot be wiped
+  // before it is said.
+  //
+  // Counts and one sanitised word. No screen contents, no username.
+  socket.on('call_diag', (d) => {
+    const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : '?');
+    const word = (v) => String(v || 'unknown').replace(/[^a-z-]/gi, '').slice(0, 20) || 'unknown';
+    if (!d || word(d.what) !== 'share') return;
+    console.log(`[share] user=${socket.user.id} outcome=${word(d.outcome)}`
+      + ` tries=${n(d.tries)} captured=${n(d.captured)}`
+      + ` senders=${n(d.senders)} switched=${n(d.switched)}`);
+  });
+
   socket.on('app_focus', (focused) => {
     const cur = onlineUsers.get(socket.id);
     if (!cur) return;
