@@ -91,6 +91,7 @@ import EdgeBack from '../components/EdgeBack';
 import ExpiryRing from '../components/ExpiryRing';
 import TextViewer from '../components/TextViewer';
 import * as mediaCache from '../mediaCache';
+import { pickVoice, wantsPrefetch, MAX_ON_OPEN } from '../voicePrefetch';
 import * as offline from '../offlineStore';
 import ImageEditor from '../components/ImageEditor';
 import SelectedRow, { SelectionCount } from '../components/SelectedRow';
@@ -1709,6 +1710,39 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     // player after leaving the chat and should keep chaining voice messages.
   }, [room.id]);
 
+  /**
+   * Have the recent voice messages before anybody taps one.
+   *
+   * On the loaded history rather than inside either load path, because there
+   * are two of them and burying this in one would work in half the cases.
+   *
+   * Capped and newest-first: a year of voice notes is a large download on a
+   * connection paid for by the megabyte, and nobody is about to play the ones
+   * from last March. Already-cached ones are skipped, so re-opening a chat
+   * asks for nothing.
+   */
+  useEffect(() => {
+    if (loading || !messages.length) return;
+    let cancelled = false;
+    (async () => {
+      const candidates = pickVoice({
+        messages,
+        canKeep: canTakeContent,
+        max: MAX_ON_OPEN,
+      });
+      const wanted: string[] = [];
+      for (const m of candidates) {
+        const url = `${BASE_URL}${m.file_path}`;
+        // peek never downloads — it only says whether the file is already here.
+        const local = await mediaCache.peek(url).catch(() => null);
+        if (!local) wanted.push(String(m.file_path));
+      }
+      if (!cancelled && wanted.length) queuePrefetch(wanted);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, messages.length, room.id]);
+
   // The peer's key, asked for until it arrives.
   //
   // Reported with a photograph of a whole conversation reading "cannot decrypt
@@ -2150,6 +2184,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
                  .test(String(msg.content || ''))) {
           const mid = msg.id;
           setMentionIds(prev => (prev.includes(mid) ? prev : [...prev, mid]));
+        }
+        // A voice message that has just arrived: have the file before the
+        // first tap, which is the play that would otherwise stream. See
+        // src/voicePrefetch.ts — including why a disappearing one is skipped.
+        if (wantsPrefetch({ message: msg, canKeep: canTakeContentRef.current })) {
+          queuePrefetch([String(msg.file_path)]);
         }
         // meRef for the same reason as above — bound once, `me` is '' then.
         if (msg.type === 'text' && msg.username !== meRef.current) {
@@ -4262,12 +4302,59 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
    *  • In a PRIVATE room, only the message's own author may take their content
    *    out of it. You can always copy and download what you wrote yourself.
    */
+  /**
+   * Pull voice messages down before anybody taps one.
+   *
+   * The cache already keeps a voice note once it has been played; what it did
+   * not do was have it ready for the FIRST play, which is the one that
+   * stretches on a slow connection.
+   *
+   * One at a time, on purpose. These are small and there is no hurry — the
+   * point is that the file is there in a few seconds, not that it races the
+   * rest of the chat for the connection. A failure is dropped silently: this
+   * is an optimisation, and a voice note that does not pre-fetch still plays
+   * perfectly well by streaming.
+   *
+   * Which messages, and whether one may be written to disk at all, is decided
+   * in src/voicePrefetch.ts — with the same canTakeContent the player uses,
+   * because pre-fetching something the sender said could not be kept would be
+   * a way of keeping it.
+   */
+  const prefetching = useRef(false);
+  const prefetchQueue = useRef<string[]>([]);
+  async function runPrefetch() {
+    if (prefetching.current) return;
+    prefetching.current = true;
+    try {
+      while (prefetchQueue.current.length) {
+        const url = prefetchQueue.current.shift()!;
+        await mediaCache.fetchAndKeep(url).catch(() => {});
+      }
+    } finally {
+      prefetching.current = false;
+    }
+  }
+  function queuePrefetch(paths: string[]) {
+    const q = prefetchQueue.current;
+    paths.forEach(p => {
+      const url = `${BASE_URL}${p}`;
+      if (!q.includes(url)) q.push(url);
+    });
+    if (q.length) runPrefetch();
+  }
+
+  // Read from the socket listener, which is bound once: the function itself
+  // closes over roomInfo and `me`, so the first render's copy would judge
+  // every later message against an empty name.
+  const canTakeContentRef = useRef<(m: Message) => boolean>(() => true);
+
   function canTakeContent(m: Message) {
     if (m.disappear_seconds) return false;
     const priv = !!(roomInfo?.is_private ?? room.is_private);
     if (priv && m.username !== me) return false;
     return true;
   }
+  canTakeContentRef.current = canTakeContent;
 
   // ── Multi-select ───────────────────────────────────────────────────────────
   function toggleSelected(msg: Message) {
