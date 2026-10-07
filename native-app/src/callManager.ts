@@ -5,6 +5,7 @@
 import { PermissionsAndroid, Platform } from 'react-native';
 import { Audio } from 'expo-av';
 import { mediaDevices, RTCPeerConnection, MediaStream } from 'react-native-webrtc';
+import { scaleFor, encodedNothing, MAX_BITRATE, SAMPLE_AFTER_MS } from './screenShare';
 import { apiFetch, getSocket } from './api';
 import { stopRinging } from './incomingCall';
 import { routeFor, outgoingStatus, endStopsCall, RING_TIMEOUT_MS, CallMode, CallPhase, OutgoingState } from './callAudio';
@@ -57,6 +58,9 @@ class CallManager {
   shareCaptured = false;
   /** How many share attempts this process has seen, so zero is unambiguous. */
   shareTries = 0;
+  /** What the capture was scaled by, and what the encoder then produced. */
+  shareScale = 1;
+  shareEncoded = -1;
   private screenTrack: any = null;
   private screenStream: any = null;
   private cameraTrack: any = null;
@@ -331,7 +335,7 @@ class CallManager {
    * being shared — this goes into a log read into a repository that has been
    * public.
    */
-  private reportShare(outcome: string) {
+  private reportShare(outcome: string, extra?: Record<string, number>) {
     try {
       this.sock?.emit('call_diag', {
         what: 'share',
@@ -340,8 +344,89 @@ class CallManager {
         captured: this.shareCaptured ? 1 : 0,
         senders: this.shareSenders,
         switched: this.shareSwitched,
+        scale: this.shareScale,
+        ...(extra || {}),
       });
     } catch {}
+  }
+
+  /**
+   * Tell the encoder to send the screen at a size the call can carry.
+   *
+   * A camera call negotiates something like 640x480; a phone screen is about
+   * 1080x2400. WebRTC adapts a CAMERA source down to fit, but the library
+   * creates a screencast source with adaptation deliberately off so that text
+   * stays sharp — so nothing brings the frame size down, and the encoder is
+   * handed something it will not produce output for. The far end then freezes
+   * on the last camera frame, which is exactly what was reported.
+   *
+   * Done with setParameters rather than by renegotiating the call. A second
+   * offer mid-call is treated by the web client as a NEW INCOMING CALL and
+   * hangs up, so renegotiation means changing the signalling at both ends —
+   * which is the next thing to try, not the first.
+   */
+  private async fitScreenToCall(track: any) {
+    const scale = scaleFor({
+      width: track?.getSettings?.()?.width,
+      height: track?.getSettings?.()?.height,
+    });
+    this.shareScale = scale;
+    const jobs: Promise<any>[] = [];
+    this.pcs.forEach((pc: any) => {
+      pc.getSenders().forEach((sn: any) => {
+        if (!sn.track || sn.track.kind !== 'video') return;
+        try {
+          const params: any = sn.getParameters();
+          if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+          params.encodings.forEach((enc: any) => {
+            enc.scaleResolutionDownBy = scale;
+            enc.maxBitrate = MAX_BITRATE;
+          });
+          jobs.push(sn.setParameters(params).catch(() => {}));
+        } catch {}
+      });
+    });
+    await Promise.allSettled(jobs);
+  }
+
+  /**
+   * Ask the encoder, a few seconds in, whether anything is coming out.
+   *
+   * The one fact that cannot be learned from this side of the code: frames
+   * encoded is a counter inside WebRTC. Zero while the track is live means
+   * the encoder is refusing the source; climbing means the picture is going
+   * out and whatever is wrong is further along.
+   */
+  private async sampleShare(startedAt: number) {
+    let sender: any = null;
+    this.pcs.forEach((pc: any) => {
+      pc.getSenders().forEach((sn: any) => {
+        if (!sender && sn.track && sn.track.kind === 'video') sender = sn;
+      });
+    });
+    if (!sender || !this.sharingScreen) return;
+    let encoded = -1;
+    let sent = -1;
+    let w = 0;
+    let h = 0;
+    try {
+      const stats = await sender.getStats();
+      stats.forEach((r: any) => {
+        if (r && r.type === 'outbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) {
+          if (typeof r.framesEncoded === 'number') encoded = r.framesEncoded;
+          if (typeof r.framesSent === 'number') sent = r.framesSent;
+          if (typeof r.frameWidth === 'number') w = r.frameWidth;
+          if (typeof r.frameHeight === 'number') h = r.frameHeight;
+        }
+      });
+    } catch {}
+    const seconds = Math.round((Date.now() - startedAt) / 1000);
+    this.shareEncoded = encoded;
+    if (encodedNothing({ framesEncoded: encoded, seconds })) {
+      this.shareFailed = 'no-frames';
+      this.emit();
+    }
+    this.reportShare('stats', { encoded, sent, w, h, seconds });
   }
 
   async toggleScreenShare() {
@@ -395,7 +480,12 @@ class CallManager {
       return;
     }
     this.shareFailed = null;
+    // Before the first report, so the numbers describe the stream that is
+    // actually going out rather than the one before it was sized.
+    await this.fitScreenToCall(track);
     this.reportShare('ok');
+    const startedAt = Date.now();
+    setTimeout(() => { this.sampleShare(startedAt).catch(() => {}); }, SAMPLE_AFTER_MS);
     // A camera that was off has a picture going out again, and the other end
     // is told so — it has been looking at the "camera off" placeholder.
     if (this.cameraOff && this.peerId != null) {

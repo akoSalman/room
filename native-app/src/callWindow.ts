@@ -298,6 +298,10 @@ export function shareFailureText(reason: unknown): string {
   if (r === 'no-video-track') {
     return 'Your phone returned nothing to share.';
   }
+  if (r === 'no-frames') {
+    return 'The screen is being captured but nothing is going out — the call '
+      + 'will not carry it.';
+  }
   if (/NotSupported|Unsupported/i.test(r)) {
     return 'This phone cannot share its screen.';
   }

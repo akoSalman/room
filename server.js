@@ -3350,7 +3350,14 @@ io.on('connection', (socket) => {
     if (!d || word(d.what) !== 'share') return;
     console.log(`[share] user=${socket.user.id} outcome=${word(d.outcome)}`
       + ` tries=${n(d.tries)} captured=${n(d.captured)}`
-      + ` senders=${n(d.senders)} switched=${n(d.switched)}`);
+      + ` senders=${n(d.senders)} switched=${n(d.switched)} scale=${n(d.scale)}`
+      // The answer to "is the encoder producing anything", which is the only
+      // thing left that cannot be read from the source. encoded=0 after a few
+      // seconds means the encoder is refusing the screen; climbing means the
+      // picture is going out and the fault is further along.
+      + (d.encoded === undefined ? ''
+        : ` encoded=${n(d.encoded)} sent=${n(d.sent)}`
+          + ` size=${n(d.w)}x${n(d.h)} after=${n(d.seconds)}s`));
   });
 
   socket.on('app_focus', (focused) => {
