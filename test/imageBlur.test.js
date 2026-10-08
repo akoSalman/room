@@ -138,6 +138,115 @@ test('CLEARING A PICTURE REDRAWS THE ROW SHOWING IT', () => {
     'blur changes are not in extraData, so rows will not redraw');
 });
 
+// ── The web's copy ─────────────────────────────────────────────────────────
+//
+// Mirrored from the app and compared rule by rule. A photo that is covered on
+// one platform and bare on the other is a bug in whichever is behind, and
+// this is the kind of feature where "behind" means somebody's picture was on
+// display when they thought it was not.
+
+const WEB = require(path.join(ROOT, 'public', 'js', 'imageBlur.js'));
+
+test('BOTH PLATFORMS ANSWER THE SAME, over every combination', () => {
+  for (const mine of [true, false]) {
+    for (const revealed of [true, false]) {
+      for (const hiddenOneTime of [true, false]) {
+        const args = { mine, revealed, hiddenOneTime };
+        assert.strictEqual(WEB.startsBlurred(args), B.startsBlurred(args),
+          `startsBlurred disagrees for ${JSON.stringify(args)}`);
+      }
+    }
+  }
+  for (const blurred of [true, false]) {
+    assert.strictEqual(WEB.tapAction({ blurred }), B.tapAction({ blurred }));
+  }
+  for (const mine of [true, false]) {
+    assert.strictEqual(WEB.buttonCorner(mine), B.buttonCorner(mine));
+  }
+  for (const uploading of [true, false]) {
+    for (const hiddenOneTime of [true, false]) {
+      assert.strictEqual(WEB.showsButton({ uploading, hiddenOneTime }),
+        B.showsButton({ uploading, hiddenOneTime }));
+    }
+  }
+  assert.strictEqual(WEB.BLUR_BUTTON, B.BLUR_BUTTON);
+  assert.strictEqual(WEB.BLUR_RADIUS, B.BLUR_RADIUS);
+});
+
+test('THE WEB KEYS A PHOTO THE SAME WAY THE APP DOES', () => {
+  // Media urls are signed and re-signed, so the url is not an identity. If
+  // the two disagreed, clearing a photo on one would not carry to the other
+  // and the same picture would ask twice.
+  const { execFileSync: run } = require('child_process');
+  const vOut = fs.mkdtempSync(path.join(os.tmpdir(), 'vlist-'));
+  run(TSC, [path.join(NAT, 'src', 'viewerList.ts'),
+    '--outDir', vOut, '--module', 'commonjs', '--target', 'es2019', '--skipLibCheck'],
+    { stdio: 'pipe' });
+  const V = require(path.join(vOut, 'viewerList.js'));
+  for (const url of ['/uploads/1-2.jpg?e=9&s=ab', '/uploads/1-2.jpg',
+      'https://x/uploads/a%20b.png', '', 'nope']) {
+    assert.strictEqual(WEB.photoKey(url), V.photoKey(url), `photoKey disagrees for "${url}"`);
+  }
+  fs.rmSync(vOut, { recursive: true, force: true });
+});
+
+// ── And the web actually draws it ──────────────────────────────────────────
+
+const APP = fs.readFileSync(path.join(ROOT, 'public', 'js', 'app.js'), 'utf8')
+  .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+const CSS = fs.readFileSync(path.join(ROOT, 'public', 'css', 'style.css'), 'utf8');
+const HTML = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
+
+test('THE WEB COVERS BOTH A PHOTO AND A GALLERY', () => {
+  assert.ok(/wrapBlurrable\(\[img\]/.test(APP), 'a single photo is not covered');
+  assert.ok(/wrapGalleryBlur\(galleryWrap, galleryImgs/.test(APP), 'a gallery is not covered');
+});
+
+test('THE WEB BLURS THE IMAGE, not a panel over it', () => {
+  assert.ok(/\.blurrable img\.blurred \{[^}]*filter: blur\(/.test(CSS),
+    'the blur is not a filter on the image');
+  // The enlargement matters: a blur leaves soft edges, and without it the
+  // outermost pixels of the picture stay readable.
+  assert.ok(/\.blurrable img\.blurred \{[^}]*scale\(/.test(CSS),
+    'the blurred image is not scaled, so its edges stay legible');
+  assert.ok(/\.blurrable \{[^}]*overflow: hidden/.test(CSS),
+    'the enlargement spills out of the bubble');
+});
+
+test('THE WEB BUTTON IS 🙈 AND IN THE RIGHT CORNER', () => {
+  assert.ok(/\.blur-btn\.left \{ left: 8px; \}/.test(CSS), 'no left corner rule');
+  assert.ok(/\.blur-btn\.right \{ right: 8px; \}/.test(CSS), 'no right corner rule');
+  assert.ok(/ImageBlur\.buttonCorner\(opts\.mine\)/.test(APP), 'the corner is not chosen by the rule');
+  assert.ok(/ImageBlur\.BLUR_BUTTON/.test(APP), 'the button does not use the shared character');
+});
+
+test('THE WEB BUTTON DOES NOT ALSO OPEN THE PHOTO', () => {
+  // It sits over the picture, so without stopping the event a click would
+  // cover the photo and open it in the same motion.
+  // Scoped to applyBlurTo. `btn.onclick` appears five times in this file and
+  // an unanchored match found an unrelated one that happens to stop the
+  // event — so the first version of this test passed against a broken button.
+  const fn = /function applyBlurTo\([\s\S]*?\n\}/.exec(APP);
+  assert.ok(fn, 'could not find applyBlurTo');
+  const btn = /btn\.onclick = \(e\) => \{([\s\S]*?)\n    \};/.exec(fn[0]);
+  assert.ok(btn, 'could not find the blur button handler');
+  assert.ok(/stopPropagation/.test(btn[1]), 'covering a photo also opens it');
+  assert.ok(/preventDefault/.test(btn[1]), 'the button does not stop the default action');
+});
+
+test('THE WEB REMEMBERS, and does not grow for ever', () => {
+  assert.ok(/localStorage\.setItem\(REVEALED_KEY/.test(APP),
+    'clearing a photo is forgotten on reload');
+  assert.ok(/MAX_REVEALED/.test(APP), 'the list of cleared photos is unbounded');
+});
+
+test('THE RULES ARE LOADED BEFORE THE PAGE USES THEM', () => {
+  const blurAt = HTML.indexOf('/js/imageBlur.js');
+  const appAt = HTML.indexOf('/js/app.js');
+  assert.ok(blurAt > 0, 'js/imageBlur.js is never loaded, so ImageBlur is undefined');
+  assert.ok(blurAt < appAt, 'the rules load after the code that calls them');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

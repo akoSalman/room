@@ -4539,6 +4539,125 @@ function repaintEncrypted() {
   updateSeenCheckmarks();
 }
 
+
+// ── Which photos have already been cleared ─────────────────────────────────
+//
+// The decisions are in js/imageBlur.js, mirrored from the app and compared by
+// a drift test. This is the part that remembers.
+//
+// localStorage rather than memory, because "that exact photo never asks
+// again" has to survive a reload. Keyed by the upload's filename, so a
+// re-signed url — and the same photo forwarded into another chat — is the
+// same photo. Bounded, oldest forgotten first, so it cannot grow for ever.
+var REVEALED_KEY = 'revealedImages-v1';
+var MAX_REVEALED = 4000;
+var revealedList = [];
+var revealedSet = new Set();
+try {
+  var rawRevealed = JSON.parse(localStorage.getItem(REVEALED_KEY) || '[]');
+  if (Array.isArray(rawRevealed)) {
+    revealedList = rawRevealed.filter(k => typeof k === 'string' && k).slice(-MAX_REVEALED);
+    revealedSet = new Set(revealedList);
+  }
+} catch {}
+
+function saveRevealed() {
+  try { localStorage.setItem(REVEALED_KEY, JSON.stringify(revealedList)); } catch {}
+}
+function isRevealed(key) { return !!key && revealedSet.has(key); }
+function revealImage(key) {
+  if (!key || revealedSet.has(key)) return;
+  revealedList.push(key);
+  revealedSet.add(key);
+  if (revealedList.length > MAX_REVEALED) {
+    revealedList.splice(0, revealedList.length - MAX_REVEALED).forEach(k => revealedSet.delete(k));
+  }
+  saveRevealed();
+}
+function hideImage(key) {
+  if (!key || !revealedSet.has(key)) return;
+  revealedSet.delete(key);
+  revealedList = revealedList.filter(k => k !== key);
+  saveRevealed();
+}
+
+/**
+ * Wrap a picture so it arrives covered and can be covered again.
+ *
+ * The blur is a CSS filter on the image itself rather than something laid
+ * over it: an overlay can paint late, miss the corners of a rounded bubble,
+ * or be absent from a screenshot taken at the wrong moment. Filtering the
+ * image means the sharp picture is never on screen at all.
+ *
+ * Returns the wrapper to append. `imgs` is every picture the cover applies
+ * to, which for a gallery is all of them — they arrived together and are
+ * looked at together.
+ */
+function wrapBlurrable(imgs, opts) {
+  const wrap = document.createElement('div');
+  wrap.className = 'blurrable';
+  imgs.forEach(i => wrap.appendChild(i));
+  return applyBlurTo(wrap, imgs, opts);
+}
+
+/**
+ * The same cover over a mosaic that is already built.
+ *
+ * A gallery keeps its grid — the layout is the grid's business — and gets one
+ * cover and one button over the whole of it.
+ */
+function wrapGalleryBlur(wrap, imgs, opts) {
+  return applyBlurTo(wrap, imgs, opts);
+}
+
+function applyBlurTo(wrap, imgs, opts) {
+  opts = opts || {};
+  const keys = imgs.map(i => ImageBlur.photoKey(i.dataset.blurKey || i.src)).filter(Boolean);
+  const allSeen = keys.length > 0 && keys.every(isRevealed);
+  let blurred = ImageBlur.startsBlurred({
+    mine: opts.mine, hiddenOneTime: opts.hiddenOneTime, revealed: allSeen,
+  });
+
+  const paint = () => {
+    imgs.forEach(i => i.classList.toggle('blurred', blurred));
+    wrap.classList.toggle('is-blurred', blurred);
+  };
+  paint();
+
+  // The click on the PICTURE. Covered, it only clears — see ImageBlur.
+  imgs.forEach(i => {
+    const open = i.onclick;
+    i.onclick = (e) => {
+      if (ImageBlur.tapAction({ blurred }) === 'reveal') {
+        e.preventDefault(); e.stopPropagation();
+        keys.forEach(revealImage);
+        blurred = false;
+        paint();
+        return;
+      }
+      if (open) open.call(i, e);
+    };
+  });
+
+  if (ImageBlur.showsButton({ uploading: opts.uploading, hiddenOneTime: opts.hiddenOneTime })) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'blur-btn ' + ImageBlur.buttonCorner(opts.mine);
+    btn.textContent = ImageBlur.BLUR_BUTTON;
+    btn.title = 'Blur or show this photo';
+    // Its own control, outside the picture's click, so covering never also
+    // clears or opens.
+    btn.onclick = (e) => {
+      e.preventDefault(); e.stopPropagation();
+      if (blurred) keys.forEach(revealImage); else keys.forEach(hideImage);
+      blurred = !blurred;
+      paint();
+    };
+    wrap.appendChild(btn);
+  }
+  return wrap;
+}
+
 function buildMessageElement(msg) {
   const raw = msg;
   msg = decryptedMessage(msg);
@@ -4726,12 +4845,16 @@ function buildMessageElement(msg) {
     const img = document.createElement('img');
     img.src = msg.file_path; img.onclick = () => openLightbox(msg.file_path);
     if (msg.one_time_seconds) { oneTimeMediaUrls.add(img.src); img.draggable = false; }
-    bubble.appendChild(img);
+    // Arrives covered, with a 🙈 to cover it again. See wrapBlurrable.
+    bubble.appendChild(wrapBlurrable([img], {
+      mine: isMine, uploading: !!msg._uploading, hiddenOneTime: !!msg.one_time_seconds,
+    }));
   } else if (msg.type === 'gallery') {
     let urls = [];
     try { urls = JSON.parse(msg.file_path || '[]'); } catch {}
     const grid = document.createElement('div');
     grid.className = 'gallery-grid';
+    const galleryImgs = [];
     urls.forEach(u => {
       const src = msg._uploading ? u : u; // object URLs while uploading, server paths after
       const img = document.createElement('img');
@@ -4739,8 +4862,16 @@ function buildMessageElement(msg) {
       img.onclick = () => openLightbox(src);
       if (msg.one_time_seconds) { oneTimeMediaUrls.add(img.src); img.draggable = false; }
       grid.appendChild(img);
+      galleryImgs.push(img);
     });
-    bubble.appendChild(grid);
+    // One cover for the whole mosaic: the photos arrived together and are
+    // looked at together, so one button and one answer.
+    const galleryWrap = document.createElement('div');
+    galleryWrap.className = 'blurrable';
+    galleryWrap.appendChild(grid);
+    bubble.appendChild(wrapGalleryBlur(galleryWrap, galleryImgs, {
+      mine: isMine, uploading: !!msg._uploading, hiddenOneTime: !!msg.one_time_seconds,
+    }));
   } else if (msg.type === 'audio') {
     bubble.appendChild(buildVoicePlayer(msg));
   } else if (msg.type === 'video') {
