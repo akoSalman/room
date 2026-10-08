@@ -46,9 +46,9 @@ on:
         required: false
         default: 'bistbarg'
       since:
-        description: 'How far back to look (journalctl --since)'
+        description: 'How far back to look (journalctl --since, e.g. -14d)'
         required: false
-        default: '7 days ago'
+        default: '-14d'
 
 jobs:
   report:
@@ -90,8 +90,17 @@ jobs:
           mkdir -p ~/.ssh
           echo "$SSH_KEY" > ~/.ssh/k && chmod 600 ~/.ssh/k
           set +e
+          # Quoted for the REMOTE shell, which re-parses this command line.
+          # Without it a value with spaces in it — "14 days ago", the default
+          # until this was written — is split, and the remote tries to run
+          # `days` as a command. That is what the first run of this workflow
+          # did, and it is why the report is written even when the step fails:
+          # the answer was exit 127 and nothing would have said so.
+          Q_DIR=$(printf '%q' "$APP_DIR")
+          Q_SVC=$(printf '%q' "$SERVICE")
+          Q_SINCE=$(printf '%q' "$SINCE")
           ssh -i ~/.ssh/k -o StrictHostKeyChecking=accept-new -o ConnectTimeout=25 "root@$HOST" \
-            APP_DIR="$APP_DIR" SERVICE="$SERVICE" SINCE="$SINCE" bash -s > report.txt 2>&1 <<'EOF'
+            "APP_DIR=$Q_DIR SERVICE=$Q_SVC SINCE=$Q_SINCE bash -s" > report.txt 2>&1 <<'EOF'
           set +e
           cd "$APP_DIR" 2>/dev/null || { echo "APP_DIR missing"; exit 0; }
 
