@@ -60,7 +60,12 @@ jobs:
         with:
           ref: ${{ github.ref_name }}
 
+      # Never fails the job. A diagnostic that disappears when the thing it is
+      # diagnosing goes wrong is the opposite of useful: the report is always
+      # written and always committed, and says so when it could not get an
+      # answer.
       - name: Ask the server
+        continue-on-error: true
         env:
           SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           HOST_B: ${{ secrets.DEPLOY_HOST_BISTBARG }}
@@ -84,7 +89,8 @@ jobs:
           fi
           mkdir -p ~/.ssh
           echo "$SSH_KEY" > ~/.ssh/k && chmod 600 ~/.ssh/k
-          ssh -i ~/.ssh/k -o StrictHostKeyChecking=accept-new "root@$HOST" \
+          set +e
+          ssh -i ~/.ssh/k -o StrictHostKeyChecking=accept-new -o ConnectTimeout=25 "root@$HOST" \
             APP_DIR="$APP_DIR" SERVICE="$SERVICE" SINCE="$SINCE" bash -s > report.txt 2>&1 <<'EOF'
           set +e
           cd "$APP_DIR" 2>/dev/null || { echo "APP_DIR missing"; exit 0; }
@@ -130,9 +136,13 @@ jobs:
             | grep -cE '\[call\]|call_log' | sed 's/^/call lines in the window: /'
           echo ""
           EOF
-          echo "exit: $?"
+          rc=$?
+          echo "" >> report.txt
+          echo "(ssh exit $rc)" >> report.txt
+          exit 0
 
       - name: Commit the report
+        if: always()
         run: |
           mkdir -p diagnostics
           {
@@ -141,7 +151,7 @@ jobs:
             echo "Generated $(date -u +%Y-%m-%dT%H:%MZ) by .github/workflows/share-report.yml"
             echo ""
             echo '```'
-            cat report.txt
+            cat report.txt 2>/dev/null || echo "(the server step produced no output at all)"
             echo '```'
           } > "diagnostics/share-report.md"
           git config user.name  "github-actions[bot]"
