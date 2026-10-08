@@ -249,19 +249,28 @@ test('THE SUPPRESSION: a notification is shown when the app is NOT in front', ()
     'the handler still refuses to show notifications while the app is in the background');
   assert.ok(/shouldPlaySound: !inApp/.test(fn),
     'a background notification is shown silently, which reads as not arriving');
-  // The literal that caused it must not come back — but there is now ONE
-  // legitimate `false` in here, the branch that stands down because the socket
-  // has already drawn this message (see notifyOnce.ts). So the assertion is
-  // made precise rather than dropped: outside that branch, the answer must
-  // still be computed from whether the user is in the app.
+  // The literal that caused it must not come back — but there are now TWO
+  // legitimate `false` branches in here, and each is named rather than the
+  // assertion being loosened to tolerate any number of them:
+  //
+  //   • the socket has already drawn this message (notifyOnce.ts);
+  //   • the push was delivered from a queue hours after it was sent.
+  //
+  // Outside those two, the answer must still be computed from whether the
+  // user is in the app. A third unexplained `false` is the bug this test
+  // exists for, and still fails.
   const dedup = /if \(!notifyOnce\.claim\([\s\S]*?\n    \}/.exec(fn);
   assert.ok(dedup, 'the duplicate-suppression branch is gone');
-  const rest = fn.replace(dedup[0], '');
+  const stale = /if \(pushReg\.pushIsStale\([\s\S]*?\n    \}/.exec(fn);
+  assert.ok(stale, 'the stale-push branch is gone');
+  const rest = fn.replace(dedup[0], '').replace(stale[0], '');
   assert.ok(!/shouldShowAlert: false/.test(rest),
     'shouldShowAlert is hardcoded false again, which suppresses every notification');
-  // …and that branch must be guarded by the claim, not by anything else.
+  // …and each branch must be guarded by its own condition, not by anything else.
   assert.ok(/shouldShowAlert: false/.test(dedup[0]),
     'the suppression branch no longer suppresses anything');
+  assert.ok(/shouldShowAlert: false/.test(stale[0]),
+    'the stale branch no longer suppresses anything');
 });
 
 test('THE SILENT ONE: the app\'s own notification names the message channel', () => {

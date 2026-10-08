@@ -95,7 +95,18 @@ export function encodedNothing(o: { framesEncoded?: unknown; seconds?: unknown }
   // that is normal, not a failure.
   if (!Number.isFinite(secs) || secs < 2) return false;
   if (!Number.isFinite(frames)) return false;
-  return frames <= 0;
+  // NEGATIVE MEANS THE QUESTION WAS NOT ANSWERED, not that the answer was
+  // zero. The sampler starts the counter at -1 and leaves it there when
+  // getStats returns no outbound video report — which is a platform that
+  // does not expose the statistic, not an encoder that refused the screen.
+  //
+  // This read `frames <= 0`, so an unanswered question told the person "the
+  // screen is being captured but nothing is going out". That is a
+  // measurement they cannot check and I could not either: on a build where
+  // the statistic is missing, that sentence appears on every share, working
+  // or not. A diagnostic that cannot be wrong is not a diagnostic.
+  if (frames < 0) return false;
+  return frames === 0;
 }
 
 /** How long to let a share run before asking the encoder how it is doing. */

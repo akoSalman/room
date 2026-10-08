@@ -93,7 +93,21 @@ Notifications.setNotificationHandler({
     //
     // A push with no msgId — a call, an update — has nothing to key on and is
     // always allowed through.
-    const msgId = notification?.request?.content?.data?.msgId;
+    const data = notification?.request?.content?.data || {};
+    const msgId = data.msgId;
+    // Delivered from a queue long after it was sent.
+    //
+    // Reported as: notifications for messages received hours earlier and
+    // already read. Firebase holds a push for a device that is offline and
+    // hands it over when the device comes back — the server now puts a one
+    // hour lifetime on message pushes, which is the half that works when
+    // this process is dead. This is the backstop for the delivery paths that
+    // lifetime does not cover, and it is set six hours out so that a phone
+    // whose clock is wrong cannot silence itself with it.
+    if (pushReg.pushIsStale({ sentAt: data.sentAt, now: Date.now() })) {
+      notifyDiag.record('handler', false, 'stale');
+      return { shouldShowAlert: false, shouldPlaySound: false, shouldSetBadge: false };
+    }
     if (!notifyOnce.claim(msgId)) {
       notifyDiag.record('handler', false);
       return { shouldShowAlert: false, shouldPlaySound: false, shouldSetBadge: false };

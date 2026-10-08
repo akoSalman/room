@@ -89,6 +89,13 @@ test('…but NOT BEFORE IT HAS HAD TIME, or every share reports a failure', () =
   assert.strictEqual(S.encodedNothing({ seconds: 5 }), false);
   assert.strictEqual(S.encodedNothing({}), false);
   assert.strictEqual(S.encodedNothing(null), false);
+  // AND NEITHER IS A QUESTION THAT WAS NOT ANSWERED. The sampler starts the
+  // counter at -1 and leaves it there when the platform exposes no outbound
+  // video statistics. This returned true for -1, so on such a build every
+  // share — working or not — told the person nothing was going out. A
+  // diagnostic that cannot be wrong is not a diagnostic.
+  assert.strictEqual(S.encodedNothing({ framesEncoded: -1, seconds: 5 }), false,
+    'stats being unavailable is reported as the encoder producing nothing');
   // …and the sample is actually taken after a usable delay.
   assert.ok(S.SAMPLE_AFTER_MS >= 2000,
     'the sample is taken before the encoder could have produced anything');

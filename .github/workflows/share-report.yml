@@ -1,0 +1,151 @@
+name: Share Report
+
+# Why this exists.
+#
+# Screen share has now been reported four times. Each round narrowed it from
+# the device's own numbers rather than from reading the source, and each
+# round the numbers said something I would not have guessed:
+#
+#   captured=1 senders=1 switched=1   — the capture starts, the call has one
+#                                       video sender, the screen track ends up
+#                                       in it. The swap was never the problem.
+#
+# The latest round added an explicit scale, on the theory that a screencast
+# source is exempt from WebRTC's own downscaling and the encoder refuses a
+# 1080x2400 frame in a call negotiated for 640x480. That is a theory, and the
+# phone now says `no-frames` to the person using it, so the theory did not
+# hold.
+#
+# The one line that separates what is left is already being logged:
+#
+#   [share] ... scale=N encoded=N sent=N size=WxH after=Ns
+#
+#   • scale=1            the scaling never applied — getSettings() returned no
+#                        dimensions, so the last change was a no-op and the
+#                        resolution theory is untested rather than wrong
+#   • encoded=0 size=0x0 the encoder produced nothing and never configured
+#                        itself: the source is refused outright
+#   • encoded=0 size=WxH the encoder configured itself and still emitted
+#                        nothing
+#   • encoded>0 sent=0   the picture is encoded and not leaving: a transport
+#                        problem, nothing to do with the screen
+#   • encoded=? (stats unavailable on this platform) — in which case the
+#                        "nothing is going out" message shown to the person is
+#                        not a measurement at all, and says so wrongly
+#
+# NOTHING SECRET IS WRITTEN. The [share] line carries a numeric user id and
+# counters, and this report drops the user id as well. No tokens, no
+# usernames, no message content, no hostnames. diagnostics/ is committed to a
+# repository that has been public, so it is written as if anyone will read it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      brand:
+        description: 'Which server to inspect'
+        required: false
+        default: 'bistbarg'
+      since:
+        description: 'How far back to look (journalctl --since)'
+        required: false
+        default: '7 days ago'
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Ask the server
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST_B: ${{ secrets.DEPLOY_HOST_BISTBARG }}
+          DIR_B: ${{ secrets.DEPLOY_DIR_BISTBARG }}
+          SVC_B: ${{ secrets.DEPLOY_SERVICE_BISTBARG }}
+          HOST_A: ${{ secrets.DEPLOY_HOST_AKOSALMAN }}
+          DIR_A: ${{ secrets.DEPLOY_DIR_AKOSALMAN }}
+          SVC_A: ${{ secrets.DEPLOY_SERVICE_AKOSALMAN }}
+          BRAND: ${{ inputs.brand }}
+          SINCE: ${{ inputs.since }}
+        run: |
+          set -u
+          if [ "$BRAND" = "akosalman" ]; then
+            HOST="$HOST_A"; APP_DIR="$DIR_A"; SERVICE="$SVC_A"
+          else
+            HOST="$HOST_B"; APP_DIR="$DIR_B"; SERVICE="$SVC_B"
+          fi
+          if [ -z "${HOST:-}" ] || [ -z "${SSH_KEY:-}" ]; then
+            echo "Secrets for $BRAND are not configured." | tee report.txt
+            exit 0
+          fi
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/k && chmod 600 ~/.ssh/k
+          ssh -i ~/.ssh/k -o StrictHostKeyChecking=accept-new "root@$HOST" \
+            APP_DIR="$APP_DIR" SERVICE="$SERVICE" SINCE="$SINCE" bash -s > report.txt 2>&1 <<'EOF'
+          set +e
+          cd "$APP_DIR" 2>/dev/null || { echo "APP_DIR missing"; exit 0; }
+
+          echo "### is the version that reports this even running here"
+          # The deploy is scp, not git, so git HEAD lies. The file is the
+          # evidence. See push-report.yml for the time that nearly misled us.
+          echo -n "server logs [share] at all: "
+          grep -q "\[share\]" server.js 2>/dev/null && echo yes || echo "NO  <-- the deploy did not carry it"
+          echo -n "server reports encoder stats: "
+          grep -q 'encoded=' server.js 2>/dev/null && echo yes || echo "NO  <-- older build, no encoder numbers"
+          echo ""
+
+          echo "### every share attempt, oldest first"
+          # The user id is dropped: this file is public and nothing here needs
+          # to say WHO shared a screen, only what the encoder did.
+          journalctl -u "$SERVICE" --since "$SINCE" --no-pager 2>/dev/null \
+            | grep -F '[share]' \
+            | sed 's/user=[0-9]*/user=-/' \
+            | tail -200
+          echo ""
+
+          echo "### how many of each outcome"
+          journalctl -u "$SERVICE" --since "$SINCE" --no-pager 2>/dev/null \
+            | grep -F '[share]' \
+            | grep -oE 'outcome=[a-z-]+' | sort | uniq -c | sort -rn
+          echo ""
+
+          echo "### THE ANSWER: what the encoder did"
+          # One line per sample. If this section is empty, no device running a
+          # build with the sampler has shared a screen in the window, and
+          # nothing below should be read as evidence of anything.
+          journalctl -u "$SERVICE" --since "$SINCE" --no-pager 2>/dev/null \
+            | grep -F '[share]' | grep -F 'encoded=' \
+            | grep -oE 'scale=[0-9.?]+ encoded=[0-9?-]+ sent=[0-9?-]+ size=[0-9?]+x[0-9?]+ after=[0-9?]+s' \
+            | sort | uniq -c | sort -rn
+          echo ""
+
+          echo "### were any of those shares in a call that was working otherwise"
+          # A share that failed inside a call which itself never connected is
+          # not evidence about screen sharing.
+          journalctl -u "$SERVICE" --since "$SINCE" --no-pager 2>/dev/null \
+            | grep -cE '\[call\]|call_log' | sed 's/^/call lines in the window: /'
+          echo ""
+          EOF
+          echo "exit: $?"
+
+      - name: Commit the report
+        run: |
+          mkdir -p diagnostics
+          {
+            echo "# Share report — ${{ inputs.brand }}"
+            echo ""
+            echo "Generated $(date -u +%Y-%m-%dT%H:%MZ) by .github/workflows/share-report.yml"
+            echo ""
+            echo '```'
+            cat report.txt
+            echo '```'
+          } > "diagnostics/share-report.md"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add diagnostics/share-report.md
+          git commit -m "Share report for ${{ inputs.brand }} [skip ci]" || echo "no change"
+          git push origin HEAD:${{ github.ref_name }} || echo "push failed"

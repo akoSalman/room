@@ -472,6 +472,50 @@ test('THE APP AND THE SERVER TITLE A NOTIFICATION THE SAME WAY', () => {
     '🦊 ali · Family');
 });
 
+test('THE APP AND THE SERVER AGREE ABOUT WHAT COUNTS AS TOO OLD', () => {
+  // Reported as: notifications for messages received hours earlier and
+  // already read. Firebase queues a push for an offline device and hands it
+  // over when the device returns; only calls ever set a lifetime.
+  const PR = require(path.join(OUT, 'pushRegistration.js'));
+  const SRV = require(path.join(ROOT, 'notify.js'));
+  const now = 1_700_000_000_000;
+  const HOUR = 60 * 60 * 1000;
+  // Negative ages are a phone whose clock is behind — a whole time zone of
+  // it, which must still show the notification rather than refuse it.
+  for (const age of [-400 * HOUR, -13 * HOUR, -3 * HOUR, 0, 1000, HOUR,
+      5 * HOUR, 7 * HOUR, 48 * HOUR]) {
+    const args = { sentAt: now - age, now };
+    assert.strictEqual(PR.pushIsStale(args), SRV.pushIsStale(args),
+      `the two disagree for an age of ${age / HOUR}h`);
+  }
+  for (const bad of [{ now }, { sentAt: 0, now }, { sentAt: 'x', now }, {}, null]) {
+    assert.strictEqual(PR.pushIsStale(bad), SRV.pushIsStale(bad),
+      `the two disagree for ${JSON.stringify(bad)}`);
+  }
+  assert.strictEqual(PR.STALE_PUSH_MS, SRV.STALE_PUSH_MS,
+    'the phone and the server disagree about the backstop');
+  // Agreeing on something, not merely agreeing: two copies that always
+  // returned false would pass the loops above.
+  assert.strictEqual(PR.pushIsStale({ sentAt: now - 7 * HOUR, now }), true);
+  assert.strictEqual(PR.pushIsStale({ sentAt: now - 1000, now }), false);
+  assert.strictEqual(PR.pushIsStale({ sentAt: now + 13 * HOUR, now }), false,
+    'a phone a time zone behind refuses everything it is sent');
+});
+
+test('THE HANDLER ACTUALLY ASKS, before it asks anything else', () => {
+  // A stale push must not consume the once-only claim for its message: if it
+  // did, a message whose push arrives late would have its claim used up by
+  // the copy that is thrown away, and the socket's live notification for the
+  // same message would then be refused.
+  const app = fs.readFileSync(path.join(NAT, '..', 'native-app', 'App.tsx'), 'utf8');
+  const fn = /handleNotification: async \(notification: any\) => \{([\s\S]*?)\n  \},/.exec(app);
+  assert.ok(fn, 'could not find the notification handler');
+  assert.ok(/pushReg\.pushIsStale\(\{ sentAt: data\.sentAt, now: Date\.now\(\) \}\)/.test(fn[1]),
+    'the app draws a notification however old it is');
+  assert.ok(fn[1].indexOf('pushIsStale') < fn[1].indexOf('notifyOnce.claim'),
+    'a stale push uses up the claim for its message, silencing the live one');
+});
+
 let passed = 0, failed = 0;
 (async () => {
   for (const { n, f } of tests) {

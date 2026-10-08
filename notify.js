@@ -227,6 +227,83 @@ function silencedFor(o) {
   return !!(e.roomMuted || e.senderMuted);
 }
 
+// ── A notification for a message from hours ago ────────────────────────────
+//
+// Reported as: notifications, apparently from Firebase, for messages received
+// hours earlier and already seen and read.
+//
+// Nothing here re-sends anything. Firebase QUEUES: a push for a device that
+// is offline is held and delivered when it comes back, and the default
+// lifetime for that is four weeks. Only calls ever said otherwise (ttl 45s),
+// so a phone that lost its connection in the evening was handed the whole
+// evening's messages when it found a signal again — every one of them long
+// since read on another device or in the app itself.
+//
+// Two different numbers below, and the difference is the point.
+
+/**
+ * How long a message push is worth delivering at all.
+ *
+ * Told to Firebase, which drops the push when it expires rather than
+ * delivering it late. This is the half that does the work, because it is the
+ * half that still applies when the app's process is dead — which is exactly
+ * when a notification matters and when no code of ours can run.
+ *
+ * An hour rather than something tighter: suppressing a notification is a
+ * SILENT failure, and "I don't get notifications" is a worse report than "I
+ * got one a bit late". An hour removes the overnight backlog, which is what
+ * was reported, and leaves a brief outage — the normal case on these
+ * networks — still able to notify.
+ */
+const PUSH_TTL_MS = 60 * 60 * 1000;
+
+/**
+ * How old a push must look to the PHONE before the app refuses to draw it.
+ *
+ * Deliberately much larger than the lifetime above, and it is not a
+ * duplicate of it. This one is judged against the phone's own clock, and a
+ * phone's clock can be wrong by an hour without anybody noticing. If this
+ * used the same hour, a device set an hour fast would silently refuse every
+ * notification it was ever sent, and the report would be "no notifications at
+ * all" — caused by the fix for notifications arriving late.
+ *
+ * So it is set where no plausible clock error can reach it, and it exists
+ * only as a backstop for the paths Firebase's lifetime does not cover: Web
+ * Push and Najva, which queue on their own terms.
+ */
+const STALE_PUSH_MS = 6 * 60 * 60 * 1000;
+
+/** A duration as Firebase wants it written. */
+function pushTtl(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return `${Math.round(n / 1000)}s`;
+}
+
+/**
+ * Is this notification too old to be worth showing?
+ *
+ * FAILS OPEN, every time it is unsure — an unstamped push from an older
+ * server, an unreadable number, a clock that disagrees. The cost of being
+ * wrong one way is a notification somebody did not need; the cost of being
+ * wrong the other way is silence, and silence is indistinguishable from the
+ * app being broken.
+ */
+function pushIsStale(o) {
+  const e = o || {};
+  const sentAt = Number(e.sentAt);
+  const now = Number(e.now);
+  const max = Number.isFinite(Number(e.maxAgeMs)) && Number(e.maxAgeMs) > 0
+    ? Number(e.maxAgeMs) : STALE_PUSH_MS;
+  // Not stamped, or not a time: show it.
+  if (!Number.isFinite(sentAt) || sentAt <= 0) return false;
+  if (!Number.isFinite(now) || now <= 0) return false;
+  // Sent in the future, as far as this device is concerned. That is a clock
+  // disagreement and says nothing about age.
+  if (sentAt > now) return false;
+  return (now - sentAt) > max;
+}
+
 /**
  * The name a notification is shown under.
  *
@@ -252,4 +329,5 @@ function senderTitle(o) {
 module.exports = {
   recipientsFor, tokenIsDead, notificationTag, collapseKeyFor, presenceLine,
   silencedFor, senderTitle,
+  PUSH_TTL_MS, STALE_PUSH_MS, pushTtl, pushIsStale,
 };

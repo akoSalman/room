@@ -149,6 +149,43 @@ export function notificationTag(msgId: string | number | null | undefined): stri
 }
 
 /**
+ * How old a push may look to THIS PHONE before the app refuses to draw it.
+ *
+ * Mirrors STALE_PUSH_MS in notify.js and is compared against it by a drift
+ * test. Six hours, and deliberately not the one hour Firebase is told: that
+ * number is judged by Firebase's clock, this one by the phone's, and a
+ * phone's clock can be an hour out without anyone noticing. Set to an hour,
+ * a device running fast would silently refuse every notification it was ever
+ * sent — and "no notifications at all" is a far worse report than the late
+ * ones this is fixing.
+ */
+export const STALE_PUSH_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Is this notification too old to be worth drawing?
+ *
+ * FAILS OPEN whenever it is unsure — an unstamped push from an older server,
+ * an unreadable number, a clock that disagrees. Being wrong one way costs a
+ * notification nobody needed; being wrong the other way is silence, which is
+ * indistinguishable from the app being broken.
+ */
+export function pushIsStale(o: {
+  sentAt?: unknown; now?: unknown; maxAgeMs?: unknown;
+}): boolean {
+  const e = o || {};
+  const sentAt = Number(e.sentAt);
+  const now = Number(e.now);
+  const max = Number.isFinite(Number(e.maxAgeMs)) && Number(e.maxAgeMs) > 0
+    ? Number(e.maxAgeMs) : STALE_PUSH_MS;
+  if (!Number.isFinite(sentAt) || sentAt <= 0) return false;
+  if (!Number.isFinite(now) || now <= 0) return false;
+  // Sent in the future as far as this device is concerned: a clock
+  // disagreement, which says nothing about age.
+  if (sentAt > now) return false;
+  return (now - sentAt) > max;
+}
+
+/**
  * The name a notification is shown under: the profile emoji, then the name.
  *
  * Mirrors senderTitle in notify.js and is compared against it by a drift

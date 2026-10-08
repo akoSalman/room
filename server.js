@@ -9,7 +9,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const mapTiles = require('./mapTiles');
 const { recipientsFor, tokenIsDead, notificationTag, collapseKeyFor, presenceLine,
-  silencedFor, senderTitle } = require('./notify');
+  silencedFor, senderTitle, PUSH_TTL_MS, pushTtl } = require('./notify');
 const najva = require('./najva');
 const mviews = require('./messageViews');
 const { seenByAllUpTo } = require('./readReceipts');
@@ -1250,6 +1250,20 @@ function sendNajvaToUsers(userIds, title, body, data = {}) {
 
 async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
   if (!userIds.length) return;
+  // ── When this was sent, and how long it is worth ────────────────────────
+  //
+  // Reported as: notifications for messages received hours earlier and
+  // already read. Nothing re-sends them — Firebase QUEUES a push for a
+  // device that is offline and delivers it when the device returns, for up
+  // to four weeks by default. Only calls ever set a lifetime, so every
+  // message push had that four-week default and a phone that found a signal
+  // in the morning was handed the night's backlog.
+  //
+  // Stamped and bounded HERE rather than at each of the seven call sites,
+  // which is how one of them would eventually be left out. A caller that
+  // sets its own ttl — a call, at 45 seconds — keeps it.
+  data = { sentAt: Date.now(), ...data };
+  android = { ttl: pushTtl(PUSH_TTL_MS), ...android };
   // The rule lives in notify.js so it can be tested: the rest of this function
   // is behind credential checks a test environment has no way to satisfy.
   // The room id rides along on every message push already, so a muted room is
@@ -1360,8 +1374,16 @@ async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
                 ...(data.msgId ? { tag: notificationTag(data.msgId) } : {}),
                 ...(android.tag ? { tag: android.tag } : {}),
               },
-              // Calls must not be held back by Doze or app-standby buckets.
-              ...(android.ttl ? { ttl: android.ttl, direct_boot_ok: true } : {}),
+              // How long Firebase may hold this before giving up. Every push
+              // has one now — see sendPushToUsers — because the four-week
+              // default is what delivered a night of messages the morning
+              // after they were read.
+              ...(android.ttl ? { ttl: android.ttl } : {}),
+              // Separate from the lifetime above, and only for calls. These
+              // were one condition until messages gained a lifetime of their
+              // own, at which point every message would quietly have become
+              // direct-boot deliverable as a side effect of an unrelated fix.
+              ...(android.directBootOk ? { direct_boot_ok: true } : {}),
             },
           },
         }),
@@ -3827,6 +3849,11 @@ io.on('connection', (socket) => {
           // A call is worthless once it has been missed; do not deliver it
           // late from a queue.
           ttl: '45s',
+          // Deliverable before the phone has been unlocked after a reboot.
+          // Worth it for a ringing call and for nothing else: in direct-boot
+          // mode the app's own storage is still encrypted, so a message
+          // notification delivered there has nothing behind it.
+          directBootOk: true,
           fromUserId: socket.user.id,
         },
       );

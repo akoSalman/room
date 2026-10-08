@@ -256,6 +256,107 @@ test('the server actually logs both events, with the reason', () => {
     'nothing records how long the socket lasted before it dropped');
 });
 
+// ── A notification for a message from hours ago ────────────────────────────
+//
+// Reported as: notifications for messages received hours earlier and already
+// seen and read. Nothing re-sends them. Firebase QUEUES a push for a device
+// that is offline and delivers it when the device returns — for four weeks,
+// by default, and only calls ever said otherwise.
+
+const HOUR = 60 * 60 * 1000;
+
+test('A MESSAGE PUSH NOW HAS A LIFETIME AT ALL', () => {
+  // The whole bug in one assertion. Without this Firebase keeps it for four
+  // weeks and hands over the backlog whenever the phone reappears.
+  assert.ok(N.PUSH_TTL_MS > 0, 'message pushes still live for ever');
+  assert.ok(N.PUSH_TTL_MS <= 4 * HOUR,
+    `a push is kept for ${N.PUSH_TTL_MS / HOUR}h, which is the reported problem`);
+  assert.strictEqual(N.pushTtl(N.PUSH_TTL_MS), '3600s');
+  assert.strictEqual(N.pushTtl(45000), '45s', 'a call ttl is written differently');
+  assert.strictEqual(N.pushTtl(0), null, 'a meaningless lifetime is still sent');
+  assert.strictEqual(N.pushTtl('x'), null);
+});
+
+test('THE SERVER STAMPS AND BOUNDS EVERY PUSH IN ONE PLACE', () => {
+  // Seven call sites. Doing it at each is how one of them gets left out.
+  const fs2 = require('fs'), path2 = require('path');
+  const src = fs2.readFileSync(path2.join(__dirname, '..', 'server.js'), 'utf8');
+  const fn = /async function sendPushToUsers\(userIds, title, body, data = \{\}, android = \{\}\) \{([\s\S]*?)\n  if \(!fcmCreds\) return;/.exec(src);
+  assert.ok(fn, 'could not find sendPushToUsers');
+  assert.ok(/data = \{ sentAt: Date\.now\(\), \.\.\.data \}/.test(fn[1]),
+    'pushes are not stamped with when they were sent');
+  assert.ok(/android = \{ ttl: pushTtl\(PUSH_TTL_MS\), \.\.\.android \}/.test(fn[1]),
+    'message pushes still have no lifetime');
+  // The spread order matters — a call's own 45 seconds must survive it — and
+  // that is proven by running it, in the next test, rather than by an
+  // arithmetic comparison of string positions that cannot fail.
+});
+
+test('A CALL KEEPS ITS OWN SHORTER LIFETIME', () => {
+  const fs2 = require('fs'), path2 = require('path');
+  const src = fs2.readFileSync(path2.join(__dirname, '..', 'server.js'), 'utf8');
+  assert.ok(/ttl: '45s'/.test(src), 'a missed call can now be delivered an hour late');
+  // Proving the spread order does what it claims, rather than reading it.
+  const merge = (android) => ({ ttl: N.pushTtl(N.PUSH_TTL_MS), ...android });
+  assert.strictEqual(merge({ ttl: '45s' }).ttl, '45s', "a call's lifetime was overwritten");
+  assert.strictEqual(merge({}).ttl, '3600s', 'a message got no lifetime');
+});
+
+test('DIRECT BOOT STAYED WITH CALLS, and did not follow the lifetime', () => {
+  // These were one condition. Giving messages a lifetime would have made
+  // every message direct-boot deliverable as a side effect — and in direct
+  // boot the app's own storage is still encrypted, so there is nothing
+  // behind such a notification.
+  const fs2 = require('fs'), path2 = require('path');
+  const src = fs2.readFileSync(path2.join(__dirname, '..', 'server.js'), 'utf8');
+  assert.ok(!/ttl: android\.ttl, direct_boot_ok: true/.test(src),
+    'direct boot is still tied to having a lifetime');
+  assert.ok(/android\.directBootOk \? \{ direct_boot_ok: true \}/.test(src),
+    'direct boot is no longer offered to calls at all');
+  assert.ok(/directBootOk: true/.test(src), 'the call push no longer asks for direct boot');
+});
+
+test('A PUSH OLDER THAN THE BACKSTOP IS NOT DRAWN', () => {
+  const now = 1_700_000_000_000;
+  assert.strictEqual(N.pushIsStale({ sentAt: now - 7 * HOUR, now }), true);
+  assert.strictEqual(N.pushIsStale({ sentAt: now - 5 * HOUR, now }), false);
+  assert.strictEqual(N.pushIsStale({ sentAt: now - 1000, now }), false);
+});
+
+test('…AND IT FAILS OPEN EVERY OTHER WAY', () => {
+  // Suppressing a notification is a SILENT failure: "I get no notifications"
+  // is a worse report than "I got one late", and it is the report this whole
+  // file exists because of. So every uncertainty shows the notification.
+  const now = 1_700_000_000_000;
+  assert.strictEqual(N.pushIsStale({ now }), false, 'an unstamped push is refused');
+  assert.strictEqual(N.pushIsStale({ sentAt: 'nonsense', now }), false);
+  assert.strictEqual(N.pushIsStale({ sentAt: 0, now }), false);
+  assert.strictEqual(N.pushIsStale({ sentAt: -5, now }), false);
+  assert.strictEqual(N.pushIsStale({ sentAt: now - HOUR }), false, 'no clock means no judgement');
+  assert.strictEqual(N.pushIsStale(null), false);
+  // A phone whose clock is BEHIND the server sees every push as from the
+  // future. That is a clock disagreement, not an age — and the gap can be a
+  // whole time zone, so it is tested well past the backstop. At three hours
+  // this passed against a version that simply took the absolute difference,
+  // which would silence a phone whose clock is wrong in the other direction.
+  assert.strictEqual(N.pushIsStale({ sentAt: now + 3 * HOUR, now }), false,
+    'a phone with a slow clock refuses everything it is sent');
+  assert.strictEqual(N.pushIsStale({ sentAt: now + 13 * HOUR, now }), false,
+    'a phone a time zone behind refuses everything it is sent');
+  assert.strictEqual(N.pushIsStale({ sentAt: now + 400 * HOUR, now }), false,
+    'a wildly wrong clock silences the phone instead of showing the message');
+});
+
+test('THE BACKSTOP IS FAR ENOUGH OUT THAT A WRONG CLOCK CANNOT SILENCE A PHONE', () => {
+  // The two numbers are different on purpose. Firebase judges its hour by
+  // its own clock; the phone judges this one by a clock that is routinely
+  // wrong by an hour and occasionally by a day's worth of time zone.
+  assert.ok(N.STALE_PUSH_MS >= 4 * HOUR,
+    `a device whose clock is ${N.STALE_PUSH_MS / HOUR}h fast would refuse everything`);
+  assert.ok(N.STALE_PUSH_MS > N.PUSH_TTL_MS,
+    'the phone is stricter than Firebase, which is the dangerous way round');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }
