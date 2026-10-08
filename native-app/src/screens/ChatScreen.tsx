@@ -69,7 +69,7 @@ import * as live from '../liveIndicator';
 import * as saveTarget from '../saveTarget';
 import * as saveConfirm from '../saveConfirm';
 import * as reactionBurst from '../reactionBurst';
-import { mergeViewerList, absoluteUrl } from '../viewerList';
+import { mergeViewerList, absoluteUrl, photoKey } from '../viewerList';
 import ReactionBurst from '../components/ReactionBurst';
 import * as pick from '../locationPick';
 import { uploadResumable } from '../chunkedUpload';
@@ -84,6 +84,9 @@ class UploadCancelled extends Error {
   constructor() { super('cancelled'); this.name = 'UploadCancelled'; }
 }
 import ImageWithSpinner from '../components/ImageWithSpinner';
+import BlurredImage from '../components/BlurredImage';
+import * as blurStore from '../blurStore';
+import { startsBlurred } from '../imageBlur';
 import GalleryImage from '../components/GalleryImage';
 import VideoPlayer, { VideoItem } from '../components/VideoPlayer';
 import VideoBubble from '../components/VideoBubble';
@@ -258,6 +261,15 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   // redrawing too often or redrawing too much each time, which no amount of
   // reading has settled. See src/renderCount.ts.
   renderCount.noteScreen();
+  // Covering and clearing a photo must redraw the rows that show it. The
+  // store is outside React, so the screen subscribes and the counter goes in
+  // the list's extraData like every other row input.
+  const [blurTick, setBlurTick] = useState(0);
+  useEffect(() => {
+    blurStore.load().catch(() => {});
+    return blurStore.subscribe(() => setBlurTick(n => n + 1));
+  }, []);
+
   const [messages, setMessages] = useState<Message[]>([]);
   const [reactions, setReactions] = useState<Record<number, Reaction[]>>({});
   // The live reactions, for the socket listener — which is created once and
@@ -1318,10 +1330,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     // thirty seconds for nothing.
     () => ({ maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive,
       selectMode, e2ePhase, unreadInfo, bursts,
-      expandedIds, oneTimeExpiry, me, myPosition, unreadComments, commentCounts }),
+      expandedIds, oneTimeExpiry, me, myPosition, unreadComments, commentCounts, blurTick }),
     [maxOtherReadMsgId, reactions, highlightId, online, revealedOneTime, e2eActive,
       selectMode, e2ePhase, unreadInfo, bursts,
-      expandedIds, oneTimeExpiry, me, myPosition, unreadComments, commentCounts],
+      expandedIds, oneTimeExpiry, me, myPosition, unreadComments, commentCounts, blurTick],
   );
 
   const scrollBottom = useCallback(() => {
@@ -5231,18 +5243,20 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
             const uri = msg._uploading ? msg.file_path! : `${BASE_URL}${msg.file_path}`;
             const onLoaded = msg.one_time_seconds && !mine ? () => startOneTimeClock(msg) : undefined;
             return (
-              <TouchableOpacity
-                onPress={() => {
+              <BlurredImage
+                uri={uri}
+                mine={mine}
+                uploading={!!msg._uploading}
+                hiddenOneTime={hiddenOneTime}
+                cache={canTakeContent(msg)}
+                style={s.msgImage}
+                onLoaded={onLoaded}
+                onOpen={() => {
                   if (selectMode) { toggleSelected(msg); return; }
                   if (!msg._uploading) openViewer(uri);
                 }}
                 onLongPress={() => onMessageLongPress(msg)}
-                delayLongPress={350}
-                disabled={msg._uploading}>
-                {msg._uploading
-                  ? <Image source={{ uri }} style={s.msgImage} resizeMode="cover" />
-                  : <ImageWithSpinner uri={uri} cache={canTakeContent(msg)} style={s.msgImage} resizeMode="cover" onLoaded={onLoaded} />}
-              </TouchableOpacity>
+              />
             );
           })()}
           {!hiddenOneTime && msg.type === 'gallery' && (() => {
@@ -5259,10 +5273,24 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
                 </View>
               );
             }
+            // One answer for the whole mosaic: the photos arrived together
+            // and are looked at together. Covered while ANY of them is still
+            // unseen, so a gallery cannot be half-covered.
+            const keys = full.map(u => photoKey(u)).filter(Boolean) as string[];
+            const galleryBlurred = startsBlurred({
+              mine, hiddenOneTime,
+              revealed: keys.length > 0 && keys.every(k => blurStore.isRevealed(k)),
+            });
             return (
               <GalleryGrid
                 uris={full}
+                mine={mine}
                 cache={canTakeContent(msg)}
+                blurred={galleryBlurred}
+                onToggleBlur={() => {
+                  if (galleryBlurred) keys.forEach(k => blurStore.reveal(k));
+                  else keys.forEach(k => blurStore.hide(k));
+                }}
                 onLongPress={() => onMessageLongPress(msg)}
                 onOpen={(i) => { if (selectMode) toggleSelected(msg); else openViewer(full[i]); }}
                 onFirstLoaded={msg.one_time_seconds && !mine ? () => startOneTimeClock(msg) : undefined}
