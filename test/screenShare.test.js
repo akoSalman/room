@@ -74,6 +74,58 @@ test('UNKNOWN DIMENSIONS MEAN NO SCALING, not a guess', () => {
   assert.strictEqual(S.scaleFor({ width: -1080, height: -2400 }), 1);
 });
 
+test('THE SCREEN\'S OWN CONTRIBUTION IS THE DIFFERENCE, NOT THE TOTAL', () => {
+  // The first version of this measured the total, and the first report it
+  // produced could not be read: framesEncoded is cumulative for the whole
+  // outgoing stream, so it carries whatever the CAMERA encoded before the
+  // swap. On a working call a dead share hides inside a large number; on a
+  // call that never connected the total is zero whatever the screen does.
+  assert.strictEqual(S.madeNoProgress({ before: 0, after: 0, seconds: 5 }), true);
+  assert.strictEqual(S.madeNoProgress({ before: 900, after: 900, seconds: 5 }), true,
+    'a dead share on a call that was already working is reported as fine');
+  assert.strictEqual(S.madeNoProgress({ before: 900, after: 1050, seconds: 5 }), false);
+  assert.strictEqual(S.madeNoProgress({ before: 0, after: 150, seconds: 5 }), false);
+});
+
+test('…AND AN UNANSWERED QUESTION IS NOT AN ANSWER', () => {
+  // -1 is the platform not exposing the statistic. Read as a count it makes
+  // every share, working or not, report that nothing is going out — which
+  // is the message being shown to people, so it has to mean something.
+  assert.strictEqual(S.madeNoProgress({ before: -1, after: 0, seconds: 5 }), false,
+    'a missing baseline is treated as a count');
+  assert.strictEqual(S.madeNoProgress({ before: 0, after: -1, seconds: 5 }), false,
+    'a missing reading is treated as a count');
+  assert.strictEqual(S.madeNoProgress({ before: -1, after: -1, seconds: 5 }), false);
+  assert.strictEqual(S.madeNoProgress({ seconds: 5 }), false);
+  assert.strictEqual(S.madeNoProgress(null), false);
+  // Too early to say, as before.
+  assert.strictEqual(S.madeNoProgress({ before: 0, after: 0, seconds: 0 }), false);
+  assert.strictEqual(S.madeNoProgress({ before: 0, after: 0, seconds: 1 }), false);
+  // A counter that went BACKWARDS is a reconfigured encoder, not a failure.
+  assert.strictEqual(S.madeNoProgress({ before: 900, after: 10, seconds: 5 }), false);
+});
+
+test('THE CALL REPORTS WHETHER IT WAS EVEN CONNECTED', () => {
+  // Without it, encoded=0 is uninterpretable: a share that sent nothing and
+  // a call that was never carrying anything look exactly alike. The first
+  // report could not be read for precisely this reason.
+  const mgr = strip(path.join(NAT, 'src', 'callManager.ts'));
+  assert.ok(/connState\(\)/.test(mgr), 'nothing records whether the call was up');
+  assert.ok(/up: this\.connState\(\)/.test(mgr), 'the connection state is never reported');
+  assert.ok(/before, up: this\.connState\(\)/.test(mgr),
+    'the baseline is not reported alongside it');
+  // And the baseline is an actual reading. A constant here would make every
+  // share on a working call look like a failure, and every share on an idle
+  // one look fine — the exact confusion this measurement exists to end.
+  assert.ok(/const baseline = \(await this\.videoStats\(\)\)\.encoded;/.test(mgr),
+    'the baseline is a constant rather than a reading');
+  assert.ok(/sampleShare\(startedAt, baseline\)/.test(mgr),
+    'the baseline is read and then not used');
+  const srv = fs.readFileSync(path.join(NAT, '..', 'server.js'), 'utf8');
+  assert.ok(/up=\$\{n\(d\.up\)\}/.test(srv), 'the server drops the connection state');
+  assert.ok(/before=\$\{n\(d\.before\)\}/.test(srv), 'the server drops the baseline');
+});
+
 test('AN ENCODER THAT HAS PRODUCED NOTHING IS THE DIAGNOSIS', () => {
   // The one fact that cannot be read from the source: frames encoded lives
   // inside WebRTC.
@@ -113,7 +165,10 @@ test('THE SCALE IS APPLIED TO THE SENDER, before the share is announced', () => 
   // Before reportShare('ok'), so what is reported describes the stream that
   // is actually going out.
   const fitAt = CM.indexOf('await this.fitScreenToCall(track)');
-  const okAt = CM.indexOf("this.reportShare('ok')");
+  // Matched as a call rather than as an exact literal: it now carries the
+  // connection state, and a test pinned to the old spelling fails for a
+  // reason that has nothing to do with what it is checking.
+  const okAt = CM.search(/this\.reportShare\('ok'/);
   assert.ok(fitAt > 0 && okAt > 0 && fitAt < okAt,
     'the share is announced before it has been sized');
 });

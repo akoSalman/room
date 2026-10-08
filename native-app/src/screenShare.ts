@@ -111,3 +111,35 @@ export function encodedNothing(o: { framesEncoded?: unknown; seconds?: unknown }
 
 /** How long to let a share run before asking the encoder how it is doing. */
 export const SAMPLE_AFTER_MS = 5000;
+
+/**
+ * Did the SCREEN contribute nothing, as distinct from the call being idle?
+ *
+ * The first measurement of this asked only whether the frame counter was at
+ * zero, and that question cannot be answered usefully. framesEncoded is
+ * cumulative for the whole outgoing stream, so it carries whatever the
+ * CAMERA encoded before the swap: on a call that was working it is already
+ * large and a dead screen share hides inside it, and on a call that never
+ * connected it is zero whatever the screen does.
+ *
+ * The difference across the swap is the only part that belongs to the
+ * screen. Both readings must exist — a negative is a statistic the platform
+ * does not expose, not a count — and a share that has only just started has
+ * not had time to produce anything.
+ */
+export function madeNoProgress(o: {
+  before?: unknown; after?: unknown; seconds?: unknown;
+}): boolean {
+  const e = o || {};
+  const before = Number(e.before);
+  const after = Number(e.after);
+  const secs = Number(e.seconds);
+  if (!Number.isFinite(secs) || secs < 2) return false;
+  if (!Number.isFinite(before) || !Number.isFinite(after)) return false;
+  // Either reading unavailable: no measurement, so no claim.
+  if (before < 0 || after < 0) return false;
+  // Counters can reset when the encoder is reconfigured, and a reset is not
+  // a failure to encode.
+  if (after < before) return false;
+  return after === before;
+}

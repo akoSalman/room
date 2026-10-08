@@ -137,7 +137,8 @@
           "contactsPermission": "Allow ChatRoom to share a contact in a chat."
         }
       ],
-      "./plugins/withNotifeeDataSync"
+      "./plugins/withNotifeeDataSync",
+    "./plugins/withScreenShareService"
     ],
     "extra": {},
     "scheme": "chatroom"

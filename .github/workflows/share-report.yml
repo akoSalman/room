@@ -25,6 +25,11 @@ name: Share Report
 #                        resolution theory is untested rather than wrong
 #   • encoded=0 size=0x0 the encoder produced nothing and never configured
 #                        itself: the source is refused outright
+#   • up=0               the call was not connected, so none of the numbers
+#                        below it say anything about screen sharing
+#   • encoded == before  the screen contributed nothing — the counter is
+#                        cumulative for the stream, so only the difference
+#                        across the swap belongs to the share
 #   • encoded=0 size=WxH the encoder configured itself and still emitted
 #                        nothing
 #   • encoded>0 sent=0   the picture is encoded and not leaving: a transport
@@ -134,7 +139,7 @@ jobs:
           # nothing below should be read as evidence of anything.
           journalctl -u "$SERVICE" --since "$SINCE" --no-pager 2>/dev/null \
             | grep -F '[share]' | grep -F 'encoded=' \
-            | grep -oE 'scale=[0-9.?]+ encoded=[0-9?-]+ sent=[0-9?-]+ size=[0-9?]+x[0-9?]+ after=[0-9?]+s' \
+            | grep -oE 'scale=[0-9.?]+ up=[0-9?]+ before=[0-9?-]+ encoded=[0-9?-]+ sent=[0-9?-]+ size=[0-9?]+x[0-9?]+ after=[0-9?]+s' \
             | sort | uniq -c | sort -rn
           echo ""
 

@@ -5,7 +5,7 @@
 import { PermissionsAndroid, Platform } from 'react-native';
 import { Audio } from 'expo-av';
 import { mediaDevices, RTCPeerConnection, MediaStream } from 'react-native-webrtc';
-import { scaleFor, encodedNothing, MAX_BITRATE, SAMPLE_AFTER_MS } from './screenShare';
+import { scaleFor, madeNoProgress, MAX_BITRATE, SAMPLE_AFTER_MS } from './screenShare';
 import { apiFetch, getSocket } from './api';
 import { stopRinging } from './incomingCall';
 import { routeFor, outgoingStatus, endStopsCall, RING_TIMEOUT_MS, CallMode, CallPhase, OutgoingState } from './callAudio';
@@ -397,36 +397,72 @@ class CallManager {
    * the encoder is refusing the source; climbing means the picture is going
    * out and whatever is wrong is further along.
    */
-  private async sampleShare(startedAt: number) {
+  /** The outgoing video sender, whichever connection it is on. */
+  private videoSender(): any {
     let sender: any = null;
     this.pcs.forEach((pc: any) => {
       pc.getSenders().forEach((sn: any) => {
         if (!sender && sn.track && sn.track.kind === 'video') sender = sn;
       });
     });
-    if (!sender || !this.sharingScreen) return;
-    let encoded = -1;
-    let sent = -1;
-    let w = 0;
-    let h = 0;
+    return sender;
+  }
+
+  /**
+   * What the outgoing video has done so far.
+   *
+   * -1 for a number the platform does not expose, which must stay distinct
+   * from zero: one is a missing answer and the other is an answer.
+   */
+  private async videoStats(): Promise<{ encoded: number; sent: number; w: number; h: number }> {
+    const out = { encoded: -1, sent: -1, w: 0, h: 0 };
+    const sender = this.videoSender();
+    if (!sender) return out;
     try {
       const stats = await sender.getStats();
       stats.forEach((r: any) => {
         if (r && r.type === 'outbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) {
-          if (typeof r.framesEncoded === 'number') encoded = r.framesEncoded;
-          if (typeof r.framesSent === 'number') sent = r.framesSent;
-          if (typeof r.frameWidth === 'number') w = r.frameWidth;
-          if (typeof r.frameHeight === 'number') h = r.frameHeight;
+          if (typeof r.framesEncoded === 'number') out.encoded = r.framesEncoded;
+          if (typeof r.framesSent === 'number') out.sent = r.framesSent;
+          if (typeof r.frameWidth === 'number') out.w = r.frameWidth;
+          if (typeof r.frameHeight === 'number') out.h = r.frameHeight;
         }
       });
     } catch {}
+    return out;
+  }
+
+  /** Whether the call itself is up, which decides what the numbers mean. */
+  private connState(): number {
+    let up = 0;
+    this.pcs.forEach((pc: any) => {
+      const st = String(pc?.connectionState || pc?.iceConnectionState || '');
+      if (st === 'connected' || st === 'completed') up = 1;
+    });
+    return up;
+  }
+
+  /**
+   * Ask the encoder, a few seconds in, what the SCREEN contributed.
+   *
+   * The difference across the swap, not the total. framesEncoded is
+   * cumulative for the whole outgoing stream, so the total carries whatever
+   * the camera had already encoded — on a working call a dead share hides
+   * inside a large number, and on a call that never connected the total is
+   * zero whatever the screen does. The first version measured the total, and
+   * the first report it produced could not be interpreted: encoded=0 on its
+   * own does not say whether the screen failed or the call was idle.
+   */
+  private async sampleShare(startedAt: number, before: number) {
+    if (!this.videoSender() || !this.sharingScreen) return;
+    const { encoded, sent, w, h } = await this.videoStats();
     const seconds = Math.round((Date.now() - startedAt) / 1000);
     this.shareEncoded = encoded;
-    if (encodedNothing({ framesEncoded: encoded, seconds })) {
+    if (madeNoProgress({ before, after: encoded, seconds })) {
       this.shareFailed = 'no-frames';
       this.emit();
     }
-    this.reportShare('stats', { encoded, sent, w, h, seconds });
+    this.reportShare('stats', { encoded, sent, w, h, seconds, before, up: this.connState() });
   }
 
   async toggleScreenShare() {
@@ -483,9 +519,14 @@ class CallManager {
     // Before the first report, so the numbers describe the stream that is
     // actually going out rather than the one before it was sized.
     await this.fitScreenToCall(track);
-    this.reportShare('ok');
+    this.reportShare('ok', { up: this.connState() });
     const startedAt = Date.now();
-    setTimeout(() => { this.sampleShare(startedAt).catch(() => {}); }, SAMPLE_AFTER_MS);
+    // Read AFTER the swap. The counter belongs to the outgoing stream rather
+    // than to the track, so swapping does not reset it — and a reading taken
+    // before the system's capture sheet would be however long the person
+    // spent looking at that sheet out of date.
+    const baseline = (await this.videoStats()).encoded;
+    setTimeout(() => { this.sampleShare(startedAt, baseline).catch(() => {}); }, SAMPLE_AFTER_MS);
     // A camera that was off has a picture going out again, and the other end
     // is told so — it has been looking at the "camera off" placeholder.
     if (this.cameraOff && this.peerId != null) {

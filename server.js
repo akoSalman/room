@@ -3500,8 +3500,15 @@ io.on('connection', (socket) => {
       // thing left that cannot be read from the source. encoded=0 after a few
       // seconds means the encoder is refusing the screen; climbing means the
       // picture is going out and the fault is further along.
+      // up=1 means the call itself was connected. Without it, encoded=0 is
+      // uninterpretable: a share that sent nothing and a call that was never
+      // carrying anything look identical.
+      + (d.up === undefined ? '' : ` up=${n(d.up)}`)
       + (d.encoded === undefined ? ''
-        : ` encoded=${n(d.encoded)} sent=${n(d.sent)}`
+        // before= is the same counter read at the moment of the swap. The
+        // counter is cumulative for the outgoing stream, so only the
+        // DIFFERENCE belongs to the screen.
+        : ` before=${n(d.before)} encoded=${n(d.encoded)} sent=${n(d.sent)}`
           + ` size=${n(d.w)}x${n(d.h)} after=${n(d.seconds)}s`));
   });
 
