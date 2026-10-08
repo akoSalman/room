@@ -1,0 +1,140 @@
+// ── Not moving the chat list out from under a finger ───────────────────────
+//
+// Reported as: a message arrives in a chat that is not at the top; on leaving
+// that chat and returning to the list, it updates at that moment and the wrong
+// conversation gets tapped because everything moved.
+//
+// The list is thrown away while a chat is open and built again on the way
+// back. It paints immediately from the cache — the order from before — and the
+// server's answer lands a moment later with the new order. That moment is
+// exactly when somebody is reaching for the next conversation.
+//
+// Opening the wrong one is not a small error: it is a message sent to the
+// wrong person, read receipts in a chat nobody meant to open, and on a
+// disappearing message it cannot be taken back.
+const assert = require('assert');
+const { execFileSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const ROOT = path.join(__dirname, '..');
+const NAT = path.join(ROOT, 'native-app');
+const TSC = path.join(NAT, 'node_modules', '.bin', 'tsc');
+if (!fs.existsSync(TSC)) {
+  console.log('  ! skipping list-order tests (native-app deps not installed)');
+  process.exit(0);
+}
+const OUT = fs.mkdtempSync(path.join(os.tmpdir(), 'lorder-'));
+process.on('exit', () => fs.rmSync(OUT, { recursive: true, force: true }));
+execFileSync(TSC, [path.join(NAT, 'src', 'listOrder.ts'),
+  '--outDir', OUT, '--module', 'commonjs', '--target', 'es2019', '--skipLibCheck'],
+  { stdio: 'pipe' });
+const L = require(path.join(OUT, 'listOrder.js'));
+
+const tests = [];
+const test = (n, f) => tests.push({ n, f });
+const NOW = 1_000_000;
+
+test('A LIST THAT HAS JUST APPEARED DOES NOT REARRANGE', () => {
+  // The reported case exactly: back from a chat, the cache is on screen, the
+  // server's answer arrives, and a finger is already on the way down.
+  assert.strictEqual(L.mayReorder({ shownAt: NOW, now: NOW + 100 }), false);
+  assert.strictEqual(L.mayReorder({ shownAt: NOW, now: NOW + L.SETTLE_MS + 1 }), true);
+});
+
+test('A LIST BEING TOUCHED DOES NOT REARRANGE EITHER', () => {
+  // Both conditions, not either. A list that has been up for a minute is
+  // still being scrolled, and that is the same hazard.
+  const old = NOW - 60_000;
+  assert.strictEqual(L.mayReorder({ shownAt: old, lastTouchAt: NOW, now: NOW + 50 }), false);
+  assert.strictEqual(
+    L.mayReorder({ shownAt: old, lastTouchAt: NOW, now: NOW + L.QUIET_MS + 1 }), true);
+});
+
+test('NEVER TOUCHED IS NOT RECENTLY TOUCHED', () => {
+  // A zero timestamp must not read as "touched at the epoch, which was ages
+  // ago" NOR as "touched just now" — the first is right by luck, the second
+  // would freeze the order for ever.
+  assert.strictEqual(L.mayReorder({ shownAt: NOW - 60_000, lastTouchAt: 0, now: NOW }), true);
+});
+
+test('MISSING FACTS DO NOT HOLD THE LIST HOSTAGE', () => {
+  // If this cannot tell, the answer is to let the list be correct. A rule
+  // that defaults to "never reorder" would silently stop the list updating.
+  assert.strictEqual(L.mayReorder({}), true);
+  assert.strictEqual(L.mayReorder({ now: NOW }), true);
+  assert.strictEqual(L.mayReorder(null), true);
+});
+
+test('HELD ORDER KEEPS POSITIONS BUT TAKES THE NEW CONTENT', () => {
+  // The whole point: counts and previews must update immediately. It is only
+  // the sequence that waits, because the sequence is what moves a target.
+  const current = [{ id: 1, unread: 0 }, { id: 2, unread: 0 }, { id: 3, unread: 0 }];
+  const incoming = [{ id: 3, unread: 5 }, { id: 1, unread: 0 }, { id: 2, unread: 0 }];
+  const held = L.holdOrder(current, incoming);
+  assert.deepStrictEqual(held.map(r => r.id), [1, 2, 3], 'the order moved');
+  assert.strictEqual(held.find(r => r.id === 3).unread, 5, 'the new unread count was lost');
+});
+
+test('A CONVERSATION THAT IS GONE DOES NOT LINGER', () => {
+  // Left or deleted. Keeping it would show a chat that is not there, which is
+  // worse than a row moving.
+  const held = L.holdOrder([{ id: 1 }, { id: 2 }], [{ id: 1 }]);
+  assert.deepStrictEqual(held.map(r => r.id), [1]);
+});
+
+test('A BRAND NEW CONVERSATION STILL APPEARS, at the end for now', () => {
+  // It has to appear from somewhere, and the end is the only place that
+  // pushes nothing else aside. It takes its real position once the list
+  // settles.
+  const held = L.holdOrder([{ id: 1 }, { id: 2 }], [{ id: 9 }, { id: 1 }, { id: 2 }]);
+  assert.deepStrictEqual(held.map(r => r.id), [1, 2, 9]);
+});
+
+test('AN EMPTY LIST TAKES THE SERVER ORDER STRAIGHT AWAY', () => {
+  // First load: there is nothing on screen to protect, and holding would mean
+  // showing an empty list while the data is already here.
+  assert.deepStrictEqual(L.holdOrder([], [{ id: 2 }, { id: 1 }]).map(r => r.id), [2, 1]);
+  assert.deepStrictEqual(L.holdOrder(null, [{ id: 2 }]).map(r => r.id), [2]);
+  assert.deepStrictEqual(L.holdOrder([{ id: 1 }], null), []);
+});
+
+test('A ROW REPEATED IN THE OLD ORDER IS NOT DRAWN TWICE', () => {
+  const held = L.holdOrder([{ id: 1 }, { id: 1 }, { id: 2 }], [{ id: 1 }, { id: 2 }]);
+  assert.deepStrictEqual(held.map(r => r.id), [1, 2]);
+});
+
+// ── And the screen uses it ─────────────────────────────────────────────────
+
+const strip = (f) => fs.readFileSync(f, 'utf8')
+  .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+const SCREEN = strip(path.join(NAT, 'src', 'screens', 'RoomsScreen.tsx'));
+
+test('THE SERVER ANSWER GOES THROUGH THE HOLD', () => {
+  assert.ok(/applyList\('rooms', r\)/.test(SCREEN), 'rooms are still set directly');
+  assert.ok(/applyList\('dms', d\)/.test(SCREEN), 'dms are still set directly');
+  assert.ok(!/if \(Array\.isArray\(r\)\) setRooms\(r\);/.test(SCREEN),
+    'the old direct assignment is still there');
+});
+
+test('TOUCHES ARE NOTED, or the quiet rule can never fire', () => {
+  assert.ok(/onTouchStart=\{\(\) => \{ lastTouchAt\.current = Date\.now\(\); \}\}/.test(SCREEN),
+    'a finger on the list is not noticed');
+  assert.ok(/onScrollBeginDrag=/.test(SCREEN), 'a scroll is not noticed');
+});
+
+test('WHAT COULD NOT BE APPLIED IS RETRIED', () => {
+  // Otherwise the list keeps the old order until the next refresh, which is
+  // a worse bug than the one being fixed.
+  assert.ok(/pendingOrder\.current/.test(SCREEN), 'a held order is forgotten rather than retried');
+  assert.ok(/setInterval\(/.test(SCREEN), 'nothing ever retries it');
+});
+
+let passed = 0, failed = 0;
+for (const { n, f } of tests) {
+  try { f(); console.log(`  ✓ ${n}`); passed++; }
+  catch (e) { console.error(`  ✗ ${n}\n      ${e.message}`); failed++; }
+}
+console.log(`\n${passed} passed, ${failed} failed`);
+process.exit(failed ? 1 : 0);

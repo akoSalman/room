@@ -53,7 +53,8 @@ const DOUBLE_TAP_SLOP = 40;
 const DOUBLE_TAP_MS = 300;
 
 export default function TileMap({
-  center, zoom, markers, width, height, interactive = true, onCenterChange, onZoomChange,
+  center, zoom, markers, width, height, interactive = true, pinAtCentre = false,
+  onCenterChange, onZoomChange,
 }: {
   center: LatLng;
   zoom: number;
@@ -61,6 +62,18 @@ export default function TileMap({
   width: number;
   height: number;
   interactive?: boolean;
+  /**
+   * There is a crosshair pinned to the middle of this map and the middle is
+   * what the user is choosing. Zooming then has to keep the CENTRE still
+   * rather than the fingers: a pinch that holds the fingers' point fixed
+   * moves everything else, including the middle — so the pin ends up
+   * somewhere nobody picked. Reported as "pinch does not drop in the correct
+   * location".
+   *
+   * An ordinary map wants the opposite, which is why this is a choice and not
+   * a change of behaviour everywhere.
+   */
+  pinAtCentre?: boolean;
   onCenterChange?: (c: LatLng) => void;
   onZoomChange?: (z: number) => void;
 }) {
@@ -106,6 +119,9 @@ export default function TileMap({
   // render later, so `zoomRef`/`centerRef` are stale the moment a pinch
   // commits a level mid-gesture; compounding off stale values sent the map
   // somewhere else entirely.
+  // Read inside gesture handlers, which are made once.
+  const pinAtCentreRef = useRef(false);
+  pinAtCentreRef.current = !!pinAtCentre;
   const applied = useRef({ zoom, center });
   // The fractional zoom the pinch started from, so the whole gesture is
   // measured from one fixed baseline instead of from wherever it got to.
@@ -147,7 +163,10 @@ export default function TileMap({
     const { width: w, height: h } = sizeRef.current;
     const from = applied.current;
     if (next === from.zoom) return;
-    const c = zoomAbout(from.center, from.zoom, next, focal, w, h);
+    // On a picker the middle is the answer, so the middle is what must not
+    // move. See pinAtCentre.
+    const about = pinAtCentreRef.current ? { x: w / 2, y: h / 2 } : focal;
+    const c = zoomAbout(from.center, from.zoom, next, about, w, h);
     applied.current = { zoom: next, center: c };
     onCenterChange?.(c);
     onZoomChange?.(next);
@@ -171,12 +190,17 @@ export default function TileMap({
     setDragOffset({ x: e.nativeEvent.translationX, y: e.nativeEvent.translationY });
   };
 
+  /** END, FAILED or CANCELLED — a gesture that is over, however it ended. */
+  const isOver = (state: number) =>
+    state === GHState.END || state === GHState.FAILED || state === GHState.CANCELLED;
+
   const onPanState = (e: any) => {
     const { state, oldState, translationX, translationY } = e.nativeEvent;
     if (state === GHState.BEGAN) {
       applied.current = { zoom: zoomRef.current, center: centerRef.current };
       return;
     }
+    if (isOver(state) && mode.current === 'pan') mode.current = 'none';
     if (oldState !== GHState.ACTIVE) return;
     // A pinch that began mid-drag has already moved the map; committing the
     // drag as well would move it twice.
@@ -227,6 +251,20 @@ export default function TileMap({
         setPinch({ scale: 1, fx: focalX, fy: focalY });
       }
       return;
+    }
+    // ANY ending clears the mode, not just one that reached ACTIVE.
+    //
+    // This is why the map could not be dragged. A pinch sets mode to 'pinch'
+    // as soon as it BEGINS, and the drag handler refuses to do anything while
+    // that is set — two fingers must own the gesture. But the mode was only
+    // cleared on an END that followed ACTIVE, so a pinch that began and never
+    // activated (a second finger that lands and lifts, a touch the recogniser
+    // rejects) left it set for ever. From then on every drag returned
+    // immediately: pinch worked, dragging did nothing, permanently.
+    if (isOver(state)) {
+      mode.current = 'none';
+      liveScale.current = 1;
+      setPinch(null);
     }
     if (oldState !== GHState.ACTIVE) return;
     // Any final part-level is decided here: half a level up rounds up, so a

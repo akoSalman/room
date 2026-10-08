@@ -5427,9 +5427,23 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
             && msg.type !== 'location' && msg.content ? (
             <Text style={[s.msgText, s.caption, msgDirStyle(msg.content || '')]} selectable>{renderTextWithLinks(msg.content)}</Text>
           ) : null}
+          {/* Closing a one-time message again.
+              It was twelve-point grey text with no padding, which reads as a
+              caption rather than a control and is a target about the size of
+              the word itself. This is the one thing somebody wants the moment
+              they have finished looking — often in a hurry, because the whole
+              point of the message is that it is not meant to stay open — so it
+              is now a button shaped like one, with a real tap area and the
+              hit slop to forgive a near miss. */}
           {msg.one_time_seconds && !hiddenOneTime && !msg._uploading ? (
-            <TouchableOpacity onPress={() => hideOneTime(msg)}>
-              <Text style={s.oneTimeHideBtn}>🙈 Hide</Text>
+            <TouchableOpacity
+              onPress={() => hideOneTime(msg)}
+              style={s.oneTimeHideBtn}
+              hitSlop={{ top: 10, bottom: 10, left: 12, right: 12 }}
+              accessibilityRole="button"
+              accessibilityLabel="Hide this one-time message">
+              <Ionicons name="eye-off-outline" size={15} color={C.text} />
+              <Text style={s.oneTimeHideText}>Hide</Text>
             </TouchableOpacity>
           ) : null}
           {msg._uploading && <UploadOverlay msgId={msg.id} />}
@@ -7308,7 +7322,14 @@ const s = StyleSheet.create({
   oneTimeTag: { color: '#f87171', fontSize: 11 },
   oneTimeActive: { backgroundColor: 'rgba(248,113,113,0.25)', borderRadius: 8 },
   oneTimeHint: { color: C.muted, fontSize: 13, paddingHorizontal: 16, paddingBottom: 8 },
-  oneTimeHideBtn: { color: C.muted, fontSize: 12, marginTop: 5 },
+  // A pill, not a caption: an icon and a word on a surface, with enough
+  // height to be hit without looking.
+  oneTimeHideBtn: {
+    flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 6,
+    marginTop: 8, paddingVertical: 7, paddingHorizontal: 12,
+    borderRadius: 16, backgroundColor: 'rgba(127,127,127,0.18)',
+  },
+  oneTimeHideText: { color: C.text, fontSize: 13, fontWeight: '700' },
   lightboxNav: {
     position: 'absolute', top: '50%', marginTop: -23, zIndex: 10,
     width: 46, height: 46, borderRadius: 23, alignItems: 'center', justifyContent: 'center',

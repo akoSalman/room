@@ -96,6 +96,10 @@ export default function LocationPicker({
             // apart: the blue dot is where the phone thinks you are, the
             // crosshair is where the pin will land.
             markers={fix ? [{ at: { lat: fix.lat, lng: fix.lng }, label: 'You', mine: true }] : []}
+            // The crosshair is the answer, so the crosshair is what must stay
+            // still while zooming — otherwise a pinch moves the pin off the
+            // place that was being aimed at.
+            pinAtCentre
             onCenterChange={(c) => { setTouched(true); setCenter(c); }}
             onZoomChange={(z) => { setTouched(true); setZoom(z); }}
           />

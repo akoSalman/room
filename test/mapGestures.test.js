@@ -179,6 +179,54 @@ test('A MAP IN A MESSAGE STILL DOES NOT EAT THE CHAT SCROLL', () => {
     'a non-interactive map is still wrapped in gesture handlers');
 });
 
+test('A PINCH THAT NEVER ACTIVATES DOES NOT KILL DRAGGING', () => {
+  // Reported as: the picker works with pinch but not with swipe.
+  //
+  // The drag handler refuses to act while a pinch owns the gesture — two
+  // fingers must win over one. But the mode was set as soon as a pinch
+  // BEGAN and cleared only on an end that followed ACTIVE. A pinch that
+  // began and never activated — a second finger that lands and lifts, a
+  // touch the recogniser rejects — left it set for ever, and from then on
+  // every drag returned immediately. Pinch worked; dragging was dead.
+  const map = strip(path.join(NATIVE, 'components', 'TileMap.tsx'));
+  assert.ok(/const isOver = \(state: number\) =>/.test(map),
+    'there is no notion of a gesture that ended without activating');
+  for (const st of ['END', 'FAILED', 'CANCELLED']) {
+    assert.ok(new RegExp('GHState\\.' + st).test(map),
+      `a gesture that ends as ${st} does not release the map`);
+  }
+  // The pinch handler specifically, because that is the one that strands it.
+  const pinch = /const onPinchState = [\s\S]*?\n  \};/.exec(map);
+  assert.ok(pinch, 'could not find onPinchState');
+  assert.ok(/if \(isOver\(state\)\) \{[\s\S]*?mode\.current = 'none';/.test(pinch[0]),
+    'a pinch that ends without activating still owns the gesture afterwards');
+});
+
+test('ON A PICKER, ZOOMING KEEPS THE PIN STILL', () => {
+  // Reported as: pinch does not drop in the correct location.
+  //
+  // Zooming about the fingers holds the FINGERS' point fixed, which moves
+  // everything else — including the middle, and on the picker the middle is
+  // the answer. An ordinary map wants the opposite, so this is a choice
+  // rather than a change everywhere.
+  const map = strip(path.join(NATIVE, 'components', 'TileMap.tsx'));
+  assert.ok(/pinAtCentreRef\.current \? \{ x: w \/ 2, y: h \/ 2 \} : focal/.test(map),
+    'zooming still moves the centre, so the pin lands somewhere nobody chose');
+  // Read through a ref: the gesture handlers are built once.
+  assert.ok(/pinAtCentreRef\.current = !!pinAtCentre;/.test(map),
+    'the flag is captured at the first render and goes stale');
+  const picker = strip(path.join(NATIVE, 'components', 'LocationPicker.tsx'));
+  assert.ok(/pinAtCentre/.test(picker), 'the picker does not ask for it');
+});
+
+test('…and an ordinary map still zooms about the fingers', () => {
+  // The read-only maps in messages. Taking this away everywhere would make
+  // every map worse to fix one.
+  const map = strip(path.join(NATIVE, 'components', 'TileMap.tsx'));
+  assert.ok(/pinAtCentre = false/.test(map),
+    'every map now zooms about its centre, which is wrong for a map you are reading');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

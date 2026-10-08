@@ -431,14 +431,23 @@ const s = StyleSheet.create({
   },
   acceptBtn: { backgroundColor: '#22c55e' },
   declineBtn: { backgroundColor: '#ef4444' },
-  // The toggles: flat, with a hairline instead of a shadow. Same treatment as
-  // the rest of the app's controls, which are an icon font on a plain surface.
+  // The toggles: a plain translucent disc, and nothing else.
+  //
+  // There was a hairline border here, and it is what was reported as the
+  // icons having an angular shape under them during a video call. Android
+  // draws a sub-pixel border on a rounded view as a faceted path — a circle
+  // that renders as a polygon — and over moving video that outline is the
+  // most visible thing about the button. Over the camera-off placeholder it
+  // is nearly the same colour as the background, which is exactly why it
+  // looked fine with the camera off and wrong with it on.
+  //
+  // The fill is a little stronger to make up for the lost edge, which costs
+  // nothing: a filled disc has no outline to alias.
   ctrlBtn: {
-    backgroundColor: 'rgba(255,255,255,0.12)',
-    borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.22)',
+    backgroundColor: 'rgba(255,255,255,0.18)',
   },
   // On, not merely pressed: filled rather than brightened, so "my microphone
   // is off" is legible at a glance instead of being a shade of grey.
-  ctrlActive: { backgroundColor: '#fff', borderColor: '#fff' },
+  ctrlActive: { backgroundColor: '#fff' },
   actionLabel: { color: 'rgba(255,255,255,0.7)', fontSize: 13, fontWeight: '600' },
 });

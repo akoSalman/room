@@ -20,6 +20,7 @@ import { changesLeftText, renameWorthDoing, renamedText } from '../profileEdit';
 import * as upd from '../updateSource';
 import { BUILD_VERSION } from '../version';
 import * as connection from '../connection';
+import { mayReorder, holdOrder } from '../listOrder';
 import * as keepAlive from '../keepAlive';
 import { statusLine as updateStatusLine } from '../updateResume';
 
@@ -46,6 +47,47 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
 }) {
   // The chat a long press is offering to clear.
   const [clearing, setClearing] = useState<Room | null>(null);
+  // When the list appeared, and when it was last touched — the two facts that
+  // decide whether it is safe to put it in a new order. See src/listOrder.ts.
+  const shownAt = useRef(Date.now());
+  const lastTouchAt = useRef(0);
+  const pendingOrder = useRef<{ rooms: Room[] | null; dms: Room[] | null }>({ rooms: null, dms: null });
+
+  /**
+   * Take a fresh list, reordering only when nobody is reaching for it.
+   *
+   * The content is applied at once — counts, previews, who is online. Only
+   * the ORDER waits, because the order is the only part that moves a target.
+   * What could not be applied is remembered and retried.
+   */
+  const applyList = useCallback((which: 'rooms' | 'dms', incoming: Room[]) => {
+    const set = which === 'rooms' ? setRooms : setDms;
+    const allowed = mayReorder({
+      shownAt: shownAt.current, lastTouchAt: lastTouchAt.current, now: Date.now(),
+    });
+    if (allowed) {
+      pendingOrder.current[which] = null;
+      set(incoming);
+      return;
+    }
+    pendingOrder.current[which] = incoming;
+    set(prev => holdOrder(prev, incoming));
+  }, []);
+
+  // Retry whatever had to wait. Cheap, and only while something is waiting.
+  useEffect(() => {
+    const t = setInterval(() => {
+      const p = pendingOrder.current;
+      if (!p.rooms && !p.dms) return;
+      if (!mayReorder({
+        shownAt: shownAt.current, lastTouchAt: lastTouchAt.current, now: Date.now(),
+      })) return;
+      if (p.rooms) { setRooms(p.rooms); p.rooms = null; }
+      if (p.dms) { setDms(p.dms); p.dms = null; }
+    }, 250);
+    return () => clearInterval(t);
+  }, []);
+
   const [rooms, setRooms] = useState<Room[]>([]);
   const [dms, setDms] = useState<Room[]>([]);
   const [newRoom, setNewRoom] = useState('');
@@ -223,8 +265,10 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
     // Only overwrite what the server actually answered. Offline, apiFetch
     // returns an error value, and the lists already on screen — restored from
     // the device — must survive rather than being blanked.
-    if (Array.isArray(r)) setRooms(r);
-    if (Array.isArray(d)) setDms(d);
+    // Through applyList, so a late answer cannot rearrange the list at the
+    // moment somebody is tapping it. See src/listOrder.ts.
+    if (Array.isArray(r)) applyList('rooms', r);
+    if (Array.isArray(d)) applyList('dms', d);
     setMe(u || '');
     setMyId(id);
     getAvatar().then(setMyAvatar);
@@ -587,6 +631,12 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
         <ActivityIndicator color={C.accent} style={{ marginTop: 40 }} />
       ) : (
         <FlatList
+          // Every touch is noted, so a list somebody has a finger on does not
+          // rearrange itself. See src/listOrder.ts — opening the wrong
+          // conversation is not a small error.
+          onTouchStart={() => { lastTouchAt.current = Date.now(); }}
+          onScrollBeginDrag={() => { lastTouchAt.current = Date.now(); }}
+          onMomentumScrollEnd={() => { lastTouchAt.current = Date.now(); }}
           data={[
             ...rooms.map(r => ({ ...r, _type: 'room' })),
             dms.length ? { id: -1, name: '──  Direct Messages  ──', is_dm: -1, _type: 'divider' } : null,
