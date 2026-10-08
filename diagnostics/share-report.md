@@ -1,10 +1,31 @@
 # Share report — bistbarg
 
-Generated 2026-10-08T17:15Z by .github/workflows/share-report.yml
+Generated 2026-10-08T17:16Z by .github/workflows/share-report.yml
 
 ```
 Warning: Permanently added '185.8.174.198' (ED25519) to the list of known hosts.
-bash: days: command not found
+### is the version that reports this even running here
+server logs [share] at all: yes
+server reports encoder stats: yes
 
-(ssh exit 127)
+### every share attempt, oldest first
+Oct 07 20:09:27 srv5524755161 node[295773]: [share] user=- outcome=ok tries=1 captured=1 senders=1 switched=1
+Oct 07 20:10:14 srv5524755161 node[295773]: [share] user=- outcome=ok tries=2 captured=1 senders=1 switched=1
+Oct 08 16:38:50 srv5524755161 node[377328]: [share] user=- outcome=ok tries=1 captured=1 senders=1 switched=1 scale=1.83
+Oct 08 16:38:56 srv5524755161 node[377328]: [share] user=- outcome=stats tries=1 captured=1 senders=1 switched=1 scale=1.83 encoded=0 sent=0 size=0x0 after=5s
+Oct 08 16:40:35 srv5524755161 node[377328]: [share] user=- outcome=capture-failed tries=2 captured=1 senders=1 switched=1 scale=1.83
+
+### how many of each outcome
+      3 outcome=ok
+      1 outcome=stats
+      1 outcome=capture-failed
+
+### THE ANSWER: what the encoder did
+      1 scale=1.83 encoded=0 sent=0 size=0x0 after=5s
+
+### were any of those shares in a call that was working otherwise
+call lines in the window: 0
+
+
+(ssh exit 0)
 ```
