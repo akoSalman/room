@@ -105,6 +105,29 @@ test('A ROW REPEATED IN THE OLD ORDER IS NOT DRAWN TWICE', () => {
   assert.deepStrictEqual(held.map(r => r.id), [1, 2]);
 });
 
+test('A CONVERSATION WITH SOMETHING NEW GOES TO THE TOP', () => {
+  const list = [{ id: 1 }, { id: 2 }, { id: 3 }];
+  assert.deepStrictEqual(L.bumpToTop(list, 3).map(r => r.id), [3, 1, 2]);
+  // Ids arrive from the socket as numbers and from urls as strings.
+  assert.deepStrictEqual(L.bumpToTop(list, '3').map(r => r.id), [3, 1, 2]);
+});
+
+test('…AND NOTHING HAPPENS WHEN NOTHING WOULD CHANGE', () => {
+  // The same array back, so React skips the re-render — on a list that is
+  // being redrawn for every arriving message, that matters.
+  const list = [{ id: 1 }, { id: 2 }];
+  assert.strictEqual(L.bumpToTop(list, 1), list, 'the row already first was moved anyway');
+  assert.strictEqual(L.bumpToTop(list, 99), list, 'a room not in this list disturbed it');
+  assert.strictEqual(L.bumpToTop(list, null), list);
+  assert.deepStrictEqual(L.bumpToTop(null, 1), []);
+});
+
+test('BUMPING KEEPS EVERY OTHER ROW IN PLACE', () => {
+  // A move that reshuffles the rest is the bug wearing a different hat.
+  const list = [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }];
+  assert.deepStrictEqual(L.bumpToTop(list, 3).map(r => r.id), [3, 1, 2, 4]);
+});
+
 // ── And the screen uses it ─────────────────────────────────────────────────
 
 const strip = (f) => fs.readFileSync(f, 'utf8')
@@ -124,11 +147,52 @@ test('TOUCHES ARE NOTED, or the quiet rule can never fire', () => {
   assert.ok(/onScrollBeginDrag=/.test(SCREEN), 'a scroll is not noticed');
 });
 
-test('WHAT COULD NOT BE APPLIED IS RETRIED', () => {
-  // Otherwise the list keeps the old order until the next refresh, which is
-  // a worse bug than the one being fixed.
-  assert.ok(/pendingOrder\.current/.test(SCREEN), 'a held order is forgotten rather than retried');
-  assert.ok(/setInterval\(/.test(SCREEN), 'nothing ever retries it');
+test('A HELD ORDER IS NOT APPLIED A MOMENT LATER', () => {
+  // This replaces a test that asserted the opposite, and the reversal is the
+  // point. Holding the order and then applying it moved the list at ~750ms
+  // instead of ~400ms — nearer the tap, not further from it — and the problem
+  // came back a third time. There is no delay at which somebody is reliably
+  // not reaching for a row.
+  assert.ok(!/pendingOrder/.test(SCREEN),
+    'a held order is still stored up to be applied later');
+  assert.ok(!/setInterval\([\s\S]{0,400}?bumpToTop/.test(SCREEN),
+    'a timer still reorders the list behind the person looking at it');
+});
+
+test('A MESSAGE ARRIVING GOES THROUGH THE SAME GATE', () => {
+  // The half that was missing. The server's answer was held politely while
+  // every arriving message yanked its row to the top regardless — which is
+  // why "multiple users sending at the same time" was the case that broke.
+  assert.ok(/const bumpRoom = \(roomId: number\) => \{ applyBump\(roomId\); \}/.test(SCREEN),
+    'arriving messages still reorder the list directly');
+  const fn = /const applyBump = useCallback\(\(roomId: unknown\) => \{([\s\S]*?)\n  \}, \[\]\);/.exec(SCREEN);
+  assert.ok(fn, 'could not find applyBump');
+  assert.ok(/mayReorder\(\{/.test(fn[1]), 'a bump does not consult the gate');
+  assert.ok(/if \(!mayReorder[\s\S]*?\) return;/.test(fn[1]),
+    'a bump that is not allowed still happens');
+});
+
+test('PULLING TO REFRESH DOES REORDER', () => {
+  // Otherwise a list whose order is held has no way back at all. Their own
+  // gesture, their own expectation, and their finger is on the list rather
+  // than on a row.
+  assert.ok(/onRefresh=\{refresh\}/.test(SCREEN), 'pull to refresh does not go through refresh');
+  const fn = /const refresh = useCallback\(async \(\) => \{([\s\S]*?)\n  \}, \[load\]\);/.exec(SCREEN);
+  assert.ok(fn, 'could not find refresh');
+  assert.ok(/forceOrder\.current = true/.test(fn[1]), 'refresh does not force the order');
+  assert.ok(/finally \{ forceOrder\.current = false; \}/.test(fn[1]),
+    'the force is never cleared, so every later answer reorders too');
+  const al = /const applyList = useCallback\(\(which: 'rooms' \| 'dms', incoming: Room\[\]\) => \{([\s\S]*?)\n  \}, \[\]\);/.exec(SCREEN);
+  assert.ok(al && /forceOrder\.current \|\| mayReorder/.test(al[1]),
+    'applyList ignores the forced refresh');
+});
+
+test('REFRESH IS DECLARED AFTER WHAT IT CALLS', () => {
+  // `const load` in the same scope: naming it in a dependency array before
+  // it exists throws on every render, which is a blank screen rather than a
+  // misordered list. Caught here because it is invisible until it runs.
+  assert.ok(SCREEN.indexOf('const load = useCallback') < SCREEN.indexOf('const refresh = useCallback'),
+    'refresh reads load before it is initialised');
 });
 
 let passed = 0, failed = 0;

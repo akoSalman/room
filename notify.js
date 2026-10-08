@@ -227,7 +227,29 @@ function silencedFor(o) {
   return !!(e.roomMuted || e.senderMuted);
 }
 
+/**
+ * The name a notification is shown under.
+ *
+ * With the profile emoji in front of it. In a tray holding messages from
+ * three people, that emoji is what is recognised first — it is how people are
+ * told apart everywhere else in the app, and without it the tray is three
+ * rows of plain text to be read one at a time.
+ *
+ * One function because there are two routes to a notification — the server's
+ * push and the app drawing its own off the socket — and the same message must
+ * look the same whichever one got there first. They are keyed by the same tag
+ * precisely so that either may replace the other; two different titles would
+ * make that replacement visible as a flicker of the name changing.
+ */
+function senderTitle(o) {
+  const e = o || {};
+  const avatar = e.avatar == null ? '' : String(e.avatar);
+  const name = e.username == null ? '' : String(e.username);
+  const suffix = e.suffix == null ? '' : String(e.suffix);
+  return (avatar ? avatar + ' ' : '') + name + suffix;
+}
+
 module.exports = {
   recipientsFor, tokenIsDead, notificationTag, collapseKeyFor, presenceLine,
-  silencedFor,
+  silencedFor, senderTitle,
 };

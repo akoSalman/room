@@ -51,14 +51,20 @@ export function tapAction(o: { blurred?: unknown }): 'reveal' | 'open' {
  * have the mechanism next time" means.
  */
 export function startsBlurred(o: {
-  mine?: unknown; revealed?: unknown; hiddenOneTime?: unknown;
+  mine?: unknown; revealed?: unknown; hidden?: unknown; hiddenOneTime?: unknown;
 }): boolean {
   const e = o || {};
   // A one-time message has its own cover and its own rules. Two covers over
   // one picture is a picture nobody can open.
   if (e.hiddenOneTime) return false;
-  if (e.mine) return false;
-  return !e.revealed;
+  // An explicit "cover this" beats everything, including the picture being
+  // yours. This is what was missing: `mine` returned false before anything
+  // else was consulted, so your own photos could never be covered and the
+  // button appeared to do nothing — it changed a state the rule then ignored.
+  if (e.hidden) return true;
+  if (e.revealed) return false;
+  // Nobody has said either way: theirs arrives covered, yours does not.
+  return !e.mine;
 }
 
 /**

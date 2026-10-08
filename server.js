@@ -9,7 +9,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const mapTiles = require('./mapTiles');
 const { recipientsFor, tokenIsDead, notificationTag, collapseKeyFor, presenceLine,
-  silencedFor } = require('./notify');
+  silencedFor, senderTitle } = require('./notify');
 const najva = require('./najva');
 const mviews = require('./messageViews');
 const { seenByAllUpTo } = require('./readReceipts');
@@ -2908,35 +2908,158 @@ app.get('/upload/session/:id', authMiddleware, (req, res) => {
 // already installed use it, and they must keep working.
 app.route('/upload/session/:id').post(chunkHandler()).patch(chunkHandler());
 
+// ── Keeping the bytes that did arrive ──────────────────────────────────────
+//
+// Reported as: sending a photo on a poor connection, the bar reaches ten per
+// cent and starts again from nothing, several times over.
+//
+// The cause was here rather than on the phone. A chunk was buffered whole by
+// express.raw before the handler ran, so a connection that died part way
+// through it produced no handler call and no write: every byte of that chunk
+// was thrown away, and the phone sent them again. On a link that drops every
+// few seconds, a large chunk may never complete, and the upload makes no
+// progress at all while using data continuously.
+//
+// Now the body is appended as it arrives. Whatever landed is kept, and the
+// phone's next attempt is answered with a 409 carrying the real offset, which
+// it already knows how to continue from. A dropped connection costs the bytes
+// still in flight and nothing more.
+//
+// A hole in the middle of the file is the one thing that must not happen —
+// that is a photo which uploads "successfully" and is broken. It cannot
+// happen here, because the offset is not a number anybody maintains: it is
+// the length of the partial file (see openSession). Appending N bytes moves it
+// by exactly N, and an interrupted append moves it by exactly what was
+// written.
+//
+// Base64 bodies are still buffered. They are the fallback for devices that
+// cannot hand a binary body to the network stack, and a truncated base64
+// string is not the encoding of a prefix of the file — decoding one would
+// write rubbish. Buffering keeps that path exactly as it was.
+
+// One append at a time per session. Two at once would interleave into a file
+// of the right length and wrong all through, which the length-is-the-offset
+// invariant cannot detect.
+const chunkInFlight = new Set();
+
 function chunkHandler() {
   return [
     authMiddleware,
-    express.raw({ type: () => true, limit: CHUNK_LIMIT_BYTES }),
+    (req, res, next) => {
+      if (req.get('x-encoding') === 'base64') {
+        return express.raw({ type: () => true, limit: CHUNK_LIMIT_BYTES })(req, res, next);
+      }
+      next();
+    },
     (req, res) => {
       const s = openSession(req, res);
       if (!s) return;
-    const at = parseInt(req.get('x-offset'), 10);
-    if (!isFinite(at) || at < 0) return res.status(400).json({ error: 'Bad offset' });
-    // Not an error worth failing on: a chunk that was already received, then
-    // re-sent because the acknowledgement was lost, is the normal shape of a
-    // resume. Tell the client where things actually stand and let it continue.
-    if (at !== s.offset) return res.status(409).json({ error: 'Offset mismatch', offset: s.offset });
+      const at = parseInt(req.get('x-offset'), 10);
+      if (!isFinite(at) || at < 0) return res.status(400).json({ error: 'Bad offset' });
+      // Not an error worth failing on: a chunk that was already received, then
+      // re-sent because the acknowledgement was lost, is the normal shape of a
+      // resume. Tell the client where things actually stand and let it continue.
+      if (at !== s.offset) return res.status(409).json({ error: 'Offset mismatch', offset: s.offset });
 
-    let buf = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-    if (req.get('x-encoding') === 'base64') {
-      try { buf = Buffer.from(buf.toString('utf8'), 'base64'); }
-      catch { return res.status(400).json({ error: 'Bad chunk' }); }
-    }
-    if (!buf.length) return res.status(400).json({ error: 'Empty chunk' });
-    // A client that keeps sending past the size it declared would otherwise be
-    // able to fill the disk one chunk at a time.
-    if (s.offset + buf.length > s.meta.size) return res.status(413).json({ error: 'Past end of file' });
-
-      try { fs.appendFileSync(partPath(s.id), buf); }
-      catch { return res.status(500).json({ error: 'Write failed' }); }
-      res.json({ offset: s.offset + buf.length, size: s.meta.size });
+      if (req.get('x-encoding') === 'base64') return writeBufferedChunk(req, res, s);
+      return streamChunkToPart(req, res, s);
     },
   ];
+}
+
+/** The base64 fallback, unchanged: decoded whole, written whole. */
+function writeBufferedChunk(req, res, s) {
+  let buf = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+  try { buf = Buffer.from(buf.toString('utf8'), 'base64'); }
+  catch { return res.status(400).json({ error: 'Bad chunk' }); }
+  if (!buf.length) return res.status(400).json({ error: 'Empty chunk' });
+  // A client that keeps sending past the size it declared would otherwise be
+  // able to fill the disk one chunk at a time.
+  if (s.offset + buf.length > s.meta.size) return res.status(413).json({ error: 'Past end of file' });
+  try { fs.appendFileSync(partPath(s.id), buf); }
+  catch { return res.status(500).json({ error: 'Write failed' }); }
+  res.json({ offset: s.offset + buf.length, size: s.meta.size });
+}
+
+/**
+ * Append the request body to the partial file as it arrives.
+ *
+ * Nothing is accepted past the size the session declared, checked BEFORE each
+ * write rather than after, so a client cannot fill the disk by overrunning.
+ * The reply reports the file's length, which is the offset by definition.
+ */
+function streamChunkToPart(req, res, s) {
+  if (chunkInFlight.has(s.id)) {
+    return res.status(409).json({ error: 'Chunk already in flight', offset: s.offset });
+  }
+  const room = Math.min(s.meta.size - s.offset, CHUNK_LIMIT_BYTES);
+  // Already holding every byte it was promised, and being offered more. 413
+  // rather than a 409 with an offset: there is no offset to carry on from,
+  // the file is complete, and the only correct next request is the finish.
+  if (room <= 0) return res.status(413).json({ error: 'Past end of file' });
+
+  chunkInFlight.add(s.id);
+  const ws = fs.createWriteStream(partPath(s.id), { flags: 'a' });
+  let written = 0;
+  let refused = null;
+  let settled = false;
+  // Whether the CLIENT went away, which is not the same as the request
+  // stream being finished with. `req.destroyed` is true after a perfectly
+  // normal end — Node destroys the stream once it has been consumed — so
+  // reading it as "the client is gone" swallowed the reply to every
+  // successful chunk and hung the upload. Hence an explicit flag, set only by
+  // the events that actually mean the connection broke.
+  let clientGone = false;
+
+  const settle = () => {
+    if (settled) return;
+    settled = true;
+    chunkInFlight.delete(s.id);
+    // The length of the file, not a running total. The two agree in every
+    // case a test can produce — removing this line breaks nothing, which is
+    // worth saying rather than claiming it is covered. It is here for the one
+    // case that cannot be provoked over HTTP: a write that fails part way
+    // through, after which the counter is ahead of the disk, and an offset
+    // ahead of the disk is a hole in the finished file.
+    let size = s.offset + written;
+    try { size = fs.statSync(partPath(s.id)).size; } catch {}
+    // The connection went away mid-chunk. The bytes are kept and the phone
+    // will ask where things stand; there is nobody left to answer.
+    if (clientGone || res.headersSent || res.writableEnded || res.destroyed) return;
+    if (refused) return res.status(refused.status).json({ error: refused.error, offset: size });
+    if (!written) return res.status(400).json({ error: 'Empty chunk' });
+    res.json({ offset: size, size: s.meta.size });
+  };
+
+  req.on('data', (b) => {
+    if (refused) return;
+    const left = room - written;
+    const take = b.length > left ? b.subarray(0, left) : b;
+    if (take.length) {
+      written += take.length;
+      // Backpressure: a phone on a fast link can hand over bytes faster than
+      // the disk takes them, and ignoring this grows the buffer without limit.
+      if (!ws.write(take) && !clientGone) {
+        req.pause();
+        ws.once('drain', () => { if (!clientGone && !req.destroyed) req.resume(); });
+      }
+    }
+    if (b.length > left) {
+      refused = { status: 413, error: 'Past end of file' };
+      // The file is closed and the rest of the body is read and thrown away,
+      // rather than the connection being destroyed. Destroying it mid-body
+      // leaves the client with a network error in place of a reason — and a
+      // network error is the one thing it WILL retry, for ever.
+      ws.end();
+    }
+  });
+  req.on('end', () => ws.end());
+  req.on('aborted', () => { clientGone = true; ws.end(); });
+  req.on('error', () => { clientGone = true; ws.end(); });
+  res.on('close', () => { if (!res.writableFinished) clientGone = true; });
+  ws.on('error', () => { refused = { status: 500, error: 'Write failed' }; settle(); });
+  // After the bytes are on disk, so the length reported is the length written.
+  ws.on('close', settle);
 }
 
 // All bytes in: turn the partial into a real upload.
@@ -3585,7 +3708,7 @@ io.on('connection', (socket) => {
       // one, who can see it.
       sendPushToUsers(
         [...mentioned].filter(id => !viewingUserIds.has(id)),
-        (msg.avatar ? msg.avatar + ' ' : '') + msg.username + roomLabel,
+        senderTitle({ avatar: msg.avatar, username: msg.username, suffix: roomLabel }),
         `mentioned you`,
         { roomId: String(roomId), msgId: String(msg.id), mention: '1', ...openData },
         { fromUserId: socket.user.id },
@@ -3611,7 +3734,7 @@ io.on('connection', (socket) => {
     }
     sendPushToUsers(
       memberIds.filter(id => id !== socket.user.id && !viewingUserIds.has(id)),
-      (msg.avatar ? msg.avatar + ' ' : '') + msg.username + roomLabel,
+      senderTitle({ avatar: msg.avatar, username: msg.username, suffix: roomLabel }),
       messagePreview(msg),
       // A comment names the message it hangs off, so tapping the notification
       // can open the THREAD at that comment. Without it the app could only
@@ -3684,7 +3807,7 @@ io.on('connection', (socket) => {
       // looping, a full-screen intent, and Accept/Decline in the shade.
       sendPushToUsers(
         [toUserId],
-        (socket.user.avatar ? socket.user.avatar + ' ' : '') + socket.user.username,
+        senderTitle({ avatar: socket.user.avatar, username: socket.user.username }),
         k === 'video' ? '🎥 Incoming video call' : '📞 Incoming voice call',
         {
           type: 'call', kind: k,
@@ -3807,7 +3930,7 @@ io.on('connection', (socket) => {
     if (!(live && live.size > 0)) {
       sendPushToUsers(
         [toUserId],
-        (socket.user.avatar ? socket.user.avatar + ' ' : '') + socket.user.username,
+        senderTitle({ avatar: socket.user.avatar, username: socket.user.username }),
         '📞 Missed call',
         { type: 'call_missed', fromUserId: socket.user.id },
         { tag: 'incoming-call', fromUserId: socket.user.id },
@@ -4200,7 +4323,7 @@ io.on('connection', (socket) => {
     if (!viewingDm) {
       sendPushToUsers(
         [target.id],
-        (socket.user.avatar ? socket.user.avatar + ' ' : '') + socket.user.username,
+        senderTitle({ avatar: socket.user.avatar, username: socket.user.username }),
         `🔒 Invited you to "${room.name}"`,
         {
           roomId: String(dm.id), msgId: String(msg.id),
@@ -4604,7 +4727,8 @@ io.on('connection', (socket) => {
     dstMembers.forEach(id => emitMessageTo(id, signMessage(msg, id), dstRoom.id));
     sendPushToUsers(
       dstMembers.filter(id => id !== socket.user.id),
-      (msg.avatar ? msg.avatar + ' ' : '') + msg.username + (dstRoom.is_dm ? '' : ` · ${dstRoom.name}`),
+      senderTitle({ avatar: msg.avatar, username: msg.username,
+        suffix: dstRoom.is_dm ? '' : ` · ${dstRoom.name}` }),
       messagePreview(msg),
       {
         roomId: String(dstRoom.id), msgId: String(msg.id),

@@ -5280,6 +5280,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
             const galleryBlurred = startsBlurred({
               mine, hiddenOneTime,
               revealed: keys.length > 0 && keys.every(k => blurStore.isRevealed(k)),
+              // ANY one covered covers the mosaic, the mirror of the line
+              // above: a gallery is one answer, and the cautious half of a
+              // disagreement is the half to honour.
+              hidden: keys.some(k => blurStore.isHidden(k)),
             });
             return (
               <GalleryGrid

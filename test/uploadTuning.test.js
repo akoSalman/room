@@ -138,6 +138,8 @@ test('the app and the web agree, connection by connection', () => {
   const sizes = [64 * KB, 128 * KB, 256 * KB, 512 * KB];
   for (const bps of speeds) {
     for (const cur of sizes) {
+      if (A) assert.strictEqual(W.shrinkAfterFailure(cur), A.shrinkAfterFailure(cur),
+        `shrinkAfterFailure disagrees for ${cur}`);
       assert.strictEqual(W.nextChunkBytes(bps, cur), A.nextChunkBytes(bps, cur),
         `nextChunkBytes disagrees for ${bps} / ${cur}`);
       assert.strictEqual(W.stallTimeoutMs(cur, bps), A.stallTimeoutMs(cur, bps),
@@ -181,7 +183,9 @@ test('the watchdog waits longer than the chunk it is watching', () => {
 test('progress is still reported within a chunk where the browser allows it', () => {
   // Smaller chunks are the floor under this, not a replacement for it.
   assert.ok(/xhr\.upload\.onprogress = function/.test(res), 'within-chunk progress was dropped');
-  assert.ok(/cb\.onProgress\(start \+ e\.loaded, total\)/.test(res), 'the events are ignored');
+  // Through report() now, which is what keeps the bar from going backwards
+  // when the chunk those events belonged to has to be sent again.
+  assert.ok(/report\(start \+ e\.loaded\)/.test(res), 'the events are ignored');
 });
 
 test('the rules are loaded by the page, before the uploader', () => {
@@ -190,15 +194,55 @@ test('the rules are loaded by the page, before the uploader', () => {
     'the uploader is loaded before the rules it uses');
 });
 
-test('the app was deliberately left alone, and says so', () => {
-  // Its progress events do arrive, so its bar moves within a chunk; changing
-  // the size of the pieces a phone sends on the strength of a browser bug is
-  // a different decision.
-  const up = fs.readFileSync(path.join(NAT, 'src', 'uploadSession.ts'), 'utf8');
-  assert.ok(/The app keeps its fixed 512 KB/.test(up),
-    'nothing records why the app does not use these rules');
+test('THE APP USES THESE RULES TOO, now that there is evidence about phones', () => {
+  // This replaces a test that pinned the opposite decision. The app was
+  // deliberately left on a fixed 512 KB because the only evidence was a
+  // browser bug about a bar that did not move, which says nothing about how
+  // big a piece a phone should send.
+  //
+  // The evidence now exists and points the other way: a photo on a poor
+  // connection reaching about ten per cent and starting again. A chunk counts
+  // only when it lands whole, so a large one on a link that drops every few
+  // seconds may never land, and the upload spends data without advancing.
   const chunked = fs.readFileSync(path.join(NAT, 'src', 'chunkedUpload.ts'), 'utf8');
-  assert.ok(/chunkBytes = CHUNK_BYTES/.test(chunked), 'the app quietly changed its chunk size too');
+  assert.ok(/chunkBytes = FIRST_CHUNK_BYTES/.test(chunked),
+    'the app still starts every upload with the old fixed chunk');
+  assert.ok(/chunk = nextChunkBytes\(rate, chunk\)/.test(chunked),
+    'the app never grows its chunk, so a large file pays for this');
+  assert.ok(/chunk = shrinkAfterFailure\(chunk\)/.test(chunked),
+    'a chunk that failed does not make the next one smaller');
+  assert.ok(/chunkRange\(offset, total, chunk\)/.test(chunked),
+    'the loop still slices by the fixed size');
+  // And the reversal is written down where the rules live.
+  const up = fs.readFileSync(path.join(NAT, 'src', 'uploadSession.ts'), 'utf8');
+  assert.ok(/overtaken by a report from the app itself/.test(up),
+    'nothing records why this decision changed');
+});
+
+test('A FAILED CHUNK HALVES, down to the floor and no further', () => {
+  // nextChunkBytes only learns from chunks that SUCCEEDED, so on a connection
+  // where the current size never completes it never adapts at all.
+  assert.strictEqual(W.shrinkAfterFailure(512 * KB), 256 * KB);
+  assert.strictEqual(W.shrinkAfterFailure(256 * KB), 128 * KB);
+  assert.strictEqual(W.shrinkAfterFailure(W.CHUNK_MIN), W.CHUNK_MIN,
+    'the chunk shrank below the point where per-chunk overhead dominates');
+  assert.strictEqual(W.shrinkAfterFailure(0), W.CHUNK_MIN);
+  assert.strictEqual(W.shrinkAfterFailure(NaN), W.FIRST_CHUNK_BYTES / 2);
+  assert.ok(W.shrinkAfterFailure(99 * 1024 * KB) <= W.CHUNK_MAX, 'it exceeded the cap');
+});
+
+test('THE BAR IS NOT ALLOWED TO GO BACKWARDS', () => {
+  // The reported symptom. Re-sending a chunk starts its byte count again, and
+  // reporting that honestly is a bar that resets — while the bytes are still
+  // on the server, which makes the lower number the less truthful one.
+  assert.strictEqual(W.reportedSent(400, 100, 1000), 400, 'the bar was allowed to drop');
+  assert.strictEqual(W.reportedSent(400, 700, 1000), 700, 'the bar stopped moving forwards');
+  assert.strictEqual(W.reportedSent(0, 0, 1000), 0);
+  // Never past the end, or the bar reads over 100%.
+  assert.strictEqual(W.reportedSent(900, 5000, 1000), 1000);
+  assert.strictEqual(W.reportedSent(2000, 100, 1000), 1000);
+  // An unknown total is not a reason to report nothing.
+  assert.strictEqual(W.reportedSent(100, 250, 0), 250);
 });
 
 // ── The last request ────────────────────────────────────────────────────────
@@ -208,6 +252,36 @@ test('the app was deliberately left alone, and says so', () => {
 // arrived — the bar sat at 100% — and the one request that turns the pieces
 // into a file had no deadline and no retry on either client. A request that
 // never settles is routine on a mobile network; nothing below it ever fires.
+
+test('THE TWO COPIES AGREE ABOUT THE BAR AND ABOUT SHRINKING', () => {
+  if (!A) return;
+  for (const peak of [0, 100, 400, 2000]) {
+    for (const sent of [0, 100, 700, 5000]) {
+      for (const total of [0, 1000]) {
+        assert.strictEqual(W.reportedSent(peak, sent, total), A.reportedSent(peak, sent, total),
+          `reportedSent disagrees for ${peak}/${sent}/${total}`);
+      }
+    }
+  }
+  // Agreeing on something, not merely agreeing.
+  assert.strictEqual(W.reportedSent(400, 100, 1000), 400);
+  assert.strictEqual(W.shrinkAfterFailure(512 * KB), 256 * KB);
+});
+
+test('THE WEB USES THEM TOO', () => {
+  // The same report applies to the browser: it re-sends a chunk after a
+  // failure, and its bar jumped backwards for the same reason.
+  const r = fs.readFileSync(path.join(ROOT, 'public', 'js', 'resumable.js'), 'utf8');
+  assert.ok(/chunk = UploadTuning\.shrinkAfterFailure\(chunk\)/.test(r),
+    'a failed chunk does not make the next one smaller on the web');
+  assert.ok(/UploadTuning\.reportedSent\(peak, sent, total\)/.test(r),
+    'the web bar can still go backwards');
+  // Every report goes through it, or the one that does not is the one that
+  // resets the bar.
+  const direct = (r.match(/cb\.onProgress\(/g) || []).length;
+  assert.strictEqual(direct, 1,
+    `${direct} places report progress directly, bypassing the rule`);
+});
 
 test('THE BUG: the finish request has a deadline at all', () => {
   assert.ok(W.FINISH_TIMEOUT_MS > 0, 'the finish can still hang forever');

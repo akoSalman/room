@@ -39,8 +39,13 @@ function stub(name, body) {
     JSON.stringify({ name, main: 'index.js' }));
 }
 stub('@notifee/react-native',
-  'module.exports = { default: { displayNotification: async () => {}, cancelNotification: async () => {} },'
-  + ' AndroidImportance: { HIGH: 4 } };');
+  'const shown = [];\n'
+  // __esModule, or TypeScript's interop helper wraps this a second time and
+  // notifee.displayNotification lands on undefined.
+  + 'module.exports = { __esModule: true, __shown: shown, default: {\n'
+  + '  displayNotification: async (n) => { shown.push(n); },\n'
+  + '  cancelNotification: async () => {},\n'
+  + '}, AndroidImportance: { HIGH: 4 } };');
 stub('expo-notifications', 'module.exports = { dismissNotificationAsync: async () => {} };');
 stub('react-native', "module.exports = { AppState: { currentState: 'background' } };");
 stub('@react-native-async-storage/async-storage',
@@ -55,8 +60,33 @@ execFileSync(TSC, [
 ], { stdio: 'pipe' });
 const S = require(path.join(OUT, 'socketNotifier.js'));
 
+const NOTIFEE = require(path.join(OUT, 'node_modules', '@notifee', 'react-native'));
+
 const tests = [];
 const test = (n, f) => tests.push({ n, f });
+
+/**
+ * Deliver one message the way the socket does, and return what was drawn.
+ *
+ * Through attach and the real listener rather than by calling a helper, so
+ * what is asserted is the notification a person would actually see.
+ */
+async function raise(msg) {
+  S.detach();
+  S.setMe('sara');
+  S.setViewing(null);
+  // attach registers more than one onAny listener — one for arrivals and one
+  // for deletions — so every one of them gets the event, as the socket does.
+  const handlers = [];
+  S.attach({ on: () => {}, onAny: (f) => { handlers.push(f); } });
+  assert.ok(handlers.length, 'attach never registered a listener');
+  NOTIFEE.__shown.length = 0;
+  handlers.forEach(h => h('message_received', msg));
+  // displayNotification is a promise the listener does not await.
+  await new Promise(r => setImmediate(r));
+  S.detach();
+  return NOTIFEE.__shown;
+}
 
 const base = {
   msgUsername: 'ali', me: 'sara', appState: 'background',
@@ -401,10 +431,53 @@ test('THE NOTIFIER ACTUALLY PASSES THE FLAG ON', () => {
     'raiseDecision is called without seenElsewhere, so the rule never fires');
 });
 
+test("THE NOTIFICATION CARRIES THE SENDER'S PROFILE EMOJI", async () => {
+  // The emoji is how people are told apart everywhere else in the app. A tray
+  // with three messages in it was three rows of plain text.
+  const shown = await raise({
+    id: 900001, room_id: 7, username: 'ali', avatar: '🦊', type: 'text',
+  });
+  assert.strictEqual(shown.length, 1, 'nothing was drawn at all');
+  assert.strictEqual(shown[0].title, '🦊 ali',
+    `the notification is titled "${shown[0].title}"`);
+});
+
+test('…AND READS AS A NAME WHEN SOMEBODY HAS NO EMOJI', async () => {
+  // Nobody is forced to pick one, and "undefined ali" would be worse than
+  // the bare name this replaces.
+  const shown = await raise({ id: 900002, room_id: 7, username: 'ali', type: 'text' });
+  assert.strictEqual(shown.length, 1, 'nothing was drawn at all');
+  assert.strictEqual(shown[0].title, 'ali', `the notification is titled "${shown[0].title}"`);
+});
+
+test('THE APP AND THE SERVER TITLE A NOTIFICATION THE SAME WAY', () => {
+  // Both routes are keyed by the same tag so either may replace the other.
+  // While they disagreed, which title you saw depended on which arrived
+  // first — and the replacement showed as the name changing.
+  const PR = require(path.join(OUT, 'pushRegistration.js'));
+  const SRV = require(path.join(ROOT, 'notify.js'));
+  for (const avatar of ['🦊', '', null, undefined, 0]) {
+    for (const username of ['ali', '', null]) {
+      for (const suffix of ['', ' · Family', null]) {
+        const args = { avatar, username, suffix };
+        assert.strictEqual(PR.senderTitle(args), SRV.senderTitle(args),
+          `the two disagree for ${JSON.stringify(args)}`);
+      }
+    }
+  }
+  // Agreeing on something, not merely agreeing: two copies that both
+  // returned '' would pass the loop above.
+  assert.strictEqual(PR.senderTitle({ avatar: '🦊', username: 'ali' }), '🦊 ali');
+  assert.strictEqual(SRV.senderTitle({ avatar: '🦊', username: 'ali', suffix: ' · Family' }),
+    '🦊 ali · Family');
+});
+
 let passed = 0, failed = 0;
-for (const { n, f } of tests) {
-  try { f(); console.log(`  ✓ ${n}`); passed++; }
-  catch (e) { console.error(`  ✗ ${n}\n      ${e.message}`); failed++; }
-}
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+(async () => {
+  for (const { n, f } of tests) {
+    try { await f(); console.log(`  ✓ ${n}`); passed++; }
+    catch (e) { console.error(`  ✗ ${n}\n      ${e.message}`); failed++; }
+  }
+  console.log(`\n${passed} passed, ${failed} failed`);
+  process.exit(failed ? 1 : 0);
+})();

@@ -14,11 +14,22 @@
 // to the wrong person, read receipts in a chat nobody meant to open, and on a
 // disappearing message it cannot be undone.
 //
-// So a reorder waits for a moment when nobody is reaching: a short settle
-// after the list appears, and a pause after the last touch. The CONTENT —
-// unread counts, the last line, who is online — updates immediately
-// throughout. It is only the ORDER that waits, because order is the only part
-// that moves a target.
+// So a reorder happens in the first moments after the list appears — before
+// anybody can have found a row and started moving towards it — or it does not
+// happen at all until the list is opened again. The CONTENT — unread counts,
+// the last line, who is online — updates immediately throughout. It is only
+// the ORDER that is fixed, because order is the only part that moves a target.
+//
+// An earlier version held a reorder and applied it a moment later, and the
+// problem was reported again: holding for 700ms and then moving the list put
+// the movement at 750ms, nearer the tap than before. There is no delay at
+// which somebody is reliably not reaching, so there is no delay worth
+// choosing. The sequence catches up on the next open, which costs nothing,
+// because the device's copy is written from every answer.
+//
+// What this gives up: sit on the list while messages arrive and the order
+// goes stale. The unread counts do not, and they are what says a chat has
+// something new. Pull to refresh reorders on request.
 
 /** How long after the list appears before its order may change. */
 export const SETTLE_MS = 700;
@@ -92,4 +103,22 @@ export function holdOrder<T extends Ided>(current: T[] | null | undefined, incom
     if (!used.has(String(r.id))) out.push(r);
   });
   return out;
+}
+
+/**
+ * One conversation moved to the top, because something just happened in it.
+ *
+ * The same move the list made on its own, named and separated so it can be
+ * held back. Returns the SAME array when nothing would change — absent, or
+ * already first — so React skips the re-render.
+ */
+export function bumpToTop<T extends Ided>(list: T[] | null | undefined, id: unknown): T[] {
+  const cur = Array.isArray(list) ? list : [];
+  if (id == null) return cur;
+  const key = String(id);
+  const i = cur.findIndex(r => r && r.id != null && String(r.id) === key);
+  if (i <= 0) return cur;
+  const next = cur.slice();
+  const [hit] = next.splice(i, 1);
+  return [hit, ...next];
 }

@@ -55,10 +55,18 @@ export const CHUNK_BYTES = 512 * 1024;
 // that moves every few seconds; on a fast one it settles back at the old half
 // megabyte and nothing changes.
 //
-// These rules are used by the WEB uploader, which is where the report came
-// from. The app keeps its fixed 512 KB for now: its progress events do arrive,
-// so the bar there moves within a chunk, and changing the size of the pieces a
-// phone sends is not something to do on the strength of a browser bug.
+// These rules were written for the WEB uploader, where the report came from,
+// and the app deliberately kept its fixed 512 KB: its progress events do
+// arrive, so the bar there moves within a chunk, and changing the size of the
+// pieces a phone sends was not worth doing on the strength of a browser bug.
+//
+// That has been overtaken by a report from the app itself — a photo reaching
+// about ten per cent and starting again, repeatedly, on a poor connection.
+// The size of the pieces is exactly what that is about: a chunk only counts
+// when it lands whole, so a 512 KB chunk on a link that drops every few
+// seconds may never land at all, and the phone spends data continuously
+// without the upload advancing. The evidence now points the other way, so the
+// app uses these rules too.
 
 /** Never smaller than this: per-chunk overhead would start to dominate. */
 export const CHUNK_MIN = 64 * 1024;
@@ -97,6 +105,36 @@ export function nextChunkBytes(bytesPerSecond: number, current = FIRST_CHUNK_BYT
   const rounded = Math.round(ideal / step) * step;
   const capped = Math.min(rounded, cur * 2);
   return Math.min(CHUNK_MAX, Math.max(CHUNK_MIN, capped));
+}
+
+/**
+ * Smaller, after a chunk failed to get through.
+ *
+ * nextChunkBytes only learns from chunks that SUCCEEDED, so on a connection
+ * where the current size never completes it never adapts — the rate stays at
+ * whatever it last was and the same doomed chunk is tried for ever. A failure
+ * is evidence in its own right, and halving is the standard answer to it.
+ */
+export function shrinkAfterFailure(current: number): number {
+  const cur = Math.round(current) || FIRST_CHUNK_BYTES;
+  if (!(cur > 0)) return CHUNK_MIN;
+  return Math.min(CHUNK_MAX, Math.max(CHUNK_MIN, Math.floor(cur / 2)));
+}
+
+/**
+ * What the bar should say, given what it said before.
+ *
+ * Never less than it already showed. Re-sending a chunk starts its byte count
+ * again, and reporting that honestly means the bar jumps backwards several
+ * times on a bad connection — which is what "it resets and begins from
+ * scratch" describes. The bytes are not lost (the server keeps whatever
+ * arrived), so the lower number is the less accurate of the two.
+ */
+export function reportedSent(peak: number, sent: number, total: number): number {
+  const t = Number(total);
+  const hi = Math.max(Number(peak) || 0, Number(sent) || 0);
+  if (!Number.isFinite(t) || t <= 0) return hi;
+  return Math.min(hi, t);
 }
 
 /**

@@ -49,6 +49,31 @@ test('YOUR OWN PICTURE ARRIVES CLEAR', () => {
   assert.strictEqual(B.startsBlurred({ mine: true, revealed: false }), false);
 });
 
+test('…BUT THE BUTTON STILL COVERS IT', () => {
+  // Reported as "the monkey button doesn't work on my sent images", and it
+  // did not: `mine` was answered before anything else, so your own pictures
+  // could not be covered at all. The button changed a stored state that this
+  // rule then ignored, which looks exactly like a dead button.
+  //
+  // This is the reason the feature exists on your own photos — handing
+  // somebody your phone to show them one thing, with the last thing you sent
+  // sitting above it.
+  assert.strictEqual(B.startsBlurred({ mine: true, hidden: true }), true);
+});
+
+test('AN EXPLICIT COVER BEATS HAVING BEEN CLEARED', () => {
+  // Otherwise the button is dead on anything already looked at — which is
+  // every picture, a moment after it arrives.
+  assert.strictEqual(B.startsBlurred({ mine: false, revealed: true, hidden: true }), true);
+  assert.strictEqual(B.startsBlurred({ mine: true, revealed: true, hidden: true }), true);
+});
+
+test('A ONE-TIME MESSAGE STILL OVERRIDES AN EXPLICIT COVER', () => {
+  // Order matters: hiddenOneTime is asked first, so a one-time photo under
+  // its own cover cannot also get this one and become unopenable.
+  assert.strictEqual(B.startsBlurred({ hidden: true, hiddenOneTime: true }), false);
+});
+
 test('A ONE-TIME MESSAGE KEEPS ITS OWN COVER', () => {
   // Two covers over one picture is a picture nobody can open.
   assert.strictEqual(B.startsBlurred({ mine: false, revealed: false, hiddenOneTime: true }), false);
@@ -121,6 +146,23 @@ test('A GALLERY IS COVERED AS ONE, with one button', () => {
   assert.strictEqual(buttons, 1, `the mosaic has ${buttons} buttons; it should have one`);
 });
 
+test('THE APP DRAWING CODE ACTUALLY ASKS ABOUT THE COVER', () => {
+  // The store and the rules agree (below). This is the part that was wrong
+  // in a way no rule test could see: a picture whose drawing code never
+  // mentions `hidden` is a picture whose button is dead, whatever the store
+  // remembers.
+  const call = /startsBlurred\(\{([\s\S]*?)\}\)/.exec(IMG);
+  assert.ok(call, 'BlurredImage does not consult the rules');
+  assert.ok(/hidden:\s*blurStore\.isHidden\(key\)/.test(call[1]),
+    'the app never tells the rules a photo was deliberately covered');
+
+  const chat = strip(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'));
+  const gal = /const galleryBlurred = startsBlurred\(\{([\s\S]*?)\}\);/.exec(chat);
+  assert.ok(gal, 'the mosaic does not consult the rules');
+  assert.ok(/hidden:\s*keys\.some\(k => blurStore\.isHidden\(k\)\)/.test(gal[1]),
+    'covering a mosaic is never told to the rules');
+});
+
 test('A GALLERY IS NOT HALF-COVERED', () => {
   // Covered while ANY of its photos is still unseen.
   const chat = strip(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'));
@@ -138,6 +180,113 @@ test('CLEARING A PICTURE REDRAWS THE ROW SHOWING IT', () => {
     'blur changes are not in extraData, so rows will not redraw');
 });
 
+// ── The app's memory ───────────────────────────────────────────────────────
+//
+// Run for real against a fake AsyncStorage. The reported bug lived here as
+// much as in the rules: the store knew only "cleared", and your own pictures
+// were never in that list, so covering one removed it from a list it was not
+// in and wrote nothing anywhere.
+
+const NM = path.join(OUT, 'node_modules');
+fs.mkdirSync(path.join(NM, '@react-native-async-storage', 'async-storage'), { recursive: true });
+fs.writeFileSync(
+  path.join(NM, '@react-native-async-storage', 'async-storage', 'package.json'),
+  JSON.stringify({ name: '@react-native-async-storage/async-storage', main: 'index.js' }));
+fs.writeFileSync(
+  path.join(NM, '@react-native-async-storage', 'async-storage', 'index.js'), `
+  const mem = new Map();
+  // __esModule, or TypeScript's interop helper wraps this again and every
+  // call lands on undefined.
+  module.exports = { __esModule: true, __mem: mem, default: {
+    getItem: async k => (mem.has(k) ? mem.get(k) : null),
+    setItem: async (k, v) => { mem.set(k, v); },
+  } };
+`);
+execFileSync(TSC, [path.join(NAT, 'src', 'blurStore.ts'),
+  '--outDir', OUT, '--module', 'commonjs', '--target', 'es2019', '--skipLibCheck'],
+  { stdio: 'pipe' });
+const MEM = require(path.join(NM, '@react-native-async-storage', 'async-storage')).__mem;
+const S = require(path.join(OUT, 'blurStore.js'));
+const KEY = 'revealedImages-v1';
+// setItem is not awaited by the store — it is fire-and-forget, deliberately,
+// so a slow disk never delays the picture being covered on screen.
+const settle = () => new Promise(r => setImmediate(r));
+
+test('COVERING YOUR OWN PICTURE IS RECORDED', () => {
+  S._reset(); MEM.clear();
+  // Never revealed — this is the case that wrote nothing at all.
+  S.hide('mine.jpg');
+  assert.strictEqual(S.isHidden('mine.jpg'), true,
+    'the store forgot immediately, so the button does nothing');
+  assert.strictEqual(B.startsBlurred({ mine: true, revealed: S.isRevealed('mine.jpg'), hidden: S.isHidden('mine.jpg') }), true,
+    'your own picture is still bare after you covered it');
+});
+
+test('…AND SURVIVES CLOSING THE APP', async () => {
+  S._reset(); MEM.clear();
+  S.hide('mine.jpg');
+  await settle();
+  assert.ok(MEM.get(KEY), 'nothing was written to storage');
+  // A fresh start, reading only what was actually written.
+  S._reset();
+  await S.load();
+  assert.strictEqual(S.isHidden('mine.jpg'), true, 'the cover is forgotten on restart');
+});
+
+test('CLEARING IT AGAIN UNDOES THE COVER', async () => {
+  S._reset(); MEM.clear();
+  S.hide('a.jpg');
+  S.reveal('a.jpg');
+  assert.strictEqual(S.isHidden('a.jpg'), false, 'a covered picture cannot be cleared again');
+  assert.strictEqual(S.isRevealed('a.jpg'), true);
+  await settle();
+  S._reset();
+  await S.load();
+  assert.strictEqual(S.isHidden('a.jpg'), false, 'the undo is forgotten on restart');
+  assert.strictEqual(S.isRevealed('a.jpg'), true);
+});
+
+test('COVERING A PICTURE ALREADY CLEARED TAKES IT OFF THE CLEARED LIST', () => {
+  S._reset(); MEM.clear();
+  S.reveal('b.jpg');
+  S.hide('b.jpg');
+  assert.strictEqual(S.isRevealed('b.jpg'), false);
+  assert.strictEqual(S.isHidden('b.jpg'), true);
+});
+
+test('THE APP STILL READS THE OLDER SHAPE', async () => {
+  // Shipped once as a bare array. Losing it makes every photo ask again.
+  S._reset(); MEM.clear();
+  MEM.set(KEY, JSON.stringify(['old.jpg']));
+  await S.load();
+  assert.strictEqual(S.isRevealed('old.jpg'), true,
+    'photos cleared before the update ask again');
+  assert.strictEqual(S.isHidden('old.jpg'), false);
+});
+
+test('COVERING TELLS THE SCREEN', () => {
+  // Without this the picture stays bare until something else happens to
+  // redraw the row, which looks like the button not working.
+  S._reset(); MEM.clear();
+  let n = 0;
+  const off = S.subscribe(() => { n++; });
+  S.hide('c.jpg');
+  assert.ok(n > 0, 'covering a photo does not redraw the row showing it');
+  off();
+  const was = n;
+  S.hide('d.jpg');
+  assert.strictEqual(n, was, 'unsubscribe does not unsubscribe');
+});
+
+test('NEITHER LIST GROWS FOR EVER', () => {
+  // Read on every render of every photo, on phones that are not fast.
+  S._reset(); MEM.clear();
+  for (let i = 0; i < S.MAX_REMEMBERED + 50; i++) S.hide('h' + i + '.jpg');
+  assert.strictEqual(S.isHidden('h0.jpg'), false, 'the covered list is unbounded');
+  assert.strictEqual(S.isHidden('h' + (S.MAX_REMEMBERED + 49) + '.jpg'), true,
+    'the newest cover was dropped instead of the oldest');
+});
+
 // ── The web's copy ─────────────────────────────────────────────────────────
 //
 // Mirrored from the app and compared rule by rule. A photo that is covered on
@@ -150,13 +299,19 @@ const WEB = require(path.join(ROOT, 'public', 'js', 'imageBlur.js'));
 test('BOTH PLATFORMS ANSWER THE SAME, over every combination', () => {
   for (const mine of [true, false]) {
     for (const revealed of [true, false]) {
-      for (const hiddenOneTime of [true, false]) {
-        const args = { mine, revealed, hiddenOneTime };
-        assert.strictEqual(WEB.startsBlurred(args), B.startsBlurred(args),
-          `startsBlurred disagrees for ${JSON.stringify(args)}`);
+      for (const hidden of [true, false]) {
+        for (const hiddenOneTime of [true, false]) {
+          const args = { mine, revealed, hidden, hiddenOneTime };
+          assert.strictEqual(WEB.startsBlurred(args), B.startsBlurred(args),
+            `startsBlurred disagrees for ${JSON.stringify(args)}`);
+        }
       }
     }
   }
+  // Not just agreement — agreement on something. Two copies that both always
+  // said false would pass the loop above.
+  assert.strictEqual(WEB.startsBlurred({ mine: true, hidden: true }), true,
+    'the web copy cannot cover your own picture either');
   for (const blurred of [true, false]) {
     assert.strictEqual(WEB.tapAction({ blurred }), B.tapAction({ blurred }));
   }
@@ -192,8 +347,45 @@ test('THE WEB KEYS A PHOTO THE SAME WAY THE APP DOES', () => {
 
 // ── And the web actually draws it ──────────────────────────────────────────
 
-const APP = fs.readFileSync(path.join(ROOT, 'public', 'js', 'app.js'), 'utf8')
+const APP_SRC = fs.readFileSync(path.join(ROOT, 'public', 'js', 'app.js'), 'utf8');
+const APP = APP_SRC
   .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+
+/**
+ * The web's memory, lifted out of app.js and run for real.
+ *
+ * app.js is a page: it cannot be required. So the store's own lines are cut
+ * out of it and executed against a fake localStorage. That keeps this a test
+ * of the shipped code rather than of a copy written in the test — the bug
+ * here was precisely a store that recorded nothing, which no amount of
+ * grepping for a function name would have caught.
+ */
+function buildWebStore(seed) {
+  const from = APP_SRC.indexOf("var REVEALED_KEY = 'revealedImages-v1';");
+  const to = APP_SRC.indexOf('function wrapBlurrable');
+  assert.ok(from > 0 && to > from, 'could not find the web blur store in app.js');
+  const src = APP_SRC.slice(from, to);
+
+  const mem = new Map();
+  if (seed != null) mem.set('revealedImages-v1', seed);
+  const localStorage = {
+    getItem: k => (mem.has(k) ? mem.get(k) : null),
+    setItem: (k, v) => { mem.set(k, v); },
+  };
+  const make = new Function('localStorage', 'ImageBlur', src + `
+    return {
+      isRevealed, isHiddenImage, revealImage, hideImage,
+      raw: () => localStorage.getItem('revealedImages-v1'),
+      // The same composition applyBlurTo performs, over the real store.
+      blurredFor: (o) => ImageBlur.startsBlurred({
+        mine: o.mine, hiddenOneTime: o.hiddenOneTime,
+        revealed: o.keys.length > 0 && o.keys.every(isRevealed),
+        hidden: o.keys.some(isHiddenImage),
+      }),
+    };
+  `);
+  return make(localStorage, WEB);
+}
 const CSS = fs.readFileSync(path.join(ROOT, 'public', 'css', 'style.css'), 'utf8');
 const HTML = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
 
@@ -240,6 +432,48 @@ test('THE WEB REMEMBERS, and does not grow for ever', () => {
   assert.ok(/MAX_REVEALED/.test(APP), 'the list of cleared photos is unbounded');
 });
 
+test('THE WEB REMEMBERS AN EXPLICIT COVER TOO', () => {
+  // Run as code rather than grepped: the bug being fixed was a store that
+  // only knew "cleared", so hiding your own photo wrote nothing anywhere.
+  const web = buildWebStore();
+  web.hideImage('mine.jpg');
+  assert.strictEqual(web.isHiddenImage('mine.jpg'), true,
+    'covering your own photo records nothing, so the button does nothing');
+  assert.strictEqual(web.blurredFor({ mine: true, keys: ['mine.jpg'] }), true,
+    'your own photo is still bare after you covered it');
+
+  // And it survives a reload, from what was actually written to storage.
+  const again = buildWebStore(web.raw());
+  assert.strictEqual(again.isHiddenImage('mine.jpg'), true,
+    'the cover is forgotten on reload');
+
+  // Reversible: clearing it again undoes the cover.
+  web.revealImage('mine.jpg');
+  assert.strictEqual(web.isHiddenImage('mine.jpg'), false);
+  assert.strictEqual(web.blurredFor({ mine: true, keys: ['mine.jpg'] }), false);
+});
+
+test('THE WEB STILL READS THE OLDER SHAPE', () => {
+  // Shipped once as a bare array. Anybody who used that build has cleared
+  // photos recorded that way, and losing them makes every one ask again.
+  const web = buildWebStore(JSON.stringify(['theirs.jpg']));
+  assert.strictEqual(web.isRevealed('theirs.jpg'), true,
+    'photos cleared before the update ask again');
+  assert.strictEqual(web.blurredFor({ mine: false, keys: ['theirs.jpg'] }), false);
+});
+
+test('THE WEB DRAWING CODE ACTUALLY ASKS ABOUT THE COVER', () => {
+  // The composition above proves the rule and the store agree. This proves
+  // the code that paints the picture is the thing doing that composition —
+  // a store nobody reads is the same as no store.
+  const fn = /function applyBlurTo\(wrap, imgs, opts\) \{([\s\S]*?)\n\}/.exec(APP);
+  assert.ok(fn, 'could not find applyBlurTo');
+  const call = /ImageBlur\.startsBlurred\(\{([\s\S]*?)\}\)/.exec(fn[1]);
+  assert.ok(call, 'applyBlurTo does not consult the rules');
+  assert.ok(/hidden:\s*keys\.some\(isHiddenImage\)/.test(call[1]),
+    'the web never tells the rules a photo was deliberately covered');
+});
+
 test('THE RULES ARE LOADED BEFORE THE PAGE USES THEM', () => {
   const blurAt = HTML.indexOf('/js/imageBlur.js');
   const appAt = HTML.indexOf('/js/app.js');
@@ -247,10 +481,12 @@ test('THE RULES ARE LOADED BEFORE THE PAGE USES THEM', () => {
   assert.ok(blurAt < appAt, 'the rules load after the code that calls them');
 });
 
-let passed = 0, failed = 0;
-for (const { n, f } of tests) {
-  try { f(); console.log(`  ✓ ${n}`); passed++; }
-  catch (e) { console.error(`  ✗ ${n}\n      ${e.message}`); failed++; }
-}
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+(async () => {
+  let passed = 0, failed = 0;
+  for (const { n, f } of tests) {
+    try { await f(); console.log(`  ✓ ${n}`); passed++; }
+    catch (e) { console.error(`  ✗ ${n}\n      ${e.message}`); failed++; }
+  }
+  console.log(`\n${passed} passed, ${failed} failed`);
+  process.exit(failed ? 1 : 0);
+})();

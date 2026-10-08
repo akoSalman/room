@@ -23,6 +23,34 @@
     return Math.min(CHUNK_MAX, Math.max(CHUNK_MIN, capped));
   }
 
+  /**
+   * Smaller, after a chunk failed to get through.
+   *
+   * nextChunkBytes only learns from chunks that SUCCEEDED, so on a connection
+   * where the current size never completes it never adapts — the same doomed
+   * chunk is tried for ever. A failure is evidence in its own right.
+   */
+  function shrinkAfterFailure(current) {
+    var cur = Math.round(current) || FIRST_CHUNK_BYTES;
+    if (!(cur > 0)) return CHUNK_MIN;
+    return Math.min(CHUNK_MAX, Math.max(CHUNK_MIN, Math.floor(cur / 2)));
+  }
+
+  /**
+   * What the bar should say, given what it said before: never less.
+   *
+   * Re-sending a chunk starts its byte count again, and reporting that
+   * honestly is a bar that jumps backwards — reported as an upload that
+   * "resets and begins from scratch". The bytes are not lost (the server
+   * keeps whatever arrived), so the lower number is the less truthful one.
+   */
+  function reportedSent(peak, sent, total) {
+    var t = Number(total);
+    var hi = Math.max(Number(peak) || 0, Number(sent) || 0);
+    if (!isFinite(t) || t <= 0) return hi;
+    return Math.min(hi, t);
+  }
+
   function stallTimeoutMs(chunkBytes, bytesPerSecond, floor) {
     var f = floor === undefined ? STALL_FLOOR_MS : floor;
     if (!isFinite(bytesPerSecond) || bytesPerSecond <= 0) return f;
@@ -46,6 +74,8 @@
     FIRST_CHUNK_BYTES: FIRST_CHUNK_BYTES,
     STALL_FLOOR_MS: STALL_FLOOR_MS,
     nextChunkBytes: nextChunkBytes,
+    shrinkAfterFailure: shrinkAfterFailure,
+    reportedSent: reportedSent,
     stallTimeoutMs: stallTimeoutMs,
   };
 })(typeof window !== 'undefined' ? window : this);

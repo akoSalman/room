@@ -43,15 +43,20 @@
    *
    * Only the first time, and only somebody else's. Your own arrives clear:
    * you chose the file seconds ago, and covering it back at you protects
-   * nobody. The button still covers it whenever you want.
+   * nobody. The button still covers it whenever you want — and THAT is the
+   * part `hidden` carries, without which the button on your own pictures
+   * changed a state this rule then ignored.
    */
   function startsBlurred(o) {
     o = o || {};
     // A one-time message has its own cover and its own rules. Two covers over
     // one picture is a picture nobody can open.
     if (o.hiddenOneTime) return false;
-    if (o.mine) return false;
-    return !o.revealed;
+    // An explicit "cover this" beats everything, including it being yours.
+    if (o.hidden) return true;
+    if (o.revealed) return false;
+    // Nobody has said either way: theirs arrives covered, yours does not.
+    return !o.mine;
   }
 
   /** Which bottom corner the button sits in: the bubble's outer edge. */

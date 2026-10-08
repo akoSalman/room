@@ -4035,4 +4035,186 @@ test('...and a chat open on a HIDDEN tab is not being read', async () => {
     'a hidden tab counted as reading the chat, which would silence everything');
 });
 
+// ── Uploading on a connection that keeps dropping ──────────────────────────
+//
+// Reported as: sending a photo, the bar reaches about ten per cent and starts
+// again from nothing, several times over. The chunk was buffered whole before
+// anything was written, so a connection that died part way through one threw
+// every byte of it away.
+
+const http = require('http');
+const crypto = require('crypto');
+
+/** Open a session the way the app does. */
+async function openUpload(token, size, name = 'photo.jpg') {
+  const r = await api('/upload/session', 'POST', { name, size, mime: 'image/jpeg' }, token);
+  assert.ok(r.id, `could not open an upload session: ${JSON.stringify(r)}`);
+  return r.id;
+}
+
+/**
+ * Send bytes at an offset, as one complete chunk.
+ *
+ * With a deadline, because the way this handler fails is by never answering:
+ * it streams the body and then decides whether to reply, so a wrong guard
+ * leaves the request open for ever. Without this the suite hangs instead of
+ * failing, and a hang says nothing about which test broke.
+ */
+async function sendChunk(id, token, at, buf, encoding) {
+  const res = await fetch(`${baseUrl}/upload/session/${id}`, {
+    method: 'POST',
+    signal: AbortSignal.timeout(15000),
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': encoding === 'base64' ? 'text/plain' : 'application/octet-stream',
+      'x-offset': String(at),
+      ...(encoding === 'base64' ? { 'x-encoding': 'base64' } : {}),
+    },
+    body: encoding === 'base64' ? buf.toString('base64') : buf,
+  });
+  return { status: res.status, body: await res.json().catch(() => ({})) };
+}
+
+/**
+ * Start a chunk, send part of it, then kill the connection.
+ *
+ * Content-Length promises the whole chunk and the socket dies part way
+ * through, which is exactly what a connection dropping looks like from the
+ * server's side.
+ */
+function dropMidChunk(id, token, at, buf, sendBytes) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(baseUrl);
+    const req = http.request({
+      host: u.hostname, port: u.port, path: `/upload/session/${id}`, method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/octet-stream',
+        'x-offset': String(at),
+        'Content-Length': String(buf.length),
+      },
+    });
+    req.on('error', () => {});
+    req.write(buf.subarray(0, sendBytes), () => {
+      // Long enough for the bytes to be written, then the connection goes.
+      setTimeout(() => { req.destroy(); resolve(); }, 250);
+    });
+    req.on('timeout', reject);
+  });
+}
+
+// The partial file itself. Its length IS the offset — that is the invariant
+// the whole resume mechanism rests on, so the tests check the two agree
+// rather than trusting the number the server reports.
+const partSize = (id) => {
+  const f = path.join('uploads', '.partial', `${id}.part`);
+  try { return fs.statSync(f).size; } catch { return -1; }
+};
+
+test('a whole chunk advances the upload', async () => {
+  const me = await signUp('upl1');
+  const bytes = Buffer.alloc(4096, 7);
+  const id = await openUpload(me.token, bytes.length);
+  const r = await sendChunk(id, me.token, 0, bytes.subarray(0, 2048));
+  assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+  assert.strictEqual(r.body.offset, 2048);
+  const got = await api(`/upload/session/${id}`, 'GET', null, me.token);
+  assert.strictEqual(got.offset, 2048, 'the server forgot a chunk it acknowledged');
+});
+
+test('THE REPORTED BUG: a connection dying mid-chunk keeps what arrived', async () => {
+  // This is the whole fix. Before it, the answer here was 0 and the phone
+  // sent the same bytes again — on a link that drops every few seconds, for
+  // ever, while using data continuously.
+  const me = await signUp('upl2');
+  const bytes = Buffer.alloc(300 * 1024, 3);
+  const id = await openUpload(me.token, bytes.length);
+  await dropMidChunk(id, me.token, 0, bytes, 64 * 1024);
+  const got = await api(`/upload/session/${id}`, 'GET', null, me.token);
+  assert.ok(got.offset > 0,
+    'every byte of an interrupted chunk was thrown away, so the upload restarts');
+  assert.ok(got.offset <= 64 * 1024,
+    `the server claims ${got.offset} bytes but only 65536 were sent`);
+  assert.strictEqual(got.offset, partSize(id),
+    'the reported offset is not the length of the file, so a hole is possible');
+});
+
+test('…and the next attempt is told where things really stand', async () => {
+  // The phone still believes it is at its own offset. A 409 carrying the real
+  // one is what it already knows how to continue from.
+  const me = await signUp('upl3');
+  const bytes = Buffer.alloc(200 * 1024, 5);
+  const id = await openUpload(me.token, bytes.length);
+  await dropMidChunk(id, me.token, 0, bytes, 64 * 1024);
+  const r = await sendChunk(id, me.token, 0, bytes.subarray(0, 1024));
+  assert.strictEqual(r.status, 409, `the stale offset was accepted: ${JSON.stringify(r.body)}`);
+  assert.ok(r.body.offset > 0, 'the 409 does not say where to resume from');
+  assert.strictEqual(r.body.offset, partSize(id), 'the 409 offset is not the file length');
+});
+
+test('A FILE WITH A HOLE IN IT: the bytes that arrive are the bytes that were sent', async () => {
+  // The failure that matters most. A photo assembled with a gap in the middle
+  // uploads "successfully" and is broken, which is worse than a slow upload.
+  // So: three chunks with a dropped connection in the middle, then compare
+  // every byte of the result against the original.
+  const me = await signUp('upl4');
+  const bytes = crypto.randomBytes(120 * 1024);
+  const id = await openUpload(me.token, bytes.length);
+
+  await sendChunk(id, me.token, 0, bytes.subarray(0, 32 * 1024));
+  await dropMidChunk(id, me.token, 32 * 1024, bytes.subarray(32 * 1024, 96 * 1024), 20 * 1024);
+  // Resume from wherever the server actually got to, as the app does.
+  let at = (await api(`/upload/session/${id}`, 'GET', null, me.token)).offset;
+  while (at < bytes.length) {
+    const end = Math.min(at + 32 * 1024, bytes.length);
+    const r = await sendChunk(id, me.token, at, bytes.subarray(at, end));
+    assert.strictEqual(r.status, 200, `chunk at ${at} refused: ${JSON.stringify(r.body)}`);
+    at = r.body.offset;
+  }
+
+  const fin = await api(`/upload/session/${id}/finish`, 'POST', null, me.token);
+  assert.ok(fin.url, `finish failed: ${JSON.stringify(fin)}`);
+  const onDisk = fs.readFileSync(path.join('uploads', path.basename(fin.url.split('?')[0])));
+  assert.strictEqual(onDisk.length, bytes.length, 'the assembled file is the wrong length');
+  assert.ok(onDisk.equals(bytes), 'the assembled file differs from what was sent');
+});
+
+test('nothing is accepted past the size the session declared', async () => {
+  // Checked before each write, not after, or a client could fill the disk a
+  // chunk at a time.
+  const me = await signUp('upl5');
+  const id = await openUpload(me.token, 1024);
+  const r = await sendChunk(id, me.token, 0, Buffer.alloc(4096, 1));
+  assert.strictEqual(r.status, 413, `oversized chunk accepted: ${JSON.stringify(r.body)}`);
+  assert.ok(partSize(id) <= 1024,
+    `the partial file grew to ${partSize(id)} bytes for a 1024-byte upload`);
+});
+
+test('an empty chunk is still refused', async () => {
+  const me = await signUp('upl6');
+  const id = await openUpload(me.token, 1024);
+  const r = await sendChunk(id, me.token, 0, Buffer.alloc(0));
+  assert.strictEqual(r.status, 400, `an empty chunk was accepted: ${JSON.stringify(r.body)}`);
+});
+
+test('the base64 fallback still works, byte for byte', async () => {
+  // The path for devices that cannot hand a binary body to the network stack.
+  // It is still buffered whole on purpose: a truncated base64 string is not
+  // the encoding of a prefix of the file.
+  const me = await signUp('upl7');
+  const bytes = crypto.randomBytes(8 * 1024);
+  const id = await openUpload(me.token, bytes.length);
+  let at = 0;
+  while (at < bytes.length) {
+    const end = Math.min(at + 4096, bytes.length);
+    const r = await sendChunk(id, me.token, at, bytes.subarray(at, end), 'base64');
+    assert.strictEqual(r.status, 200, `base64 chunk refused: ${JSON.stringify(r.body)}`);
+    at = r.body.offset;
+  }
+  const fin = await api(`/upload/session/${id}/finish`, 'POST', null, me.token);
+  assert.ok(fin.url, `finish failed: ${JSON.stringify(fin)}`);
+  const onDisk = fs.readFileSync(path.join('uploads', path.basename(fin.url.split('?')[0])));
+  assert.ok(onDisk.equals(bytes), 'the base64 path now corrupts the file');
+});
+
 main().catch(err => { console.error(err); process.exit(1); });

@@ -72,6 +72,16 @@
     var chunk = UploadTuning.FIRST_CHUNK_BYTES;
     var rate = 0;            // bytes per second, from the chunks that landed
     var chunkStartedAt = 0;
+    // The highest progress already shown. Re-sending a chunk starts its byte
+    // count again, so reporting it honestly makes the bar jump backwards —
+    // and the bytes are not lost, because the server keeps whatever arrived.
+    var peak = 0;
+
+    /** Progress, never going backwards. See UploadTuning.reportedSent. */
+    function report(sent) {
+      peak = UploadTuning.reportedSent(peak, sent, total);
+      cb.onProgress(peak, total);
+    }
 
     function headers(extra) {
       var h = { Authorization: 'Bearer ' + window.token };
@@ -124,7 +134,7 @@
         // the only evidence that anything is still happening.
         xhr.upload.onprogress = function (e) {
           lastByteAt = Date.now();
-          if (e.lengthComputable) cb.onProgress(start + e.loaded, total);
+          if (e.lengthComputable) report(start + e.loaded);
         };
         xhr.onload = function () {
           var body = {};
@@ -185,7 +195,7 @@
           if (!w || w.error) throw new Error('This upload expired — send it again');
           offset = Math.max(0, Math.min(w.offset || 0, total));
         }
-        cb.onProgress(offset, total);
+        report(offset);
         await pump();
       } catch (e) {
         running = false;
@@ -216,18 +226,21 @@
             chunk = UploadTuning.nextChunkBytes(rate, chunk);
           }
           offset = res.offset;
-          cb.onProgress(offset, total);
+          report(offset);
           continue;
         }
         if (res.status === -1) return;                    // aborted by us
         if (res.status === 409 && typeof res.offset === 'number') {
           offset = Math.max(0, Math.min(res.offset, total));
-          cb.onProgress(offset, total);
+          report(offset);
           continue;
         }
         if (!shouldRetry(attempt, res.status)) {
           throw new Error('Upload failed (' + (res.status || 'connection') + ')');
         }
+        // A chunk that failed is evidence about this connection, and the only
+        // evidence the rate never sees — it is measured from successes alone.
+        chunk = UploadTuning.shrinkAfterFailure(chunk);
         await sleep(retryDelay(attempt));
         attempt++;
         if (stopped || paused) return;

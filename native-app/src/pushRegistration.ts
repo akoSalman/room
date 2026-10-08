@@ -149,6 +149,26 @@ export function notificationTag(msgId: string | number | null | undefined): stri
 }
 
 /**
+ * The name a notification is shown under: the profile emoji, then the name.
+ *
+ * Mirrors senderTitle in notify.js and is compared against it by a drift
+ * test. The two routes to a notification — the server's push and this app
+ * drawing its own off the socket — are keyed by the same tag so either may
+ * replace the other. That only works invisibly while they agree on the
+ * title; the app was showing a bare username while the push showed the
+ * emoji, so which one you saw depended on which arrived first.
+ */
+export function senderTitle(o: {
+  avatar?: unknown; username?: unknown; suffix?: unknown;
+}): string {
+  const e = o || {};
+  const avatar = e.avatar == null ? '' : String(e.avatar);
+  const name = e.username == null ? '' : String(e.username);
+  const suffix = e.suffix == null ? '' : String(e.suffix);
+  return (avatar ? avatar + ' ' : '') + name + suffix;
+}
+
+/**
  * May the app raise a notification from the socket itself?
  *
  * Yes — whenever it can carry the shared tag.

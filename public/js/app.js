@@ -4553,20 +4553,39 @@ var REVEALED_KEY = 'revealedImages-v1';
 var MAX_REVEALED = 4000;
 var revealedList = [];
 var revealedSet = new Set();
+// Deliberately COVERED, which is not the same as "not yet cleared". Your own
+// pictures are clear until you say otherwise, so without somewhere to record
+// that you said otherwise the button on them has nothing to change.
+var hiddenSet = new Set();
 try {
   var rawRevealed = JSON.parse(localStorage.getItem(REVEALED_KEY) || '[]');
+  // An array is the older shape, from before covering your own was possible.
   if (Array.isArray(rawRevealed)) {
     revealedList = rawRevealed.filter(k => typeof k === 'string' && k).slice(-MAX_REVEALED);
     revealedSet = new Set(revealedList);
+  } else if (rawRevealed && typeof rawRevealed === 'object') {
+    var rl = Array.isArray(rawRevealed.revealed) ? rawRevealed.revealed : [];
+    var hl = Array.isArray(rawRevealed.hidden) ? rawRevealed.hidden : [];
+    revealedList = rl.filter(k => typeof k === 'string' && k).slice(-MAX_REVEALED);
+    revealedSet = new Set(revealedList);
+    hiddenSet = new Set(hl.filter(k => typeof k === 'string' && k).slice(-MAX_REVEALED));
   }
 } catch {}
 
 function saveRevealed() {
-  try { localStorage.setItem(REVEALED_KEY, JSON.stringify(revealedList)); } catch {}
+  try {
+    localStorage.setItem(REVEALED_KEY, JSON.stringify({
+      revealed: revealedList, hidden: [...hiddenSet],
+    }));
+  } catch {}
 }
 function isRevealed(key) { return !!key && revealedSet.has(key); }
+function isHiddenImage(key) { return !!key && hiddenSet.has(key); }
 function revealImage(key) {
-  if (!key || revealedSet.has(key)) return;
+  if (!key) return;
+  // Clearing it undoes an explicit cover, whoever sent it.
+  var wasHidden = hiddenSet.delete(key);
+  if (revealedSet.has(key)) { if (wasHidden) saveRevealed(); return; }
   revealedList.push(key);
   revealedSet.add(key);
   if (revealedList.length > MAX_REVEALED) {
@@ -4575,9 +4594,16 @@ function revealImage(key) {
   saveRevealed();
 }
 function hideImage(key) {
-  if (!key || !revealedSet.has(key)) return;
+  if (!key) return;
+  // Recorded as covered, not merely dropped from the cleared list — your own
+  // were never in that list, which is how the button came to do nothing.
   revealedSet.delete(key);
   revealedList = revealedList.filter(k => k !== key);
+  hiddenSet.add(key);
+  if (hiddenSet.size > MAX_REVEALED) {
+    var first = hiddenSet.values().next();
+    if (!first.done) hiddenSet.delete(first.value);
+  }
   saveRevealed();
 }
 
@@ -4616,6 +4642,8 @@ function applyBlurTo(wrap, imgs, opts) {
   const allSeen = keys.length > 0 && keys.every(isRevealed);
   let blurred = ImageBlur.startsBlurred({
     mine: opts.mine, hiddenOneTime: opts.hiddenOneTime, revealed: allSeen,
+    // ANY one covered covers the set, the mirror of `every` above.
+    hidden: keys.some(isHiddenImage),
   });
 
   const paint = () => {

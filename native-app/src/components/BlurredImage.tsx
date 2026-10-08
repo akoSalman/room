@@ -43,7 +43,9 @@ export default function BlurredImage({
   }, []);
 
   const blurred = startsBlurred({
-    mine, hiddenOneTime, revealed: blurStore.isRevealed(key),
+    mine, hiddenOneTime,
+    revealed: blurStore.isRevealed(key),
+    hidden: blurStore.isHidden(key),
   });
 
   return (

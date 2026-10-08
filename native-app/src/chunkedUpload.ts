@@ -17,9 +17,10 @@
 // The choice is made once per file, on the first chunk, and then kept.
 import * as FileSystem from 'expo-file-system';
 import {
-  CHUNK_BYTES, chunkRange, resumeOffset, isComplete,
+  chunkRange, resumeOffset, isComplete,
   shouldRetry, retryDelay, MAX_UPLOAD_BYTES,
   stallTimeoutMs, FINISH_TIMEOUT_MS, shouldRetryFinish, MAX_ATTEMPTS,
+  FIRST_CHUNK_BYTES, nextChunkBytes, shrinkAfterFailure, reportedSent,
 } from './uploadSession';
 
 export type UploadHandle = {
@@ -145,7 +146,7 @@ export function uploadResumable(
   mime: string,
   token: string,
   cb: UploadCallbacks,
-  chunkBytes = CHUNK_BYTES,
+  chunkBytes = FIRST_CHUNK_BYTES,
 ): UploadHandle {
   let stopped = false;      // cancelled for good
   let paused = false;
@@ -159,6 +160,26 @@ export function uploadResumable(
   let timer: any = null;
   /** Bytes per second, from the chunks that have landed — feeds the deadline. */
   let rate = 0;
+  /**
+   * How big the next piece should be.
+   *
+   * No longer a constant 512 KB. A chunk only counts when it lands whole, so
+   * on a connection that drops every few seconds a large one may never land,
+   * and the upload uses data continuously without advancing — reported as a
+   * photo reaching ten per cent and starting again. Starts small, grows
+   * towards a few seconds of transfer as the connection proves itself, and
+   * halves whenever a chunk fails.
+   */
+  let chunk = chunkBytes;
+  /**
+   * The highest progress already shown.
+   *
+   * Re-sending a chunk starts its byte count again; reporting that honestly
+   * makes the bar jump backwards, which is the thing people actually see and
+   * report. The bytes are not lost — the server keeps whatever arrived — so
+   * the lower number is the less truthful of the two. See reportedSent.
+   */
+  let peak = 0;
   // Resolves the backoff sleep early. Without it, pausing during the wait
   // between two retries left the loop parked on a promise nobody would ever
   // settle — `running` stayed true, and resume did nothing at all.
@@ -204,7 +225,7 @@ export function uploadResumable(
         offset = resumeOffset(j.offset, total);
       }
       if (!reader) reader = await makeReader(uri);
-      cb.onProgress(offset, total);
+      report(offset);
       await pump();
     } catch (e: any) {
       running = false;
@@ -214,9 +235,15 @@ export function uploadResumable(
     running = false;
   }
 
+  /** Progress, never going backwards. */
+  function report(sent: number) {
+    peak = reportedSent(peak, sent, total);
+    cb.onProgress(peak, total);
+  }
+
   async function pump() {
     while (!stopped && !paused) {
-      const range = chunkRange(offset, total, chunkBytes);
+      const range = chunkRange(offset, total, chunk);
       if (!range) break;
       const { body, base64 } = await reader!(range.start, range.end);
       if (stopped || paused) return;
@@ -224,7 +251,7 @@ export function uploadResumable(
       const res = await sendChunk(
         api(`/upload/session/${sessionId}`), token, range.start, body, base64,
         (x) => { inFlight = x; },
-        (loaded) => cb.onProgress(range.start + loaded, total),
+        (loaded) => report(range.start + loaded),
         // Generous, and measured from what this connection has actually
         // managed so far, so a slow link is not mistaken for a dead one.
         stallTimeoutMs(range.end - range.start, rate));
@@ -234,20 +261,28 @@ export function uploadResumable(
         attempt = 0;
         const took = Date.now() - startedAt;
         if (took > 0) rate = ((range.end - range.start) / took) * 1000;
+        // What this connection can actually carry in a few seconds, which is
+        // only knowable from a chunk that arrived.
+        chunk = nextChunkBytes(rate, chunk);
         offset = res.offset ?? offset;
-        cb.onProgress(offset, total);
+        report(offset);
         continue;
       }
       if (res.status === -1) return;             // aborted by pause/cancel
       // The server telling us its offset is not a failure, it is the answer.
+      // It is also how the bytes from a half-delivered chunk are recovered:
+      // the server keeps whatever arrived, so its offset is ahead of ours.
       if (res.status === 409 && typeof res.offset === 'number') {
         offset = resumeOffset(res.offset, total);
-        cb.onProgress(offset, total);
+        report(offset);
         continue;
       }
       if (!shouldRetry(attempt, res.status)) {
         throw new Error(`Upload failed (${res.status || 'network'})`);
       }
+      // A chunk that failed is evidence about this connection, and the only
+      // evidence the rate never sees — it is measured from successes.
+      chunk = shrinkAfterFailure(chunk);
       await sleep(retryDelay(attempt));
       attempt++;
       if (stopped || paused) return;

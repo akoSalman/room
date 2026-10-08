@@ -20,7 +20,7 @@ import { changesLeftText, renameWorthDoing, renamedText } from '../profileEdit';
 import * as upd from '../updateSource';
 import { BUILD_VERSION } from '../version';
 import * as connection from '../connection';
-import { mayReorder, holdOrder } from '../listOrder';
+import { mayReorder, holdOrder, bumpToTop } from '../listOrder';
 import * as keepAlive from '../keepAlive';
 import { statusLine as updateStatusLine } from '../updateResume';
 
@@ -51,41 +51,56 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
   // decide whether it is safe to put it in a new order. See src/listOrder.ts.
   const shownAt = useRef(Date.now());
   const lastTouchAt = useRef(0);
-  const pendingOrder = useRef<{ rooms: Room[] | null; dms: Room[] | null }>({ rooms: null, dms: null });
+  // Set by pull-to-refresh: the one reorder somebody asked for.
+  const forceOrder = useRef(false);
 
   /**
    * Take a fresh list, reordering only when nobody is reaching for it.
    *
    * The content is applied at once — counts, previews, who is online. Only
    * the ORDER waits, because the order is the only part that moves a target.
-   * What could not be applied is remembered and retried.
+   *
+   * A held order is NOT applied a moment later. That was the earlier attempt
+   * and it is why this was reported a third time: holding for 700ms and then
+   * reordering moved the list at 750ms, which is closer to the moment of the
+   * tap than 400ms was. It would have been easy to call that a tuning
+   * problem; it is not, because there is no delay at which somebody is
+   * reliably not reaching.
+   *
+   * So a held order simply does not happen. The sequence is decided when the
+   * list opens and stays put until it is opened again — and the device's copy
+   * is written from every answer, so the next open opens in the right order.
+   * New messages still change counts and previews, which is where "this chat
+   * has something new" actually lives.
    */
   const applyList = useCallback((which: 'rooms' | 'dms', incoming: Room[]) => {
     const set = which === 'rooms' ? setRooms : setDms;
-    const allowed = mayReorder({
+    const allowed = forceOrder.current || mayReorder({
       shownAt: shownAt.current, lastTouchAt: lastTouchAt.current, now: Date.now(),
     });
-    if (allowed) {
-      pendingOrder.current[which] = null;
-      set(incoming);
-      return;
-    }
-    pendingOrder.current[which] = incoming;
+    if (allowed) { set(incoming); return; }
     set(prev => holdOrder(prev, incoming));
   }, []);
 
-  // Retry whatever had to wait. Cheap, and only while something is waiting.
-  useEffect(() => {
-    const t = setInterval(() => {
-      const p = pendingOrder.current;
-      if (!p.rooms && !p.dms) return;
-      if (!mayReorder({
-        shownAt: shownAt.current, lastTouchAt: lastTouchAt.current, now: Date.now(),
-      })) return;
-      if (p.rooms) { setRooms(p.rooms); p.rooms = null; }
-      if (p.dms) { setDms(p.dms); p.dms = null; }
-    }, 250);
-    return () => clearInterval(t);
+  /**
+   * Move a conversation to the top, if now is a moment when that is safe.
+   *
+   * This is the half that was missing, and the half the report was about:
+   * several people writing at once meant several of these a second, each one
+   * pulling a row out from under a finger — while the server's answer was
+   * being politely held back.
+   *
+   * Not safe means not now and not later: the row stays where it is and its
+   * unread count still goes up, which is the part that says something
+   * arrived. The sequence catches up the next time the list is opened.
+   */
+  const applyBump = useCallback((roomId: unknown) => {
+    if (roomId == null) return;
+    if (!mayReorder({
+      shownAt: shownAt.current, lastTouchAt: lastTouchAt.current, now: Date.now(),
+    })) return;
+    setRooms(prev => bumpToTop(prev, roomId));
+    setDms(prev => bumpToTop(prev, roomId));
   }, []);
 
   const [rooms, setRooms] = useState<Room[]>([]);
@@ -277,6 +292,16 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
     if (Array.isArray(r) && Array.isArray(d)) offline.saveRooms(r, d);
   }, []);
 
+  /**
+   * Pulled down to refresh: the person asked for the list to be brought up to
+   * date, so the order moves. Their own gesture, their own expectation — and
+   * their finger is on the list, not on a row.
+   */
+  const refresh = useCallback(async () => {
+    forceOrder.current = true;
+    try { await load(); } finally { forceOrder.current = false; }
+  }, [load]);
+
   // The device's copy first, so the list is on screen before any request is
   // made — then the network refreshes it. Opening the app should never mean
   // staring at a spinner for something that was already here.
@@ -325,18 +350,10 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
       const uname = await getUsername();
       sock = await getSocket();
       // Float the room that just had activity to the top of its list, so the
-      // ordering tracks it live instead of only on reload.
-      const bumpRoom = (roomId: number) => {
-        const bump = (list: Room[]) => {
-          const i = list.findIndex(r => r.id === roomId);
-          if (i <= 0) return list; // absent, or already first
-          const next = list.slice();
-          const [hit] = next.splice(i, 1);
-          return [hit, ...next];
-        };
-        setRooms(prev => bump(prev));
-        setDms(prev => bump(prev));
-      };
+      // ordering tracks it live instead of only on reload — but through the
+      // same gate as everything else, because several people writing at once
+      // is the case where this rearranged the list under a finger.
+      const bumpRoom = (roomId: number) => { applyBump(roomId); };
       const onMsg = (msg: any) => {
         bumpRoom(msg.room_id);
         if (msg.username === uname) return; // own messages are never "unread"
@@ -688,7 +705,7 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
             );
           }}
           refreshing={loading}
-          onRefresh={load}
+          onRefresh={refresh}
         />
       )}
 

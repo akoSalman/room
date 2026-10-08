@@ -234,7 +234,9 @@ export function attach(socket: any, opts?: { pushRegistered?: () => boolean }): 
       // Still the server's tag, so a delete can pull it from the tray by name
       // whichever route drew it.
       id: pushReg.notificationTag(msg.id),
-      title: msg.username,
+      // The profile emoji in front of the name, the same as the push the
+      // server would have sent. See senderTitle in pushRegistration.ts.
+      title: pushReg.senderTitle({ avatar: msg.avatar, username: msg.username }),
       body: bodyFor(msg?.type),
       // Which chat this is about. Without it, tapping this notification only
       // launched the app, which then restored whatever chat was last open —
