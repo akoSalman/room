@@ -307,3 +307,34 @@ export function shareFailureText(reason: unknown): string {
   }
   return 'The screen could not be shared.';
 }
+
+/**
+ * A key for the view showing this stream.
+ *
+ * Reported as: on a video call, the first tap to swap the panes sometimes
+ * crashes the app.
+ *
+ * The swap handed a DIFFERENT stream to the same video view. On Android that
+ * is not a property change — it reaches into a live SurfaceViewRenderer and
+ * swaps the track underneath it, detaching one renderer and attaching another
+ * while frames are arriving. That is a native crash this side cannot guard
+ * against with a null check, and every null check here is already in place.
+ *
+ * The web never does this, and said why in its own stylesheet: the swap is a
+ * class flip, because "moving a <video> re-attaches its stream and blinks it
+ * black". The app was doing precisely the thing the web avoided.
+ *
+ * So the view is keyed by the stream it shows. A swap then UNMOUNTS the view
+ * and mounts a new one, which starts with the right track and never has one
+ * exchanged under it. The cost is a frame of black on a tap somebody made
+ * deliberately. The alternative cost is the call ending.
+ *
+ * The pane is in the key as well as the stream: without it, swapping two
+ * views whose streams happen to compare equal would produce the same key for
+ * both and React would reuse one of them — which is the bug again, by a
+ * different route.
+ */
+export function paneKey(pane: 'remote' | 'local' | null, streamId: unknown): string {
+  const id = streamId === null || streamId === undefined ? 'none' : String(streamId);
+  return `${pane || 'none'}:${id}`;
+}

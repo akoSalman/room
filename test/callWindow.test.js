@@ -565,6 +565,54 @@ test('BOTH CALL NOTIFICATIONS CARRY THE APP ICON', () => {
   }
 });
 
+// ── The swap that crashed the app ──────────────────────────────────────────
+//
+// Reported as: on a video call, the first tap to swap the panes sometimes
+// crashes the whole app.
+//
+// Every null check was already in place and none of them could help: the
+// swap handed a DIFFERENT stream to the same video view, and on Android that
+// reaches into a live SurfaceViewRenderer and exchanges the track underneath
+// it while frames are arriving. The web never does this and says why in its
+// own stylesheet — the swap there is a class flip, because moving a <video>
+// re-attaches its stream. The app was doing exactly what the web avoided.
+
+test('A PANE IS KEYED BY THE STREAM IT SHOWS', () => {
+  // So a swap unmounts the view and mounts a new one, which starts with the
+  // right track instead of having one exchanged under it.
+  assert.notStrictEqual(W.paneKey('remote', 'abc'), W.paneKey('local', 'abc'));
+  assert.notStrictEqual(W.paneKey('remote', 'abc'), W.paneKey('remote', 'def'));
+  assert.strictEqual(W.paneKey('remote', 'abc'), W.paneKey('remote', 'abc'));
+});
+
+test('…and the PANE is in the key as well as the stream', () => {
+  // Two panes whose streams compare equal would otherwise produce one key,
+  // React would reuse a single view, and that is the original bug by another
+  // route. It happens: a renegotiation can hand back the local stream as the
+  // remote one, which this file already has a guard for elsewhere.
+  assert.notStrictEqual(W.paneKey('local', 'same'), W.paneKey('remote', 'same'));
+});
+
+test('A MISSING STREAM DOES NOT COLLIDE WITH A REAL ONE', () => {
+  // An empty key, or one that is just the pane, would make "no stream yet"
+  // and "this stream" the same view.
+  assert.notStrictEqual(W.paneKey('remote', null), W.paneKey('remote', 'abc'));
+  assert.notStrictEqual(W.paneKey('remote', undefined), W.paneKey('remote', ''));
+  assert.ok(W.paneKey(null, null).length > 0, 'the key is empty, which React treats as no key');
+});
+
+test('BOTH VIDEO VIEWS ARE ACTUALLY KEYED', () => {
+  // The rule is worth nothing if the views do not use it — and the crash is
+  // in the one that is not.
+  const overlay = fs.readFileSync(path.join(__dirname, '..',
+    'native-app', 'src', 'components', 'CallOverlay.tsx'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  assert.ok(/key=\{paneKey\(panes\.big, bigStream\.id\)\}/.test(overlay),
+    'the big pane is not keyed, so its track is still exchanged in place');
+  assert.ok(/key=\{paneKey\(panes\.small, smallStream\.id\)\}/.test(overlay),
+    'the corner pane is not keyed, so its track is still exchanged in place');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

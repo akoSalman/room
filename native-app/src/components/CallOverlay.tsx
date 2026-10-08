@@ -9,7 +9,7 @@ import { C } from '../theme';
 import { callManager } from '../callManager';
 import {
   canMinimize, clampToScreen, snapToEdge, defaultPosition, isDrag,
-  videoPanes, canSwapVideos, mirrors, shareFailureText,
+  videoPanes, canSwapVideos, mirrors, shareFailureText, paneKey,
   showBigPlaceholder, cameraOffFor,
 } from '../callWindow';
 
@@ -189,6 +189,11 @@ export default function CallOverlay() {
           <>
             {bigStream && (
               <RTCView
+                // Keyed by the stream, so a swap MOUNTS A NEW VIEW rather
+                // than exchanging the track inside a live one. See paneKey:
+                // that exchange is a native crash, and it is the thing the
+                // web deliberately avoids by flipping a class instead.
+                key={paneKey(panes.big, bigStream.id)}
                 streamURL={bigStream.toURL()}
                 style={StyleSheet.absoluteFill as any}
                 objectFit="cover"
@@ -208,6 +213,7 @@ export default function CallOverlay() {
                   ? 'Show my video full screen' : "Show the other person's video full screen"}
               >
                 <RTCView
+                  key={paneKey(panes.small, smallStream.id)}
                   streamURL={smallStream.toURL()}
                   style={StyleSheet.absoluteFill as any}
                   objectFit="cover"
