@@ -3547,6 +3547,10 @@ io.on('connection', (socket) => {
     const word = (v) => String(v || 'unknown').replace(/[^a-z-]/gi, '').slice(0, 20) || 'unknown';
     if (!d || word(d.what) !== 'share') return;
     console.log(`[share] user=${socket.user.id} outcome=${word(d.outcome)}`
+      // Which failure it was. Stripped to letters and hyphens, so a message
+      // carrying a path or a name cannot reach a log that is read into a
+      // public repository.
+      + (d.reason ? ` reason=${word(d.reason)}` : '')
       + ` tries=${n(d.tries)} captured=${n(d.captured)}`
       + ` senders=${n(d.senders)} switched=${n(d.switched)} scale=${n(d.scale)}`
       // The answer to "is the encoder producing anything", which is the only

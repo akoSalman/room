@@ -8,7 +8,7 @@ import { mediaDevices, RTCPeerConnection, MediaStream } from 'react-native-webrt
 import { scaleFor, madeNoProgress, MAX_BITRATE, SAMPLE_AFTER_MS } from './screenShare';
 import { apiFetch, getSocket } from './api';
 import { stopRinging } from './incomingCall';
-import { routeFor, outgoingStatus, endStopsCall, RING_TIMEOUT_MS, NO_ANSWER_MS, CallMode, CallPhase, OutgoingState } from './callAudio';
+import { routeFor, outgoingStatus, endStopsCall, RING_TIMEOUT_MS, NO_ANSWER_MS, CONNECT_WAIT_MS, CallMode, CallPhase, OutgoingState } from './callAudio';
 import { toneFor, toneVolume, toneLoops, toneStillWanted } from './callTones';
 import { canMinimize, canSwapVideos, CallPhase as WindowPhase } from './callWindow';
 import * as ongoing from './ongoingCall';
@@ -335,11 +335,14 @@ class CallManager {
    * being shared — this goes into a log read into a repository that has been
    * public.
    */
-  private reportShare(outcome: string, extra?: Record<string, number>) {
+  private reportShare(outcome: string, extra?: Record<string, number>, reason?: string) {
     try {
       this.sock?.emit('call_diag', {
         what: 'share',
         outcome,
+        // WHICH failure, not just that there was one. The server strips this
+        // to letters and hyphens before logging it.
+        ...(reason ? { reason } : {}),
         tries: this.shareTries,
         captured: this.shareCaptured ? 1 : 0,
         senders: this.shareSenders,
@@ -475,10 +478,16 @@ class CallManager {
       // Refusing at the system sheet is a decision and says nothing. Anything
       // else is a failure, and a silent return is exactly how this looked like
       // it was working while doing nothing at all.
-      const name = String(err?.name || err?.message || '');
+      // BOTH, joined. A React Native promise rejection is a plain Error:
+      // its `name` is the useless string "Error" and the reason is in
+      // `message`. Reading `name || message` therefore always took "Error",
+      // so cancelling the system sheet — which rejects with NotAllowedError
+      // in the message — was recorded as a failure and shown as one.
+      const name = [err?.name, err?.message].filter(Boolean).join(' ').trim();
       this.shareTries++;
-      if (!/NotAllowed|Abort|cancel/i.test(name)) this.shareFailed = name || 'failed';
-      this.reportShare(/NotAllowed|Abort|cancel/i.test(name) ? 'refused' : 'capture-failed');
+      const refused = /NotAllowed|Abort|cancel/i.test(name);
+      if (!refused) this.shareFailed = name || 'failed';
+      this.reportShare(refused ? 'refused' : 'capture-failed', undefined, name);
       this.emit();
       return;
     }
@@ -583,6 +592,14 @@ class CallManager {
   }
 
   private sock: any = null;
+  /**
+   * Whether this call's offer actually went out.
+   *
+   * A call that never left the device is not a missed call for anybody —
+   * nobody's phone rang — so logging one puts an entry in the other
+   * person's chat about a call they were never offered.
+   */
+  private offerSent = false;
   private pcs = new Map<number, RTCPeerConnection>();
   private pendingIce = new Map<number, any[]>(); // candidates that arrived before the pc was ready
   private iceServers: any[] = [{ urls: ['stun:stun.l.google.com:19302'] }];
@@ -791,6 +808,7 @@ class CallManager {
     // is the difference between "their phone has the call" and "a push has
     // been sent to a phone that may be face down in a drawer", and the caller
     // is entitled to know which one they are waiting on.
+    this.offerSent = true;
     this.sock.emit('call_offer', {
       toUserId: userId, kind: this.mode === 'dm-video' ? 'video' : 'voice',
       sdp: (pc as any).localDescription, ...extra,
@@ -800,6 +818,32 @@ class CallManager {
       this.out = { ...this.out, delivered: !!res?.delivered, pushed: !!res?.pushed };
       this.status = outgoingStatus(this.out);
       this.emit();
+    });
+  }
+
+  /**
+   * Resolve once the socket is connected, or false if it does not get there.
+   *
+   * A named handler removed by name: `off('connect')` with no handler would
+   * take every other listener for that event with it, which is the mistake
+   * socketNotifier.ts exists to document.
+   */
+  private waitForSocket(ms: number): Promise<boolean> {
+    const s = this.sock;
+    if (!s) return Promise.resolve(false);
+    if (s.connected) return Promise.resolve(true);
+    return new Promise<boolean>(resolve => {
+      let settled = false;
+      const finish = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try { s.off('connect', onConnect); } catch {}
+        resolve(ok);
+      };
+      const onConnect = () => finish(true);
+      const timer = setTimeout(() => finish(false), ms);
+      s.on('connect', onConnect);
     });
   }
 
@@ -822,7 +866,11 @@ class CallManager {
 
   private teardown() {
     // Log the DM call outcome before clearing state (rooms aren't logged).
-    if (this.mode?.startsWith('dm')) {
+    // An OUTGOING call that never got as far as sending its offer is not a
+    // missed call: nobody's phone rang, and the entry would appear in the
+    // other person's chat for a call they were never offered. Incoming ones
+    // are always logged — the offer by definition arrived.
+    if (this.mode?.startsWith('dm') && (!this.outgoing || this.offerSent)) {
       this.logCall(this.connectedAt ? 'completed' : 'missed');
     }
     this.pcs.forEach(pc => pc.close());
@@ -963,6 +1011,26 @@ class CallManager {
     this.applyRoute('outgoing');
     this.out = {};
     this.minimized = false;
+    this.offerSent = false;
+    // ── Wait for the socket before placing it ──────────────────────────────
+    //
+    // Reported as: for about half a minute after opening the app, tapping
+    // call logs a missed call and nothing happens. socket.io BUFFERS an emit
+    // made while it is still connecting, which is right for a chat message
+    // and wrong for a call: the offer sat in the buffer, no phone rang, and
+    // the caller watched a silent "Calling…" until they gave up.
+    if (!this.sock?.connected) {
+      this.status = 'Connecting…';
+      this.syncOngoing();
+      this.emit();
+      if (!(await this.waitForSocket(CONNECT_WAIT_MS))) {
+        // Say so, and do not log a call that was never placed.
+        this.status = 'No connection';
+        this.emit();
+        setTimeout(() => this.end(), 1500);
+        return;
+      }
+    }
     this.status = outgoingStatus(this.out);
     // Our own ringback, and ONLY ours: InCallManager's was started here too,
     // so two tones played over each other and the loud one won.

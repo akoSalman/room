@@ -1,0 +1,124 @@
+diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java
+index 01df786..a5cea90 100644
+--- a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java
++++ b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java
+@@ -73,7 +73,20 @@ class GetUserMediaImpl {
+                     mediaProjectionPermissionResultData = data;
+ 
+                     ThreadUtils.runOnExecutor(() -> {
+-                        MediaProjectionService.launch(activity);
++                        // WAIT for the foreground service, rather than
++                        // starting it and carrying straight on. Since
++                        // Android 10 a MediaProjection used before one is
++                        // running produces a track that never emits a single
++                        // frame, and nothing anywhere says so: the capture
++                        // appears to start, the track is live, and the far
++                        // end sees a frozen picture.
++                        String why = MediaProjectionService.launchAndWait(activity, 5000);
++                        if (why != null) {
++                            displayMediaPromise.reject("DOMException", why);
++                            displayMediaPromise = null;
++                            mediaProjectionPermissionResultData = null;
++                            return;
++                        }
+                         createScreenStream();
+                     });
+                 }
+diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/MediaProjectionService.java b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/MediaProjectionService.java
+index c3cd9fe..b09128f 100644
+--- a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/MediaProjectionService.java
++++ b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/MediaProjectionService.java
+@@ -25,6 +25,47 @@ public class MediaProjectionService extends Service {
+ 
+     static final int NOTIFICATION_ID = new Random().nextInt(99999) + 10000;
+ 
++    /**
++     * Whether this service is actually in the foreground right now.
++     *
++     * startForegroundService() returns as soon as the request is queued; the
++     * service reaches the foreground later, on the main thread. Since
++     * Android 10 a MediaProjection cannot produce frames unless a foreground
++     * service of type mediaProjection is already running, so using the
++     * projection in that gap yields a live track that never emits anything —
++     * which is exactly what screen sharing did.
++     */
++    public static volatile boolean sRunning = false;
++
++    /**
++     * Start the service and wait until it is really in the foreground.
++     *
++     * Returns null when the projection may proceed, or a short reason why
++     * it may not, so the caller can say something true instead of handing
++     * back a track that will stay blank.
++     */
++    public static String launchAndWait(Context context, long timeoutMs) {
++        if (!WebRTCModuleOptions.getInstance().enableMediaProjectionService) {
++            // The app never asked for the service. Capture cannot work on
++            // Android 10 or newer, and saying so beats a silent blank track.
++            return "ScreenCaptureServiceDisabled";
++        }
++        if (sRunning) {
++            return null;
++        }
++        launch(context);
++        long deadline = System.currentTimeMillis() + timeoutMs;
++        while (!sRunning && System.currentTimeMillis() < deadline) {
++            try {
++                Thread.sleep(25);
++            } catch (InterruptedException e) {
++                Thread.currentThread().interrupt();
++                break;
++            }
++        }
++        return sRunning ? null : "ScreenCaptureServiceNotRunning";
++    }
++
+     public static void launch(Context context) {
+         if (!WebRTCModuleOptions.getInstance().enableMediaProjectionService) {
+             return;
+@@ -59,10 +100,17 @@ public class MediaProjectionService extends Service {
+             return;
+         }
+ 
++        sRunning = false;
+         Intent intent = new Intent(context, MediaProjectionService.class);
+         context.stopService(intent);
+     }
+ 
++    @Override
++    public void onDestroy() {
++        sRunning = false;
++        super.onDestroy();
++    }
++
+     @Override
+     public IBinder onBind(Intent intent) {
+         return null;
+@@ -73,10 +121,23 @@ public class MediaProjectionService extends Service {
+ 
+         Notification notification = MediaProjectionNotification.buildMediaProjectionNotification(this);
+ 
+-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
+-        } else {
+-            startForeground(NOTIFICATION_ID, notification);
++        try {
++            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
++                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
++            } else {
++                startForeground(NOTIFICATION_ID, notification);
++            }
++            // Only now may a projection be used. The waiter above is spinning
++            // on this.
++            sRunning = true;
++        } catch (RuntimeException e) {
++            // Refused — a missing permission, or a background start the
++            // system does not allow. Stopping cleanly is better than a
++            // service that exists and is not in the foreground, which
++            // Android kills the whole app for.
++            Log.w(TAG, "Media projection service could not go foreground", e);
++            sRunning = false;
++            stopSelf();
+         }
+ 
+         return START_NOT_STICKY;

@@ -261,6 +261,20 @@ export default function CallOverlay() {
         <Text style={s.callState}>{elapsed ?? cm.status}</Text>
       </View>
 
+      {/* Why a share did not start.
+          *
+          * ABOVE the row of buttons, not inside it. It was a child of a
+          * `flexDirection: 'row'` with `justifyContent: 'space-evenly'`, so
+          * the moment it appeared it became one more evenly-spaced item and
+          * pushed the buttons out to the edges — reported as the buttons
+          * going to the sides with a text between them. A message about a
+          * failure must not rearrange the controls it is explaining. */}
+      {isVideo && !!cm.shareFailed && (
+        <Text style={s.shareError} numberOfLines={2}>
+          {shareFailureText(cm.shareFailed)}
+        </Text>
+      )}
+
       <View style={s.controls}>
         <View style={s.actionCol}>
           <TouchableOpacity style={[s.roundBtn, s.ctrlBtn, cm.muted && s.ctrlActive]} onPress={() => cm.toggleMute()}>
@@ -299,14 +313,7 @@ export default function CallOverlay() {
             goes into the sender the camera was using, so the other end sees
             one video throughout.
 
-            A failure says so. Every one of them used to be swallowed, so a
-            share that never started and a share that was working looked
-            exactly alike — which is what "it does not share anything" was. */}
-        {isVideo && !!cm.shareFailed && (
-          <Text style={s.shareError} numberOfLines={2}>
-            {shareFailureText(cm.shareFailed)}
-          </Text>
-        )}
+            A failure says so — above this row, not in it. See shareError. */}
         {isVideo && (
           <View style={s.actionCol}>
             <TouchableOpacity
@@ -331,9 +338,13 @@ export default function CallOverlay() {
 const hit8 = { top: 8, bottom: 8, left: 8, right: 8 };
 
 const s = StyleSheet.create({
+  // Pinned just above the controls row, which is itself absolute at
+  // bottom: 60. Laid out in the normal flow it would sit wherever the column
+  // happened to end — usually behind the video.
   shareError: {
+    position: 'absolute', bottom: 150, left: 0, right: 0,
     color: '#fca5a5', fontSize: 12, textAlign: 'center',
-    paddingHorizontal: 16, marginBottom: 6,
+    paddingHorizontal: 16,
   },
 
   minimizeBtn: {

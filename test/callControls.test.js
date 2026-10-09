@@ -481,6 +481,32 @@ test('THE SHARE LOG LINE IS COUNTS AND ONE WORD', () => {
   assert.ok(!/username/.test(block[0]), 'the share log line names the user');
 });
 
+test('A SHARE FAILURE DOES NOT REARRANGE THE BUTTONS', () => {
+  // Reported as: tapping share sends the buttons out to the sides with a
+  // text between them.
+  //
+  // The message was a child of the controls row, which is
+  // `flexDirection: 'row'` with `justifyContent: 'space-evenly'` — so the
+  // moment it appeared it became one more evenly-spaced item and pushed the
+  // buttons apart. A message explaining a failure must not rearrange the
+  // controls it is explaining.
+  const src = fs.readFileSync(path.join(ROOT, 'native-app', 'src', 'components', 'CallOverlay.tsx'), 'utf8');
+  const row = /<View style=\{s\.controls\}>([\s\S]*?)\n      <\/View>/.exec(src);
+  assert.ok(row, 'could not find the controls row');
+  assert.ok(!/shareFailureText/.test(row[1]),
+    'the failure message is inside the row again, which spreads the buttons');
+  // Still shown, just not in there.
+  assert.ok(/shareFailureText\(cm\.shareFailed\)/.test(src),
+    'the failure is no longer shown at all');
+  assert.ok(src.indexOf('shareFailureText(cm.shareFailed)') < src.indexOf('<View style={s.controls}>'),
+    'the message is drawn after the row rather than above it');
+  // And it is positioned, because the row it sits above is absolute — laid
+  // out in normal flow it would land wherever the column happened to end.
+  const style = /shareError: \{([\s\S]*?)\},/.exec(src);
+  assert.ok(style && /position: 'absolute'/.test(style[1]),
+    'the message is not positioned, so it lands behind the video');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

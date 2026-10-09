@@ -335,17 +335,40 @@ export function forStorage(state: MediaState | null, max = STORED_PER_TAB): Medi
   if (!state) return null;
   const keep = (list: MediaItem[]) =>
     (Array.isArray(list) ? list : []).filter(i => i && i.cacheable !== false).slice(0, max);
+  const images = keep(state.images);
+  const all = Array.isArray(state.images) ? state.images : [];
+
+  // ── Where the gallery carries on from ────────────────────────────────────
+  //
+  // Reported as: the gallery only loads 114 images and there should be far
+  // more. 114 is what is left of 120 once the unkeepable ones are dropped,
+  // and 120 is the cap above — so this is the stored copy, and it was
+  // stored saying there was nothing after it.
+  //
+  // The first version set the cursor to null and hasMore to false, reasoning
+  // that a cursor describing a run that had just been cut short would ask
+  // the server to carry on from a page this copy does not have. That is
+  // backwards: the cursor is a MESSAGE ID and the server returns
+  // `id < before`, so the oldest photo still held is exactly the right place
+  // to carry on from. Saying "no more" instead capped the gallery at the
+  // stored page for good, online as well as off — the refresh keeps the
+  // stored cursor on purpose, so nothing ever put it back.
+  const cutTail = images.length > 0 && all.length > 0 && images[images.length - 1] !== all[all.length - 1];
+  const lastId = images.length ? images[images.length - 1].msgId : null;
+  const canPage = cutTail && lastId != null && Number.isFinite(Number(lastId));
+
   const out: MediaState = {
-    images: keep(state.images),
+    images,
     files: keep(state.files),
     music: keep(state.music),
     links: keep(state.links),
-    // The cursor describes the end of a run that has just been cut short, so
-    // it would ask the server to carry on from a page this copy does not
-    // have. Offline the gallery shows what it has; online the refresh
-    // replaces it.
-    imagesCursor: null,
-    imagesHasMore: false,
+    // Cut short: carry on from the oldest photo still held. Not cut short:
+    // whatever the run already said, which the server gave it.
+    imagesCursor: cutTail ? (canPage ? Number(lastId) : null) : (state.imagesCursor ?? null),
+    // Without an id to carry on from there is nothing to ask for, and
+    // claiming otherwise is a "load more" that fetches the first page again
+    // for ever.
+    imagesHasMore: cutTail ? canPage : !!state.imagesHasMore,
     fetchedAt: 0,
   };
   if (!out.images.length && !out.files.length && !out.music.length && !out.links.length) {

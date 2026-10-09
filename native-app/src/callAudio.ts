@@ -190,6 +190,23 @@ export const RING_TIMEOUT_MS = 60000;
  */
 export const NO_ANSWER_MS = 45000;
 
+/**
+ * How long a call waits for the socket before giving up on placing it.
+ *
+ * Reported as: for about half a minute after opening the app, tapping call
+ * logs a missed call and nothing happens; after a while it works.
+ *
+ * socket.io buffers an emit made while it is still connecting and sends it
+ * when it connects — which is right for a chat message and wrong for a call.
+ * The offer went into the buffer, nothing reached the other phone, the
+ * caller watched a silent "Calling…", and the call_log emit was buffered
+ * too, so the missed call appeared later as the one visible trace of it.
+ *
+ * Long enough to cover an ordinary reconnect on a slow network, short
+ * enough that nobody is left watching a call that was never placed.
+ */
+export const CONNECT_WAIT_MS = 8000;
+
 function idOf(v: unknown): string | null {
   if (v === null || v === undefined || v === '') return null;
   const s = String(v).trim();

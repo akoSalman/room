@@ -335,9 +335,50 @@ test('A STORED GALLERY DOES NOT CLAIM TO BE FRESH', () => {
   const out = M.forStorage(full({ fetchedAt: Date.now() }));
   assert.strictEqual(out.fetchedAt, 0, 'a stored gallery suppresses its own refresh');
   assert.strictEqual(M.isStale(out, Date.now()), true);
-  // And it does not ask the server to carry on from a page it does not have.
-  assert.strictEqual(out.imagesCursor, null, 'the cursor points past the stored run');
-  assert.strictEqual(out.imagesHasMore, false);
+});
+
+test('THE BUG: A STORED GALLERY CAN STILL REACH THE REST OF THE ROOM', () => {
+  // Reported as: the gallery only loads 114 images and there should be far
+  // more. 114 is 120 — the cap — less the unkeepable ones, so that number is
+  // the stored copy, and it was stored saying there was nothing after it.
+  //
+  // The cursor is a MESSAGE ID and the server returns `id < before`, so the
+  // oldest photo still held is exactly where to carry on. Saying "no more"
+  // capped the gallery at one stored page for good, online as well as off,
+  // because the refresh keeps the stored cursor on purpose.
+  const many = Array.from({ length: 500 }, (_, i) => item(1000 - i));
+  const out = M.forStorage(full({ images: many, imagesCursor: 7, imagesHasMore: true }), 10);
+  assert.strictEqual(out.images.length, 10);
+  assert.strictEqual(out.imagesHasMore, true,
+    'the stored gallery says the room has no more photos, and caps itself for good');
+  assert.strictEqual(out.imagesCursor, out.images[out.images.length - 1].msgId,
+    'the cursor is not the oldest photo still held, so paging skips or repeats');
+  // The server pages with `id < before`, so continuing from that id returns
+  // the ones the cap cut off and nothing already held.
+  assert.ok(out.imagesCursor < out.images[0].msgId, 'the cursor would re-fetch what is held');
+});
+
+test('…AND A GALLERY THAT WAS NOT CUT SHORT KEEPS WHAT IT HAD', () => {
+  // Only truncation changes the paging. A short gallery already carries the
+  // server's own cursor, which is more accurate than anything derived here.
+  const out = M.forStorage(full({
+    images: [item(9), item(8)], imagesCursor: 8, imagesHasMore: true,
+  }));
+  assert.strictEqual(out.imagesCursor, 8, "the server's cursor was thrown away");
+  assert.strictEqual(out.imagesHasMore, true);
+  const done = M.forStorage(full({
+    images: [item(9), item(8)], imagesCursor: null, imagesHasMore: false,
+  }));
+  assert.strictEqual(done.imagesHasMore, false, 'a complete gallery now asks for more for ever');
+});
+
+test('…AND WITHOUT AN ID TO CARRY ON FROM, IT STOPS', () => {
+  // "There is more" with nothing to ask for is a load-more that fetches the
+  // first page again, for ever.
+  const many = Array.from({ length: 50 }, () => ({ url: '/uploads/x.jpg' }));
+  const out = M.forStorage(full({ images: many, imagesHasMore: true }), 5);
+  assert.strictEqual(out.imagesHasMore, false, 'it will ask for a page it cannot name');
+  assert.strictEqual(out.imagesCursor, null);
 });
 
 test('NOTHING WORTH KEEPING MEANS NOTHING WRITTEN', () => {

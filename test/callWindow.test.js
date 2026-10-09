@@ -613,6 +613,23 @@ test('BOTH VIDEO VIEWS ARE ACTUALLY KEYED', () => {
     'the corner pane is not keyed, so its track is still exchanged in place');
 });
 
+test('THE TWO CAPTURE FAILURES SAY DIFFERENT THINGS', () => {
+  // One means the app never asked for the foreground service — the config
+  // plugin not having applied — and the other means it asked and the
+  // service did not come up. They need different fixes, and before the
+  // capture path refused at all, both looked like a frozen picture at the
+  // far end.
+  const off = W.shareFailureText('ScreenCaptureServiceDisabled');
+  const slow = W.shareFailureText('ScreenCaptureServiceNotRunning');
+  const other = W.shareFailureText('something else entirely');
+  assert.notStrictEqual(off, slow, 'both say the same thing to the person');
+  assert.notStrictEqual(off, other, 'a disabled service falls through to the catch-all');
+  assert.notStrictEqual(slow, other, 'a service that did not start falls through to the catch-all');
+  // And one of them tells the person to try again, because it is the one
+  // that a second attempt actually fixes.
+  assert.ok(/again/i.test(slow), 'a transient failure does not suggest retrying');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

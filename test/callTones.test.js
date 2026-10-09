@@ -345,6 +345,59 @@ test('THE GIVE-UP CHECKS THE CALL IS STILL UNANSWERED WHEN IT FIRES', () => {
     'the backstop silences whatever is ringing, including a later call');
 });
 
+// ── A call placed before the socket is up ──────────────────────────────────
+//
+// Reported as: for about half a minute after opening the app, tapping call
+// logs a missed call and nothing happens; after a while it works.
+//
+// socket.io BUFFERS an emit made while it is still connecting and sends it on
+// connect. That is right for a chat message and wrong for a call: the offer
+// sat in the buffer, no phone rang, the caller watched a silent "Calling…",
+// and the call_log emit was buffered too — so the missed call appeared later
+// as the one visible trace of a call that was never placed.
+
+test('THE CALL WAITS FOR THE SOCKET, and says so', () => {
+  if (!AUDIO) return;
+  assert.ok(AUDIO.CONNECT_WAIT_MS > 0, 'a call is still placed into a buffer');
+  assert.ok(AUDIO.CONNECT_WAIT_MS <= 20000, 'the caller stares at "Connecting…" for ages');
+  assert.ok(AUDIO.CONNECT_WAIT_MS < AUDIO.NO_ANSWER_MS,
+    'the wait outlasts the whole call, so the give-up fires while still connecting');
+
+  const mgr = fs.readFileSync(path.join(NAT, 'src', 'callManager.ts'), 'utf8');
+  assert.ok(/if \(!this\.sock\?\.connected\) \{/.test(mgr), 'the call does not check the socket');
+  assert.ok(/waitForSocket\(CONNECT_WAIT_MS\)/.test(mgr), 'it checks and then carries on regardless');
+  assert.ok(/'Connecting…'/.test(mgr), 'the wait is invisible to the person calling');
+  assert.ok(/'No connection'/.test(mgr), 'giving up is silent');
+});
+
+test('A CALL THAT NEVER LEFT THE DEVICE IS NOT A MISSED CALL', () => {
+  // Nobody's phone rang, so an entry in the other person's chat is a record
+  // of something that did not happen to them.
+  const mgr = fs.readFileSync(path.join(NAT, 'src', 'callManager.ts'), 'utf8');
+  assert.ok(/this\.offerSent = true;/.test(mgr), 'nothing records whether the offer went out');
+  assert.ok(/if \(this\.mode\?\.startsWith\('dm'\) && \(!this\.outgoing \|\| this\.offerSent\)\) \{/.test(mgr),
+    'a call that was never placed is still logged as missed');
+  // Reset per call, or the second call inherits the first one's answer.
+  assert.ok(/this\.offerSent = false;/.test(mgr), 'the flag is never reset');
+  // An INCOMING call is always logged: the offer reached this device by
+  // definition, so declining or missing it is real.
+  assert.ok(/!this\.outgoing \|\|/.test(mgr), 'declining an incoming call stopped being logged');
+});
+
+test('THE WAIT REMOVES ITS OWN LISTENER, BY NAME', () => {
+  // off('connect') with no handler removes every listener for that event,
+  // including ones belonging to files that have never heard of this — the
+  // mistake socketNotifier.ts exists to document.
+  const mgr = fs.readFileSync(path.join(NAT, 'src', 'callManager.ts'), 'utf8');
+  const fn = /private waitForSocket\(ms: number\): Promise<boolean> \{([\s\S]*?)\n  \}/.exec(mgr);
+  assert.ok(fn, 'could not find waitForSocket');
+  assert.ok(/s\.off\('connect', onConnect\)/.test(fn[1]),
+    'it removes the handler by event alone, taking others with it');
+  assert.ok(/clearTimeout\(timer\)/.test(fn[1]), 'the timeout outlives the connection');
+  assert.ok(/if \(s\.connected\) return Promise\.resolve\(true\)/.test(fn[1]),
+    'an already-connected socket still waits for an event that has passed');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

@@ -298,6 +298,15 @@ export function shareFailureText(reason: unknown): string {
   if (r === 'no-video-track') {
     return 'Your phone returned nothing to share.';
   }
+  // Both come from the patched capture path, which now refuses rather than
+  // handing back a track that can never produce a frame. See
+  // patches/react-native-webrtc+118.0.7.patch.
+  if (/ScreenCaptureServiceDisabled/.test(r)) {
+    return 'This build cannot share the screen — the capture service is off.';
+  }
+  if (/ScreenCaptureServiceNotRunning/.test(r)) {
+    return 'The screen could not be captured. Try again in a moment.';
+  }
   if (r === 'no-frames') {
     return 'The screen is being captured but nothing is going out — the call '
       + 'will not carry it.';

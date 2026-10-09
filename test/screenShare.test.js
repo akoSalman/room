@@ -126,6 +126,68 @@ test('THE CALL REPORTS WHETHER IT WAS EVEN CONNECTED', () => {
   assert.ok(/before=\$\{n\(d\.before\)\}/.test(srv), 'the server drops the baseline');
 });
 
+test('THE CAPTURE WAITS FOR ITS FOREGROUND SERVICE', () => {
+  // The measurement that forced this: on a CONNECTED call (up=1) the
+  // encoder reported encoded=0, size=0x0 — not a frame it refused, a frame
+  // it never received. Since Android 10 a MediaProjection produces nothing
+  // unless a foreground service of type mediaProjection is already running,
+  // and startForegroundService returns before the service gets there, so the
+  // library used the projection in the gap and handed back a live track that
+  // could never emit anything.
+  const patch = fs.readFileSync(path.join(NAT, 'patches',
+    'react-native-webrtc+118.0.7.patch'), 'utf8');
+  assert.ok(/launchAndWait\(activity, \d+\)/.test(patch),
+    'the capture still starts without waiting for the service');
+  assert.ok(/sRunning = true;/.test(patch), 'nothing marks the service as actually running');
+  assert.ok(/stopSelf\(\)/.test(patch),
+    'a service that cannot go foreground is left half-started, which Android kills the app for');
+  // And it refuses rather than returning a track that can never work.
+  assert.ok(/displayMediaPromise\.reject\("DOMException", why\)/.test(patch),
+    'a capture that cannot work still resolves with a blank track');
+});
+
+test('…AND THE TWO WAYS IT CAN FAIL ARE TOLD APART', () => {
+  // One says the app never asked for the service — which is the config
+  // plugin not having applied — and the other says it asked and the service
+  // did not come up. They need different fixes, and both looked like
+  // "encoded=0" before.
+  const patch = fs.readFileSync(path.join(NAT, 'patches',
+    'react-native-webrtc+118.0.7.patch'), 'utf8');
+  assert.ok(/ScreenCaptureServiceDisabled/.test(patch), 'a missing flag is indistinguishable');
+  assert.ok(/ScreenCaptureServiceNotRunning/.test(patch), 'a service that never started is indistinguishable');
+  // What each one SAYS is checked where shareFailureText is compiled, in
+  // callWindow.test.js.
+});
+
+test('THE REASON REACHES THE SERVER, stripped', () => {
+  const mgr = strip(path.join(NAT, 'src', 'callManager.ts'));
+  assert.ok(/reportShare\(refused \? 'refused' : 'capture-failed', undefined, name\)/.test(mgr),
+    'the failure is reported without saying which one it was');
+  const srv = fs.readFileSync(path.join(NAT, '..', 'server.js'), 'utf8');
+  assert.ok(/reason=\$\{word\(d\.reason\)\}/.test(srv), 'the server drops the reason');
+  // word() is the existing sanitiser — a message carrying a path or a name
+  // must not reach a log that is read into a public repository.
+  assert.ok(/const word = \(v\) => String\(v \|\| 'unknown'\)\.replace/.test(srv),
+    'the reason is logged unsanitised');
+});
+
+test('A CANCELLED SHARE IS NOT A FAILURE', () => {
+  // A React Native rejection is a plain Error: `name` is the useless string
+  // "Error" and the reason is in `message`. Reading `name || message` always
+  // took "Error", so tapping Cancel on the system sheet was recorded as
+  // capture-failed and shown to the person as an error.
+  const mgr = strip(path.join(NAT, 'src', 'callManager.ts'));
+  assert.ok(/\[err\?\.name, err\?\.message\]\.filter\(Boolean\)\.join\(' '\)/.test(mgr),
+    'only one of the two fields is read, and it is the one that is always "Error"');
+  // Proving the join actually matches a cancellation, rather than trusting it.
+  const joined = [{ name: 'Error', message: 'NotAllowedError' }]
+    .map(e => [e.name, e.message].filter(Boolean).join(' ').trim())[0];
+  assert.ok(/NotAllowed|Abort|cancel/i.test(joined),
+    'a cancelled share is still treated as a failure');
+  assert.ok(!/NotAllowed|Abort|cancel/i.test('Error'),
+    'the old reading would have matched, and this test would prove nothing');
+});
+
 test('AN ENCODER THAT HAS PRODUCED NOTHING IS THE DIAGNOSIS', () => {
   // The one fact that cannot be read from the source: frames encoded lives
   // inside WebRTC.
