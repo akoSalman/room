@@ -2516,9 +2516,31 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
 
   // The gallery's own state follows the room, from the cache when there is one
   // so that reopening a chat does not empty it.
+  //
+  // And from the DEVICE when there is nothing in memory. Reported as: with no
+  // connection the gallery does not load. The pictures were always kept —
+  // mediaCache writes them to permanent storage and reads them back by
+  // filename — but the list of them lived in a Map that dies with the
+  // process, so a cold start had nothing to show and no way to ask for it.
   useEffect(() => {
-    setMediaState(rm.getCached(room.id));
+    let alive = true;
+    const inMemory = rm.getCached(room.id);
+    setMediaState(inMemory);
     setMediaFocusIndex(0);
+    if (inMemory) return;
+    offline.loadMedia(room.id).then(saved => {
+      if (!alive || !saved) return;
+      // Still nothing in memory: a fetch may have landed while the disk was
+      // being read, and it is newer than anything written down.
+      if (rm.getCached(room.id)) return;
+      rm.putCached(room.id, saved);
+      // Marked dirty so the stored copy — which is old by definition, and
+      // trimmed — is refreshed as soon as there is a connection, rather than
+      // being treated as a fetch that just happened.
+      rm.markDirty(room.id);
+      setMediaState(saved);
+    }).catch(() => {});
+    return () => { alive = false; };
   }, [room.id]);
 
   /**
@@ -2542,6 +2564,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     // stay loaded, and their place in the grid does not move.
     const next = cached ? rm.mergeRefresh(cached, first, Date.now()) : rm.fromFirstPage(first, Date.now());
     rm.putCached(room.id, next);
+    // Written down so the next cold start — on a phone with no connection —
+    // has something to draw. forStorage drops anything this viewer may not
+    // keep, which is the same rule the pictures themselves obey.
+    offline.saveMedia(room.id, rm.forStorage(next)).catch(() => {});
     setMediaState(next);
     addEncryptedLinks(next);
   }

@@ -4217,4 +4217,21 @@ test('the base64 fallback still works, byte for byte', async () => {
   assert.ok(onDisk.equals(bytes), 'the base64 path now corrupts the file');
 });
 
+test('A JUNK "I drew it" DOES NOT UPSET THE SERVER', async () => {
+  // New socket handler, taking a value the client chooses. Reaching into it
+  // without checking is how a handler throws on every call — and this one
+  // runs for every message to a connected device.
+  const me = await signUp('ack77');
+  const s = await connect(me.token);
+  s.emit('notified', null);
+  s.emit('notified', 'nonsense');
+  s.emit('notified', 42);
+  s.emit('notified', {});
+  s.emit('notified', { msgId: null });
+  s.emit('notified', { msgId: 999999 });
+  await new Promise(r => setTimeout(r, 150));
+  const rooms = await api('/rooms', 'GET', null, me.token);
+  assert.ok(Array.isArray(rooms), 'the server stopped answering after a junk acknowledgement');
+});
+
 main().catch(err => { console.error(err); process.exit(1); });

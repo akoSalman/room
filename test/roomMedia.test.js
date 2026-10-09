@@ -280,6 +280,101 @@ test('nonsense measurements leave the grid where it is', () => {
     M.restoreOffset({ savedOffset: 800, focusRow: 3, rowHeight: ROW, viewportHeight: 0 }), 800);
 });
 
+// ── Offline ────────────────────────────────────────────────────────────────
+//
+// Reported as: with no connection the gallery of a chat does not load, and
+// "I told you each downloaded image should stay on the device". The pictures
+// always were kept — mediaCache writes them to permanent storage and reads
+// them back by filename, so a re-signed url is still the same file. What was
+// never kept was the LIST, which lived in a Map that dies with the process.
+
+const item = (n, over = {}) => ({ url: `/uploads/${n}.jpg`, msgId: n, ...over });
+const full = (over = {}) => ({
+  images: [item(1), item(2)], files: [item(3)], music: [item(4)], links: [item(5)],
+  imagesCursor: 7, imagesHasMore: true, fetchedAt: 1234, ...over,
+});
+
+test('THE LIST IS KEPT, which is what offline needed', () => {
+  const out = M.forStorage(full());
+  assert.deepStrictEqual(out.images.map(i => i.msgId), [1, 2]);
+  assert.deepStrictEqual(out.files.map(i => i.msgId), [3]);
+  assert.deepStrictEqual(out.music.map(i => i.msgId), [4]);
+  assert.deepStrictEqual(out.links.map(i => i.msgId), [5]);
+});
+
+test('WHAT THIS VIEWER MAY NOT KEEP IS NOT KEPT', () => {
+  // The same rule the pictures obey. A disappearing message, or someone
+  // else's file in a private room, must not be written down — and a url in a
+  // stored list is a way to ask for it that outlives the message.
+  const out = M.forStorage(full({
+    images: [item(1), item(2, { cacheable: false }), item(3)],
+    files: [item(4, { cacheable: false })],
+  }));
+  assert.deepStrictEqual(out.images.map(i => i.msgId), [1, 3],
+    'a photo the viewer may not keep was written to the device');
+  assert.deepStrictEqual(out.files, [],
+    'a file the viewer may not keep was written to the device');
+});
+
+test('IT IS BOUNDED, because a gallery can hold thousands', () => {
+  const many = Array.from({ length: 500 }, (_, i) => item(i));
+  const out = M.forStorage(full({ images: many }));
+  assert.strictEqual(out.images.length, M.STORED_PER_TAB);
+  // The newest end: the gallery is ordered newest first, and what somebody
+  // opens offline is the recent end of it.
+  assert.strictEqual(out.images[0].msgId, 0);
+  assert.ok(M.STORED_PER_TAB > 0 && M.STORED_PER_TAB <= 500);
+  // A smaller cap can be asked for, and is honoured.
+  assert.strictEqual(M.forStorage(full({ images: many }), 5).images.length, 5);
+});
+
+test('A STORED GALLERY DOES NOT CLAIM TO BE FRESH', () => {
+  // fetchedAt drives staleness. Stored unchanged, a gallery from last week
+  // would look like one fetched a moment ago and suppress the refresh that
+  // should replace it.
+  const out = M.forStorage(full({ fetchedAt: Date.now() }));
+  assert.strictEqual(out.fetchedAt, 0, 'a stored gallery suppresses its own refresh');
+  assert.strictEqual(M.isStale(out, Date.now()), true);
+  // And it does not ask the server to carry on from a page it does not have.
+  assert.strictEqual(out.imagesCursor, null, 'the cursor points past the stored run');
+  assert.strictEqual(out.imagesHasMore, false);
+});
+
+test('NOTHING WORTH KEEPING MEANS NOTHING WRITTEN', () => {
+  // Otherwise every room with a disappearing photo in it leaves an empty
+  // shell on disk that the gallery then treats as a loaded gallery.
+  assert.strictEqual(M.forStorage(null), null);
+  assert.strictEqual(M.forStorage(M.emptyState()), null);
+  assert.strictEqual(M.forStorage(full({
+    images: [item(1, { cacheable: false })], files: [], music: [], links: [],
+  })), null, 'a gallery of nothing but unkeepable items was still written');
+});
+
+test('RUBBISH IN DOES NOT THROW', () => {
+  const out = M.forStorage({ images: null, files: undefined, music: 'x', links: [item(1)] });
+  assert.deepStrictEqual(out.images, []);
+  assert.deepStrictEqual(out.files, []);
+  assert.deepStrictEqual(out.music, []);
+  assert.strictEqual(out.links.length, 1);
+});
+
+test('THE SCREEN READS IT, AND WRITES IT', () => {
+  const chat = fs.readFileSync(path.join(__dirname, '..', 'native-app', 'src',
+    'screens', 'ChatScreen.tsx'), 'utf8');
+  assert.ok(/offline\.loadMedia\(room\.id\)/.test(chat),
+    'nothing reads the stored gallery, so offline it is still empty');
+  assert.ok(/offline\.saveMedia\(room\.id, rm\.forStorage\(next\)\)/.test(chat),
+    'nothing writes the gallery down');
+  // Marked dirty on restore, or a stored gallery is treated as a fresh fetch
+  // and never refreshed.
+  const eff = /offline\.loadMedia\(room\.id\)\.then\(saved => \{([\s\S]*?)\n    \}\)/.exec(chat);
+  assert.ok(eff, 'could not find the restore');
+  assert.ok(/rm\.markDirty\(room\.id\)/.test(eff[1]),
+    'a gallery restored from disk is never refreshed');
+  assert.ok(/if \(rm\.getCached\(room\.id\)\) return;/.test(eff[1]),
+    'a slow disk read overwrites a fetch that already landed');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

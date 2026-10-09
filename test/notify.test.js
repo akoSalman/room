@@ -357,6 +357,86 @@ test('THE BACKSTOP IS FAR ENOUGH OUT THAT A WRONG CLOCK CANNOT SILENCE A PHONE',
     'the phone is stricter than Firebase, which is the dangerous way round');
 });
 
+// ── Not pushing what the socket already delivered ──────────────────────────
+//
+// Reported as: "don't send firebase notification of a message already arrived
+// through socket and opened". Both routes are deliberate — Firebase does not
+// reach every device on these networks, and the socket is gone once the
+// process is killed — so when both work, both arrive. The phone draws only
+// one of them, but the push was still sent and still queued to be handed over
+// later if the phone drops off in between.
+
+test('A MESSAGE TO A CONNECTED DEVICE WAITS', () => {
+  assert.strictEqual(N.heldForSocket({ msgId: 5, online: true }), true);
+  assert.strictEqual(N.heldForSocket({ msgId: '5', online: true }), true);
+});
+
+test('…AND ONE TO A DEVICE THAT IS GONE DOES NOT', () => {
+  // The case the push exists for. Holding it here would delay every
+  // notification to a phone whose app Android has killed, which is most of
+  // them.
+  assert.strictEqual(N.heldForSocket({ msgId: 5, online: false }), false);
+  assert.strictEqual(N.heldForSocket({ msgId: 5 }), false);
+});
+
+test('A CALL IS NEVER HELD', () => {
+  // A call is worth something for about thirty seconds in total. It also
+  // carries no message id, so there would be nothing to acknowledge it by
+  // and the hold could only ever expire.
+  assert.strictEqual(N.heldForSocket({ online: true }), false, 'a ringing call waits five seconds');
+  assert.strictEqual(N.heldForSocket({ msgId: null, online: true }), false);
+  assert.strictEqual(N.heldForSocket({ msgId: '', online: true }), false);
+  assert.strictEqual(N.heldForSocket(null), false);
+});
+
+test('THE WAIT IS SHORT, and shorter than the lifetime of the push', () => {
+  assert.ok(N.SOCKET_GRACE_MS >= 1000, 'too short for a round trip and a native call');
+  assert.ok(N.SOCKET_GRACE_MS <= 15000, 'a phone killed in the gap waits this long to be told');
+  assert.ok(N.SOCKET_GRACE_MS < N.PUSH_TTL_MS, 'the push expires before it is even sent');
+});
+
+test('THE SERVER HOLDS, CANCELS, AND STILL SENDS WHEN NOBODY ANSWERS', () => {
+  const fs2 = require('fs'), path2 = require('path');
+  const src = fs2.readFileSync(path2.join(__dirname, '..', 'server.js'), 'utf8');
+
+  // Held per recipient, by asking the rule about each one.
+  assert.ok(/heldForSocket\(\{ msgId, online: isUserOnline\(id\) \}\)/.test(src),
+    'the hold does not depend on whether that device is actually connected');
+  // The waiting itself — that a hold ends in a send, that cancelling stops
+  // it, that nothing is left behind — is run as code in pushHold.test.js.
+  // What belongs here is that the server uses it, and with the real wait.
+  assert.ok(/const pushHolder = createHolder\(SOCKET_GRACE_MS\)/.test(src),
+    'the server holds pushes with its own timing rather than the shared rule');
+  assert.ok(/require\('\.\/pushHold'\)/.test(src), 'the server keeps a second copy of the waiting');
+  assert.ok(/pushHolder\.hold\(id, msgId,/.test(src), 'nothing is ever held');
+
+  // And the cancel is keyed to the authenticated account, not to anything the
+  // client chooses — otherwise a client could silence someone else.
+  assert.ok(/pushHolder\.cancel\(socket\.user\.id, String\(id\)\)/.test(src),
+    'a client can cancel a push for an account that is not its own');
+
+  // One send path, used both immediately and after the wait: two would drift.
+  assert.ok(/async function deliverPush\(userIds, title, body, data, android\)/.test(src),
+    'the delayed send is a second copy of the sending code');
+  assert.ok(/\(\) => deliverPush\(\[id\], title, body, data, android\)/.test(src),
+    'the held push is sent by something other than the normal path');
+});
+
+test('THE APP ACKNOWLEDGES ONLY AFTER IT HAS ACTUALLY DRAWN ONE', () => {
+  // Acknowledging optimistically would drop the push for a notification that
+  // then failed to draw, and the message would arrive in silence.
+  const fs2 = require('fs'), path2 = require('path');
+  const sn = fs2.readFileSync(path2.join(__dirname, '..', 'native-app', 'src',
+    'socketNotifier.ts'), 'utf8');
+  assert.ok(/socket\.emit\('notified', \{ msgId: msg\.id \}\)/.test(sn),
+    'the app never tells the server it drew the notification');
+  const ok = sn.indexOf("socket.emit('notified'");
+  const raised = sn.indexOf("notifyDiag.record('socket-raised')");
+  const failed = sn.indexOf("notifyDiag.record('socket-failed'");
+  assert.ok(raised > 0 && ok > raised, 'the acknowledgement does not follow the notification');
+  assert.ok(failed > ok, 'the acknowledgement is sent on the failure path too');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

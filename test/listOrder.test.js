@@ -159,17 +159,49 @@ test('A HELD ORDER IS NOT APPLIED A MOMENT LATER', () => {
     'a timer still reorders the list behind the person looking at it');
 });
 
-test('A MESSAGE ARRIVING GOES THROUGH THE SAME GATE', () => {
-  // The half that was missing. The server's answer was held politely while
-  // every arriving message yanked its row to the top regardless — which is
-  // why "multiple users sending at the same time" was the case that broke.
-  assert.ok(/const bumpRoom = \(roomId: number\) => \{ applyBump\(roomId\); \}/.test(SCREEN),
-    'arriving messages still reorder the list directly');
-  const fn = /const applyBump = useCallback\(\(roomId: unknown\) => \{([\s\S]*?)\n  \}, \[\]\);/.exec(SCREEN);
-  assert.ok(fn, 'could not find applyBump');
-  assert.ok(/mayReorder\(\{/.test(fn[1]), 'a bump does not consult the gate');
-  assert.ok(/if \(!mayReorder[\s\S]*?\) return;/.test(fn[1]),
-    'a bump that is not allowed still happens');
+test('A MESSAGE ARRIVING MOVES NOTHING ON SCREEN', () => {
+  // Reported a fourth time. The previous version moved a row whenever the
+  // list had been up for a moment and nobody had touched it yet — which is
+  // most of the time a list is on screen, and exactly when somebody is
+  // choosing a row. It also contradicted the comment above it, which already
+  // said the order is decided when the list opens and stays put.
+  assert.ok(!/bumpToTop/.test(SCREEN),
+    'the visible list still moves a row when a message arrives');
+  assert.ok(!/applyBump/.test(SCREEN), 'the old bump path is still wired up');
+  // The count still changes, which is the part that says something arrived.
+  assert.ok(/setUnread\(prev => \(\{ \.\.\.prev, \[msg\.room_id\]/.test(SCREEN),
+    'an arriving message no longer updates the unread count either');
+});
+
+test('THE SAVED LIST IS KEPT IN ORDER WHILE THE LIST IS CLOSED', () => {
+  // The actual fix, and the one the previous three rounds did not attempt.
+  // The list is thrown away while a chat is open and rebuilt from the copy on
+  // the device — a copy last written BEFORE that chat was opened. Correcting
+  // it afterwards is the bug; there is no moment at which the correction is
+  // safe. So the copy is kept current while nobody can be reaching for it.
+  const order = fs.readFileSync(path.join(NAT, 'src', 'roomOrder.ts'), 'utf8');
+  assert.ok(/offline\.bumpRoom\(msg\?\.room_id\)/.test(order),
+    'nothing keeps the saved order current');
+  // onAny, or two screens' off('message_received') removes this listener too
+  // — the hazard socketNotifier.ts exists because of.
+  assert.ok(/socket\.onAny\(/.test(order), "uses on('message_received'), which any screen can remove");
+  assert.ok(/attached === socket/.test(order), 'attaching twice adds two listeners');
+
+  const app = fs.readFileSync(path.join(NAT, 'App.tsx'), 'utf8');
+  assert.ok(/roomOrder\.attach\(sock\)/.test(app), 'the order keeper is never attached');
+  // Through onSocket, so a replaced socket is also covered — the mistake
+  // that once left the notifier listening to a dead one.
+  const eff = /const stop = onSocket\(sock => \{([\s\S]*?)\n    \}\);/.exec(app);
+  assert.ok(eff && /roomOrder\.attach\(sock\)/.test(eff[1]),
+    'it is attached once rather than to every socket');
+
+  const store = fs.readFileSync(path.join(NAT, 'src', 'offlineStore.ts'), 'utf8');
+  assert.ok(/export async function bumpRoom/.test(store), 'the store cannot reorder itself');
+  assert.ok(/bumpToTop\(cached\.rooms, roomId\)/.test(store)
+    && /bumpToTop\(cached\.dms, roomId\)/.test(store),
+    'only one of the two lists is kept in order');
+  assert.ok(/if \(rooms === cached\.rooms && dms === cached\.dms\) return;/.test(store),
+    'a disk write per message in a busy chat, for no change');
 });
 
 test('PULLING TO REFRESH DOES REORDER', () => {

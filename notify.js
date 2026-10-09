@@ -304,6 +304,52 @@ function pushIsStale(o) {
   return (now - sentAt) > max;
 }
 
+// ── Not pushing what the socket already delivered ──────────────────────────
+//
+// Reported as: "don't send firebase notification of a message already arrived
+// through socket and opened".
+//
+// There are two routes to a notification and both are deliberate: Firebase
+// does not reach every device on these networks, so the app draws its own
+// from the socket; and the socket is gone once Android has killed the
+// process, so the push exists. When both work, both arrive. notifyOnce.ts
+// makes the phone draw only one of them — but the push was still sent, still
+// paid for in data, and still sitting in Firebase's queue to be delivered
+// later if the phone goes offline in between.
+//
+// So a push to somebody whose socket is live WAITS a few seconds. If the app
+// says it drew the notification itself, the push is never sent. If it says
+// nothing — killed in those seconds, or the socket was already dead and the
+// server had not noticed — it goes out as before.
+//
+// It fails towards SENDING, which is the direction that matters: a push too
+// many is noise, and a push too few is "I don't get notifications".
+
+/**
+ * How long a push waits for the app to say it got there first.
+ *
+ * Long enough for a message to cross the socket, be drawn, and be
+ * acknowledged — a round trip and a native call, so hundreds of
+ * milliseconds. Short enough that a phone killed in the gap is notified
+ * while the message is still current.
+ */
+const SOCKET_GRACE_MS = 5000;
+
+/**
+ * Should this push wait to see whether the socket beat it?
+ *
+ * Only a message, and only to a device that appears to be connected. A call
+ * is never held: it has seconds of usefulness in total, and it carries no
+ * message id to be acknowledged by.
+ */
+function heldForSocket(o) {
+  const e = o || {};
+  // No message id, nothing to acknowledge, nothing to cancel: a call, an
+  // update, anything else.
+  if (e.msgId === undefined || e.msgId === null || e.msgId === '') return false;
+  return !!e.online;
+}
+
 /**
  * The name a notification is shown under.
  *
@@ -330,4 +376,5 @@ module.exports = {
   recipientsFor, tokenIsDead, notificationTag, collapseKeyFor, presenceLine,
   silencedFor, senderTitle,
   PUSH_TTL_MS, STALE_PUSH_MS, pushTtl, pushIsStale,
+  SOCKET_GRACE_MS, heldForSocket,
 };

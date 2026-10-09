@@ -9,7 +9,9 @@ const fs = require('fs');
 const crypto = require('crypto');
 const mapTiles = require('./mapTiles');
 const { recipientsFor, tokenIsDead, notificationTag, collapseKeyFor, presenceLine,
-  silencedFor, senderTitle, PUSH_TTL_MS, pushTtl } = require('./notify');
+  silencedFor, senderTitle, PUSH_TTL_MS, pushTtl,
+  SOCKET_GRACE_MS, heldForSocket } = require('./notify');
+const { createHolder } = require('./pushHold');
 const najva = require('./najva');
 const mviews = require('./messageViews');
 const { seenByAllUpTo } = require('./readReceipts');
@@ -1248,6 +1250,11 @@ function sendNajvaToUsers(userIds, title, body, data = {}) {
   }).catch(err => console.error('[najva] request error:', err.message));
 }
 
+// Pushes waiting to see whether the socket beat them. The waiting itself is
+// in pushHold.js, where it can be run by a test; which pushes wait at all is
+// heldForSocket in notify.js.
+const pushHolder = createHolder(SOCKET_GRACE_MS);
+
 async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
   if (!userIds.length) return;
   // ── When this was sent, and how long it is worth ────────────────────────
@@ -1276,6 +1283,43 @@ async function sendPushToUsers(userIds, title, body, data = {}, android = {}) {
   // this app as a home-screen PWA, and that PWA is pushed through Web Push,
   // which needs no Google credentials at all. A server with no FCM key must
   // still be able to notify them.
+  // ── Give the socket a moment to own this one ────────────────────────────
+  //
+  // Reported as: do not send a Firebase notification for a message that
+  // already arrived over the socket. Both routes are deliberate and neither
+  // can be switched off — Firebase does not reach every device here, and the
+  // socket is gone once the process is killed — so when both work, both
+  // arrive. The phone draws only one (notifyOnce.ts), but the push was still
+  // sent, still paid for in data, and still queued at Firebase to be handed
+  // over later if the phone drops off in between.
+  //
+  // A push to a device that looks connected now waits a few seconds. The app
+  // says when it has drawn the notification itself, and the waiting push is
+  // dropped. No word in those seconds — killed, or a socket the server has
+  // not yet noticed is dead — and it goes out exactly as before.
+  const msgId = data && data.msgId;
+  const waiting = new Set(
+    userIds.filter(id => heldForSocket({ msgId, online: isUserOnline(id) })));
+  if (waiting.size) {
+    // No username and no token: this line is read into a repository that has
+    // been public. See the other [push] lines.
+    console.log(`[push] holding ${waiting.size} for the socket`);
+    waiting.forEach(id => pushHolder.hold(id, msgId,
+      () => deliverPush([id], title, body, data, android)));
+    userIds = userIds.filter(id => !waiting.has(id));
+    if (!userIds.length) return;
+  }
+  return deliverPush(userIds, title, body, data, android);
+}
+
+/**
+ * Actually send, by every route this server has.
+ *
+ * Split from the decision above so a held push can be sent later by the same
+ * code that would have sent it immediately — rather than a second copy of it
+ * that drifts.
+ */
+async function deliverPush(userIds, title, body, data, android) {
   sendWebPushToUsers(userIds, title, body, data);
   // Najva runs ALONGSIDE Firebase and before its early return, because a
   // server with no Google credentials must still notify these phones — and
@@ -3291,6 +3335,15 @@ function insertSystemMessage(roomId, userId, kind, data) {
  * the screen off is not reading it — without that distinction a laptop left
  * open would silence the user's phone for ever.
  */
+/** Does this account have any socket connected right now? */
+function isUserOnline(userId) {
+  if (!userId) return false;
+  for (const u of onlineUsers.values()) {
+    if (u && u.userId === userId) return true;
+  }
+  return false;
+}
+
 function isViewingRoom(userId, roomId) {
   if (!userId || roomId === null || roomId === undefined) return false;
   const want = String(roomId);
@@ -3510,6 +3563,24 @@ io.on('connection', (socket) => {
         // DIFFERENCE belongs to the screen.
         : ` before=${n(d.before)} encoded=${n(d.encoded)} sent=${n(d.sent)}`
           + ` size=${n(d.w)}x${n(d.h)} after=${n(d.seconds)}s`));
+  });
+
+  // ── "I have already drawn this one" ────────────────────────────────────
+  //
+  // The app says so when it raises a notification off the socket, and the
+  // push that was waiting for exactly this is dropped. See heldForSocket in
+  // notify.js for why the push waits at all.
+  //
+  // Only this account's own held pushes can be cancelled — the key is built
+  // from the authenticated socket, not from anything the client sends — so a
+  // client cannot silence somebody else's notifications by guessing a
+  // message id.
+  socket.on('notified', (d) => {
+    const id = d && (d.msgId ?? d.messageId);
+    if (id === undefined || id === null || id === '') return;
+    if (pushHolder.cancel(socket.user.id, String(id))) {
+      console.log('[push] socket got there first; push dropped');
+    }
   });
 
   socket.on('app_focus', (focused) => {

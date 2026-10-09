@@ -254,7 +254,16 @@ export function attach(socket: any, opts?: { pushRegistered?: () => boolean }): 
         pressAction: { id: 'default', launchActivity: 'default' },
       },
     }).then(
-      () => notifyDiag.record('socket-raised'),
+      () => {
+        notifyDiag.record('socket-raised');
+        // Tell the server this one is drawn, so the push it is holding for
+        // this exact message is never sent. See heldForSocket in notify.js.
+        //
+        // AFTER the notification exists, not before: an acknowledgement sent
+        // optimistically would drop the push for a notification that then
+        // failed to draw, and the message would arrive silently.
+        try { socket.emit('notified', { msgId: msg.id }); } catch {}
+      },
       (e: any) => notifyDiag.record('socket-failed', undefined, e?.message || String(e)),
     );
   });

@@ -27,6 +27,7 @@ on:
       - 'inputLimits.js'
       - 'mediaAccess.js'
       - 'mapTiles.js'
+      - 'pushHold.js'
       - 'webPush.js'
       - 'linkMeta.js'
       - 'package.json'

@@ -299,3 +299,57 @@ export function restoreOffset(o: {
   const cap = o.maxOffset === undefined ? Infinity : Math.max(0, o.maxOffset);
   return Math.max(0, Math.min(centred, cap));
 }
+
+// ── What the gallery keeps on the device ────────────────────────────────────
+//
+// Reported as: with no connection, the gallery of a chat does not load — and
+// "I told you each downloaded image should stay on the device".
+//
+// Both halves of that are fair, and the pictures were never the problem: they
+// are written to permanent storage by mediaCache and read back from it, keyed
+// by filename so a re-signed url is still the same file. What was never kept
+// was the LIST. The cache above is a Map in memory, so it dies with the
+// process — and the gallery then has nothing to show and no way to ask.
+//
+// So the list is written down too. Not all of it: a gallery can hold a couple
+// of thousand entries, and what somebody opens offline is the recent end of
+// it.
+
+/** How many entries of each kind are kept on the device. */
+export const STORED_PER_TAB = 120;
+
+/**
+ * The part of a gallery that may be written to permanent storage.
+ *
+ * `cacheable: false` is the SAME rule the pictures themselves obey: a
+ * disappearing message, and anybody else's file in a private room, must not
+ * be kept. Keeping a url for one would be keeping a way to ask for content
+ * whose sender said it could not be kept — and would put it in a list that
+ * outlives the message.
+ *
+ * `fetchedAt` is deliberately zeroed. What comes back off the disk is old by
+ * definition, and a stored timestamp would make a gallery from last week look
+ * freshly fetched and suppress the refresh that replaces it.
+ */
+export function forStorage(state: MediaState | null, max = STORED_PER_TAB): MediaState | null {
+  if (!state) return null;
+  const keep = (list: MediaItem[]) =>
+    (Array.isArray(list) ? list : []).filter(i => i && i.cacheable !== false).slice(0, max);
+  const out: MediaState = {
+    images: keep(state.images),
+    files: keep(state.files),
+    music: keep(state.music),
+    links: keep(state.links),
+    // The cursor describes the end of a run that has just been cut short, so
+    // it would ask the server to carry on from a page this copy does not
+    // have. Offline the gallery shows what it has; online the refresh
+    // replaces it.
+    imagesCursor: null,
+    imagesHasMore: false,
+    fetchedAt: 0,
+  };
+  if (!out.images.length && !out.files.length && !out.music.length && !out.links.length) {
+    return null;
+  }
+  return out;
+}

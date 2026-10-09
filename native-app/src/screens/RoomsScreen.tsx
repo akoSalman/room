@@ -20,7 +20,7 @@ import { changesLeftText, renameWorthDoing, renamedText } from '../profileEdit';
 import * as upd from '../updateSource';
 import { BUILD_VERSION } from '../version';
 import * as connection from '../connection';
-import { mayReorder, holdOrder, bumpToTop } from '../listOrder';
+import { mayReorder, holdOrder } from '../listOrder';
 import * as keepAlive from '../keepAlive';
 import { statusLine as updateStatusLine } from '../updateResume';
 
@@ -82,26 +82,18 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
     set(prev => holdOrder(prev, incoming));
   }, []);
 
-  /**
-   * Move a conversation to the top, if now is a moment when that is safe.
-   *
-   * This is the half that was missing, and the half the report was about:
-   * several people writing at once meant several of these a second, each one
-   * pulling a row out from under a finger — while the server's answer was
-   * being politely held back.
-   *
-   * Not safe means not now and not later: the row stays where it is and its
-   * unread count still goes up, which is the part that says something
-   * arrived. The sequence catches up the next time the list is opened.
-   */
-  const applyBump = useCallback((roomId: unknown) => {
-    if (roomId == null) return;
-    if (!mayReorder({
-      shownAt: shownAt.current, lastTouchAt: lastTouchAt.current, now: Date.now(),
-    })) return;
-    setRooms(prev => bumpToTop(prev, roomId));
-    setDms(prev => bumpToTop(prev, roomId));
-  }, []);
+  // A message arriving does NOT move anything on screen.
+  //
+  // The previous version moved a row to the top whenever the list had been up
+  // for a moment and nobody had touched it yet — which is most of the time a
+  // list is on screen, and precisely the moment somebody is choosing a row.
+  // It also contradicted the rule written above it, which says the order is
+  // decided when the list opens and stays put.
+  //
+  // The count on the row still goes up, which is the part that says something
+  // arrived. The order catches up when the list is next opened, and it opens
+  // in the right order because the device's copy is kept current while the
+  // list is closed — see src/roomOrder.ts.
 
   const [rooms, setRooms] = useState<Room[]>([]);
   const [dms, setDms] = useState<Room[]>([]);
@@ -349,11 +341,10 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
     (async () => {
       const uname = await getUsername();
       sock = await getSocket();
-      // Float the room that just had activity to the top of its list, so the
-      // ordering tracks it live instead of only on reload — but through the
-      // same gate as everything else, because several people writing at once
-      // is the case where this rearranged the list under a finger.
-      const bumpRoom = (roomId: number) => { applyBump(roomId); };
+      // Nothing. Kept as a name so the two call sites below read as before:
+      // an arriving message changes a row's unread count and never its
+      // position. See the note beside applyList.
+      const bumpRoom = (_roomId: number) => {};
       const onMsg = (msg: any) => {
         bumpRoom(msg.room_id);
         if (msg.username === uname) return; // own messages are never "unread"

@@ -39,6 +39,7 @@ import * as keepAlive from './src/keepAlive';
 import { BUILD_VERSION } from './src/version';
 import * as storage from './src/storage';
 import * as socketNotifier from './src/socketNotifier';
+import * as roomOrder from './src/roomOrder';
 import { C } from './src/theme';
 import * as notifyOnce from './src/notifyOnce';
 
@@ -783,6 +784,11 @@ export default function App() {
     const stop = onSocket(sock => {
       if (cancelled) return;
       socketNotifier.attach(sock, { pushRegistered: () => pushRegisteredRef.current });
+      // The device's copy of the chat list, kept in order while the list
+      // itself is closed — which is what makes it open in the right order
+      // instead of being corrected while somebody is reaching for a row.
+      // See src/roomOrder.ts.
+      roomOrder.attach(sock);
     });
     (async () => {
       const uname = await getUsername();
