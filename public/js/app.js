@@ -4641,7 +4641,7 @@ function applyBlurTo(wrap, imgs, opts) {
   const keys = imgs.map(i => ImageBlur.photoKey(i.dataset.blurKey || i.src)).filter(Boolean);
   const allSeen = keys.length > 0 && keys.every(isRevealed);
   let blurred = ImageBlur.startsBlurred({
-    mine: opts.mine, hiddenOneTime: opts.hiddenOneTime, revealed: allSeen,
+    hiddenOneTime: opts.hiddenOneTime, revealed: allSeen,
     // ANY one covered covers the set, the mirror of `every` above.
     hidden: keys.some(isHiddenImage),
   });

@@ -43,7 +43,7 @@ export default function BlurredImage({
   }, []);
 
   const blurred = startsBlurred({
-    mine, hiddenOneTime,
+    hiddenOneTime,
     revealed: blurStore.isRevealed(key),
     hidden: blurStore.isHidden(key),
   });
@@ -62,7 +62,17 @@ export default function BlurredImage({
         delayLongPress={350}
         disabled={uploading}>
         {uploading
-          ? <CachedImage uri={uri} cache={false} style={style} resizeMode="cover" fadeDuration={0} />
+          // Covered while it is still going up, too. On these connections an
+          // upload takes a while, and a photo sitting in the open for the
+          // length of it is exactly the exposure this exists to prevent —
+          // and it would also mean the picture changing appearance the
+          // moment the upload finished.
+          ? (
+            <CachedImage
+              uri={uri} cache={false} style={style} resizeMode="cover" fadeDuration={0}
+              blurRadius={blurred ? BLUR_RADIUS : 0}
+            />
+          )
           : (
             <ImageWithSpinner
               uri={uri}

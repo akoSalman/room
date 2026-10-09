@@ -5304,7 +5304,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
             // unseen, so a gallery cannot be half-covered.
             const keys = full.map(u => photoKey(u)).filter(Boolean) as string[];
             const galleryBlurred = startsBlurred({
-              mine, hiddenOneTime,
+              hiddenOneTime,
               revealed: keys.length > 0 && keys.every(k => blurStore.isRevealed(k)),
               // ANY one covered covers the mosaic, the mirror of the line
               // above: a gallery is one answer, and the cautious half of a

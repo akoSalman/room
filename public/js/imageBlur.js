@@ -41,22 +41,22 @@
   /**
    * Does this picture arrive covered?
    *
-   * Only the first time, and only somebody else's. Your own arrives clear:
-   * you chose the file seconds ago, and covering it back at you protects
-   * nobody. The button still covers it whenever you want — and THAT is the
-   * part `hidden` carries, without which the button on your own pictures
-   * changed a state this rule then ignored.
+   * Only the first time. Who sent it is not an input: that was tried, and
+   * the answer it gave — your own photos arrive clear — was wrong about
+   * whose eyes this is for. A photo you sent sits in the conversation as
+   * long as one you received, in front of the same people.
    */
   function startsBlurred(o) {
     o = o || {};
     // A one-time message has its own cover and its own rules. Two covers over
     // one picture is a picture nobody can open.
     if (o.hiddenOneTime) return false;
-    // An explicit "cover this" beats everything, including it being yours.
+    // An explicit "cover this" beats having been cleared, so the button works
+    // on a picture that is already open.
     if (o.hidden) return true;
     if (o.revealed) return false;
-    // Nobody has said either way: theirs arrives covered, yours does not.
-    return !o.mine;
+    // Nobody has said either way: it arrives covered.
+    return true;
   }
 
   /** Which bottom corner the button sits in: the bubble's outer edge. */

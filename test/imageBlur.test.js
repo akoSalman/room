@@ -42,23 +42,44 @@ test('…and ONCE CLEARED it never asks again', () => {
   assert.strictEqual(B.startsBlurred({ mine: false, revealed: true }), false);
 });
 
-test('YOUR OWN PICTURE ARRIVES CLEAR', () => {
-  // You chose the file seconds ago. Blurring it back at you protects nobody,
-  // and the button still covers it whenever you want — which is the part
-  // that serves the same purpose.
-  assert.strictEqual(B.startsBlurred({ mine: true, revealed: false }), false);
+test('YOUR OWN PICTURE ARRIVES COVERED TOO', () => {
+  // This replaces a test asserting the opposite, and the reversal is the
+  // point. The first version argued that you chose the file seconds ago, so
+  // covering it back at you protects nobody — which is wrong about whose
+  // eyes this is for. A photo you sent sits in the conversation exactly as
+  // long as one you received, in front of the same people. Asked for
+  // directly.
+  assert.strictEqual(B.startsBlurred({ mine: true, revealed: false }), true);
+  assert.strictEqual(B.startsBlurred({ revealed: false }), true);
 });
 
-test('…BUT THE BUTTON STILL COVERS IT', () => {
-  // Reported as "the monkey button doesn't work on my sent images", and it
-  // did not: `mine` was answered before anything else, so your own pictures
-  // could not be covered at all. The button changed a stored state that this
-  // rule then ignored, which looks exactly like a dead button.
-  //
-  // This is the reason the feature exists on your own photos — handing
-  // somebody your phone to show them one thing, with the last thing you sent
-  // sitting above it.
+test('WHO SENT IT IS NOT AN INPUT AT ALL', () => {
+  // Not "ignored inside the rule": absent from it. Passing it has no effect
+  // on any combination, which is what stops the old behaviour coming back as
+  // a special case.
+  for (const revealed of [true, false]) {
+    for (const hidden of [true, false]) {
+      for (const hiddenOneTime of [true, false]) {
+        const base = { revealed, hidden, hiddenOneTime };
+        assert.strictEqual(
+          B.startsBlurred({ ...base, mine: true }), B.startsBlurred(base),
+          `the sender changes the answer for ${JSON.stringify(base)}`);
+        assert.strictEqual(
+          B.startsBlurred({ ...base, mine: false }), B.startsBlurred(base));
+      }
+    }
+  }
+  // …and it still decides the corner, which is the only thing it is for now.
+  assert.strictEqual(B.buttonCorner(true), 'left');
+  assert.strictEqual(B.buttonCorner(false), 'right');
+});
+
+test('…AND THE BUTTON STILL COVERS A PICTURE THAT IS OPEN', () => {
+  // Reported as "the monkey button doesn't work on my sent images". An
+  // explicit cover has to beat having been cleared, or the button is dead on
+  // anything already looked at — which is every picture, a moment later.
   assert.strictEqual(B.startsBlurred({ mine: true, hidden: true }), true);
+  assert.strictEqual(B.startsBlurred({ revealed: true, hidden: true }), true);
 });
 
 test('AN EXPLICIT COVER BEATS HAVING BEEN CLEARED', () => {
@@ -124,6 +145,23 @@ test('THE PICTURE ITSELF IS BLURRED, not covered by something', () => {
   assert.ok(/blurRadius=\{blurRadius\}/.test(spinner), 'the blur never reaches the image');
 });
 
+test('A PICTURE IS COVERED WHILE IT IS STILL GOING UP', () => {
+  // Uploads take a while on these connections, and a photo sitting in the
+  // open for the length of one is the exposure this feature exists to
+  // prevent. It would also mean the picture changing appearance the moment
+  // the upload finished, which looks like a glitch.
+  //
+  // Both branches of the render, because the uploading one draws a different
+  // component and had no blur on it at all.
+  const uses = (IMG.match(/blurRadius=\{blurred \? BLUR_RADIUS : 0\}/g) || []).length;
+  assert.strictEqual(uses, 2,
+    `${uses} of the two render paths blur the picture; a photo is bare while it uploads`);
+  // The web does this already, because its cover is a class on the <img>
+  // whatever state the message is in — so the two platforms agree.
+  assert.ok(/classList\.toggle\('blurred', blurred\)/.test(APP),
+    'the web stopped covering the picture itself');
+});
+
 test('THE BUTTON IS NOT INSIDE THE TAP TARGET', () => {
   // Otherwise covering a picture would also clear or open it.
   const press = /onPress=\{\(\) => \{[\s\S]*?tapAction\([\s\S]*?\}\}/.exec(IMG);
@@ -161,6 +199,13 @@ test('THE APP DRAWING CODE ACTUALLY ASKS ABOUT THE COVER', () => {
   assert.ok(gal, 'the mosaic does not consult the rules');
   assert.ok(/hidden:\s*keys\.some\(k => blurStore\.isHidden\(k\)\)/.test(gal[1]),
     'covering a mosaic is never told to the rules');
+  // And who sent it has left both call sites, not just the rule. Passing it
+  // back in — as itself or folded into another input — is how the old
+  // behaviour returns for one kind of message while the rule still looks
+  // right.
+  assert.ok(!/\bmine\b/.test(gal[1]),
+    'the mosaic still tells the rules who sent it');
+  assert.ok(!/\bmine\b/.test(call[1]), 'a single photo still tells the rules who sent it');
 });
 
 test('A GALLERY IS NOT HALF-COVERED', () => {
@@ -310,8 +355,12 @@ test('BOTH PLATFORMS ANSWER THE SAME, over every combination', () => {
   }
   // Not just agreement — agreement on something. Two copies that both always
   // said false would pass the loop above.
+  assert.strictEqual(WEB.startsBlurred({ mine: true }), true,
+    'the web copy still lets your own pictures arrive uncovered');
   assert.strictEqual(WEB.startsBlurred({ mine: true, hidden: true }), true,
     'the web copy cannot cover your own picture either');
+  assert.strictEqual(WEB.startsBlurred({ revealed: true }), false,
+    'the web copy covers a picture that was already cleared');
   for (const blurred of [true, false]) {
     assert.strictEqual(WEB.tapAction({ blurred }), B.tapAction({ blurred }));
   }

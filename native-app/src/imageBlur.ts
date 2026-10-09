@@ -11,9 +11,14 @@
 //
 // Two decisions are worth stating because they are judgements, not mechanics:
 //
-//  • YOUR OWN pictures arrive clear. You chose the file seconds ago; blurring
-//    it back at you is a step that protects nobody. The button still blurs it
-//    whenever you want, which is the part that serves the same purpose.
+//  • EVERY picture arrives covered, including your own. This started the
+//    other way round — you chose the file seconds ago, so covering it back at
+//    you seemed to protect nobody — and that was wrong about whose eyes the
+//    feature is for. A photo you sent sits in the conversation exactly as
+//    long as one you received, and it is on screen for the same shoulder on
+//    the same bus. Asked for directly, and `mine` now has nothing to do with
+//    this question: it decides which corner the button sits in and nothing
+//    else.
 //
 //  • The state is keyed by the FILE, not the message. The same photo
 //    forwarded into another chat is the same photo, and having cleared it
@@ -46,25 +51,27 @@ export function tapAction(o: { blurred?: unknown }): 'reveal' | 'open' {
 /**
  * Does this picture arrive blurred?
  *
- * Only the first time, and only somebody else's. `revealed` is the record of
- * every picture already cleared, which is what "that exact image does not
- * have the mechanism next time" means.
+ * Only the first time. `revealed` is the record of every picture already
+ * cleared, which is what "that exact image does not have the mechanism next
+ * time" means.
+ *
+ * Who sent it is not an input. It was, and the answer it gave — your own
+ * photos arrive clear — was wrong: a photo you sent sits in the conversation
+ * as long as one you received, in front of the same people.
  */
 export function startsBlurred(o: {
-  mine?: unknown; revealed?: unknown; hidden?: unknown; hiddenOneTime?: unknown;
+  revealed?: unknown; hidden?: unknown; hiddenOneTime?: unknown;
 }): boolean {
   const e = o || {};
   // A one-time message has its own cover and its own rules. Two covers over
   // one picture is a picture nobody can open.
   if (e.hiddenOneTime) return false;
-  // An explicit "cover this" beats everything, including the picture being
-  // yours. This is what was missing: `mine` returned false before anything
-  // else was consulted, so your own photos could never be covered and the
-  // button appeared to do nothing — it changed a state the rule then ignored.
+  // An explicit "cover this" beats having been cleared, so the button works
+  // on a picture that is already open.
   if (e.hidden) return true;
   if (e.revealed) return false;
-  // Nobody has said either way: theirs arrives covered, yours does not.
-  return !e.mine;
+  // Nobody has said either way: it arrives covered.
+  return true;
 }
 
 /**
