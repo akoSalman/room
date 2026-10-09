@@ -1,8 +1,8 @@
 diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java
-index 01df786..a5cea90 100644
+index 01df786..53da080 100644
 --- a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java
 +++ b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java
-@@ -73,7 +73,20 @@ class GetUserMediaImpl {
+@@ -73,7 +73,25 @@ class GetUserMediaImpl {
                      mediaProjectionPermissionResultData = data;
  
                      ThreadUtils.runOnExecutor(() -> {
@@ -14,7 +14,12 @@ index 01df786..a5cea90 100644
 +                        // frame, and nothing anywhere says so: the capture
 +                        // appears to start, the track is live, and the far
 +                        // end sees a frozen picture.
-+                        String why = MediaProjectionService.launchAndWait(activity, 5000);
++                        // 2.5s: a foreground service reaches the foreground in well under a
++                        // second, and this blocks the WebRTC executor thread while it
++                        // waits — so the generous number is the wrong trade when the
++                        // service is NOT coming, which is a live call stalled for the
++                        // length of the wait.
++                        String why = MediaProjectionService.launchAndWait(activity, 2500);
 +                        if (why != null) {
 +                            displayMediaPromise.reject("DOMException", why);
 +                            displayMediaPromise = null;
