@@ -8,7 +8,7 @@ import { mediaDevices, RTCPeerConnection, MediaStream } from 'react-native-webrt
 import { scaleFor, madeNoProgress, MAX_BITRATE, SAMPLE_AFTER_MS } from './screenShare';
 import { apiFetch, getSocket } from './api';
 import { stopRinging } from './incomingCall';
-import { routeFor, outgoingStatus, endStopsCall, RING_TIMEOUT_MS, CallMode, CallPhase, OutgoingState } from './callAudio';
+import { routeFor, outgoingStatus, endStopsCall, RING_TIMEOUT_MS, NO_ANSWER_MS, CallMode, CallPhase, OutgoingState } from './callAudio';
 import { toneFor, toneVolume, toneLoops, toneStillWanted } from './callTones';
 import { canMinimize, canSwapVideos, CallPhase as WindowPhase } from './callWindow';
 import * as ongoing from './ongoingCall';
@@ -969,7 +969,7 @@ class CallManager {
     this.startTone('caller');
     this.syncOngoing();
     this.emit();
-    // Give up after 45s of no answer (logged as a missed call)
+    // Give up after NO_ANSWER_MS of no answer (logged as a missed call)
     clearTimeout(this.noAnswerTimer);
     this.noAnswerTimer = setTimeout(() => {
       if (this.mode?.startsWith('dm') && !this.connectedAt) {
@@ -977,7 +977,7 @@ class CallManager {
         this.emit();
         setTimeout(() => this.end(), 1200);
       }
-    }, 45000);
+    }, NO_ANSWER_MS);
     try { await this.makeOffer(peerId); } catch { this.end(); }
   }
 

@@ -941,8 +941,16 @@ body.kb-open #install-hint { display: none; }
  * whole thing.
  *
  * Direct children only: gallery grids, link-preview covers and map tiles are
- * images inside a bubble that size themselves. */
-.msg-bubble > img {
+ * images inside a bubble that size themselves.
+ *
+ * …and one level through .blurrable, which is a wrapper and not a layout.
+ * Adding the cover put a div between the bubble and the photo, this rule
+ * stopped matching, and every single photo lost its width and its 340px
+ * ceiling at once — reported as images being stretched vertically. A
+ * direct-child selector and a new wrapper are a combination that fails
+ * silently and completely. */
+.msg-bubble > img,
+.msg-bubble > .blurrable > img {
   width: var(--media-w); max-width: 100%;
   height: auto; max-height: 340px;
   object-fit: cover; object-position: center top;
@@ -1104,7 +1112,8 @@ body.kb-open #install-hint { display: none; }
   .room-actions:not(.not-owner) { display: flex !important; }
 
   .msg-wrapper { max-width: 88%; }
-  .msg-bubble > img { width: min(var(--media-w), 62vw); }
+  .msg-bubble > img,
+  .msg-bubble > .blurrable > img { width: min(var(--media-w), 62vw); }
   .msg-bubble audio { max-width: 100%; }
   #emoji-picker { width: 210px; }
 

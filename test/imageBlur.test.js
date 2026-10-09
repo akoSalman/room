@@ -474,6 +474,40 @@ test('THE WEB DRAWING CODE ACTUALLY ASKS ABOUT THE COVER', () => {
     'the web never tells the rules a photo was deliberately covered');
 });
 
+test('THE COVER WRAPPER DOES NOT TAKE THE PHOTO\'S SIZE WITH IT', () => {
+  // Reported as: images on the web are stretched vertically.
+  //
+  // wrapBlurrable puts a <div> between the bubble and the photo, and the
+  // rule that sizes a photo is a DIRECT-CHILD selector. It stopped matching
+  // the moment the cover shipped, so every single photo lost its width and
+  // its 340px ceiling at once. A direct-child selector plus a new wrapper
+  // fails silently and completely, and nothing in the suite noticed.
+  //
+  // So the invariant is checked rather than the spelling: whatever sizes a
+  // bare photo in a bubble must also size a wrapped one.
+  const fn = /function wrapBlurrable\(imgs, opts\) \{([\s\S]*?)\n\}/.exec(APP_SRC);
+  assert.ok(fn, 'could not find wrapBlurrable');
+  const cls = /wrap\.className = '([^']+)'/.exec(fn[1]);
+  assert.ok(cls, 'the cover wrapper has no class to write a rule against');
+  const wrapped = `.msg-bubble > .${cls[1]} > img`;
+
+  // Every rule that names the bare photo must name the wrapped one too.
+  const blocks = CSS.split('}');
+  const sizing = blocks.filter(b => /\.msg-bubble\s*>\s*img\b/.test(b.split('{')[0] || ''));
+  assert.ok(sizing.length, 'nothing sizes a photo in a bubble any more');
+  sizing.forEach(b => {
+    const sel = b.split('{')[0];
+    assert.ok(sel.includes(wrapped),
+      `a rule sizes a bare photo but not a covered one, so covered photos lose it:\n${sel.trim()}`);
+  });
+
+  // And the properties that were lost are actually in there.
+  const main = sizing.find(b => /max-height/.test(b)) || '';
+  assert.ok(/width:\s*var\(--media-w\)/.test(main), 'photos have no width');
+  assert.ok(/max-height:\s*\d+px/.test(main), 'photos have no ceiling, so a tall one fills the screen');
+  assert.ok(/object-fit:\s*cover/.test(main), 'photos are not cropped to shape');
+});
+
 test('THE RULES ARE LOADED BEFORE THE PAGE USES THEM', () => {
   const blurAt = HTML.indexOf('/js/imageBlur.js');
   const appAt = HTML.indexOf('/js/app.js');

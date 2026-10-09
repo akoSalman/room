@@ -25,11 +25,16 @@ global.window = global;
 const W = require(path.join(ROOT, 'public', 'js', 'callTones.js'));
 
 let A = null;
+let AUDIO = null;
 if (fs.existsSync(TSC)) {
   const OUT = fs.mkdtempSync(path.join(os.tmpdir(), 'tones-'));
   execFileSync(TSC, [path.join(NAT, 'src', 'callTones.ts'),
     '--outDir', OUT, '--module', 'commonjs', '--target', 'es2019', '--skipLibCheck'], { stdio: 'pipe' });
   A = require(path.join(OUT, 'callTones.js'));
+  // The two ring timings live next door, in callAudio.ts.
+  execFileSync(TSC, [path.join(NAT, 'src', 'callAudio.ts'),
+    '--outDir', OUT, '--module', 'commonjs', '--target', 'es2019', '--skipLibCheck'], { stdio: 'pipe' });
+  AUDIO = require(path.join(OUT, 'callAudio.js'));
   process.on('exit', () => fs.rmSync(OUT, { recursive: true, force: true }));
 } else {
   console.log('  ! app-side rules skipped (native-app deps not installed); web copy still checked');
@@ -257,6 +262,87 @@ test('connecting stops the ring on both clients', () => {
   assert.ok(wat > 0, 'the web markConnected moved');
   assert.ok(/stopRing\(\)/.test(web.slice(wat, wat + 400)),
     'the web leaves the ring playing over a connected call');
+});
+
+// ── A ring that ends by itself ─────────────────────────────────────────────
+//
+// Reported as: calling from the web, the ringing does not stop at all. Both
+// tones loop, and the browser had no timer of any kind — so a call nobody
+// answered rang until the tab was closed. The app has had both of these from
+// the start, one of them as a bare literal.
+
+test('THE BUG: the web knows how long a ring may last', () => {
+  assert.ok(W.NO_ANSWER_MS > 0, 'the caller rings for ever');
+  assert.ok(W.RING_TIMEOUT_MS > 0, 'the ringing side rings for ever');
+});
+
+test('THE CALLER GIVES UP FIRST, or the backstop pre-empts every call', () => {
+  // The ordinary ending is the caller stopping. The other number exists only
+  // for when that never arrives — a dead tab, a dropped network — so it has
+  // to be the longer of the two. The relationship was described in a comment
+  // and enforced nowhere, with the two numbers in different files.
+  assert.ok(W.NO_ANSWER_MS < W.RING_TIMEOUT_MS,
+    'the phone being called gives up before the caller does');
+  if (AUDIO) {
+    assert.ok(AUDIO.NO_ANSWER_MS < AUDIO.RING_TIMEOUT_MS,
+      'the app has the same two numbers the wrong way round');
+  }
+});
+
+test('BOTH PLATFORMS GIVE UP AT THE SAME MOMENT', () => {
+  if (!AUDIO) return;
+  assert.strictEqual(W.NO_ANSWER_MS, AUDIO.NO_ANSWER_MS,
+    'a browser and a phone disagree about when a caller gives up');
+  assert.strictEqual(W.RING_TIMEOUT_MS, AUDIO.RING_TIMEOUT_MS,
+    'a browser and a phone disagree about when a ringing device gives up');
+});
+
+test('…AND NEITHER IS ABSURD', () => {
+  // Agreeing on something, not merely agreeing: two copies both set to a
+  // second, or to an hour, would pass the comparison above.
+  assert.ok(W.NO_ANSWER_MS >= 20000, 'a caller gives up before anybody could answer');
+  assert.ok(W.RING_TIMEOUT_MS <= 180000, 'a phone rings for minutes with nobody there');
+});
+
+test('THE APP NO LONGER CARRIES THE NUMBER TWICE', () => {
+  // It was a bare 45000 in callManager while a comment in callAudio described
+  // what it should be. Two places, one of them unnamed.
+  const mgr = fs.readFileSync(path.join(NAT, 'src', 'callManager.ts'), 'utf8');
+  assert.ok(/\}, NO_ANSWER_MS\);/.test(mgr), 'the caller\'s timer is not the shared number');
+  assert.ok(!/\b45000\b/.test(mgr), 'the literal is still there beside the constant');
+});
+
+test('THE WEB ACTUALLY SETS BOTH TIMERS, AND CLEARS THEM', () => {
+  const js = fs.readFileSync(path.join(ROOT, 'public', 'js', 'calls.js'), 'utf8');
+  assert.ok(/CallTones\.NO_ANSWER_MS\)/.test(js), 'the caller still rings for ever');
+  assert.ok(/CallTones\.RING_TIMEOUT_MS\)/.test(js), 'the ringing side still rings for ever');
+  // Cleared, or a timer from a finished call ends the NEXT one.
+  assert.ok(/function clearRingTimers\(\)/.test(js), 'nothing cancels them');
+  const teardown = /function teardown\(\) \{([\s\S]*?)\n  \}/.exec(js);
+  assert.ok(teardown && /clearRingTimers\(\)/.test(teardown[1]),
+    'a finished call leaves its timers running');
+  // Answering must cancel the give-up, or a call that connects slowly is
+  // hung up 45 seconds after it was placed.
+  const ans = /s\.on\('call_answer', async \(\{ fromUserId, sdp \}\) => \{([\s\S]*?)\n    \}\);/.exec(js);
+  assert.ok(ans, 'could not find the answer handler');
+  assert.ok(/clearTimeout\(noAnswerTimer\)/.test(ans[1]),
+    'answering leaves the give-up timer armed');
+});
+
+test('THE GIVE-UP CHECKS THE CALL IS STILL UNANSWERED WHEN IT FIRES', () => {
+  // Otherwise it ends a call that connected while it was waiting.
+  const js = fs.readFileSync(path.join(ROOT, 'public', 'js', 'calls.js'), 'utf8');
+  const fn = /noAnswerTimer = setTimeout\(\(\) => \{([\s\S]*?)\}, CallTones\.NO_ANSWER_MS\);/.exec(js);
+  assert.ok(fn, 'could not find the give-up timer');
+  // The whole guard, not just the word: both bodies mention these names
+  // again further down, so a looser check passed against a version with no
+  // guard at all.
+  assert.ok(/if \(!mode \|\| mode\.indexOf\('dm'\) !== 0 \|\| connectedAt\) return;/.test(fn[1]),
+    'the give-up ends a call that had already connected');
+  const ring = /ringTimeout = setTimeout\(\(\) => \{([\s\S]*?)\}, CallTones\.RING_TIMEOUT_MS\);/.exec(js);
+  assert.ok(ring, 'could not find the backstop');
+  assert.ok(/if \(!incoming \|\| String\(incoming\.fromUserId\) !== String\(offer\.fromUserId\)\) return;/.test(ring[1]),
+    'the backstop silences whatever is ringing, including a later call');
 });
 
 let passed = 0, failed = 0;

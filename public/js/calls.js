@@ -44,6 +44,9 @@ const Calls = (() => {
       if (pc) await pc.setRemoteDescription(sdp).catch(() => {});
       flushIce(fromUserId);
       stopRing();
+      // Answered: the give-up timer would otherwise end a call that is
+      // connecting, 45 seconds after it was placed.
+      clearTimeout(noAnswerTimer); noAnswerTimer = null;
       out = Object.assign({}, out, { answered: true });
       setStatus(CallStatus.outgoingStatus(out));
     });
@@ -342,6 +345,19 @@ const Calls = (() => {
     if (ringAudio) { try { ringAudio.pause(); } catch {} ringAudio = null; }
   }
   let connectedAt = null, timerInterval = null;
+  // ── A ring that ends by itself ────────────────────────────────────────────
+  //
+  // Reported as: calling from the web, the ringing does not stop at all.
+  //
+  // Both tones loop, and nothing here ever gave up. The app has had these two
+  // timers from the beginning; the browser had neither, so a call nobody
+  // answered rang until the tab was closed. See CallTones.NO_ANSWER_MS.
+  let noAnswerTimer = null;
+  let ringTimeout = null;
+  function clearRingTimers() {
+    clearTimeout(noAnswerTimer); noAnswerTimer = null;
+    clearTimeout(ringTimeout); ringTimeout = null;
+  }
   // Which end of the call this is, and who it is with — for the log entry.
   // Held separately from `mode` and `dmPeer` because teardown clears those,
   // and because a declined call never sets `mode` at all.
@@ -425,6 +441,7 @@ const Calls = (() => {
     sharedScreen = null;
     cameraBeforeShare = null;
     stopRing();
+    clearRingTimers();
     connectedAt = null;
     clearInterval(timerInterval);
     timerInterval = null;
@@ -452,6 +469,16 @@ const Calls = (() => {
     out = {};
     setStatus(CallStatus.outgoingStatus(out));
     startTone('caller');
+    // Give up after NO_ANSWER_MS, which ends the call, stops the ringback and
+    // logs it as missed — the same thing the app does, with the same number.
+    clearTimeout(noAnswerTimer);
+    noAnswerTimer = setTimeout(() => {
+      if (!mode || mode.indexOf('dm') !== 0 || connectedAt) return;
+      setStatus('No answer');
+      // A moment on screen first: ending instantly looks like the call
+      // failed rather than went unanswered.
+      setTimeout(() => { if (!connectedAt) end(); }, 1200);
+    }, CallTones.NO_ANSWER_MS);
     if (kind === 'video') {
       $('call-local-video').srcObject = localStream; $('call-local-video').muted = true;
       // Re-laid now the local stream is really attached: you are the big
@@ -477,6 +504,16 @@ const Calls = (() => {
     if (mode) { sock.emit('call_end', { toUserId: offer.fromUserId }); return; } // busy
     incoming = offer;
     startTone('callee');
+    // The caller normally ends an unanswered call first. This is for when
+    // that never arrives — their tab was closed, or their network went — and
+    // without it the ringtone here loops for ever.
+    clearTimeout(ringTimeout);
+    ringTimeout = setTimeout(() => {
+      if (!incoming || String(incoming.fromUserId) !== String(offer.fromUserId)) return;
+      incoming = null;
+      stopRing();
+      $('incoming-call').classList.add('hidden');
+    }, CallTones.RING_TIMEOUT_MS);
     // Tell the caller their call is really ringing here.
     sock.emit('call_ringing', { toUserId: offer.fromUserId });
     $('incoming-call-text').textContent =
@@ -488,6 +525,7 @@ const Calls = (() => {
     const offer = incoming;
     incoming = null;
     stopRing();
+    clearRingTimers();
     $('incoming-call').classList.add('hidden');
     if (!offer) return;
     // Accepting is a tap too, and the same rule applies to it.
@@ -533,6 +571,7 @@ const Calls = (() => {
     }
     incoming = null;
     stopRing();
+    clearRingTimers();
     $('incoming-call').classList.add('hidden');
   }
 

@@ -174,6 +174,22 @@ export function endStopsCall(o: {
  */
 export const RING_TIMEOUT_MS = 60000;
 
+/**
+ * How long a caller rings before giving up and logging a missed call.
+ *
+ * Shorter than RING_TIMEOUT_MS above, deliberately: the caller ending the
+ * call is the ORDINARY way a ring stops, and the backstop on the other phone
+ * exists only for when that never arrives. If this were the longer of the
+ * two, every unanswered call would end by backstop and the caller would be
+ * left ringing at a phone that had already given up.
+ *
+ * It was a bare 45000 inside callManager, while the comment above described
+ * the relationship between them as though it were enforced somewhere. The
+ * web had neither number and no timer at all, so a call from a browser that
+ * nobody answered rang until the tab was closed.
+ */
+export const NO_ANSWER_MS = 45000;
+
 function idOf(v: unknown): string | null {
   if (v === null || v === undefined || v === '') return null;
   const s = String(v).trim();

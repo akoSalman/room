@@ -149,8 +149,17 @@ test('a picture sets the width of its bubble, and the caption follows it', () =>
   // Reported with a screenshot: a tall image was capped by HEIGHT, so it came
   // out about 85px wide while its caption ran to the full width of the bubble
   // — a wide box with a stamp in the corner.
-  const img = rules(css).find(r => r.selector === '.msg-bubble > img');
+  // Matched as a selector LIST: the cover wrapper added a second selector to
+  // this rule, and an exact-string lookup then found nothing and failed for a
+  // reason that has nothing to do with what it checks.
+  const img = rules(css).find(r => /(^|,)\s*\.msg-bubble\s*>\s*img\s*(,|$)/.test(r.selector)
+    && /max-height/.test(r.body));
   assert.ok(img, 'the single-image rule is gone — this check would be vacuous');
+  // The photo is wrapped for the cover, so the rule has to reach through it.
+  // Without this, every photo on the web lost its width and its ceiling at
+  // once — reported as images stretched vertically.
+  assert.ok(/\.msg-bubble\s*>\s*\.blurrable\s*>\s*img/.test(img.selector),
+    'a covered photo is not sized by this rule, which is every photo');
   assert.ok(/width:\s*var\(--media-w\)/.test(img.body), 'the image no longer has a width of its own');
   assert.ok(/object-fit:\s*cover/.test(img.body), 'a tall image is shrunk instead of cropped');
   const cap = rules(css).find(r => r.selector === '.msg-caption');
