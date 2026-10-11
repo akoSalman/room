@@ -46,6 +46,7 @@ import UploadOverlay from '../components/UploadOverlay';
 import SaveOverlay from '../components/SaveOverlay';
 import * as save from '../saveProgress';
 import { parseDataUri, pastedName, fileUriFromText, extensionFor, shouldReadText, clipboardOffer } from '../pasteDrop';
+import { pickShot, isScreenshotName, isScreenshotAlbum, FRESH_MS } from '../screenshots';
 import * as pending from '../pendingMedia';
 import * as textDraft from '../textDraft';
 import {
@@ -2904,9 +2905,138 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   // has just copied the thing they want to send.
   useEffect(() => {
     checkClipboard();
-    const sub = AppState.addEventListener('change', st => { if (st === 'active') checkClipboard(); });
+    checkScreenshot();
+    const sub = AppState.addEventListener('change', st => {
+      if (st !== 'active') return;
+      checkClipboard();
+      checkScreenshot();
+    });
     return () => sub.remove();
   }, []);
+
+  // ── The screenshot that is NOT on the clipboard ───────────────────────────
+  //
+  // Asked for as: after taking a screenshot, paste it without opening the
+  // gallery. Everything above is about the clipboard, and a screenshot never
+  // reaches it — Android writes the file and shows a floating preview, and
+  // unless the person taps "Copy" there (a button not every Android has) the
+  // clipboard is untouched. So the paste button correctly says there is
+  // nothing to paste, and the gallery was the only way in.
+  //
+  // See ../screenshots.ts for which one is offered and why the album rather
+  // than the filename decides it.
+  const [shot, setShot] = useState<{ id: string; uri: string; name: string } | null>(null);
+  // Sent or waved away. The check runs again every time the app comes to the
+  // front, so without this a dismissed chip would come straight back and
+  // there would be no way to be rid of it.
+  const shotHandled = useRef<string[]>([]);
+
+  /**
+   * The newest screenshot worth offering, or null.
+   *
+   * `mayAsk` is the whole difference between this function's two callers, and
+   * it is a difference about consent rather than about pictures:
+   *
+   *   - the automatic look, which runs whenever the app comes to the front,
+   *     must NEVER raise a permission prompt. One appearing because a
+   *     conversation was opened is unexplainable, and a "no" given to it is
+   *     then remembered against the gallery picker, which is the feature
+   *     people actually need;
+   *
+   *   - Paste may ask, because the person has just tapped Paste. A prompt
+   *     there is an answer to what they did. Without this route the offer
+   *     would only ever reach people who had already granted the permission
+   *     for some other reason — on Android 13 the photo picker needs none, so
+   *     that is far from everybody.
+   */
+  async function findScreenshot(mayAsk: boolean): Promise<{ id: string; uri: string; name: string } | null> {
+    try {
+      // Asked about PHOTOS only. The default covers audio and video as well,
+      // so somebody who granted pictures and nothing else — which is a choice
+      // Android 13 offers, and a sensible one — would read as having refused,
+      // and this would silently never work for them.
+      const perm = mayAsk
+        ? await MediaLibrary.requestPermissionsAsync(false, ['photo'])
+        : await MediaLibrary.getPermissionsAsync(false, ['photo']);
+      // 'limited' is Android 14's "only these photos": the query below simply
+      // finds nothing unless a screenshot is among the chosen ones, which is
+      // the right outcome without a special case.
+      if (!perm.granted && perm.accessPrivileges !== 'limited') return null;
+      const now = Date.now();
+      // The folder's name, which is not translated, unlike the filenames
+      // inside it. Samsung keeps it under DCIM and the album is still called
+      // this.
+      let album = await MediaLibrary.getAlbumAsync('Screenshots');
+      if (!album) {
+        const all = await MediaLibrary.getAlbumsAsync({ includeSmartAlbums: false });
+        album = (all || []).find(a => isScreenshotAlbum(a.title)) || null;
+      }
+      const page = await MediaLibrary.getAssetsAsync({
+        // With an album every asset in it counts, so one is enough. Without
+        // one this is a page of ordinary photos to be sifted by name.
+        first: album ? 1 : 16,
+        mediaType: ['photo'],
+        sortBy: ['creationTime'],
+        createdAfter: now - FRESH_MS,
+        ...(album ? { album } : {}),
+      });
+      const assets = page?.assets || [];
+      const pick = pickShot({
+        shots: album ? assets : assets.filter(a => isScreenshotName(a.filename)),
+        now,
+        handled: shotHandled.current,
+      });
+      if (!pick) return null;
+      // The asset's own uri is not always a readable path; this is.
+      const info = await MediaLibrary.getAssetInfoAsync(pick.id);
+      const uri = info?.localUri || info?.uri || null;
+      if (!uri) return null;
+      return { id: pick.id, uri, name: pick.filename };
+    } catch {
+      // No offer. This is a convenience on top of the picker, and nothing
+      // about it is worth a message.
+      return null;
+    }
+  }
+
+  /**
+   * The automatic look, on arrival and on every return to the front.
+   *
+   * Assigned rather than only set: an offer left up after its screenshot has
+   * gone stale, or after the picture was dealt with, is an offer to send the
+   * WRONG picture.
+   */
+  async function checkScreenshot() {
+    setShot(await findScreenshot(false));
+  }
+
+  /** Stage a screenshot, exactly as a pasted or a picked picture is staged. */
+  function stageScreenshot(s: { id: string; uri: string; name: string }) {
+    // Recorded as dealt with before anything else. The automatic look runs
+    // again on every return to the front, so one that is not recorded comes
+    // straight back as an offer to send what has already been sent.
+    shotHandled.current = [...shotHandled.current, s.id];
+    setShot(null);
+    // A screenshot IS an image, whatever its name says. guessMime answers
+    // application/octet-stream for a name it does not recognise — truthy, so
+    // a plain `||` fallback never fires — and staging it as that would send
+    // the screenshot as a FILE: no preview in the bubble, no quality switch.
+    const guessed = guessMime(s.name);
+    const mime = guessed.startsWith('image/') ? guessed : 'image/png';
+    // Staged rather than sent: the message being typed is its caption, and
+    // the quality switch and the one-time timer all apply to it.
+    setPendingMedia(prev => [...prev, { uri: s.uri, name: pastedName(mime, Date.now(), s.name), mime }]);
+  }
+
+  /** The chip's own tap. */
+  function takeScreenshot() {
+    if (shot) stageScreenshot(shot);
+  }
+
+  function dismissScreenshot() {
+    if (shot) shotHandled.current = [...shotHandled.current, shot.id];
+    setShot(null);
+  }
 
   // ── An image pasted from the KEYBOARD ─────────────────────────────────────
   //
@@ -2977,7 +3107,24 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       }
       const img = await Clipboard.getImageAsync({ format: 'png' });
       const parsed = img?.data ? parseDataUri(img.data) : null;
-      if (!parsed) { Alert.alert('Nothing to paste', 'There is no image or file on the clipboard.'); return; }
+      if (!parsed) {
+        // ── Paste, for the screenshot that was never copied ───────────────
+        //
+        // Asked for as: after taking a screenshot, send it without opening
+        // the gallery. Taking one does not copy it — Android writes the file
+        // and offers "Copy" in a floating preview that not every Android
+        // has — so this is where that request lands: the clipboard is empty,
+        // the person has just asked to paste, and the thing they almost
+        // certainly meant is sitting in Pictures/Screenshots.
+        //
+        // This is also the only route that may ASK for permission to look,
+        // which is why the dead end became a route rather than the offer
+        // getting its own button: a prompt here answers a tap.
+        const found = await findScreenshot(true);
+        if (found) { stageScreenshot(found); return; }
+        Alert.alert('Nothing to paste', 'There is no image or file on the clipboard, and no recent screenshot.');
+        return;
+      }
       // The clipboard hands back base64; it has to become a real file before
       // anything can upload it.
       const name = pastedName(parsed.mime, Date.now());
@@ -7391,6 +7538,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
           onSend={sendText}
           clipboard={clipboardHas}
           onPaste={pasteFromClipboard}
+          screenshot={shot}
+          onSendScreenshot={takeScreenshot}
+          onDismissScreenshot={dismissScreenshot}
           // Straight to the camera. A photo of what is in front of you is by
           // far the commonest attachment, and it used to cost two taps and a
           // sheet before the camera even began warming up. The other four ways

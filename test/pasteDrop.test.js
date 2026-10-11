@@ -426,8 +426,20 @@ test('the button names what would actually happen', () => {
 test('the app has the button on the composer, not only in the attach menu', () => {
   const comp = fs.readFileSync(path.join(NAT, 'src', 'components', 'Composer.tsx'), 'utf8');
   const src = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
-  assert.ok(/\{!!clipboard && \(/.test(comp),
-    'the paste button is shown even when the clipboard holds nothing to paste');
+  // REVERSED, deliberately. This used to require the button to be HIDDEN
+  // when the clipboard held nothing, on the grounds that a control which does
+  // nothing is worse than no control.
+  //
+  // That reasoning stopped applying when the button got something to do with
+  // an empty clipboard: look for the screenshot just taken. A screenshot is
+  // never on the clipboard, so hiding the button whenever the clipboard was
+  // empty hid the only route to one from everybody who had not copied
+  // something else first — and it is also the only route allowed to ask for
+  // permission to look, because a prompt following a tap on "Paste" explains
+  // itself. See screenshotOffer.test.js.
+  assert.ok(/onPress=\{onPaste\}/.test(comp), 'there is no paste button');
+  assert.ok(/accessibilityLabel=\{pasteLabel\(clipboard\)\}/.test(comp),
+    'the button no longer names what the tap would actually do');
   assert.ok(/onPress=\{onPaste\}/.test(comp), 'the button does nothing');
   assert.ok(/clipboard=\{clipboardHas\}/.test(src) && /onPaste=\{pasteFromClipboard\}/.test(src),
     'the composer is never told what is on the clipboard');
@@ -440,8 +452,16 @@ test('the clipboard is re-checked on coming back from another app', () => {
   const src = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
   const fn = src.slice(src.indexOf('async function checkClipboard()'), src.indexOf('async function pasteFromClipboard()'));
   assert.ok(fn.length > 0, 'checkClipboard is gone — this check would be vacuous');
-  assert.ok(/AppState\.addEventListener\('change', st => \{ if \(st === 'active'\) checkClipboard\(\)/.test(fn),
-    'the clipboard is never re-checked, so the button reflects a stale answer');
+  // Matched as behaviour rather than as a line of text. This used to require
+  // the handler to be the exact one-liner it was first written as, and it
+  // broke the day a second thing was checked on resume beside it — the
+  // screenshot offer — while the re-check it guards was still there.
+  const listener = /AppState\.addEventListener\('change', st => \{([\s\S]*?)\n    \}\);/.exec(fn);
+  assert.ok(listener, 'the clipboard is never re-checked, so the button reflects a stale answer');
+  assert.ok(/st === 'active'|st !== 'active'/.test(listener[1]),
+    'the clipboard is re-read on every state change, going to the background included');
+  assert.ok(/checkClipboard\(\)/.test(listener[1]),
+    'coming back from another app does not re-check the clipboard');
   assert.ok(/sub\.remove\(\)/.test(fn), 'the listener outlives the screen');
   assert.ok(fn.includes('shouldReadText({'), 'the clipboard text is read on every glance at the chat');
   assert.ok(fn.includes('clipboardOffer({'), 'the screen decides for itself what counts as pasteable');

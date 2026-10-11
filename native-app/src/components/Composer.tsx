@@ -63,6 +63,17 @@ type Props = {
    */
   clipboard?: 'image' | 'file' | null;
   onPaste?: () => void;
+  /**
+   * A screenshot taken moments ago, which the clipboard knows nothing about.
+   *
+   * Separate from `clipboard` rather than another value of it, because the two
+   * are offered differently: the clipboard gets an icon on the strip, and this
+   * gets a thumbnail — the person needs to see WHICH picture before attaching
+   * one they have not chosen from anywhere.
+   */
+  screenshot?: { uri: string } | null;
+  onSendScreenshot?: () => void;
+  onDismissScreenshot?: () => void;
   onToggleQuickEmoji: (open: boolean) => void;
   onRemoveMedia: (index: number) => void;
   /** Opens the staged item for a look — and for editing. */
@@ -85,6 +96,7 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
     onTyping, onSend, onAttach, onRecord, onRecordPressIn, onOneTime, onLocation, liveLocation,
     sendQuality, onQuality, disappearing,
     clipboard, onPaste,
+    screenshot, onSendScreenshot, onDismissScreenshot,
     onToggleQuickEmoji, onRemoveMedia, onRenameMedia, onPreviewMedia, mentionables,
     onDraftChange,
   } = props;
@@ -185,6 +197,33 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
         </View>
       )}
 
+      {/* ── The screenshot just taken ──────────────────────────────────────
+          Asked for: send a screenshot without going to the gallery for it. A
+          screenshot never reaches the clipboard, so the 📋 button beside this
+          cannot offer it and is right not to — see ../screenshots.ts.
+
+          A thumbnail, not just words: this says "that one" about a picture
+          the person has just seen, and a chip reading "Send screenshot" with
+          nothing to look at would be a guess they have to take on trust. */}
+      {!!screenshot && (
+        <View style={s.shotBar}>
+          <TouchableOpacity style={s.shotOffer} onPress={onSendScreenshot} accessibilityLabel="Send the screenshot just taken">
+            <Image source={{ uri: screenshot.uri }} style={s.shotThumb} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.shotTitle}>Screenshot ready</Text>
+              <Text style={s.shotHint} numberOfLines={1}>Tap to attach it</Text>
+            </View>
+          </TouchableOpacity>
+          {/* Dismissing is remembered, or the chip would come back every time
+              the app returns to the front. */}
+          <TouchableOpacity style={s.shotClose} onPress={onDismissScreenshot}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityLabel="Not this screenshot">
+            <Text style={s.shotCloseText}>✕</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Options strip */}
       <View style={s.optionsStrip}>
         {/* Icon only, like the flame beside it. The word said nothing the
@@ -213,16 +252,22 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
             color={liveLocation ? '#22c55e' : C.text}
           />
         </TouchableOpacity>
-        {/* Only when the clipboard holds something the message box cannot
-            take — a screenshot, or a file copied in a file manager. Text
-            already pastes by long-press, so lighting up for every copied word
-            would bury the one case this exists for. */}
-        {!!clipboard && (
-          <TouchableOpacity style={s.stripBtn} onPress={onPaste}
-            accessibilityLabel={pasteLabel(clipboard)}>
-            <Text style={s.stripBtnText}>📋</Text>
-          </TouchableOpacity>
-        )}
+        {/* Always here now.
+            It used to appear only when the clipboard held something, on the
+            grounds that a control which does nothing is worse than no
+            control. That stopped being true when it got something to do with
+            an EMPTY clipboard: look for the screenshot just taken, which is
+            never on the clipboard at all (../screenshots.ts). Hiding it was
+            then hiding the one route to a screenshot from everybody who had
+            not copied something else first — and it is also the only route
+            that can ask for permission to look, because a prompt following a
+            tap on "Paste" explains itself.
+            The label still names what would actually happen; with nothing
+            copied it reads simply "Paste". */}
+        <TouchableOpacity style={s.stripBtn} onPress={onPaste}
+          accessibilityLabel={pasteLabel(clipboard)}>
+          <Text style={s.stripBtnText}>📋</Text>
+        </TouchableOpacity>
         {!quickEmoji && (
           <TouchableOpacity style={s.stripBtn}
             onPress={() => { onToggleQuickEmoji(true); AsyncStorage.removeItem('quickEmojiClosed'); }}>
@@ -437,6 +482,21 @@ const s = StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 6,
     backgroundColor: 'rgba(59,125,216,0.08)', borderTopWidth: 1, borderTopColor: C.accent,
   },
+  // The screenshot offer. Tinted like the staged-media bar it sits above, so
+  // it reads as the same kind of thing one step earlier.
+  shotBar: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 12, paddingVertical: 6,
+    backgroundColor: 'rgba(59,125,216,0.08)', borderTopWidth: 1, borderTopColor: C.accent,
+  },
+  shotOffer: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  shotThumb: { width: 38, height: 38, borderRadius: 6, backgroundColor: 'rgba(59,125,216,0.12)' },
+  shotTitle: { color: C.text, fontSize: 13, fontWeight: '600' },
+  shotHint: { color: C.muted, fontSize: 11 },
+  shotClose: {
+    width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
+  },
+  shotCloseText: { color: C.muted, fontSize: 13 },
   pendingMediaItem: { position: 'relative' },
   pendingMediaThumb: { width: 54, height: 54, borderRadius: 8 },
   pendingMediaFile: { backgroundColor: 'rgba(59,125,216,0.12)', alignItems: 'center', justifyContent: 'center' },
