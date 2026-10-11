@@ -124,6 +124,48 @@ test('THE SAME BUG next door: the app update download is throttled too', () => {
     'the final frame of the update download can be thrown away by the clock');
 });
 
+// ── Your own video is already downloaded ───────────────────────────────────
+//
+// Reported as: my sent videos should not need downloading, because I sent them
+// from this device. They did, because the only thing that made a video
+// "downloaded" was having fetched it from the server — so the one person
+// guaranteed to own the bytes was the one asked to pay for them again.
+
+test('THE SENDER KEEPS WHAT THEY SENT', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'native-app', 'src',
+    'videoDownloads.ts'), 'utf8');
+  assert.ok(/export async function adopt\(localUri: string, remoteUrl: string, canKeep = true\)/.test(src),
+    'there is no way to hand the store a file this device already has');
+  const fn = /export async function adopt\([\s\S]*?\n\}/.exec(src);
+  assert.ok(fn, 'could not find adopt');
+  // Keyed by the REMOTE url, or the bubble — which only knows that url —
+  // will never find it.
+  assert.ok(/const dest = pathFor\(remoteUrl\)/.test(fn[0]),
+    'the copy is filed under the local path, where nothing looks for it');
+  // Copied, not moved or linked: what was uploaded is a temporary file.
+  assert.ok(/copyAsync\(\{ from: localUri, to: dest \}\)/.test(fn[0]),
+    'the sender\'s copy does not outlive the temporary file it was made from');
+  assert.ok(/status: 'done'/.test(fn[0]), 'the file is copied and then not recorded');
+  // A copy that produced nothing is not a download.
+  assert.ok(/if \(!size\)/.test(fn[0]), 'an empty copy is recorded as a finished download');
+});
+
+test('…BUT NOT A DISAPPEARING ONE', () => {
+  // Sending a one-time video does not entitle the sender to a permanent copy
+  // of something the receiver was promised would not persist.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'native-app', 'src',
+    'videoDownloads.ts'), 'utf8');
+  const fn = /export async function adopt\([\s\S]*?\n\}/.exec(src);
+  assert.ok(/if \(!canKeep\) return false;/.test(fn[0]),
+    'a disappearing video is kept for ever by whoever sent it');
+  const chat = fs.readFileSync(path.join(__dirname, '..', 'native-app', 'src',
+    'screens', 'ChatScreen.tsx'), 'utf8');
+  assert.ok(/if \(type === 'video' && !oneTime && !disappearing\) \{/.test(chat),
+    'the send path adopts a video the receiver was told would not persist');
+  assert.ok(/attachments\.adopt\(uri, `\$\{BASE_URL\}\$\{res\.url\}`\)/.test(chat),
+    'the send path never adopts anything');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

@@ -261,14 +261,16 @@ export default function CallOverlay() {
         <Text style={s.callState}>{elapsed ?? cm.status}</Text>
       </View>
 
-      {/* Why a share did not start.
+      {/* One positioned bar holding the message AND the buttons.
           *
-          * ABOVE the row of buttons, not inside it. It was a child of a
-          * `flexDirection: 'row'` with `justifyContent: 'space-evenly'`, so
-          * the moment it appeared it became one more evenly-spaced item and
-          * pushed the buttons out to the edges — reported as the buttons
-          * going to the sides with a text between them. A message about a
-          * failure must not rearrange the controls it is explaining. */}
+          * The message was a child of the row itself, which is a flex row
+          * with space-evenly — so the moment it appeared it became one more
+          * evenly-spaced item and pushed the buttons out to the edges. It was
+          * then pinned at a fixed distance above the row instead, which is a
+          * number that stops being right the moment the row changes height,
+          * and it now wraps onto two lines. The bar is the fix: the message
+          * sits above the row in ordinary flow, and only the bar is placed. */}
+      <View style={s.bottomBar}>
       {isVideo && !!cm.shareFailed && (
         <Text style={s.shareError} numberOfLines={2}>
           {shareFailureText(cm.shareFailed)}
@@ -324,12 +326,41 @@ export default function CallOverlay() {
             <Text style={s.actionLabel}>{cm.sharingScreen ? 'Stop' : 'Share'}</Text>
           </View>
         )}
+        {/* Silence and hide the OTHER end, on this device only.
+            *
+            * Asked for as: when muting a call, a control to mute the other
+            * person too, and the same for the camera. Nothing here reaches
+            * across to switch off somebody else's microphone — what it does
+            * is stop playing what they send. */}
+        <View style={s.actionCol}>
+          <TouchableOpacity
+            style={[s.roundBtn, s.ctrlBtn, cm.peerMuted && s.ctrlActive]}
+            onPress={() => cm.togglePeerMuted()}>
+            <Ionicons
+              name={cm.peerMuted ? 'volume-mute' : 'volume-high'}
+              size={25} color={cm.peerMuted ? '#111827' : '#fff'} />
+          </TouchableOpacity>
+          <Text style={s.actionLabel}>{cm.peerMuted ? 'Unmute them' : 'Mute them'}</Text>
+        </View>
+        {isVideo && (
+          <View style={s.actionCol}>
+            <TouchableOpacity
+              style={[s.roundBtn, s.ctrlBtn, cm.peerVideoHidden && s.ctrlActive]}
+              onPress={() => cm.togglePeerVideo()}>
+              <Ionicons
+                name={cm.peerVideoHidden ? 'eye-off' : 'eye'}
+                size={25} color={cm.peerVideoHidden ? '#111827' : '#fff'} />
+            </TouchableOpacity>
+            <Text style={s.actionLabel}>{cm.peerVideoHidden ? 'Show them' : 'Hide them'}</Text>
+          </View>
+        )}
         <View style={s.actionCol}>
           <TouchableOpacity style={[s.roundBtn, s.callBtn, s.declineBtn]} onPress={() => cm.end()}>
             <Ionicons name="call" size={28} color="#fff" style={s.endIcon} />
           </TouchableOpacity>
           <Text style={s.actionLabel}>End</Text>
         </View>
+      </View>
       </View>
     </View>
   );
@@ -338,13 +369,11 @@ export default function CallOverlay() {
 const hit8 = { top: 8, bottom: 8, left: 8, right: 8 };
 
 const s = StyleSheet.create({
-  // Pinned just above the controls row, which is itself absolute at
-  // bottom: 60. Laid out in the normal flow it would sit wherever the column
-  // happened to end — usually behind the video.
+  // In ordinary flow inside the bar, above the row — so it needs no
+  // measurement of its own and cannot drift when the row grows a line.
   shareError: {
-    position: 'absolute', bottom: 150, left: 0, right: 0,
     color: '#fca5a5', fontSize: 12, textAlign: 'center',
-    paddingHorizontal: 16,
+    paddingHorizontal: 16, marginBottom: 10,
   },
 
   minimizeBtn: {
@@ -418,9 +447,12 @@ const s = StyleSheet.create({
     position: 'absolute', bottom: 70, left: 0, right: 0,
     flexDirection: 'row', justifyContent: 'space-evenly',
   },
+  bottomBar: { position: 'absolute', bottom: 60, left: 0, right: 0 },
   controls: {
-    position: 'absolute', bottom: 60, left: 0, right: 0,
     flexDirection: 'row', justifyContent: 'space-evenly',
+    // Wraps, because a video call now carries seven of these and seven do
+    // not fit across a phone. Without it they shrink into each other.
+    flexWrap: 'wrap', rowGap: 14,
   },
   actionCol: { alignItems: 'center', gap: 8 },
   // No shadow here. It used to be on EVERY button, including the translucent

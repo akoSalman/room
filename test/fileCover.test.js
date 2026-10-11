@@ -145,6 +145,47 @@ test('THE READY COVER IS THE ONE THE STORE ACTUALLY REPORTS', () => {
   assert.ok(!/'ready'/.test(store), "the store now reports 'ready' — the row must follow");
 });
 
+// ── Tapping a video in the files tab ───────────────────────────────────────
+//
+// Reported as: it opens the file in the browser and then downloads it.
+//
+// Both halves follow from handing the url to the system browser. Every
+// /uploads response carries Content-Disposition: attachment, so a browser can
+// only download it — and the url is a SIGNED one, which then sits in another
+// app's history. The chat's own player was there all along.
+
+test('A VIDEO IS RECOGNISED BY ITS NAME', () => {
+  for (const n of ['a.mp4', 'A.MOV', 'clip.m4v', 'x.webm', 'y.mkv', 'z.3gp', 'q.avi']) {
+    assert.strictEqual(F.isVideoName(n), true, `${n} is not treated as a video`);
+  }
+});
+
+test('…and nothing else is', () => {
+  for (const n of ['a.jpg', 'a.pdf', 'a.mp3', 'a.zip', 'a', '', null, undefined,
+      'mp4', 'a.mp4.pdf']) {
+    assert.strictEqual(F.isVideoName(n), false, `${JSON.stringify(n)} is treated as a video`);
+  }
+});
+
+test('THE FILES TAB PLAYS IT INSTEAD OF HANDING IT TO A BROWSER', () => {
+  const chat = fs.readFileSync(path.join(__dirname, '..', 'native-app', 'src',
+    'screens', 'ChatScreen.tsx'), 'utf8');
+  const fn = /async function onMediaAction\(action: MediaAction, item: MediaItem\) \{([\s\S]*?)\n  \}/.exec(chat);
+  assert.ok(fn, 'could not find onMediaAction');
+  assert.ok(/if \(item\.kind === 'video' \|\| isVideoName\(item\.name \|\| item\.url\)\)/.test(fn[1]),
+    'a video still goes wherever non-images go');
+  assert.ok(/setVideoItem\(\{/.test(fn[1]), 'nothing opens the in-app player');
+  // The downloaded copy is preferred, so a video already held plays at once
+  // and with no signal.
+  assert.ok(/await attachments\.localUri\(abs\)/.test(fn[1]),
+    'a video already on the device is streamed again');
+  // And NOTHING in this handler hands a signed url to the browser any more.
+  assert.ok(!/Linking\.openURL/.test(fn[1]),
+    'a signed url is still passed to the system browser, where it lands in another app\'s history');
+  assert.ok(/openFile\(\{/.test(fn[1]),
+    'other files no longer open at all');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

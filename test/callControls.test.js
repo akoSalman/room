@@ -500,11 +500,76 @@ test('A SHARE FAILURE DOES NOT REARRANGE THE BUTTONS', () => {
     'the failure is no longer shown at all');
   assert.ok(src.indexOf('shareFailureText(cm.shareFailed)') < src.indexOf('<View style={s.controls}>'),
     'the message is drawn after the row rather than above it');
-  // And it is positioned, because the row it sits above is absolute — laid
-  // out in normal flow it would land wherever the column happened to end.
+  // It sits in a positioned BAR with the row, rather than being pinned a
+  // fixed distance above it. The fixed distance was a number that stopped
+  // being right the moment the row grew a second line, which it now does.
+  const bar = /bottomBar: \{([\s\S]*?)\},/.exec(src);
+  assert.ok(bar && /position: 'absolute'/.test(bar[1]),
+    'nothing places the controls, so they land in the middle of the video');
   const style = /shareError: \{([\s\S]*?)\},/.exec(src);
-  assert.ok(style && /position: 'absolute'/.test(style[1]),
-    'the message is not positioned, so it lands behind the video');
+  assert.ok(style && !/position: 'absolute'/.test(style[1]),
+    'the message is placed separately again, which drifts when the row grows');
+  assert.ok(src.indexOf('<View style={s.bottomBar}>') < src.indexOf('shareFailureText(cm.shareFailed)'),
+    'the message is outside the bar that positions it');
+});
+
+// ── Silencing and hiding the other end ─────────────────────────────────────
+//
+// Asked for as: when muting a call, a control to mute the other person too,
+// and the same for the camera.
+
+test('THERE ARE CONTROLS FOR THE OTHER END, and they are local', () => {
+  const mgr = fs.readFileSync(path.join(ROOT, 'native-app', 'src', 'callManager.ts'), 'utf8');
+  assert.ok(/togglePeerMuted\(\)/.test(mgr), 'there is no way to silence the other end');
+  assert.ok(/togglePeerVideo\(\)/.test(mgr), 'there is no way to hide the other end');
+  // LOCAL: it disables the tracks that arrived, and sends nothing. Reaching
+  // across to switch off somebody else's microphone is not a power one
+  // person on a call should have over another.
+  const apply = /private applyPeerMedia\(\) \{([\s\S]*?)\n  \}/.exec(mgr);
+  assert.ok(apply, 'could not find applyPeerMedia');
+  assert.ok(/t\.enabled = !this\.peerMuted/.test(apply[1]), 'muting them does nothing');
+  assert.ok(/t\.enabled = !this\.peerVideoHidden/.test(apply[1]), 'hiding them does nothing');
+  assert.ok(!/emit\('call_/.test(apply[1]),
+    'it signals the other device, which is not a local control at all');
+});
+
+test('A VOICE CALL CAN BE SILENCED TOO', () => {
+  // dm-video keeps a remoteStream; a voice call does not — its audio is
+  // routed by the library — so taking the tracks only from remoteStream
+  // would leave nothing to silence on the calls where it matters most.
+  const mgr = fs.readFileSync(path.join(ROOT, 'native-app', 'src', 'callManager.ts'), 'utf8');
+  const ontrack = /\(pc as any\)\.ontrack = \(e: any\) => \{([\s\S]*?)\n    \};/.exec(mgr);
+  assert.ok(ontrack, 'could not find ontrack');
+  // The whole guard, not just the push: the push stays put inside a branch
+  // that can never run, and a looser check passed against exactly that.
+  assert.ok(/if \(e\.track && this\.remoteTracks\.indexOf\(e\.track\) < 0\) \{\n        this\.remoteTracks\.push\(e\.track\);/.test(ontrack[1]),
+    'only a video call remembers what the far end sent');
+  // Outside the dm-video branch, or a voice call records nothing.
+  const vidOnly = /if \(this\.mode === 'dm-video'\) \{([\s\S]*?)\n      \}/.exec(ontrack[1]);
+  assert.ok(vidOnly && !/remoteTracks/.test(vidOnly[1]),
+    'the tracks are only remembered for a video call');
+  // A track arriving after the choice was made must obey it.
+  assert.ok(/this\.applyPeerMedia\(\)/.test(ontrack[1]),
+    'turning their camera back on un-mutes them');
+});
+
+test('THE CHOICE DOES NOT OUTLIVE THE CALL', () => {
+  const mgr = fs.readFileSync(path.join(ROOT, 'native-app', 'src', 'callManager.ts'), 'utf8');
+  assert.ok(/this\.peerMuted = false;/.test(mgr), 'the next call starts silenced');
+  assert.ok(/this\.peerVideoHidden = false;/.test(mgr), 'the next call starts hidden');
+  assert.ok(/this\.remoteTracks = \[\];/.test(mgr), 'the old call\'s tracks are held for ever');
+});
+
+test('THE BUTTONS FIT, because there are now seven of them', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'native-app', 'src', 'components', 'CallOverlay.tsx'), 'utf8');
+  assert.ok(/togglePeerMuted\(\)/.test(src), 'the control is not on the screen');
+  assert.ok(/togglePeerVideo\(\)/.test(src), 'the camera control is not on the screen');
+  // Hiding their camera is meaningless on a voice call.
+  const vid = /\{isVideo && \(\n          <View style=\{s\.actionCol\}>\n            <TouchableOpacity\n              style=\{\[s\.roundBtn, s\.ctrlBtn, cm\.peerVideoHidden/.test(src);
+  assert.ok(vid, 'the hide-their-camera button shows on a voice call');
+  const controls = /  controls: \{([\s\S]*?)\},/.exec(src);
+  assert.ok(controls && /flexWrap: 'wrap'/.test(controls[1]),
+    'seven buttons are squeezed into one row across a phone');
 });
 
 let passed = 0, failed = 0;

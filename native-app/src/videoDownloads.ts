@@ -4,7 +4,7 @@
 // scrolling the bubble off screen, opening another chat, and coming back.
 // Screens subscribe and read the state; they never own it.
 import * as FileSystem from 'expo-file-system';
-import { localNameFor } from './download';
+import { localNameFor, downloadUsable, downloadFailureText } from './download';
 // The SAME throttle rule the gallery save uses, imported rather than copied:
 // the interval is a judgement about the JavaScript thread, not about either
 // feature, and two of them would drift.
@@ -19,6 +19,8 @@ export type DownloadState = {
   status: 'downloading' | 'done' | 'failed';
   /** Where the finished file lives. */
   uri?: string;
+  /** Why it failed, for a tile that has to say something useful. */
+  reason?: string;
 };
 
 const state = new Map<string, DownloadState>();
@@ -181,8 +183,28 @@ export async function start(url: string): Promise<string | null> {
     const res = await task.downloadAsync();
     tasks.delete(key);
     if (!res?.uri) throw new Error('no file');
+    // ── Did the server actually send the file? ─────────────────────────────
+    //
+    // expo writes whatever came back and resolves whatever the status was. A
+    // media link is signed and lives a day or two, so an old one comes back
+    // 403 with an empty body — which was written as a zero-byte file and
+    // recorded as a finished download. The tile then said "downloaded" and
+    // playing it played nothing, which is exactly how this was reported.
+    let size = 0;
+    try { size = ((await FileSystem.getInfoAsync(res.uri)) as any)?.size || 0; } catch {}
+    if (!downloadUsable({ status: (res as any).status, size })) {
+      // Nothing usable is left behind to be mistaken for a finished download.
+      try { await FileSystem.deleteAsync(pathFor(url), { idempotent: true }); } catch {}
+      state.set(key, {
+        written: 0, total: state.get(key)?.total || 0, status: 'failed',
+        reason: downloadFailureText((res as any).status),
+      });
+      lastEmitAt.delete(key);
+      emit();
+      return null;
+    }
     const cur = state.get(key);
-    state.set(key, { written: cur?.written || 0, total: cur?.total || 0, status: 'done', uri: res.uri });
+    state.set(key, { written: cur?.written || size, total: cur?.total || size, status: 'done', uri: res.uri });
     lastEmitAt.delete(key);
     emit();
     return res.uri;
@@ -215,4 +237,59 @@ export async function remove(url: string) {
   state.delete(key);
   emit();
   try { await FileSystem.deleteAsync(pathFor(url), { idempotent: true }); } catch {}
+}
+
+/**
+ * A file this device already has IS the download.
+ *
+ * Reported as: my own sent videos should not need downloading, because I sent
+ * them from this device.
+ *
+ * They did, because the only thing that made a video "downloaded" was having
+ * fetched it from the server — so the one person guaranteed to own the bytes
+ * already was the one asked to pay for them again. This copies the local file
+ * under the key the finished url will have, so the bubble shows it as held
+ * the moment the upload lands.
+ *
+ * COPIED, not linked: the file that was uploaded is a temporary one, and the
+ * sender's copy has to outlive it.
+ *
+ * `canKeep` is false for a disappearing or one-time video, and then nothing
+ * is kept — the same rule every other store here obeys. Sending one does not
+ * entitle the sender to a permanent copy the receiver was promised would not
+ * exist.
+ */
+export async function adopt(localUri: string, remoteUrl: string, canKeep = true): Promise<boolean> {
+  if (!canKeep) return false;
+  if (typeof localUri !== 'string' || !localUri) return false;
+  if (typeof remoteUrl !== 'string' || !remoteUrl) return false;
+  const key = keyFor(remoteUrl);
+  const dest = pathFor(remoteUrl);
+  try {
+    // Already held — an earlier send of the same file, or a download.
+    if (await localUri2(dest)) return true;
+    await ensureDir();
+    await FileSystem.copyAsync({ from: localUri, to: dest });
+    const size = ((await FileSystem.getInfoAsync(dest)) as any)?.size || 0;
+    if (!size) {
+      try { await FileSystem.deleteAsync(dest, { idempotent: true }); } catch {}
+      return false;
+    }
+    state.set(key, { written: size, total: size, status: 'done', uri: dest });
+    sizes.set(key, size);
+    emit();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Does this exact path already hold bytes? */
+async function localUri2(path: string): Promise<boolean> {
+  try {
+    const info = await FileSystem.getInfoAsync(path);
+    return !!(info.exists && (info as any).size > 0);
+  } catch {
+    return false;
+  }
 }

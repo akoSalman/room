@@ -103,6 +103,7 @@ import LinkCard from '../components/LinkCard';
 import { spentByToken, menuWasStrayTap } from '../tokenTap';
 import { shownText, showsToggle, toggleLabel } from '../longText';
 import * as attachments from '../videoDownloads';
+import { isVideoName } from '../fileCover';
 import {
   kindOf, tapAction as fileTapAction, cardMeta, showsDownloadButton, installHelp, openHelp, isApk,
 } from '../fileOpen';
@@ -3257,6 +3258,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       // produce.
       if (cancelledNow(up.get(clientId)?.phase)) { removeCancelled(clientId); return; }
       pendingUploadPaths.current[clientId] = res.url;
+      // The sender already has these bytes on this device. Without this the
+      // one person guaranteed to own the file was the one asked to download
+      // it back — reported as "my sent videos should not need download".
+      //
+      // Not for a disappearing or one-time video: sending one does not
+      // entitle the sender to a permanent copy of something the receiver was
+      // promised would not persist. The same rule canTakeContent applies to
+      // everything else kept on this device.
+      if (type === 'video' && !oneTime && !disappearing) {
+        attachments.adopt(uri, `${BASE_URL}${res.url}`).catch(() => {});
+      }
       socketRef.current?.emit('send_message', {
         roomId: room.id, type, content: caption, filePath: res.url, fileName: name, replyToId, clientId, oneTimeSeconds: oneTime,
         parentId: sendingParentId(),
@@ -4668,9 +4680,37 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         setShowMedia(false);
         setViewerFromMedia(true);
         openViewer(`${BASE_URL}${images[idx]}`, images.map(u => `${BASE_URL}${u}`));
-      } else {
-        Linking.openURL(abs).catch(() => toast('Could not open this'));
+        return;
       }
+      // ── A video plays here, not in a browser ───────────────────────────
+      //
+      // Reported as: tapping a video in the files tab opens it in the
+      // browser and then downloads it. Both halves follow from handing the
+      // url to the system browser: /uploads is served with
+      // Content-Disposition: attachment, so a browser can only download it,
+      // and the link — which is a signed one — ends up in another app's
+      // history. The chat's own player has been here all along.
+      if (item.kind === 'video' || isVideoName(item.name || item.url)) {
+        setShowMedia(false);
+        const local = await attachments.localUri(abs);
+        setVideoPlaylist([]);
+        setVideoItem({
+          id: item.msgId ?? abs,
+          url: local || abs,
+          name: item.name || 'Video',
+        });
+        setVideoMini(false);
+        return;
+      }
+      // Everything else goes the way the chat opens a file: fetched first
+      // and opened from the device, so the signed url does not leave the
+      // app at all.
+      openFile({
+        id: (item.msgId ?? `media-${item.url}`) as any,
+        file_path: item.url,
+        file_name: item.name || item.url.split('/').pop() || 'file',
+        type: 'file',
+      } as any);
       return;
     }
     // Download and Share reuse the chat's own paths, which already handle the

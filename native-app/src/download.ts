@@ -88,3 +88,41 @@ export function shouldAutoOpen(o: {
 }): boolean {
   return !!(o && o.waiting && o.status === 'done' && o.hasFile);
 }
+
+// ── A refusal is not a download ────────────────────────────────────────────
+//
+// Reported as: videos, after downloading, do not play at all.
+//
+// expo-file-system writes whatever the server sends and resolves whatever the
+// status was. A media link is signed and lives a day or two, so an old one —
+// from a chat restored off the device, or a message fetched long ago — comes
+// back 403 with an empty body. That was written to disk as a zero-byte file
+// and recorded as a FINISHED download: the tile then said "downloaded", and
+// playing it played nothing.
+//
+// The status and the size are both checked because either alone lets the
+// other through: a 200 can still deliver nothing, and a file with bytes in it
+// can still have come with a refusal.
+
+/** Was this actually the file, rather than the server saying no? */
+export function downloadUsable(o: { status?: unknown; size?: unknown }): boolean {
+  const e = o || {};
+  const status = Number(e.status);
+  // No status at all: older expo versions did not report one, and refusing
+  // on that basis would reject every download on those builds.
+  if (Number.isFinite(status) && status !== 0 && !(status >= 200 && status < 300)) return false;
+  const size = Number(e.size);
+  // A size we could not read is not evidence of emptiness.
+  if (Number.isFinite(size) && size <= 0) return false;
+  return true;
+}
+
+/** What to tell somebody whose download was refused. */
+export function downloadFailureText(status: unknown): string {
+  const n = Number(status);
+  if (n === 403 || n === 410) {
+    return 'That link has expired. Open the chat again to refresh it.';
+  }
+  if (n === 404) return 'That file is no longer on the server.';
+  return 'The download failed.';
+}

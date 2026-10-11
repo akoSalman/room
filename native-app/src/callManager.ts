@@ -30,6 +30,19 @@ class CallManager {
   incoming: Incoming = null;
   localStream: MediaStream | null = null;
   remoteStream: MediaStream | null = null; // dm-video only
+  // ── Silencing and hiding the OTHER end, on this device ──────────────────
+  //
+  // Asked for as: when muting a call, a control to mute the other person
+  // too, and the same for the camera.
+  //
+  // Local, and only local. Nothing here reaches across to switch off
+  // somebody else's microphone — that is not a power one person on a call
+  // should have over another — so what this does is stop playing what they
+  // send. Theirs stays on; this end stops listening.
+  peerMuted = false;
+  peerVideoHidden = false;
+  /** Every track the far end has added, so a choice survives a new one. */
+  private remoteTracks: any[] = [];
   muted = false;
   cameraOff = false;
   /** The OTHER side's camera, as last reported by them. */
@@ -761,6 +774,15 @@ class CallManager {
       if (this.mode === 'dm-video') {
         this.remoteStream = e.streams[0];
       }
+      // Remembered for BOTH modes: a voice call has no remoteStream — the
+      // audio is routed by the library — so without this there would be
+      // nothing to silence on the calls where silencing matters most.
+      if (e.track && this.remoteTracks.indexOf(e.track) < 0) {
+        this.remoteTracks.push(e.track);
+        // A track that arrives after the choice was made must obey it, or
+        // turning the camera back on un-mutes them.
+        this.applyPeerMedia();
+      }
       // Voice: react-native-webrtc routes received audio to the speaker
       // automatically once the track is added to a connection.
       this.emit();
@@ -883,6 +905,10 @@ class CallManager {
     try { InCallManager?.stop(); InCallManager?.stopRingback?.(); } catch {}
     this.localStream = null;
     this.remoteStream = null;
+    // A choice belongs to the call that was made, not the next one.
+    this.remoteTracks = [];
+    this.peerMuted = false;
+    this.peerVideoHidden = false;
     this.mode = null;
     this.roomVoiceId = null;
     this.incoming = null;
@@ -1142,6 +1168,31 @@ class CallManager {
   end() {
     this.pcs.forEach((_pc, userId) => this.sock?.emit('call_end', { toUserId: userId }));
     this.teardown();
+  }
+
+  /** Put the current choice onto every track the far end has sent. */
+  private applyPeerMedia() {
+    this.remoteTracks.forEach(t => {
+      if (!t) return;
+      try {
+        if (t.kind === 'audio') t.enabled = !this.peerMuted;
+        else if (t.kind === 'video') t.enabled = !this.peerVideoHidden;
+      } catch {}
+    });
+  }
+
+  /** Stop playing what they are sending. Their microphone is untouched. */
+  togglePeerMuted() {
+    this.peerMuted = !this.peerMuted;
+    this.applyPeerMedia();
+    this.emit();
+  }
+
+  /** Stop showing what they are sending. Their camera is untouched. */
+  togglePeerVideo() {
+    this.peerVideoHidden = !this.peerVideoHidden;
+    this.applyPeerMedia();
+    this.emit();
   }
 
   toggleMute() {

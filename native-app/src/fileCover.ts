@@ -41,6 +41,21 @@ export function extOf(name: unknown): string {
 }
 
 /**
+ * Names that are a video, whatever the server called the item.
+ *
+ * The media tab's entries carry a `kind`, and this is the fallback for the
+ * ones that do not — an older server, or a file sent as a document. Tapping
+ * one used to hand its url to the system browser, which can only download it
+ * (every /uploads response is Content-Disposition: attachment) and which
+ * takes a signed link out of the app on the way.
+ */
+export const VIDEO_EXT = ['mp4', 'mov', 'm4v', 'webm', 'mkv', '3gp', 'avi'];
+
+export function isVideoName(name: unknown): boolean {
+  return VIDEO_EXT.indexOf(extOf(name)) >= 0;
+}
+
+/**
  * Which kind of cover this file gets.
  *
  * `kind` is what the server said the message was, and it is trusted over the

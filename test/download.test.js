@@ -116,6 +116,67 @@ test('what the download is COSTING is still shown while it runs', () => {
   assert.ok(src.includes('fmtBytes(total)'), 'the size before pressing is gone');
 });
 
+// ── A refusal is not a download ────────────────────────────────────────────
+//
+// Reported as: videos, after downloading, do not play at all.
+//
+// expo-file-system writes whatever the server sends and resolves whatever the
+// status was. A media link is signed and lives a day or two, so an old one —
+// from a chat restored off the device, or a message fetched long ago — comes
+// back 403 with an empty body. That was written to disk as a zero-byte file
+// and recorded as a FINISHED download: the tile said "downloaded", and
+// playing it played nothing.
+
+test('THE BUG: a 403 is not a downloaded video', () => {
+  assert.strictEqual(D.downloadUsable({ status: 403, size: 0 }), false);
+  assert.strictEqual(D.downloadUsable({ status: 403, size: 120 }), false,
+    'a refusal with a body in it is still a refusal');
+  assert.strictEqual(D.downloadUsable({ status: 404, size: 500 }), false);
+  assert.strictEqual(D.downloadUsable({ status: 500, size: 0 }), false);
+});
+
+test('…AND NEITHER IS AN EMPTY FILE WITH A 200 ON IT', () => {
+  // Either check alone lets the other through.
+  assert.strictEqual(D.downloadUsable({ status: 200, size: 0 }), false);
+  assert.strictEqual(D.downloadUsable({ status: 200, size: 1 }), true);
+  assert.strictEqual(D.downloadUsable({ status: 206, size: 9000 }), true);
+});
+
+test('A BUILD THAT REPORTS NO STATUS STILL DOWNLOADS', () => {
+  // Older expo versions do not report one. Refusing on that basis would
+  // break every download on those builds, which is far worse than the bug.
+  assert.strictEqual(D.downloadUsable({ size: 100 }), true);
+  assert.strictEqual(D.downloadUsable({ status: 0, size: 100 }), true);
+  assert.strictEqual(D.downloadUsable({ status: 'x', size: 100 }), true);
+  // A size that could not be read is not evidence of emptiness either.
+  assert.strictEqual(D.downloadUsable({ status: 200 }), true);
+  assert.strictEqual(D.downloadUsable({}), true);
+  assert.strictEqual(D.downloadUsable(null), true);
+});
+
+test('AN EXPIRED LINK SAYS WHAT TO DO ABOUT IT', () => {
+  // The one failure somebody can act on: the chat re-fetches its links when
+  // it opens, so reopening it fixes this.
+  assert.ok(/expired/i.test(D.downloadFailureText(403)));
+  assert.ok(/open the chat/i.test(D.downloadFailureText(403)));
+  assert.ok(/expired/i.test(D.downloadFailureText(410)));
+  assert.notStrictEqual(D.downloadFailureText(404), D.downloadFailureText(403));
+  assert.ok(D.downloadFailureText(500).length > 0, 'an unknown failure says nothing at all');
+});
+
+test('THE STORE ACTUALLY CHECKS BEFORE CALLING IT DONE', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'native-app', 'src',
+    'videoDownloads.ts'), 'utf8');
+  assert.ok(/if \(!downloadUsable\(\{ status: \(res as any\)\.status, size \}\)\)/.test(src),
+    'a refusal is still recorded as a finished download');
+  // The empty file must go, or localUri finds it later and the tile lies
+  // again on the next open.
+  const guard = /if \(!downloadUsable\([\s\S]*?\n    \}/.exec(src);
+  assert.ok(guard && /deleteAsync\(pathFor\(url\), \{ idempotent: true \}\)/.test(guard[0]),
+    'the unusable file is left on disk to be mistaken for a download');
+  assert.ok(guard && /status: 'failed'/.test(guard[0]), 'it is recorded as finished anyway');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }
