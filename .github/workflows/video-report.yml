@@ -128,9 +128,15 @@ jobs:
           # size says. 'moov' is the index every player needs; a truncated or
           # mis-assembled upload is exactly what loses it.
           #
+          # ONLY MP4-FAMILY FILES. The webm voice notes were globbed in here
+          # and tested for boxes that exist only in MP4, so every one of them
+          # came back looking corrupt — which is how this report lied the
+          # first time it was run. They are listed above, by what they are.
+          #
           # No filenames: only the size, the box type, and what was found.
-          ls -t uploads/*.mp4 uploads/*.mov uploads/*.m4v uploads/*.webm 2>/dev/null \
+          ls -t uploads/*.mp4 uploads/*.mov uploads/*.m4v 2>/dev/null \
             | head -n "$COUNT" | while read -r f; do
+            [ "$(dd if="$f" bs=1 skip=4 count=4 2>/dev/null)" = "ftyp" ] || continue
             SIZE=$(stat -c%s "$f" 2>/dev/null)
             BOX=$(dd if="$f" bs=1 skip=4 count=4 2>/dev/null | tr -cd '[:print:]')
             # Searched in the first and last megabyte: faststart puts moov at
@@ -140,6 +146,62 @@ jobs:
             AGE=$(( ( $(date +%s) - $(stat -c%Y "$f" 2>/dev/null) ) / 60 ))
             printf 'size=%-10s box=%-6s moov_head=%s moov_tail=%s age=%smin\n' \
               "$SIZE" "$BOX" "$HEAD_MOOV" "$TAIL_MOOV" "$AGE"
+          done
+          echo ""
+
+          echo "### DOES THE BOX TREE REACH THE END OF THE FILE"
+          # The question the columns above cannot answer, and the one that
+          # matters: "ftyp is present and moov is present" is also true of a
+          # file whose last megabyte never arrived. A player opens such a file
+          # happily and then fails part way through, which is exactly how an
+          # unplayable video is described.
+          #
+          # An MP4 is a list of boxes laid end to end, each announcing its own
+          # length in its first four bytes, and together they must tile the
+          # file EXACTLY. So: walk them. Landing past the end means a box
+          # claims bytes that are not there — the file is truncated, and by
+          # how much. Landing short means bytes nobody accounts for.
+          #
+          # No decoder and no dependencies: lengths and four-character types,
+          # which is all this needs and all it may write down.
+          ls -t uploads/*.mp4 uploads/*.mov uploads/*.m4v 2>/dev/null \
+            | head -n 8 | while read -r f; do
+            SIZE=$(stat -c%s "$f" 2>/dev/null)
+            [ "$(dd if="$f" bs=1 skip=4 count=4 2>/dev/null)" = "ftyp" ] || continue
+            OFF=0; CHAIN=""; NOTE="ok"
+            for _ in $(seq 1 40); do
+              [ "$OFF" -ge "$SIZE" ] && break
+              HDR=$(dd if="$f" bs=1 skip="$OFF" count=8 2>/dev/null | od -An -tx1 | tr -d ' \n')
+              if [ "${#HDR}" -lt 16 ]; then NOTE="header past end"; break; fi
+              BS=$((16#${HDR:0:8}))
+              TY=$(dd if="$f" bs=1 skip=$((OFF+4)) count=4 2>/dev/null | tr -cd '[:alnum:] ')
+              # A real box names itself in four characters. Without this check
+              # a run of trailing nulls reads as a length of 0, which is legal
+              # ONLY for the last box and means "to the end of the file" — so
+              # 64 bytes of junk on the end of a truncated upload came back
+              # "ok". Verified against a file built with exactly that.
+              if [ "${#TY}" -ne 4 ]; then NOTE="not a box type"; break; fi
+              if [ "$BS" -eq 1 ]; then
+                # 64-bit length, in the eight bytes after the type.
+                BIG=$(dd if="$f" bs=1 skip=$((OFF+8)) count=8 2>/dev/null | od -An -tx1 | tr -d ' \n')
+                BS=$((16#$BIG))
+              elif [ "$BS" -eq 0 ]; then
+                # "to the end of the file", which is legal for the last box.
+                BS=$((SIZE - OFF))
+              fi
+              if [ "$BS" -lt 8 ]; then NOTE="box claims $BS bytes"; break; fi
+              CHAIN="$CHAIN $TY"
+              OFF=$((OFF + BS))
+            done
+            if [ "$NOTE" = "ok" ]; then
+              if [ "$OFF" -gt "$SIZE" ]; then
+                NOTE="TRUNCATED by $((OFF - SIZE)) bytes"
+              elif [ "$OFF" -lt "$SIZE" ]; then
+                NOTE="stops $((SIZE - OFF)) bytes short"
+              fi
+            fi
+            AGE=$(( ( $(date +%s) - $(stat -c%Y "$f" 2>/dev/null) ) / 60 ))
+            printf 'size=%-10s age=%-7s %-26s boxes:%s\n' "$SIZE" "${AGE}min" "$NOTE" "$CHAIN"
           done
           echo ""
 
