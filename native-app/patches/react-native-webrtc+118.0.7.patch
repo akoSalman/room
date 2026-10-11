@@ -29,11 +29,62 @@ index 01df786..53da080 100644
                          createScreenStream();
                      });
                  }
+diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/MediaProjectionNotification.java b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/MediaProjectionNotification.java
+index dfe0c87..3e2b154 100644
+--- a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/MediaProjectionNotification.java
++++ b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/MediaProjectionNotification.java
+@@ -57,6 +57,37 @@ class MediaProjectionNotification {
+         notificationManager.createNotificationChannel(channel);
+     }
+ 
++    /**
++     * A small icon that actually exists.
++     *
++     * getIdentifier() returns 0 for a name the app does not have, and
++     * setSmallIcon(0) is not a no-op: Android treats a foreground service
++     * notification with no valid small icon as unusable and REPLACES the
++     * whole thing with one of its own, reading "<app> is running / Tap for
++     * more information or to stop the app" over the launcher icon. That was
++     * reported as a second permanent notification that said nothing about
++     * screen sharing.
++     *
++     * ic_notification is this library's guess at a name. Expo generates the
++     * app's from expo.plugins['expo-notifications'].icon and calls it
++     * notification_icon — see src/notificationIcon.ts, which had to name the
++     * same resource for notifee. Both are tried, and the launcher icon is the
++     * last resort: ugly as a silhouette, but it keeps the notification the
++     * service's own rather than handing it to the system.
++     */
++    private static int smallIconFor(Context context) {
++        int icon = context.getResources().getIdentifier(
++                "ic_notification", "drawable", context.getPackageName());
++        if (icon == 0) {
++            icon = context.getResources().getIdentifier(
++                    "notification_icon", "drawable", context.getPackageName());
++        }
++        if (icon == 0) {
++            icon = context.getApplicationInfo().icon;
++        }
++        return icon;
++    }
++
+     static Notification buildMediaProjectionNotification(Context context) {
+         NotificationCompat.Builder builder = new NotificationCompat.Builder(context, ONGOING_CONFERENCE_CHANNEL_ID);
+ 
+@@ -70,7 +101,7 @@ class MediaProjectionNotification {
+                 .setAutoCancel(true)
+                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                 .setOnlyAlertOnce(true)
+-                .setSmallIcon(context.getResources().getIdentifier("ic_notification", "drawable", context.getPackageName()))
++                .setSmallIcon(smallIconFor(context))
+                 .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE);
+ 
+         return builder.build();
 diff --git a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/MediaProjectionService.java b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/MediaProjectionService.java
-index c3cd9fe..b09128f 100644
+index c3cd9fe..2ba9221 100644
 --- a/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/MediaProjectionService.java
 +++ b/node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/MediaProjectionService.java
-@@ -25,6 +25,47 @@ public class MediaProjectionService extends Service {
+@@ -25,6 +25,67 @@ public class MediaProjectionService extends Service {
  
      static final int NOTIFICATION_ID = new Random().nextInt(99999) + 10000;
  
@@ -75,13 +126,33 @@ index c3cd9fe..b09128f 100644
 +                break;
 +            }
 +        }
-+        return sRunning ? null : "ScreenCaptureServiceNotRunning";
++        if (sRunning) {
++            return null;
++        }
++        // STOP WHAT WAS STARTED.
++        //
++        // Reported as two permanent notifications in the shade. launch()
++        // above has already called startForegroundService(), and returning
++        // the reason without undoing it leaves a foreground service running
++        // for the life of the process — for ever, in practice, because the
++        // only other place that stops it is ScreenCaptureController.dispose()
++        // and no capturer is created on this path.
++        //
++        // It is not even visible as itself: the notification this service
++        // posts asks for a drawable called ic_notification, which an app that
++        // names its icon anything else does not have, and a notification with
++        // no valid small icon is replaced wholesale by the system's own
++        // "<app> is running / Tap for more information or to stop the app".
++        // So a failed screen share left a second permanent notification that
++        // says nothing about screen sharing at all.
++        abort(context);
++        return "ScreenCaptureServiceNotRunning";
 +    }
 +
      public static void launch(Context context) {
          if (!WebRTCModuleOptions.getInstance().enableMediaProjectionService) {
              return;
-@@ -59,10 +100,17 @@ public class MediaProjectionService extends Service {
+@@ -59,10 +120,17 @@ public class MediaProjectionService extends Service {
              return;
          }
  
@@ -99,7 +170,7 @@ index c3cd9fe..b09128f 100644
      @Override
      public IBinder onBind(Intent intent) {
          return null;
-@@ -73,10 +121,23 @@ public class MediaProjectionService extends Service {
+@@ -73,10 +141,23 @@ public class MediaProjectionService extends Service {
  
          Notification notification = MediaProjectionNotification.buildMediaProjectionNotification(this);
  
