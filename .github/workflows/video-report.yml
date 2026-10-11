@@ -87,6 +87,41 @@ jobs:
             && echo "yes  <-- the rewritten handler" || echo "no   <-- the older buffering one"
           echo ""
 
+          echo "### the newest uploads of ANY kind, by what they actually are"
+          # Deliberately not assuming MP4. The first version of this report
+          # globbed .webm in with the rest and tested every file for 'ftyp'
+          # and 'moov' — boxes that exist only in MP4 — so a perfectly good
+          # WebM came back looking like a corrupt video, and I read that as
+          # the upload being broken. It was the test that was broken.
+          #
+          # The first four bytes say what a file IS, so they are what is
+          # printed. No filenames.
+          ls -t uploads/ 2>/dev/null | head -n 18 | while read -r b; do
+            f="uploads/$b"
+            [ -f "$f" ] || continue
+            SIZE=$(stat -c%s "$f" 2>/dev/null)
+            EXT="${b##*.}"
+            MAGIC=$(dd if="$f" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')
+            case "$MAGIC" in
+              1a45dfa3) KIND="webm/matroska" ;;
+              *) case $(dd if="$f" bs=1 skip=4 count=4 2>/dev/null) in
+                   ftyp) KIND="mp4/mov" ;;
+                   *) case "$MAGIC" in
+                        4f676753) KIND="ogg" ;;
+                        52494646) KIND="riff(wav/avi)" ;;
+                        89504e47) KIND="png" ;;
+                        ffd8ff*)  KIND="jpeg" ;;
+                        25504446) KIND="pdf" ;;
+                        *) KIND="UNRECOGNISED" ;;
+                      esac ;;
+                 esac ;;
+            esac
+            AGE=$(( ( $(date +%s) - $(stat -c%Y "$f" 2>/dev/null) ) / 60 ))
+            printf 'ext=%-6s size=%-10s magic=%-8s kind=%-14s age=%smin\n' \
+              "$EXT" "$SIZE" "$MAGIC" "$KIND" "$AGE"
+          done
+          echo ""
+
           echo "### the newest videos, and whether they are videos"
           # An MP4's box type sits at bytes 4..8 and reads 'ftyp'. A file that
           # does not start that way was not written correctly, whatever its
