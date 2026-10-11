@@ -117,7 +117,6 @@ let replyTo = null; // { id, username, content, type }
 
 let onlineUsers = [];
 const unreadCounts = {};
-const openNotifications = {}; // msg id -> Notification, so deletes can close them
 let dmDividerInserted = false;
 // Who the open direct chat is with, for the profile sheet.
 let currentDMPeerName = null;
@@ -398,10 +397,54 @@ function showNotif(msg) {
     : msg.type === 'music' ? '🎵 Audio file'
     : msg.type === 'call' ? '📞 Call'
     : msg.type === 'system' ? 'ℹ️ Room update' : '📄 File';
-  const n = new Notification(msg.username, { body, icon: '/icons/icon-192.png', tag: 'chatroom-msg-' + msg.id, silent: true });
-  openNotifications[msg.id] = n;
-  n.onclose = () => { delete openNotifications[msg.id]; };
-  try { new Audio('/notify.wav').play().catch(() => {}); } catch {}
+  raiseNotif(msg.username, {
+    body,
+    icon: '/icons/icon-192.png',
+    tag: notifTag(msg.id),
+    // NOT silent, and nothing plays a sound by hand.
+    //
+    // Reported as: no notification sound on the web on a phone. This said
+    // `silent: true` and then played notify.wav itself — which cannot work
+    // on a phone, because this function only runs when the page is HIDDEN
+    // and a hidden page's audio is suspended by the browser. The one sound
+    // a phone will make for a notification is the one the system plays for
+    // it, and asking for silence is what stopped it.
+    //
+    // A custom sound is not available on either platform here: a Web Push
+    // notification on Android has no sound option at all. So the system's
+    // own is not a compromise, it is the only one there is.
+  });
+}
+
+/** The tag a message's notification carries, so it can be closed later. */
+function notifTag(msgId) { return 'chatroom-msg-' + msgId; }
+
+/**
+ * Draw a notification, through the service worker wherever there is one.
+ *
+ * `new Notification()` THROWS on Android Chrome — "Illegal constructor. Use
+ * ServiceWorkerRegistration.showNotification() instead" — so on a phone this
+ * whole path died at the first line and neither the notification nor the
+ * sound after it ever happened. It is still the fallback, because a desktop
+ * browser with no service worker registered has nothing else.
+ */
+async function raiseNotif(title, opts) {
+  try {
+    const reg = navigator.serviceWorker && await navigator.serviceWorker.getRegistration();
+    if (reg && reg.showNotification) { await reg.showNotification(title, opts); return; }
+  } catch {}
+  try { new Notification(title, opts); } catch {}
+}
+
+/** Take a message's notification off the screen, by whichever route drew it. */
+async function closeNotif(msgId) {
+  try {
+    const reg = navigator.serviceWorker && await navigator.serviceWorker.getRegistration();
+    if (reg && reg.getNotifications) {
+      const open = await reg.getNotifications({ tag: notifTag(msgId) });
+      open.forEach(n => { try { n.close(); } catch {} });
+    }
+  } catch {}
 }
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -3045,7 +3088,10 @@ function applyDelete(messageId) {
   // The unread line may have just lost one of the messages it was counting.
   refreshUnreadDivider();
   // If a notification for this message is still on screen, close it too.
-  if (openNotifications[messageId]) { try { openNotifications[messageId].close(); } catch {} delete openNotifications[messageId]; }
+  // Through the service worker, which is what drew it — a handle kept in a
+  // map only ever worked for the desktop fallback, and on a phone there was
+  // never a handle because the constructor threw.
+  closeNotif(messageId);
 }
 /**
  * Delete one message — whichever of the two deletes applies to it.
