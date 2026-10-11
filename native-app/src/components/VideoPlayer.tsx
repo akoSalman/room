@@ -18,6 +18,7 @@ import {
   Animated, PanResponder, Dimensions, Pressable,
 } from 'react-native';
 import { Video, ResizeMode, AVPlaybackStatus } from 'expo-av';
+import { playbackReason, failureHint } from '../videoFailure';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import { C } from '../theme';
@@ -61,6 +62,12 @@ export default function VideoPlayer({
   const [buffering, setBuffering] = useState(true);
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
+  // What the player actually said, cleaned of anything identifying.
+  //
+  // This used to be thrown away at all three places a video can fail, leaving
+  // one message for every cause — which is why two reports of "it will not
+  // play" were answered by guessing. See ../videoFailure.ts.
+  const [reason, setReason] = useState('');
   const [attempt, setAttempt] = useState(0);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -96,6 +103,7 @@ export default function VideoPlayer({
   useEffect(() => {
     setReady(false); setFailed(false); setBuffering(true);
     setPosition(0); setDuration(0); setPlayableMs(0); setAttempt(0);
+    setReason('');
   }, [item?.url]);
 
   // A deadline on opening.
@@ -109,6 +117,8 @@ export default function VideoPlayer({
     const t = setTimeout(() => {
       if (openTimedOut({ ready: false, failed: false, waitedMs: OPEN_TIMEOUT_MS })) {
         setFailed(true);
+        // Distinct from an error: nothing failed, nothing arrived either.
+        setReason('Timed out opening');
       }
     }, OPEN_TIMEOUT_MS);
     return () => clearTimeout(t);
@@ -123,7 +133,7 @@ export default function VideoPlayer({
 
   const onStatus = useCallback((st: AVPlaybackStatus) => {
     if (!st.isLoaded) {
-      if ((st as any).error) setFailed(true);
+      if ((st as any).error) { setFailed(true); setReason(playbackReason((st as any).error)); }
       return;
     }
     setFailed(false);
@@ -245,7 +255,7 @@ export default function VideoPlayer({
       // not being used at all, which is why a loaded-but-paused video had
       // nothing to announce itself with.
       onReadyForDisplay={() => setReady(true)}
-      onError={() => setFailed(true)}
+      onError={(e: any) => { setFailed(true); setReason(playbackReason(e)); }}
     />
   );
 
@@ -314,6 +324,13 @@ export default function VideoPlayer({
         <View style={s.centre}>
           <Ionicons name="alert-circle-outline" size={46} color="#94a3b8" />
           <Text style={s.centreText}>Couldn’t play this video</Text>
+          {/* What the player said. Two reports of "it will not play", from
+              both ends, were answered by guessing because this line did not
+              exist — the reason was thrown away at every point it arrived.
+              Written to be legible in a photograph of a phone, which is how
+              these reports reach me. */}
+          {!!failureHint(reason) && <Text style={s.failHint}>{failureHint(reason)}</Text>}
+          {!!reason && <Text style={s.failReason}>{reason}</Text>}
           <TouchableOpacity
             style={s.retry}
             onPress={() => { setFailed(false); setReady(false); setBuffering(true); setAttempt(a => a + 1); }}
@@ -425,6 +442,10 @@ const s = StyleSheet.create({
   full: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000', zIndex: 60 },
   centre: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', gap: 10 },
   centreText: { color: '#e2e8f0', fontSize: 13.5 },
+  // The hint reads first and the raw reason sits under it, dimmer and
+  // smaller: one is for the person, the other is for whoever they show it to.
+  failHint: { color: '#cbd5e1', fontSize: 12.5, marginTop: 6, textAlign: 'center', paddingHorizontal: 24 },
+  failReason: { color: '#7c8da3', fontSize: 11, marginTop: 4, textAlign: 'center', paddingHorizontal: 24 },
   retry: {
     marginTop: 4, paddingHorizontal: 24, paddingVertical: 9, borderRadius: 18,
     borderWidth: 1, borderColor: '#e2e8f0',
