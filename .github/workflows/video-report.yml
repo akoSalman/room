@@ -108,6 +108,21 @@ jobs:
           done
           echo ""
 
+          echo "### WHERE the file actually starts"
+          # The question the box column raises: is the beginning missing, and
+          # if so how much? 'ftyp' is the first box of every MP4, so the
+          # offset it is found at IS the number of bytes lost from the front.
+          # A chunk-sized answer — 131072, 262144 — names the cause outright.
+          ls -t uploads/*.mp4 uploads/*.mov uploads/*.m4v 2>/dev/null \
+            | head -n 6 | while read -r f; do
+            SIZE=$(stat -c%s "$f" 2>/dev/null)
+            # Byte offset of the first 'ftyp', or nothing when there is none.
+            AT=$(grep -abo -m1 ftyp "$f" 2>/dev/null | head -1 | cut -d: -f1)
+            FIRST=$(dd if="$f" bs=1 count=12 2>/dev/null | od -An -tx1 | tr -s ' ')
+            printf 'size=%-10s ftyp_at=%-10s first12=%s\n' "$SIZE" "${AT:-none}" "$FIRST"
+          done
+          echo ""
+
           echo "### what ffprobe makes of the newest one"
           # The outright answer where it is installed. "moov atom not found"
           # or "Invalid data" means the bytes on this server are wrong and no
