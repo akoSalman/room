@@ -69,7 +69,16 @@ function fixtures(dir) {
   const moov = box('moov', Buffer.alloc(400));
   const mdat = box('mdat', Buffer.alloc(5000, 0x11));
   const good = Buffer.concat([ftyp, moov, mdat]);
-  const up = (n, b) => fs.writeFileSync(path.join(dir, 'uploads', n), b);
+  // ls -t orders the report, so the fixtures get distinct, decreasing
+  // modification times. Left identical, which files appear at all depends on
+  // how the filesystem happens to break the tie.
+  let age = 0;
+  const up = (n, b) => {
+    const f = path.join(dir, 'uploads', n);
+    fs.writeFileSync(f, b);
+    const t = new Date(Date.now() - (age++ * 60_000));
+    fs.utimesSync(f, t, t);
+  };
   up('good.mp4', good);
   // The upload that stopped 137 bytes from the end.
   up('short.mp4', good.subarray(0, good.length - 137));
@@ -91,6 +100,38 @@ function fixtures(dir) {
   const many = [ftyp, moov];
   for (let i = 0; i < 120; i++) many.push(box('mdat', Buffer.alloc(64, 0x33)));
   up('many.mp4', Buffer.concat(many));
+  // Chunk offsets: one file whose moov was moved to the front WITH its
+  // offsets rewritten, and one without — which is structurally perfect and
+  // plays nothing. Only the second check can tell them apart.
+  const stbl = (offsets) => box('stbl', box('stco', Buffer.concat([
+    Buffer.alloc(4),
+    (() => { const b = Buffer.alloc(4); b.writeUInt32BE(offsets.length, 0); return b; })(),
+    ...offsets.map(o => { const b = Buffer.alloc(4); b.writeUInt32BE(o, 0); return b; }),
+  ])));
+  const moovWith = (offsets) => box('moov', box('trak', box('mdia', box('minf', stbl(offsets)))));
+  const sftyp = box('ftyp', Buffer.from('isom\x00\x00\x00\x00isomiso2', 'binary'));
+  const md1 = box('mdat', Buffer.alloc(1000, 0xaa));
+  const md2 = box('mdat', Buffer.alloc(1000, 0xbb));
+  const moovLen = moovWith([0, 0]).length;
+  const at1 = sftyp.length + moovLen + 8;
+  const at2 = at1 + md1.length;
+  up('offs_good.mp4', Buffer.concat([sftyp, moovWith([at1, at2]), md1, md2]));
+  // The classic faststart-done-wrong: the offsets still describe the layout
+  // the file had before the moov was moved in front of the media.
+  up('offs_bad.mp4', Buffer.concat([sftyp, moovWith([sftyp.length + 8, sftyp.length + 8 + 1008]), md1, md2]));
+  // The same thing with 64-bit offsets. A file over 4GB uses co64 instead of
+  // stco, and code that claims to read it while no test ever does is a
+  // liability in an instrument whose whole job is to be believed.
+  const stbl64 = (offsets) => box('stbl', box('co64', Buffer.concat([
+    Buffer.alloc(4),
+    (() => { const b = Buffer.alloc(4); b.writeUInt32BE(offsets.length, 0); return b; })(),
+    ...offsets.map(o => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(o), 0); return b; }),
+  ])));
+  const moov64 = (offsets) => box('moov', box('trak', box('mdia', box('minf', stbl64(offsets)))));
+  const m64len = moov64([0, 0]).length;
+  const b1 = sftyp.length + m64len + 8;
+  up('offs64_bad.mp4', Buffer.concat([sftyp, moov64([8, 9]), md1, md2]));
+  up('offs64_good.mp4', Buffer.concat([sftyp, moov64([b1, b1 + md1.length]), md1, md2]));
   // A voice note. Not an MP4, and must not be judged as one.
   up('voice.webm', Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(900, 7)]));
   fs.writeFileSync(path.join(dir, 'server.js'), 'function streamChunkToPart() {}\n');
@@ -195,6 +236,30 @@ test('…AND THE TWO WALKS AGREE ABOUT EVERY FILE', () => {
     .sort();
   assert.deepStrictEqual(verdicts(shellOut), verdicts(out),
     'the shell walk and the python walk disagree about these files');
+});
+
+test('THE LAST THING A COMPLETE FILE CAN STILL BE WRONG ABOUT', () => {
+  // A moov moved to the front without its chunk offsets rewritten gives a
+  // file that tiles perfectly, has every box in the right place, and plays
+  // nothing — so the box walk calls it healthy. Every transcoded video on
+  // the server has exactly that layout, which is why this check exists.
+  const rows = section('DO THE CHUNK OFFSETS POINT AT THE MEDIA');
+  assert.ok(rows.length >= 2, `the offset check produced nothing:\n${rows.join('\n')}`);
+  const bad = rows.find(r => /outside the media|NO CHUNK OFFSET/.test(r));
+  assert.ok(bad, `a file whose offsets point at the wrong place passed:\n${rows.join('\n')}`);
+  // …and the file whose offsets WERE rewritten is not accused of it.
+  const good = rows.filter(r => /\bok\b/.test(r));
+  assert.ok(good.length >= 1, `the sound file was accused too:\n${rows.join('\n')}`);
+  // Both widths. A file over 4GB carries its offsets as co64 rather than
+  // stco, and reading only one of the two would quietly report the other as
+  // having no offsets at all.
+  assert.ok(rows.filter(r => /outside the media|NO CHUNK OFFSET/.test(r)).length >= 2,
+    `only one width of offset table is being read:\n${rows.join('\n')}`);
+  // Files built without sample tables say so, correctly — the fixtures for
+  // the box walk have no stbl at all. What matters is that both widths of
+  // table are READ where one exists.
+  assert.ok(rows.filter(r => /\bok\b/.test(r)).length >= 2,
+    `a file whose offsets were rewritten is still accused:\n${rows.join('\n')}`);
 });
 
 test('A SOUND FILE IS NOT ACCUSED', () => {

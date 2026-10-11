@@ -165,7 +165,7 @@ jobs:
           # No decoder and no dependencies: lengths and four-character types,
           # which is all this needs and all it may write down.
           ls -t uploads/*.mp4 uploads/*.mov uploads/*.m4v 2>/dev/null \
-            | head -n 8 | while read -r f; do
+            | head -n "$COUNT" | while read -r f; do
             SIZE=$(stat -c%s "$f" 2>/dev/null)
             [ "$(dd if="$f" bs=1 skip=4 count=4 2>/dev/null)" = "ftyp" ] || continue
             # python3 does the whole walk in one pass where it exists. The
@@ -277,6 +277,91 @@ jobs:
             FIRST=$(dd if="$f" bs=1 count=12 2>/dev/null | od -An -tx1 | tr -s ' ')
             printf 'size=%-10s ftyp_at=%-10s first12=%s\n' "$SIZE" "${AT:-none}" "$FIRST"
           done
+          echo ""
+
+          echo "### DO THE CHUNK OFFSETS POINT AT THE MEDIA"
+          # The question the box walk cannot answer, and the one left standing.
+          #
+          # Every transcoded file here is laid out moov-first with hundreds of
+          # mdat boxes after it. That is only playable if the moov's chunk
+          # offsets — absolute positions into the file — were rewritten when
+          # the moov was moved to the front. A file whose offsets still
+          # describe the old layout is structurally PERFECT: it tiles exactly,
+          # it has ftyp and moov in the right places, and it plays nothing.
+          # That is the shape of "the file looks fine and will not play".
+          #
+          # Offsets and counts only, which say nothing about the content.
+          if command -v python3 >/dev/null 2>&1; then
+            ls -t uploads/*.mp4 uploads/*.mov uploads/*.m4v 2>/dev/null \
+              | head -n 10 | while read -r f; do
+              [ "$(dd if="$f" bs=1 skip=4 count=4 2>/dev/null)" = "ftyp" ] || continue
+              python3 - "$f" <<'STCOEOF'
+          import sys, os
+          p = sys.argv[1]
+          size = os.path.getsize(p)
+          fh = open(p, 'rb')
+
+          def boxes(start, end):
+              off = start
+              while off < end - 8:
+                  fh.seek(off)
+                  hdr = fh.read(8)
+                  if len(hdr) < 8: return
+                  bs = int.from_bytes(hdr[0:4], 'big')
+                  ty = hdr[4:8]
+                  body = off + 8
+                  if bs == 1:
+                      bs = int.from_bytes(fh.read(8), 'big'); body = off + 16
+                  elif bs == 0:
+                      bs = end - off
+                  if bs < 8: return
+                  yield ty, body, off + bs
+                  off += bs
+
+          def find(types, start, end):
+              for ty, body, stop in boxes(start, end):
+                  if ty in types:
+                      yield ty, body, stop
+
+          # Where the media bytes actually live.
+          mdats = [(b - 8, e) for ty, b, e in boxes(0, size) if ty == b'mdat']
+          offs = []
+          for _, mb, me in find({b'moov'}, 0, size):
+              for _, tb, te in find({b'trak'}, mb, me):
+                  for _, db, de in find({b'mdia'}, tb, te):
+                      for _, nb, ne in find({b'minf'}, db, de):
+                          for _, sb, se in find({b'stbl'}, nb, ne):
+                              for ty, cb, ce in find({b'stco', b'co64'}, sb, se):
+                                  fh.seek(cb + 4)
+                                  n = int.from_bytes(fh.read(4), 'big')
+                                  w = 4 if ty == b'stco' else 8
+                                  n = min(n, (ce - cb - 8) // w)
+                                  data = fh.read(n * w)
+                                  vals = [int.from_bytes(data[i*w:(i+1)*w], 'big') for i in range(n)]
+                                  offs.append((ty.decode(), vals))
+
+          if not offs:
+              print('  no chunk-offset table found')
+          else:
+              lo = min(v for _, vs in offs for v in vs) if any(vs for _, vs in offs) else 0
+              hi = max(v for _, vs in offs for v in vs) if any(vs for _, vs in offs) else 0
+              inside = 0; total = 0
+              for _, vs in offs:
+                  for v in vs:
+                      total += 1
+                      if any(a <= v < b for a, b in mdats): inside += 1
+              media_lo = mdats[0][0] if mdats else 0
+              media_hi = mdats[-1][1] if mdats else 0
+              verdict = 'ok' if total and inside == total else (
+                  'NO CHUNK OFFSET LANDS IN MEDIA' if inside == 0 else
+                  '%d of %d offsets land outside the media' % (total - inside, total))
+              print('  tables=%d chunks=%d first=%d last=%d media=%d..%d filesize=%d  %s'
+                    % (len(offs), total, lo, hi, media_lo, media_hi, size, verdict))
+          STCOEOF
+            done
+          else
+            echo "(needs python3 — nothing else here can walk nested boxes)"
+          fi
           echo ""
 
           echo "### what ffprobe makes of the newest one"
