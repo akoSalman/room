@@ -1,0 +1,166 @@
+name: Video Report
+
+# Why this exists.
+#
+# Reported as: a video received a moment ago, after downloading, will not
+# play. Not an old one — a fresh one.
+#
+# That rules out the expired-link explanation and leaves two possibilities
+# that need opposite fixes and look identical from the phone:
+#
+#   • the file on the SERVER is broken, in which case the upload is at fault
+#     and nothing the receiving phone does can help. The chunked upload
+#     handler was rewritten recently to stream chunks to disk as they arrive
+#     rather than buffer them, which makes it the first thing to rule out;
+#
+#   • the file on the server is a perfectly good video, in which case the
+#     fault is in fetching or playing it on the phone.
+#
+# A video file says which on its own. An MP4 begins with a box whose type is
+# at bytes 4..8 and reads `ftyp`, and it needs a `moov` box somewhere or no
+# player can do anything with it — a truncated or interleaved upload loses
+# exactly that. Where ffprobe is installed it answers outright.
+#
+# NOTHING SECRET IS WRITTEN. Sizes, a four-byte box type, and whether a
+# structural box is present. No filenames, no user ids, no frames, no
+# content. diagnostics/ is committed to a repository that has been public, so
+# it is written as if anyone will read it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      brand:
+        description: 'Which server to inspect'
+        required: false
+        default: 'bistbarg'
+      count:
+        description: 'How many of the newest videos to check'
+        required: false
+        default: '12'
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Ask the server
+        continue-on-error: true
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST_B: ${{ secrets.DEPLOY_HOST_BISTBARG }}
+          DIR_B: ${{ secrets.DEPLOY_DIR_BISTBARG }}
+          HOST_A: ${{ secrets.DEPLOY_HOST_AKOSALMAN }}
+          DIR_A: ${{ secrets.DEPLOY_DIR_AKOSALMAN }}
+          BRAND: ${{ inputs.brand }}
+          COUNT: ${{ inputs.count }}
+        run: |
+          set -u
+          if [ "$BRAND" = "akosalman" ]; then
+            HOST="$HOST_A"; APP_DIR="$DIR_A"
+          else
+            HOST="$HOST_B"; APP_DIR="$DIR_B"
+          fi
+          if [ -z "${HOST:-}" ] || [ -z "${SSH_KEY:-}" ]; then
+            echo "Secrets for $BRAND are not configured." | tee report.txt
+            exit 0
+          fi
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/k && chmod 600 ~/.ssh/k
+          set +e
+          Q_DIR=$(printf '%q' "$APP_DIR")
+          Q_COUNT=$(printf '%q' "$COUNT")
+          ssh -i ~/.ssh/k -o StrictHostKeyChecking=accept-new -o ConnectTimeout=25 "root@$HOST" \
+            "APP_DIR=$Q_DIR COUNT=$Q_COUNT bash -s" > report.txt 2>&1 <<'EOF'
+          set +e
+          cd "$APP_DIR" 2>/dev/null || { echo "APP_DIR missing"; exit 0; }
+
+          echo "### which upload handler is running here"
+          # The deploy is scp, not git, so git HEAD lies. The file is the
+          # evidence — and the streaming handler is the suspect.
+          echo -n "chunks streamed to disk as they arrive: "
+          grep -q 'function streamChunkToPart' server.js 2>/dev/null \
+            && echo "yes  <-- the rewritten handler" || echo "no   <-- the older buffering one"
+          echo ""
+
+          echo "### the newest videos, and whether they are videos"
+          # An MP4's box type sits at bytes 4..8 and reads 'ftyp'. A file that
+          # does not start that way was not written correctly, whatever its
+          # size says. 'moov' is the index every player needs; a truncated or
+          # mis-assembled upload is exactly what loses it.
+          #
+          # No filenames: only the size, the box type, and what was found.
+          ls -t uploads/*.mp4 uploads/*.mov uploads/*.m4v uploads/*.webm 2>/dev/null \
+            | head -n "$COUNT" | while read -r f; do
+            SIZE=$(stat -c%s "$f" 2>/dev/null)
+            BOX=$(dd if="$f" bs=1 skip=4 count=4 2>/dev/null | tr -cd '[:print:]')
+            # Searched in the first and last megabyte: faststart puts moov at
+            # the front, a phone's recorder usually puts it at the end.
+            HEAD_MOOV=$(dd if="$f" bs=1M count=1 2>/dev/null | grep -c moov)
+            TAIL_MOOV=$(tail -c 1048576 "$f" 2>/dev/null | grep -c moov)
+            AGE=$(( ( $(date +%s) - $(stat -c%Y "$f" 2>/dev/null) ) / 60 ))
+            printf 'size=%-10s box=%-6s moov_head=%s moov_tail=%s age=%smin\n' \
+              "$SIZE" "$BOX" "$HEAD_MOOV" "$TAIL_MOOV" "$AGE"
+          done
+          echo ""
+
+          echo "### what ffprobe makes of the newest one"
+          # The outright answer where it is installed. "moov atom not found"
+          # or "Invalid data" means the bytes on this server are wrong and no
+          # phone can be blamed for refusing them.
+          if command -v ffprobe >/dev/null 2>&1; then
+            NEWEST=$(ls -t uploads/*.mp4 uploads/*.mov uploads/*.m4v 2>/dev/null | head -1)
+            if [ -n "$NEWEST" ]; then
+              ffprobe -v error -show_entries format=duration,size,format_name \
+                -show_entries stream=codec_name,codec_type,width,height \
+                -of default=noprint_wrappers=1 "$NEWEST" 2>&1 | head -20
+            else
+              echo "(no video files)"
+            fi
+          else
+            echo "(ffprobe not installed — the box/moov columns above are the answer)"
+          fi
+          echo ""
+
+          echo "### is anything half-uploaded and left behind"
+          # A part file older than an hour is an upload that never finished.
+          # If finished files are being assembled from these while a chunk is
+          # still arriving, that is a different bug and this is where it shows.
+          find uploads/.partial -type f 2>/dev/null | wc -l | sed 's/^/partials: /'
+          find uploads/.partial -type f -mmin +60 2>/dev/null | wc -l | sed 's/^/older than an hour: /'
+          echo ""
+
+          echo "### recent upload trouble in the log"
+          journalctl -u "$(systemctl list-units --type=service --plain --no-legend 2>/dev/null | grep -o '^[^ ]*chat[^ ]*' | head -1)" \
+            --since '-2d' --no-pager 2>/dev/null \
+            | grep -iE 'Write failed|Past end of file|Chunk already in flight|Incomplete' \
+            | tail -20
+          echo "(end)"
+          EOF
+          rc=$?
+          echo "" >> report.txt
+          echo "(ssh exit $rc)" >> report.txt
+          exit 0
+
+      - name: Commit the report
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          {
+            echo "# Video report — ${{ inputs.brand }}"
+            echo ""
+            echo "Generated $(date -u +%Y-%m-%dT%H:%MZ) by .github/workflows/video-report.yml"
+            echo ""
+            echo '```'
+            cat report.txt 2>/dev/null || echo "(the server step produced no output at all)"
+            echo '```'
+          } > "diagnostics/video-report.md"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add diagnostics/video-report.md
+          git commit -m "Video report for ${{ inputs.brand }} [skip ci]" || echo "no change"
+          git push origin HEAD:${{ github.ref_name }} || echo "push failed"
