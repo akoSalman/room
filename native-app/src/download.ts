@@ -105,7 +105,7 @@ export function shouldAutoOpen(o: {
 // can still have come with a refusal.
 
 /** Was this actually the file, rather than the server saying no? */
-export function downloadUsable(o: { status?: unknown; size?: unknown }): boolean {
+export function downloadUsable(o: { status?: unknown; size?: unknown; expected?: unknown }): boolean {
   const e = o || {};
   const status = Number(e.status);
   // No status at all: older expo versions did not report one, and refusing
@@ -114,15 +114,44 @@ export function downloadUsable(o: { status?: unknown; size?: unknown }): boolean
   const size = Number(e.size);
   // A size we could not read is not evidence of emptiness.
   if (Number.isFinite(size) && size <= 0) return false;
+  // ── Did ALL of it arrive? ───────────────────────────────────────────────
+  //
+  // Reported as: a video received a moment ago will not play after being
+  // downloaded. The file on the server is a well-formed MP4 — that was
+  // checked — so what the phone has is not what the server holds.
+  //
+  // A download cut short on a bad connection leaves a file with bytes in it,
+  // a 200 on it, and most of the video missing. These are faststart files
+  // with the index at the FRONT, so the header is intact and the player
+  // opens something that then refers to frames past the end of the file:
+  // downloaded, non-empty, and unplayable.
+  //
+  // The expected size comes from a HEAD before the download. When the server
+  // did not give one this cannot be judged, and an unknown is never a
+  // failure — the same way an unknown status is not.
+  const expected = Number(e.expected);
+  // `expected > 0` cannot change the answer — a size is already required to
+  // be positive, so nothing can be shorter than a zero or negative expected
+  // — and no test can tell it from its absence. It stays because it is the
+  // obvious reading of "only when we were told a real length".
+  if (Number.isFinite(expected) && expected > 0
+    && Number.isFinite(size) && size > 0 && size < expected) return false;
   return true;
 }
 
-/** What to tell somebody whose download was refused. */
-export function downloadFailureText(status: unknown): string {
+/**
+ * What to tell somebody whose download was refused.
+ *
+ * `short` is the case where the bytes simply stopped arriving, which is the
+ * common one on these connections and the only one where trying again is
+ * worth suggesting.
+ */
+export function downloadFailureText(status: unknown, short?: unknown): string {
   const n = Number(status);
   if (n === 403 || n === 410) {
     return 'That link has expired. Open the chat again to refresh it.';
   }
   if (n === 404) return 'That file is no longer on the server.';
+  if (short) return 'Only part of it arrived. Tap to try again.';
   return 'The download failed.';
 }

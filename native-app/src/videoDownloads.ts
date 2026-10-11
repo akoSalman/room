@@ -192,12 +192,17 @@ export async function start(url: string): Promise<string | null> {
     // playing it played nothing, which is exactly how this was reported.
     let size = 0;
     try { size = ((await FileSystem.getInfoAsync(res.uri)) as any)?.size || 0; } catch {}
-    if (!downloadUsable({ status: (res as any).status, size })) {
+    // `total` came from a HEAD before the download started. A file shorter
+    // than that is a download that stopped early — which on these networks
+    // is the ordinary way one ends, and leaves a playable-looking header
+    // over frames that are not there.
+    const short = total > 0 && size > 0 && size < total;
+    if (!downloadUsable({ status: (res as any).status, size, expected: total })) {
       // Nothing usable is left behind to be mistaken for a finished download.
       try { await FileSystem.deleteAsync(pathFor(url), { idempotent: true }); } catch {}
       state.set(key, {
         written: 0, total: state.get(key)?.total || 0, status: 'failed',
-        reason: downloadFailureText((res as any).status),
+        reason: downloadFailureText((res as any).status, short),
       });
       lastEmitAt.delete(key);
       emit();

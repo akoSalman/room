@@ -154,6 +154,55 @@ test('A BUILD THAT REPORTS NO STATUS STILL DOWNLOADS', () => {
   assert.strictEqual(D.downloadUsable(null), true);
 });
 
+test('THE BUG: a download that stopped early is not a downloaded video', () => {
+  // Reported as: a video received a moment ago will not play after being
+  // downloaded — not an old one, so not an expired link.
+  //
+  // The file on the server was checked and is a well-formed MP4 with its
+  // index at the FRONT, which is what makes this so quiet: a download cut
+  // short leaves an intact header over frames that are not there. Bytes in
+  // the file, a 200 on the response, and nothing plays.
+  assert.strictEqual(D.downloadUsable({ status: 200, size: 500, expected: 8163266 }), false,
+    'half a video is treated as a video');
+  assert.strictEqual(D.downloadUsable({ status: 200, size: 8163265, expected: 8163266 }), false,
+    'one byte short is still short');
+  assert.strictEqual(D.downloadUsable({ status: 200, size: 8163266, expected: 8163266 }), true);
+  // More than expected is not a failure: a server may report a length that
+  // is out of date, and refusing a complete file would be the worse error.
+  assert.strictEqual(D.downloadUsable({ status: 200, size: 9000, expected: 8000 }), true);
+});
+
+test('…AND AN UNKNOWN EXPECTED SIZE IS NOT A FAILURE', () => {
+  // The expected size comes from a HEAD. Plenty of servers answer with
+  // nothing useful, and refusing on that basis would break every download.
+  assert.strictEqual(D.downloadUsable({ status: 200, size: 100, expected: 0 }), true);
+  assert.strictEqual(D.downloadUsable({ status: 200, size: 100 }), true);
+  assert.strictEqual(D.downloadUsable({ status: 200, size: 100, expected: 'x' }), true);
+  assert.strictEqual(D.downloadUsable({ status: 200, size: 100, expected: -5 }), true);
+});
+
+test('A SHORT DOWNLOAD SAYS SOMETHING DIFFERENT FROM A REFUSED ONE', () => {
+  // They need different things from the person: one is worth trying again
+  // straight away, the other is not.
+  const short = D.downloadFailureText(200, true);
+  assert.ok(/again/i.test(short), 'the one failure retrying actually fixes does not say so');
+  assert.notStrictEqual(short, D.downloadFailureText(403));
+  assert.notStrictEqual(short, D.downloadFailureText(200, false));
+  // An expired link is still about the link, whatever the size said.
+  assert.ok(/expired/i.test(D.downloadFailureText(403, true)));
+});
+
+test('THE STORE COMPARES AGAINST WHAT IT ASKED FOR', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'native-app', 'src',
+    'videoDownloads.ts'), 'utf8');
+  assert.ok(/expected: total/.test(src),
+    'the size that was expected is never compared with what arrived');
+  assert.ok(/const short = total > 0 && size > 0 && size < total;/.test(src),
+    'nothing tells a short download from a refused one');
+  assert.ok(/downloadFailureText\(\(res as any\)\.status, short\)/.test(src),
+    'a short download is reported as an unexplained failure');
+});
+
 test('AN EXPIRED LINK SAYS WHAT TO DO ABOUT IT', () => {
   // The one failure somebody can act on: the chat re-fetches its links when
   // it opens, so reopening it fixes this.
@@ -167,7 +216,7 @@ test('AN EXPIRED LINK SAYS WHAT TO DO ABOUT IT', () => {
 test('THE STORE ACTUALLY CHECKS BEFORE CALLING IT DONE', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'native-app', 'src',
     'videoDownloads.ts'), 'utf8');
-  assert.ok(/if \(!downloadUsable\(\{ status: \(res as any\)\.status, size \}\)\)/.test(src),
+  assert.ok(/if \(!downloadUsable\(\{ status: \(res as any\)\.status, size, expected: total \}\)\)/.test(src),
     'a refusal is still recorded as a finished download');
   // The empty file must go, or localUri finds it later and the tile lies
   // again on the next open.
