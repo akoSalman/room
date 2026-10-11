@@ -104,14 +104,48 @@ test('THE OTHER BUG: the grid is not closed when a photo opens on top of it', ()
   assert.ok(open.includes('openViewer('), 'the viewer is not opened at all');
 });
 
-test('and closing the photo does not re-open a grid that never closed', () => {
+test('and closing the photo cannot tear the grid\'s window down', () => {
+  // This check used to read "does not re-open a grid that never closed" and
+  // looked for the absence of `setShowMedia(true)` in closeViewer. Both halves
+  // were wrong in a way worth recording.
+  //
+  // The premise held for only one of the two ways in. Tapping a photo in the
+  // grid leaves the grid mounted (the test above); long-press → Open closes
+  // it, and for THAT way the photo has to re-open it or it closes to the
+  // conversation instead of to the tab it came from.
+  //
+  // And the absence of a literal was never the guarantee. When the call moved
+  // into a reopenMedia() helper the old assertion passed while the behaviour
+  // it forbade was happening — it was measuring where the words were, not
+  // what the code did.
+  //
+  // What actually prevents the flash of chat is that the window is never torn
+  // down: the restore only ever SETS true, and setting a state to the value it
+  // already holds leaves the Modal alone. So that is what is asserted, and it
+  // follows the helper rather than requiring the call to be written inline.
   const close = screen.slice(screen.indexOf('function closeViewer()'),
     screen.indexOf('const [replyTo, setReplyTo]'));
   assert.ok(close.length > 0, 'closeViewer is gone — this check would be vacuous');
-  assert.ok(!close.includes('setShowMedia(true)'), 'the grid is opened again, so the windows still swap');
-  // The grid still has to be told which photo to scroll back to.
+  assert.ok(!/setShowMedia\(false\)|setShowMedia\(!/.test(close),
+    'closing a photo closes or toggles the grid, which swaps the windows and shows the chat');
+
+  // Whatever closeViewer calls to bring the grid back must itself only ever
+  // set true. A helper that toggled would reintroduce the swap from one
+  // remove, which is exactly how the old assertion was slipped past.
+  const restore = /if \(viewerFromMedia\) \{ setViewerFromMedia\(false\); (\w+)\(\); \}/.exec(close);
+  assert.ok(restore, 'the grid is not brought back for the way in that closes it');
+  const helper = new RegExp(`function ${restore[1]}\\(\\) \\{([\\s\\S]*?)\\n  \\}`).exec(screen);
+  assert.ok(helper, `could not find ${restore[1]} — this check would be vacuous`);
+  assert.ok(/setShowMedia\(true\)/.test(helper[1]),
+    'the grid is never actually shown again');
+  assert.ok(!/setShowMedia\(false\)|setShowMedia\(!/.test(helper[1]),
+    'the restore closes the grid first, which is the window swap again');
+
+  // The grid still has to be told which photo to scroll back to, and to treat
+  // this as a fresh open so each list restores its place.
   assert.ok(close.includes('setMediaFocusIndex('), 'the grid no longer returns to the photo you were on');
-  assert.ok(close.includes('setMediaOpenId('), 'the grid is not told to restore its position');
+  assert.ok(/setMediaOpenId\(/.test(helper[1]),
+    'the grid is not told to restore its position');
 });
 
 let passed = 0, failed = 0;

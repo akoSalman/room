@@ -384,10 +384,23 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   // The photo currently open in the editor, and where it came from.
   const [editing, setEditing] = useState<{ uri: string; index?: number } | null>(null);
   // Opened from the media gallery? Then closing the image must put the gallery
-  // back, not dump the user in the chat. (Two RN Modals stacked on Android is
-  // unreliable, so the gallery is closed on the way in and restored on the way
-  // out rather than left open underneath.)
+  // back, not dump the user in the chat.
+  //
+  // Both ways in set this, and they do NOT agree about the gallery: tapping a
+  // photo in the grid leaves it mounted underneath, while long-press → Open
+  // closes it. Only the second needs re-opening, and the restore is written so
+  // that doing it for both is harmless — see closeViewer. (This comment used
+  // to claim the gallery is always closed on the way in, which cost an
+  // afternoon.)
   const [viewerFromMedia, setViewerFromMedia] = useState(false);
+  // The same question for the VIDEO player, which is not the image viewer and
+  // had no answer to it: a video opened from the files tab closed the browser
+  // on the way in and left the person in the conversation on the way out.
+  const [videoFromMedia, setVideoFromMedia] = useState(false);
+  // "Show in chat" jumps to the message and closes the browser. Hardware back
+  // should then be the step BACK to the files tab, not out of the chat
+  // altogether — the browser is where the person came from.
+  const [backToMedia, setBackToMedia] = useState(false);
   const viewerUrl = viewer ? viewer.images[viewerIdx] ?? null : null;
   // The room's whole photo list, asked for once.
   //
@@ -474,20 +487,57 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     // yet this view gets the chat's own list, which is what it had before this
     // feature existed, and the next one gets all of them.
   }
+  /** What follows a closed video: the files tab, when that is where it began. */
+  function closedVideo() {
+    if (!videoFromMedia) return;
+    setVideoFromMedia(false);
+    reopenMedia();
+  }
+
+  /**
+   * Put the files tab back, where it was.
+   *
+   * The browser is a Modal and the video player is not, so the player cannot
+   * be drawn over it — the browser has to be closed on the way in. That makes
+   * restoring it on the way out the whole of the behaviour, and it is one
+   * function because three different things now need it.
+   *
+   * It only ever sets `true`, never toggles. That is what makes it safe to
+   * call when the browser was left open: setting a state to the value it
+   * already holds changes nothing, so the Modal is not torn down and
+   * recreated. See closeViewer, where one way in closes it and the other
+   * does not.
+   */
+  function reopenMedia() {
+    setShowMedia(true);
+    // Counts as a fresh open, which is what makes each list restore the place
+    // it was left. See MediaBrowser's restore token.
+    setMediaOpenId(n => n + 1);
+  }
+
   function closeViewer() {
     // Remember the image being looked at, not the scroll offset — the grid
     // scrolls to this index when it reappears.
     setMediaFocusIndex(viewerIdx);
     setViewer(null);
-    // The grid was never closed, so there is nothing to re-open — it has been
-    // sitting underneath the whole time.
+    // There are two ways a photo opens from the browser and they differ here:
     //
-    // It used to be closed on the way in and opened again here, which meant
-    // two Android modal windows swapping places: the photo's window is torn
-    // down before the grid's is created, and in between the chat behind them
-    // both is on screen. That single frame is the reported "for one instant
-    // you see the chat and then the gallery".
-    if (viewerFromMedia) { setViewerFromMedia(false); setMediaOpenId(n => n + 1); }
+    //   • tapping it in the grid leaves the grid mounted underneath, so there
+    //     is nothing to re-open. It used to be closed on the way in and
+    //     opened again here, which meant two Android modal windows swapping
+    //     places: the photo's window is torn down before the grid's is
+    //     created, and for that one frame the chat behind them both is on
+    //     screen — the reported "for an instant you see the chat and then the
+    //     gallery";
+    //
+    //   • long-press → Open does close it (see onMediaAction), and without
+    //     the call below that photo closed to the conversation rather than to
+    //     the tab it was opened from.
+    //
+    // One line covers both because reopenMedia only ever sets `true`: for the
+    // first way that is the value showMedia already holds, so nothing is torn
+    // down and the frame of chat does not come back.
+    if (viewerFromMedia) { setViewerFromMedia(false); reopenMedia(); }
   }
   const [replyTo, setReplyTo] = useState<ReplyTo | null>(null);
   const [showOnline, setShowOnline] = useState(false);
@@ -2552,6 +2602,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
    * spinner up and waited for the whole room, every time.
    */
   async function openMediaBrowser(tab: MediaTab = 'images') {
+    // A fresh open from the header is a new journey: whatever back was going
+    // to return to is no longer where the person came from.
+    setBackToMedia(false);
     const cached = rm.getCached(room.id);
     setMediaState(cached);
     setMediaTab(tab);
@@ -4463,13 +4516,36 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   useEffect(() => {
     if (!videoItem) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      // Opened from the files tab: back is the step back to it, and shrinking
+      // to the floating window first would be a detour nobody asked for.
+      if (videoFromMedia) {
+        setVideoItem(null);
+        setVideoMini(false);
+        closedVideo();
+        return true;
+      }
       if (!videoMini) { setVideoMini(true); return true; }
       setVideoItem(null);
       setVideoMini(false);
       return true;
     });
     return () => sub.remove();
-  }, [videoItem, videoMini]);
+  }, [videoItem, videoMini, videoFromMedia]);
+
+  // Hardware back after "show in chat" goes back to the files tab.
+  //
+  // It is the step the person came by, and without it back left the chat
+  // altogether — losing both the message they were sent to look at and the
+  // tab they were looking through.
+  useEffect(() => {
+    if (!backToMedia || showMedia || videoItem || viewer) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      setBackToMedia(false);
+      reopenMedia();
+      return true;
+    });
+    return () => sub.remove();
+  }, [backToMedia, showMedia, videoItem, viewer]);
 
   // The fullscreen map takes hardware back before the chat does.
   useEffect(() => {
@@ -4668,6 +4744,8 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       if (!item.msgId) { toast('That message is no longer here'); return; }
       setShowMedia(false);
       setViewerFromMedia(false);
+      // Back is the step back to the files tab, not out of the chat.
+      setBackToMedia(true);
       // Paging back to an old message takes a moment; close the browser first
       // so the jump is visible rather than happening behind it.
       jumpToMessage(Number(item.msgId));
@@ -4692,6 +4770,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       // history. The chat's own player has been here all along.
       if (item.kind === 'video' || isVideoName(item.name || item.url)) {
         setShowMedia(false);
+        // So closing the player comes back here rather than dropping the
+        // person into the conversation.
+        setVideoFromMedia(true);
         const local = await attachments.localUri(abs);
         setVideoPlaylist([]);
         setVideoItem({
@@ -6039,7 +6120,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         minimized={videoMini}
         onMinimize={() => setVideoMini(true)}
         onExpand={() => setVideoMini(false)}
-        onClose={() => { setVideoItem(null); setVideoMini(false); }}
+        onClose={() => { setVideoItem(null); setVideoMini(false); closedVideo(); }}
         onSelect={(it) => setVideoItem(it)}
       />
 

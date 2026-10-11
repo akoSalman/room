@@ -312,6 +312,18 @@ export default function MediaBrowser({
   const token = restoreToken({ visible, openId, tab, focusIndex });
   // Where the grid was when a photo was opened from it.
   const gridOffset = useRef(0);
+  // ── And where the OTHER tabs were ───────────────────────────────────────
+  //
+  // Asked for as: after closing a video played from the files tab, the files
+  // tab should come back at the file that was played.
+  //
+  // Only the photo grid remembered anything. The files, music and links tabs
+  // are plain lists with no ref and no record of where they were, so opening
+  // something from halfway down one and coming back put you at the top of
+  // it — which on a tab of two hundred files is the same as losing your
+  // place entirely.
+  const listOffsets = useRef<Record<string, number>>({});
+  const listRefs = useRef<Record<string, FlatList | null>>({});
   useEffect(() => {
     if (!shouldRestore(token, restoreDone.current)) return;
     if (!rows.length) return;                      // nothing to scroll yet
@@ -325,6 +337,23 @@ export default function MediaBrowser({
     });
     try { gridRef.current?.scrollToOffset({ offset, animated: false }); } catch {}
   }, [token, rows.length, focusIndex, cell]);
+
+  // The same restore for the tabs that are plain lists. Keyed on the same
+  // token, so it happens once per open of a tab and never while scrolling.
+  const listRestored = useRef('');
+  useEffect(() => {
+    if (!visible || tab === 'images') return;
+    if (listRestored.current === token) return;
+    listRestored.current = token;
+    const offset = listOffsets.current[tab] || 0;
+    if (!offset) return;
+    // After the rows exist: a scroll issued before the list has them lands
+    // nowhere and is silently ignored.
+    const t = setTimeout(() => {
+      try { listRefs.current[tab]?.scrollToOffset({ offset, animated: false }); } catch {}
+    }, 0);
+    return () => clearTimeout(t);
+  }, [token, visible, tab]);
 
   const gridHeight = useRef(0);
 
@@ -377,8 +406,11 @@ export default function MediaBrowser({
     />
   );
 
-  const simpleList = (items: MediaItem[], icon: (i: MediaItem) => string, sub: (i: MediaItem) => string, empty: string) => (
+  const simpleList = (key: MediaTab, items: MediaItem[], icon: (i: MediaItem) => string, sub: (i: MediaItem) => string, empty: string) => (
     <FlatList
+      ref={(r) => { listRefs.current[key] = r; }}
+      onScroll={(e) => { listOffsets.current[key] = e.nativeEvent.contentOffset.y; }}
+      scrollEventThrottle={16}
       data={items}
       style={{ width: W }}
       keyExtractor={(i, n) => `${i.url}#${n}`}
@@ -396,6 +428,9 @@ export default function MediaBrowser({
 
   const fileList = (
     <FlatList
+      ref={(r) => { listRefs.current.files = r; }}
+      onScroll={(e) => { listOffsets.current.files = e.nativeEvent.contentOffset.y; }}
+      scrollEventThrottle={16}
       data={files}
       style={{ width: W }}
       keyExtractor={(i, n) => `${i.url}#${n}`}
@@ -417,8 +452,8 @@ export default function MediaBrowser({
     if (!visited.has(key)) return <View style={{ width: W }} />;
     if (key === 'images') return photos;
     if (key === 'files') return fileList;
-    if (key === 'music') return simpleList(music, () => '🎵', () => 'Audio', 'No audio yet');
-    return simpleList(links, () => '🔗', i => i.url, 'No links yet');
+    if (key === 'music') return simpleList('music', music, () => '🎵', () => 'Audio', 'No audio yet');
+    return simpleList('links', links, () => '🔗', i => i.url, 'No links yet');
   }
 
   const counts: Record<MediaTab, number> = {
