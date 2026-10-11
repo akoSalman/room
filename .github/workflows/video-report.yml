@@ -168,9 +168,62 @@ jobs:
             | head -n 8 | while read -r f; do
             SIZE=$(stat -c%s "$f" 2>/dev/null)
             [ "$(dd if="$f" bs=1 skip=4 count=4 2>/dev/null)" = "ftyp" ] || continue
+            # python3 does the whole walk in one pass where it exists. The
+            # shell version below spawns three processes PER BOX, which is
+            # why it needs a cap at all — and a cap is what made the first
+            # run of this section lie: every file with more boxes than the
+            # cap was reported as stopping short by whatever was left, which
+            # reads exactly like a truncation and is not one.
+            if command -v python3 >/dev/null 2>&1; then
+              python3 - "$f" <<'PYEOF'
+          import sys, os
+          p = sys.argv[1]
+          size = os.path.getsize(p)
+          off = 0; chain = []; note = "ok"
+          with open(p, 'rb') as fh:
+              while off < size:
+                  fh.seek(off)
+                  hdr = fh.read(8)
+                  if len(hdr) < 8:
+                      note = "header past end"; break
+                  bs = int.from_bytes(hdr[0:4], 'big')
+                  ty = hdr[4:8].decode('ascii', 'replace')
+                  if not all(c.isalnum() or c == ' ' for c in ty):
+                      note = "not a box type"; break
+                  if bs == 1:
+                      ext = fh.read(8)
+                      if len(ext) < 8:
+                          note = "64-bit length past end"; break
+                      bs = int.from_bytes(ext, 'big')
+                  elif bs == 0:
+                      bs = size - off
+                  if bs < 8:
+                      note = "box claims %d bytes" % bs; break
+                  chain.append(ty)
+                  off += bs
+          if note == "ok":
+              if off > size:
+                  note = "TRUNCATED by %d bytes" % (off - size)
+              elif off < size:
+                  note = "stops %d bytes short" % (size - off)
+          # Runs of the same type collapsed: a file can hold hundreds of mdat boxes
+          # and printing each one buries the answer.
+          out = []
+          for t in chain:
+              if out and out[-1][0] == t: out[-1][1] += 1
+              else: out.append([t, 1])
+          age = int((__import__('time').time() - os.path.getmtime(p)) / 60)
+          print('size=%-10s age=%-7s %-26s boxes: %s' % (
+              size, str(age) + 'min', note,
+              ' '.join(t if n == 1 else '%sx%d' % (t, n) for t, n in out)))
+          PYEOF
+              continue
+            fi
             OFF=0; CHAIN=""; NOTE="ok"
-            for _ in $(seq 1 40); do
+            WALKED=0
+            for _ in $(seq 1 400); do
               [ "$OFF" -ge "$SIZE" ] && break
+              WALKED=$((WALKED + 1))
               HDR=$(dd if="$f" bs=1 skip="$OFF" count=8 2>/dev/null | od -An -tx1 | tr -d ' \n')
               if [ "${#HDR}" -lt 16 ]; then NOTE="header past end"; break; fi
               BS=$((16#${HDR:0:8}))
@@ -193,7 +246,13 @@ jobs:
               CHAIN="$CHAIN $TY"
               OFF=$((OFF + BS))
             done
-            if [ "$NOTE" = "ok" ]; then
+            # The cap is NOT an answer. Reaching it means the walk never got
+            # to the end, so neither "short" nor "ok" may be claimed — the
+            # first run of this section claimed "short" and that was wrong
+            # about every file with a lot of boxes.
+            if [ "$NOTE" = "ok" ] && [ "$WALKED" -ge 400 ] && [ "$OFF" -lt "$SIZE" ]; then
+              NOTE="over 400 boxes, not walked"
+            elif [ "$NOTE" = "ok" ]; then
               if [ "$OFF" -gt "$SIZE" ]; then
                 NOTE="TRUNCATED by $((OFF - SIZE)) bytes"
               elif [ "$OFF" -lt "$SIZE" ]; then

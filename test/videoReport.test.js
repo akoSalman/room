@@ -83,29 +83,54 @@ function fixtures(dir) {
   big.writeUInt32BE(0, 8);
   big.writeUInt32BE(16 + 3000, 12);
   up('big64.mp4', Buffer.concat([ftyp, moov, big, Buffer.alloc(3000, 0x22)]));
+  // MANY boxes, and sound. This is the case the first version of the walk
+  // got wrong: it stopped after a fixed number of boxes and reported the
+  // unwalked remainder as "stops N bytes short", which reads exactly like a
+  // truncation. Every real video on the server came back that way, and the
+  // shortfalls it printed were megabytes.
+  const many = [ftyp, moov];
+  for (let i = 0; i < 120; i++) many.push(box('mdat', Buffer.alloc(64, 0x33)));
+  up('many.mp4', Buffer.concat(many));
   // A voice note. Not an MP4, and must not be judged as one.
   up('voice.webm', Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(900, 7)]));
   fs.writeFileSync(path.join(dir, 'server.js'), 'function streamChunkToPart() {}\n');
 }
 
-function run() {
+/**
+ * Run the report over the fixtures.
+ *
+ * `hidePython` runs it with python3 unreachable, which is the SHELL walk —
+ * the one that spawns processes per box, needs a cap, and lied because of
+ * that cap. Whether the server has python3 is not something this repository
+ * gets to decide, so both paths are tested and both must agree.
+ */
+function run(hidePython) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vidreport-'));
   fixtures(dir);
   const script = path.join(dir, 'report.sh');
   fs.writeFileSync(script, remoteScript());
-  return execFileSync('bash', [script], {
-    cwd: dir,
-    env: { ...process.env, APP_DIR: dir, COUNT: '12' },
-    encoding: 'utf8',
-  });
+  const env = { ...process.env, APP_DIR: dir, COUNT: '12' };
+  if (hidePython) {
+    // A PATH with the ordinary tools and no python3 anywhere on it.
+    const bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin, { recursive: true });
+    for (const t of ['bash', 'dd', 'od', 'stat', 'ls', 'head', 'grep', 'sed',
+                     'tr', 'find', 'wc', 'date', 'printf', 'seq', 'tail', 'cut']) {
+      try { fs.symlinkSync(execFileSync('bash', ['-c', `command -v ${t}`], { encoding: 'utf8' }).trim(), path.join(bin, t)); } catch {}
+    }
+    env.PATH = bin;
+  }
+  return execFileSync('bash', [script], { cwd: dir, env, encoding: 'utf8' });
 }
 
 let out = null;
-try { out = run(); } catch (e) { out = `REPORT CRASHED: ${e.message}\n${e.stdout || ''}`; }
+try { out = run(false); } catch (e) { out = `REPORT CRASHED: ${e.message}\n${e.stdout || ''}`; }
+let shellOut = null;
+try { shellOut = run(true); } catch (e) { shellOut = `REPORT CRASHED: ${e.message}\n${e.stdout || ''}`; }
 
 /** The lines of one section, by its heading. */
-function section(heading) {
-  const lines = out.split('\n');
+function section(heading, from) {
+  const lines = (from || out).split('\n');
   const at = lines.findIndex(l => l.includes(heading));
   assert.ok(at >= 0, `the report no longer has a "${heading}" section:\n${out}`);
   const rows = [];
@@ -138,6 +163,38 @@ test('…and the old columns really do call that same file healthy', () => {
   assert.ok(line, `the truncated file is missing from the old section:\n${rows.join('\n')}`);
   assert.ok(/moov_head=1/.test(line),
     'the truncated file no longer looks healthy to the old columns — check the fixture');
+});
+
+test('A FILE WITH MANY BOXES IS NOT ACCUSED OF BEING SHORT', () => {
+  // The lie the second version of this report told, and the reason it is
+  // worth a fixture of its own. The walk stopped after a fixed number of
+  // boxes and called the unwalked remainder a shortfall, so every real video
+  // on the server was reported as missing megabytes. Nothing was wrong with
+  // any of them.
+  // BOTH walks, because which one runs depends on whether the server has
+  // python3, and the shell one is the one that lied.
+  for (const [what, src] of [['python walk', out], ['shell walk', shellOut]]) {
+    const rows = section('DOES THE BOX TREE REACH THE END', src);
+    const many = rows.find(r => /size=9080\b/.test(r));
+    assert.ok(many, `${what}: the many-box file is missing:\n${rows.join('\n')}`);
+    assert.ok(!/short|TRUNCATED/.test(many),
+      `${what}: a sound file with many boxes is reported as incomplete: ${many}`);
+    assert.ok(/\bok\b/.test(many), `${what}: a sound file with many boxes was not accepted: ${many}`);
+  }
+  // And the chain stays readable rather than printing a hundred names.
+  const many = section('DOES THE BOX TREE REACH THE END').find(r => /size=9080\b/.test(r));
+  assert.ok(/mdatx120/.test(many), `repeated boxes are not collapsed: ${many}`);
+});
+
+test('…AND THE TWO WALKS AGREE ABOUT EVERY FILE', () => {
+  // A report whose answer depends on what happens to be installed is not a
+  // measurement. Compared by verdict, not by formatting.
+  const verdicts = (src) => section('DOES THE BOX TREE REACH THE END', src)
+    .map(r => r.replace(/age=\S+\s*/, '').replace(/\s+/g, ' ').trim())
+    .map(r => r.replace(/boxes:.*/, '').trim())
+    .sort();
+  assert.deepStrictEqual(verdicts(shellOut), verdicts(out),
+    'the shell walk and the python walk disagree about these files');
 });
 
 test('A SOUND FILE IS NOT ACCUSED', () => {
