@@ -423,26 +423,32 @@ test('the button names what would actually happen', () => {
   assert.strictEqual(N.pasteLabel(null), 'Paste');
 });
 
-test('the app has the button on the composer, not only in the attach menu', () => {
+test('the clipboard offer survives where it belongs, around the shutter', () => {
+  // REVERSED TWICE, and the second reversal is the user's own words: "I don't
+  // want to have a separate button called paste".
+  //
+  // First this required the composer's button to be HIDDEN when the clipboard
+  // held nothing. Then it required the opposite, because the button had been
+  // given something to do with an empty clipboard — look for the screenshot
+  // just taken. Now the button is gone altogether, and neither version of the
+  // rule applies, because the thing it was working around is fixed: the
+  // keyboard's own image key was grey only because nothing told the field it
+  // accepts images. A button to do what the keyboard does is clutter.
+  //
+  // What remains is the Paste action around the camera shutter, which
+  // predates all of this and appears only when the clipboard is holding
+  // something a text field cannot take.
   const comp = fs.readFileSync(path.join(NAT, 'src', 'components', 'Composer.tsx'), 'utf8');
   const src = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
-  // REVERSED, deliberately. This used to require the button to be HIDDEN
-  // when the clipboard held nothing, on the grounds that a control which does
-  // nothing is worse than no control.
-  //
-  // That reasoning stopped applying when the button got something to do with
-  // an empty clipboard: look for the screenshot just taken. A screenshot is
-  // never on the clipboard, so hiding the button whenever the clipboard was
-  // empty hid the only route to one from everybody who had not copied
-  // something else first — and it is also the only route allowed to ask for
-  // permission to look, because a prompt following a tap on "Paste" explains
-  // itself. See screenshotOffer.test.js.
-  assert.ok(/onPress=\{onPaste\}/.test(comp), 'there is no paste button');
-  assert.ok(/accessibilityLabel=\{pasteLabel\(clipboard\)\}/.test(comp),
-    'the button no longer names what the tap would actually do');
-  assert.ok(/onPress=\{onPaste\}/.test(comp), 'the button does nothing');
+  const strip = comp.slice(comp.indexOf('{/* Options strip */}'), comp.indexOf('qualityBar'));
+  assert.ok(!/onPress=\{onPaste\}/.test(strip),
+    'the separate paste button is back on the composer');
+  // The ring still gets both, and still decides for itself when to show it.
   assert.ok(/clipboard=\{clipboardHas\}/.test(src) && /onPaste=\{pasteFromClipboard\}/.test(src),
-    'the composer is never told what is on the clipboard');
+    'the camera ring is never told what is on the clipboard');
+  assert.ok(/actionsFor\(\{ side: 'right', clipboard \}\)/.test(
+    fs.readFileSync(path.join(NAT, 'src', 'screens', 'CameraScreen.tsx'), 'utf8')),
+    'the ring stopped offering Paste, which was the route before any button existed');
 });
 
 test('the clipboard is re-checked on coming back from another app', () => {
@@ -479,45 +485,92 @@ test('the app offers paste only when there is something to paste', () => {
 
 // ── Pasting an image from the KEYBOARD ──────────────────────────────────────
 //
-// Reported with a photo of Gboard refusing outright: "BistbargChat does not
-// support image pasting here". The clipboard button in the attach menu already
-// worked; what did not was the way people actually paste — the keyboard's own
-// image key, which every keyboard greys out unless the text field says it can
-// take images. A React Native TextInput never says so and has no prop for it,
-// which is why the field itself is patched.
+// Reported twice with a photograph of Gboard refusing: "BistbargChat does not
+// support image pasting here", and asked for again as "I don't want a separate
+// button called paste — make the keyboard's paste work".
+//
+// IT WAS FIXED ONCE AND THE FIX NEVER RAN. It patched ReactEditText.java in
+// node_modules; since React Native 0.71 the Android code is a prebuilt
+// artifact from Maven, so node_modules/react-native/ReactAndroid/src is not
+// compiled unless the project builds React Native from source, which this one
+// does not. React Native's own android/README.md says so.
+//
+// Four tests passed the whole time. They asserted that the PATCH FILE
+// contained setContentMimeTypes, createWrapper and an emit — the shape of a
+// diff, which is not the same as anything running. A patch against code that
+// is never compiled is indistinguishable, to a test like that, from a fix.
+//
+// So these check the one property that decides whether this works at all:
+// the code is in the app's own module, which the build compiles.
+const PLUGIN = path.join(NAT, 'plugins', 'withImagePaste.js');
+const JAVA_DIR = path.join(NAT, 'plugins', 'imagePaste');
 
-const PATCH = path.join(NAT, 'patches', 'react-native+0.74.5.patch');
+test('THE FIX IS SOMEWHERE THE BUILD ACTUALLY COMPILES', () => {
+  // The whole lesson of the first attempt, as an assertion.
+  assert.ok(!fs.existsSync(path.join(NAT, 'patches', 'react-native+0.74.5.patch')),
+    'the patch against prebuilt React Native is back; it cannot run');
+  assert.ok(fs.existsSync(PLUGIN), 'nothing puts the paste code into the project');
+  const mod = fs.readFileSync(path.join(JAVA_DIR, 'ImagePasteModule.java'), 'utf8');
+  const pkg = fs.readFileSync(path.join(JAVA_DIR, 'ImagePastePackage.java'), 'utf8');
+  // Copied into android/app/src/main/java, which is the app's own module.
+  const plugin = fs.readFileSync(PLUGIN, 'utf8');
+  assert.ok(/'android', 'app', 'src', 'main', 'java'/.test(plugin),
+    'the Java is written somewhere other than the app module');
+  assert.ok(/__PACKAGE__/.test(mod) && /__PACKAGE__/.test(pkg),
+    'the Java hardcodes a package name, so it cannot compile for both brands');
+});
 
-test('THE BUG: the text field tells the keyboard it accepts images', () => {
-  assert.ok(fs.existsSync(PATCH), 'the patch is gone, so keyboards refuse images again');
-  const patch = fs.readFileSync(PATCH, 'utf8');
-  assert.ok(patch.includes('ReactEditText.java'), 'the patch is not against the text field');
-  assert.ok(/setContentMimeTypes\(outAttrs, new String\[\] \{"image\/\*"\}\)/.test(patch),
-    'nothing advertises image support, which is the whole of the bug');
-  assert.ok(/createWrapper\(inputConnection, outAttrs, listener\)/.test(patch),
-    'the keyboard is told images are accepted and then has nowhere to deliver them');
-  assert.ok(/emit\("onPasteImage"/.test(patch), 'the committed image never reaches JS');
+test('THE FIELD DECLARES THAT IT TAKES IMAGES', () => {
+  // The whole of the bug: a keyboard greys out its image key unless the
+  // focused field says it accepts them.
+  const mod = fs.readFileSync(path.join(JAVA_DIR, 'ImagePasteModule.java'), 'utf8');
+  assert.ok(/setOnReceiveContentListener\(v, new String\[\] \{"image\/\*"\}/.test(mod),
+    'nothing declares image support, which is the whole of the bug');
+  assert.ok(/resolveView\(viewTag\)/.test(mod), 'it is not attached to any particular field');
+  assert.ok(/restartInput\(v\)/.test(mod),
+    'a field focused before this ran keeps a grey image key until the next focus');
+});
+
+test('ORDINARY TEXT PASTING IS LEFT ALONE', () => {
+  // The one thing this must not break. Everything that is not a URI goes
+  // back to the platform to insert exactly as before.
+  const mod = fs.readFileSync(path.join(JAVA_DIR, 'ImagePasteModule.java'), 'utf8');
+  assert.ok(/payload\.partition\(item -> item\.getUri\(\) != null\)/.test(mod),
+    'the listener swallows the whole payload, so pasting text stops working');
+  assert.ok(/return rest;/.test(mod), 'what is not an image is never handed back');
 });
 
 test('the pasted image is copied before the permission is given back', () => {
   // The read grant on the keyboard's content:// URI ends when the callback
   // returns. Staging that URI and uploading it a moment later would find
   // nothing there — the paste would look accepted and send an empty file.
-  const patch = fs.readFileSync(PATCH, 'utf8');
-  const commit = patch.slice(patch.indexOf('onCommitContent'), patch.indexOf('createWrapper('));
-  assert.ok(commit.includes('requestPermission()'), 'the file is read without permission');
-  const copied = commit.indexOf('new java.io.FileOutputStream');
-  const released = commit.indexOf('releasePermission()');
+  const mod = fs.readFileSync(path.join(JAVA_DIR, 'ImagePasteModule.java'), 'utf8');
+  const copied = mod.indexOf('new FileOutputStream');
+  const emitted = mod.indexOf('emit("onPasteImage"');
   assert.ok(copied > -1, 'the image is never copied out of the keyboard\'s temporary URI');
-  assert.ok(released > copied, 'the permission is handed back before the file has been copied');
-  assert.ok(commit.includes('getCacheDir()'), 'the copy is not somewhere this app can read later');
+  assert.ok(emitted > copied, 'JavaScript is handed the URI before the bytes are copied');
+  assert.ok(/getCacheDir\(\)/.test(mod), 'the copy is not somewhere this app can read later');
 });
 
 test('a field that cannot do it still types', () => {
-  // A text input that throws while being focused would be a far worse bug
-  // than one that cannot take a pasted image.
-  const patch = fs.readFileSync(PATCH, 'utf8');
-  assert.ok(/catch \(Throwable t\)/.test(patch), 'a failure here breaks every text field in the app');
+  // A composer that throws while mounting would be a far worse bug than one
+  // that cannot take a pasted image.
+  const mod = fs.readFileSync(path.join(JAVA_DIR, 'ImagePasteModule.java'), 'utf8');
+  assert.ok((mod.match(/catch \(Throwable ignored\)/g) || []).length >= 3,
+    'a failure anywhere in here reaches the text field');
+  const comp = fs.readFileSync(path.join(NAT, 'src', 'components', 'Composer.tsx'), 'utf8');
+  assert.ok(/try \{ NativeModules\.ImagePaste\?\.enable\?\.\(tag\); \} catch \{\}/.test(comp),
+    'a build without the native module breaks the composer');
+});
+
+test('THE SEPARATE PASTE BUTTON IS GONE', () => {
+  // Asked for in those words. It was only ever a way round the keyboard's
+  // image key being grey, and that is fixed where it belongs now.
+  const comp = fs.readFileSync(path.join(NAT, 'src', 'components', 'Composer.tsx'), 'utf8');
+  const strip = comp.slice(comp.indexOf('{/* Options strip */}'), comp.indexOf('qualityBar'));
+  assert.ok(!/onPress=\{onPaste\}/.test(strip), 'the strip still has a paste button on it');
+  assert.ok(/findNodeHandle\(inputRef\.current\)/.test(comp),
+    'nothing tells the keyboard this field takes images, so removing the button removes the feature');
 });
 
 test('the app stages what the keyboard hands over', () => {

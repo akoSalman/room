@@ -2,10 +2,11 @@
 // clearing never re-render the parent chat screen (and its heavy message list),
 // which is what made the input feel laggy and leave stale text after sending.
 import React, {
-  forwardRef, memo, useImperativeHandle, useRef, useState, useCallback,
+  forwardRef, memo, useImperativeHandle, useRef, useState, useCallback, useEffect,
 } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView, Image, StyleSheet,
+  NativeModules, findNodeHandle,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
@@ -13,7 +14,6 @@ import { C, isRTL } from '../theme';
 import { useOrderedFavEmojis, noteEmojiUse } from '../favEmojis';
 import EmojiEditor from './EmojiEditor';
 import { mentionQuery, applyMention, filterUsernames } from '../mentions';
-import { pasteLabel } from '../pasteDrop';
 
 export type ComposerHandle = {
   setText: (v: string) => void;
@@ -56,20 +56,13 @@ type Props = {
   /** Everyone in this chat who can be @mentioned. */
   mentionables?: string[];
   /**
-   * What is on the clipboard, if it is something a text field cannot take.
-   *
-   * Null hides the paste button entirely: a control that does nothing is worse
-   * than no control, and this one would do nothing most of the time.
-   */
-  clipboard?: 'image' | 'file' | null;
-  onPaste?: () => void;
-  /**
    * A screenshot taken moments ago, which the clipboard knows nothing about.
    *
-   * Separate from `clipboard` rather than another value of it, because the two
-   * are offered differently: the clipboard gets an icon on the strip, and this
-   * gets a thumbnail — the person needs to see WHICH picture before attaching
-   * one they have not chosen from anywhere.
+   * A thumbnail rather than an icon: this offers to attach a picture the
+   * person did not choose from anywhere, so they have to see WHICH one before
+   * they tap. (The clipboard itself is no longer offered here at all — the
+   * keyboard pastes images now, and the Paste action around the camera
+   * shutter covers a file copied in a file manager.)
    */
   screenshot?: { uri: string } | null;
   onSendScreenshot?: () => void;
@@ -95,7 +88,6 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
     pendingMedia, oneTimeSecs, quickEmoji, editing,
     onTyping, onSend, onAttach, onRecord, onRecordPressIn, onOneTime, onLocation, liveLocation,
     sendQuality, onQuality, disappearing,
-    clipboard, onPaste,
     screenshot, onSendScreenshot, onDismissScreenshot,
     onToggleQuickEmoji, onRemoveMedia, onRenameMedia, onPreviewMedia, mentionables,
     onDraftChange,
@@ -111,6 +103,25 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
   const [editEmojis, setEditEmojis] = useState(false);
   const textRef = useRef('');
   const inputRef = useRef<TextInput>(null);
+
+  // ── Let the keyboard paste an image here ─────────────────────────────────
+  //
+  // Reported twice with a photograph of Gboard refusing: "BistbargChat does
+  // not support image pasting here". A keyboard greys out its image key
+  // unless the focused field declares that it accepts images, and a React
+  // Native TextInput declares nothing — there is no prop for it.
+  //
+  // The declaration is made natively against this exact field; see
+  // plugins/imagePaste. What comes back arrives as the onPasteImage event
+  // ChatScreen already listens for, so a pasted image is staged exactly like
+  // a picked one.
+  useEffect(() => {
+    const tag = findNodeHandle(inputRef.current);
+    if (tag == null) return;
+    // Optional on purpose: a build without the native module, and iOS, both
+    // simply keep the behaviour they had.
+    try { NativeModules.ImagePaste?.enable?.(tag); } catch {}
+  }, []);
   const set = useCallback((v: string) => {
     textRef.current = v;
     setText(v);
@@ -199,8 +210,10 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
 
       {/* ── The screenshot just taken ──────────────────────────────────────
           Asked for: send a screenshot without going to the gallery for it. A
-          screenshot never reaches the clipboard, so the 📋 button beside this
-          cannot offer it and is right not to — see ../screenshots.ts.
+          screenshot taken with the buttons never reaches the clipboard at
+          all, so nothing that reads the clipboard can offer it — see
+          ../screenshots.ts. (Some keyboards DO hold one as a copied image,
+          and those now paste straight into the field above.)
 
           A thumbnail, not just words: this says "that one" about a picture
           the person has just seen, and a chip reading "Send screenshot" with
@@ -252,22 +265,16 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
             color={liveLocation ? '#22c55e' : C.text}
           />
         </TouchableOpacity>
-        {/* Always here now.
-            It used to appear only when the clipboard held something, on the
-            grounds that a control which does nothing is worse than no
-            control. That stopped being true when it got something to do with
-            an EMPTY clipboard: look for the screenshot just taken, which is
-            never on the clipboard at all (../screenshots.ts). Hiding it was
-            then hiding the one route to a screenshot from everybody who had
-            not copied something else first — and it is also the only route
-            that can ask for permission to look, because a prompt following a
-            tap on "Paste" explains itself.
-            The label still names what would actually happen; with nothing
-            copied it reads simply "Paste". */}
-        <TouchableOpacity style={s.stripBtn} onPress={onPaste}
-          accessibilityLabel={pasteLabel(clipboard)}>
-          <Text style={s.stripBtnText}>📋</Text>
-        </TouchableOpacity>
+        {/* NO PASTE BUTTON. Asked for in those words: "I don't want to have a
+            separate button called paste".
+            It was only ever a way round the real problem — the keyboard's own
+            image key being grey, because nothing told the field it accepts
+            images. That is fixed where it belongs now (see the effect above
+            and plugins/imagePaste), and a button for it would be a second way
+            to do something the keyboard already does.
+            The clipboard offer survives where it was before any of this: as
+            the Paste action around the camera shutter, which appears only
+            when the clipboard is actually holding something. */}
         {!quickEmoji && (
           <TouchableOpacity style={s.stripBtn}
             onPress={() => { onToggleQuickEmoji(true); AsyncStorage.removeItem('quickEmojiClosed'); }}>

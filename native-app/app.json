@@ -138,7 +138,8 @@
         }
       ],
       "./plugins/withNotifeeDataSync",
-    "./plugins/withScreenShareService"
+      "./plugins/withScreenShareService",
+      "./plugins/withImagePaste"
     ],
     "extra": {},
     "scheme": "chatroom"

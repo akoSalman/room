@@ -7536,8 +7536,6 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
           // this list; this is how it reaches storage without moving.
           onDraftChange={onDraftChange}
           onSend={sendText}
-          clipboard={clipboardHas}
-          onPaste={pasteFromClipboard}
           screenshot={shot}
           onSendScreenshot={takeScreenshot}
           onDismissScreenshot={dismissScreenshot}
