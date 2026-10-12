@@ -71,13 +71,30 @@ test('…ABOUT PHOTOS ONLY, both ways', () => {
     'one of the two permission calls is not narrowed to photos');
 });
 
-test('THE PASTE BUTTON IS REACHABLE WITH AN EMPTY CLIPBOARD', () => {
-  // It used to be hidden unless the clipboard held something, which would
-  // have made the route above dead code: a screenshot is never on the
-  // clipboard, so there would have been nothing to reveal the button.
-  assert.ok(!/\{!!clipboard && \(\s*\n\s*<TouchableOpacity style=\{s\.stripBtn\} onPress=\{onPaste\}/.test(COMPOSER),
-    'the paste button is hidden when the clipboard is empty, so a screenshot can never be reached through it');
-  assert.ok(/onPress=\{onPaste\}/.test(COMPOSER), 'there is no paste button at all');
+test('NOTHING PROMPTS FOR PERMISSION ANY MORE, and that is a known cost', () => {
+  // REVERSED, at the user's request: "I don't want to have a separate button
+  // called paste". That button was the only route allowed to ASK for gallery
+  // permission — a prompt following a tap on Paste explains itself, while one
+  // raised by opening a conversation does not.
+  //
+  // So the offer now reaches only phones that already hold the permission,
+  // which most do, because saving any received photo asks for it. There is no
+  // silent half-measure here: the automatic look still never prompts, and
+  // nothing else does either.
+  //
+  // The route is not gone, only narrowed — the Paste action around the camera
+  // shutter still runs pasteFromClipboard, which still falls back to looking
+  // for a screenshot and may ask. It appears only when the clipboard is
+  // holding something, which is not when you would want it, and that is the
+  // cost being recorded here rather than discovered later.
+  const comp = fs.readFileSync(path.join(NAT, 'src', 'components', 'Composer.tsx'), 'utf8');
+  const strip = comp.slice(comp.indexOf('{/* Options strip */}'), comp.indexOf('qualityBar'));
+  assert.ok(!/onPress=\{onPaste\}/.test(strip), 'the separate paste button is back');
+  // The fallback itself must still exist, or the narrowing becomes a removal.
+  const paste = /async function pasteFromClipboard\(\) \{([\s\S]*?)\n  \}/.exec(CHAT);
+  assert.ok(paste, 'could not find pasteFromClipboard');
+  assert.ok(/findScreenshot\(true\)/.test(paste[1]),
+    'the one remaining route that may ask for permission no longer looks for a screenshot');
 });
 
 test('THE ALBUM DECIDES, and the filename is only the fallback', () => {

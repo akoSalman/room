@@ -443,9 +443,14 @@ test('the clipboard offer survives where it belongs, around the shutter', () => 
   const strip = comp.slice(comp.indexOf('{/* Options strip */}'), comp.indexOf('qualityBar'));
   assert.ok(!/onPress=\{onPaste\}/.test(strip),
     'the separate paste button is back on the composer');
-  // The ring still gets both, and still decides for itself when to show it.
-  assert.ok(/clipboard=\{clipboardHas\}/.test(src) && /onPaste=\{pasteFromClipboard\}/.test(src),
+  // The ring still gets the clipboard, and still decides for itself when to
+  // show Paste. It reaches pasteFromClipboard through its action list rather
+  // than through a prop — the prop existed only for the button that is gone,
+  // and went with it.
+  assert.ok(/clipboard=\{clipboardHas\}/.test(src),
     'the camera ring is never told what is on the clipboard');
+  assert.ok(/case 'paste': return pasteFromClipboard\(\);/.test(src),
+    'the ring\'s Paste action no longer pastes');
   assert.ok(/actionsFor\(\{ side: 'right', clipboard \}\)/.test(
     fs.readFileSync(path.join(NAT, 'src', 'screens', 'CameraScreen.tsx'), 'utf8')),
     'the ring stopped offering Paste, which was the route before any button existed');
