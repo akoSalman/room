@@ -25,11 +25,14 @@ package __PACKAGE__;
 import android.content.ClipData;
 import android.content.Context;
 import android.net.Uri;
+// android.util.Pair, not androidx.core.util.Pair: ContentInfoCompat.partition
+// returns the platform one, which the compiler had to say out loud before it
+// was believed.
+import android.util.Pair;
 import android.view.View;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
 
-import androidx.core.util.Pair;
 import androidx.core.view.ContentInfoCompat;
 import androidx.core.view.OnReceiveContentListener;
 import androidx.core.view.ViewCompat;
