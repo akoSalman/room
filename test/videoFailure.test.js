@@ -127,6 +127,32 @@ test('THE PLAYER KEEPS THE REASON AT EVERY POINT IT ARRIVES', () => {
     'a video that never opens is indistinguishable from one that failed');
 });
 
+test('A REFUSAL TO START IS NOT SILENCE EITHER', () => {
+  // Reported with a photograph: the video opens, shows its first frame and
+  // its length — so it loaded — and tapping play does nothing at all.
+  // Nothing is what it did: the rejection went into an empty catch, and a
+  // player that could not begin was indistinguishable from a button that had
+  // not been pressed.
+  //
+  // onError does not cover this. A file whose container parses and whose
+  // first frame draws has already loaded; what fails afterwards fails when
+  // the decoder is asked for frames, which is here.
+  const fn = /const togglePlay = useCallback\(\(\) => \{([\s\S]*?)\n  \}, \[playing\]\);/.exec(PLAYER);
+  assert.ok(fn, 'could not find togglePlay');
+  assert.ok(!/playAsync\(\)\.catch\(\(\) => \{\}\)/.test(fn[1]),
+    'a player that refuses to start still fails silently');
+  assert.ok(/playAsync\(\)\.catch\(\(e: any\) => \{[\s\S]*?setReason\(playbackReason\(e\)/.test(fn[1]),
+    'the reason the player gave for refusing is thrown away');
+  assert.ok(/setFailed\(true\)/.test(fn[1]), 'nothing on screen says it failed');
+  // A rejection with nothing to say must still say something.
+  assert.ok(/\|\| 'The player refused to start'/.test(fn[1]),
+    'an empty rejection shows an empty message, which is the silence again');
+  // Pausing is still allowed to fail quietly: a pause that does not happen
+  // leaves the video playing, which the person can see and press again.
+  assert.ok(/pauseAsync\(\)\.catch\(\(\) => \{\}\)/.test(fn[1]),
+    'pausing now raises an error overlay over a video that is playing fine');
+});
+
 test('…AND SHOWS IT', () => {
   // Kept and not displayed would be the same bug one step further on.
   assert.ok(/\{!!reason && <Text style=\{s\.failReason\}>\{reason\}<\/Text>\}/.test(PLAYER),

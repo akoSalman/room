@@ -116,6 +116,9 @@ function fixtures(dir) {
   const at1 = sftyp.length + moovLen + 8;
   const at2 = at1 + md1.length;
   up('offs_good.mp4', Buffer.concat([sftyp, moovWith([at1, at2]), md1, md2]));
+  // The same file under an uppercase extension: the offsets section had its
+  // own lowercase glob too.
+  up('offs_good.MOV', Buffer.concat([sftyp, moovWith([at1, at2]), md1, md2]));
   // The classic faststart-done-wrong: the offsets still describe the layout
   // the file had before the moov was moved in front of the media.
   up('offs_bad.mp4', Buffer.concat([sftyp, moovWith([sftyp.length + 8, sftyp.length + 8 + 1008]), md1, md2]));
@@ -132,6 +135,15 @@ function fixtures(dir) {
   const b1 = sftyp.length + m64len + 8;
   up('offs64_bad.mp4', Buffer.concat([sftyp, moov64([8, 9]), md1, md2]));
   up('offs64_good.mp4', Buffer.concat([sftyp, moov64([b1, b1 + md1.length]), md1, md2]));
+  // AN UPPERCASE EXTENSION. This is the fixture that was missing, and its
+  // absence is why the report was believed: every section listed
+  // uploads/*.mp4 uploads/*.mov uploads/*.m4v, Linux globs are
+  // case-sensitive, and the videos being complained about came from a phone
+  // and from Telegram as .MOV. None of them was ever examined.
+  up('phone.MOV', good);
+  // And an m4a voice note, which shares the MP4 container and would crowd
+  // every list out if the report went purely on magic bytes.
+  up('voice.m4a', Buffer.concat([ftyp, moov, box('mdat', Buffer.alloc(200, 0x44))]));
   // A voice note. Not an MP4, and must not be judged as one.
   up('voice.webm', Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(900, 7)]));
   fs.writeFileSync(path.join(dir, 'server.js'), 'function streamChunkToPart() {}\n');
@@ -291,6 +303,46 @@ test('TRAILING JUNK IS NOT READ AS A BOX', () => {
   assert.ok(extra, `the padded file is missing from the walk:\n${rows.join('\n')}`);
   assert.ok(/not a box type/.test(extra),
     `64 bytes of nulls were accepted as a box: ${extra}`);
+});
+
+test('THE BUG: a .MOV is examined like any other video', () => {
+  // The report listed files by lowercase extension, so .MOV — what phones and
+  // Telegram produce, and what was being complained about — was invisible to
+  // every structural section. The report said the server's videos were sound
+  // while the failing ones had never been looked at.
+  // EVERY section that examines videos, not just one: each had its own
+  // lowercase glob, and fixing one would leave the others blind.
+  // EVERY section that examines videos, not just one: each had its own
+  // lowercase glob, and fixing one would leave the others blind.
+  for (const h of ['the newest videos, and whether they are videos',
+                   'DOES THE BOX TREE REACH THE END']) {
+    const rows = section(h);
+    // good.mp4 and phone.MOV are byte-identical, so both must appear.
+    const same = rows.filter(r => /size=5448\b/.test(r));
+    assert.strictEqual(same.length, 2,
+      `"${h}" still skips a .MOV — ${same.length} of the two identical files:\n${rows.join('\n')}`);
+  }
+  // The offsets section needs a file that HAS a sample table, so it gets its
+  // own identical pair.
+  // Filtered on the verdict as well: offs_bad.mp4 is the same size by
+  // construction, being the same layout with the offsets left behind.
+  const offs = section('DO THE CHUNK OFFSETS POINT AT THE MEDIA')
+    .filter(r => /filesize=2104\b/.test(r) && /\bok\b/.test(r));
+  assert.strictEqual(offs.length, 2,
+    `the offsets section still skips a .MOV — ${offs.length} of the two identical files`);
+  const walked = section('DOES THE BOX TREE REACH THE END').filter(r => /size=5448\b/.test(r));
+  assert.ok(walked.every(r => /\bok\b/.test(r)), `a sound .MOV was accused: ${walked.join('\n')}`);
+});
+
+test('…and an m4a voice note does not crowd the videos out', () => {
+  // Audio shares the MP4 container, so selecting purely on magic bytes would
+  // fill every list with voice notes and push the videos off the end.
+  const rows = section('DOES THE BOX TREE REACH THE END');
+  // The size is computed, not guessed: the first version of this looked for
+  // a number the fixture never had, so it passed whatever the report did.
+  const m4aSize = (8 + 24) + (8 + 400) + (8 + 200);
+  assert.ok(!rows.some(r => new RegExp(`size=${m4aSize}\\b`).test(r)),
+    `a voice note is being walked as a video:\n${rows.join('\n')}`);
 });
 
 test('A VOICE NOTE IS NOT JUDGED AS AN MP4', () => {

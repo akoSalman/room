@@ -79,6 +79,30 @@ jobs:
           set +e
           cd "$APP_DIR" 2>/dev/null || { echo "APP_DIR missing"; exit 0; }
 
+          # ── Which files are videos ───────────────────────────────
+          #
+          # By their BYTES, not their names. Every section below used to list
+          # uploads/*.mp4 uploads/*.mov uploads/*.m4v, and Linux globs are
+          # case-sensitive — so a .MOV, which is what phones and Telegram
+          # hand over, was never examined by any of them. This report said
+          # the server's videos were sound while the ones being complained
+          # about had never been looked at.
+          #
+          # An MP4-family file names its own type at bytes 4..8. Newest
+          # first, bounded so a server with thousands of uploads is not
+          # stat-ed end to end.
+          mp4_files() {
+            ls -t uploads/ 2>/dev/null | head -n 400 | while read -r b; do
+              f="uploads/$b"
+              [ -f "$f" ] || continue
+              [ "$(dd if="$f" bs=1 skip=4 count=4 2>/dev/null)" = "ftyp" ] || continue
+              # Audio shares the container; this report is about video, and
+              # m4a voice notes would crowd every list out.
+              case "$b" in *.m4a|*.M4A|*.aac|*.AAC) continue ;; esac
+              echo "$f"
+            done
+          }
+
           echo "### which upload handler is running here"
           # The deploy is scp, not git, so git HEAD lies. The file is the
           # evidence — and the streaming handler is the suspect.
@@ -134,9 +158,7 @@ jobs:
           # first time it was run. They are listed above, by what they are.
           #
           # No filenames: only the size, the box type, and what was found.
-          ls -t uploads/*.mp4 uploads/*.mov uploads/*.m4v 2>/dev/null \
-            | head -n "$COUNT" | while read -r f; do
-            [ "$(dd if="$f" bs=1 skip=4 count=4 2>/dev/null)" = "ftyp" ] || continue
+          mp4_files | head -n "$COUNT" | while read -r f; do
             SIZE=$(stat -c%s "$f" 2>/dev/null)
             BOX=$(dd if="$f" bs=1 skip=4 count=4 2>/dev/null | tr -cd '[:print:]')
             # Searched in the first and last megabyte: faststart puts moov at
@@ -164,10 +186,8 @@ jobs:
           #
           # No decoder and no dependencies: lengths and four-character types,
           # which is all this needs and all it may write down.
-          ls -t uploads/*.mp4 uploads/*.mov uploads/*.m4v 2>/dev/null \
-            | head -n "$COUNT" | while read -r f; do
+          mp4_files | head -n "$COUNT" | while read -r f; do
             SIZE=$(stat -c%s "$f" 2>/dev/null)
-            [ "$(dd if="$f" bs=1 skip=4 count=4 2>/dev/null)" = "ftyp" ] || continue
             # python3 does the whole walk in one pass where it exists. The
             # shell version below spawns three processes PER BOX, which is
             # why it needs a cap at all — and a cap is what made the first
@@ -269,8 +289,7 @@ jobs:
           # if so how much? 'ftyp' is the first box of every MP4, so the
           # offset it is found at IS the number of bytes lost from the front.
           # A chunk-sized answer — 131072, 262144 — names the cause outright.
-          ls -t uploads/*.mp4 uploads/*.mov uploads/*.m4v 2>/dev/null \
-            | head -n 6 | while read -r f; do
+          mp4_files | head -n 6 | while read -r f; do
             SIZE=$(stat -c%s "$f" 2>/dev/null)
             # Byte offset of the first 'ftyp', or nothing when there is none.
             AT=$(grep -abo -m1 ftyp "$f" 2>/dev/null | head -1 | cut -d: -f1)
@@ -292,9 +311,7 @@ jobs:
           #
           # Offsets and counts only, which say nothing about the content.
           if command -v python3 >/dev/null 2>&1; then
-            ls -t uploads/*.mp4 uploads/*.mov uploads/*.m4v 2>/dev/null \
-              | head -n 10 | while read -r f; do
-              [ "$(dd if="$f" bs=1 skip=4 count=4 2>/dev/null)" = "ftyp" ] || continue
+            mp4_files | head -n 10 | while read -r f; do
               python3 - "$f" <<'STCOEOF'
           import sys, os
           p = sys.argv[1]
@@ -369,7 +386,7 @@ jobs:
           # or "Invalid data" means the bytes on this server are wrong and no
           # phone can be blamed for refusing them.
           if command -v ffprobe >/dev/null 2>&1; then
-            NEWEST=$(ls -t uploads/*.mp4 uploads/*.mov uploads/*.m4v 2>/dev/null | head -1)
+            NEWEST=$(mp4_files | head -1)
             if [ -n "$NEWEST" ]; then
               ffprobe -v error -show_entries format=duration,size,format_name \
                 -show_entries stream=codec_name,codec_type,width,height \

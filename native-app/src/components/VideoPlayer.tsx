@@ -156,8 +156,21 @@ export default function VideoPlayer({
   }, [scrubbing]);
 
   const togglePlay = useCallback(() => {
-    if (playing) videoRef.current?.pauseAsync().catch(() => {});
-    else videoRef.current?.playAsync().catch(() => {});
+    if (playing) { videoRef.current?.pauseAsync().catch(() => {}); return; }
+    // A REFUSAL TO START IS NOT SILENCE.
+    //
+    // Reported as: the video opens, shows its first frame and its length, and
+    // tapping play does nothing at all. Nothing is exactly what this did — the
+    // rejection went into an empty catch, so a player that could not begin
+    // looked identical to a button that had not been pressed.
+    //
+    // onError does not cover it: a file whose container parses and whose
+    // first frame draws has already loaded, and what fails afterwards fails
+    // here, when the decoder is actually asked for frames.
+    videoRef.current?.playAsync().catch((e: any) => {
+      setFailed(true);
+      setReason(playbackReason(e) || 'The player refused to start');
+    });
   }, [playing]);
 
   // Read through a ref, never from the closure. Everything below that touches
