@@ -31,7 +31,7 @@ if (!fs.existsSync(TSC)) {
 const OUT = fs.mkdtempSync(path.join(os.tmpdir(), 'sharehandoff-'));
 execFileSync(TSC, [path.join(NAT, 'src', 'shareHandoff.ts'),
   '--outDir', OUT, '--module', 'commonjs', '--target', 'es2019', '--skipLibCheck'], { stdio: 'pipe' });
-const { overlayVisible, handoffExpired, HANDOFF_GRACE_MS } = require(path.join(OUT, 'shareHandoff.js'));
+const { overlayVisible, handoffExpired, shareKey, HANDOFF_GRACE_MS } = require(path.join(OUT, 'shareHandoff.js'));
 
 const CHAT = fs.readFileSync(path.join(NAT, 'src', 'screens', 'ChatScreen.tsx'), 'utf8');
 const APP = fs.readFileSync(path.join(NAT, 'App.tsx'), 'utf8');
@@ -139,6 +139,90 @@ test('…and the backstop is actually armed', () => {
   assert.ok(/setPendingShare\(null\)/.test(eff[1]), 'the expired hand-off is never cleared');
   assert.ok(/clearTimeout\(t\)/.test(eff[1]),
     'the timer outlives the share, so a later one is cut short by an older timer');
+});
+
+// ── The chat picker, opening twice ─────────────────────────────────────────
+//
+// Reported as: sharing something to the app opens the chat list several times
+// — two, in the report.
+//
+// The picker was guarded by a boolean, "a picker has been built", and both
+// ways out of a share set it back to false on their way past, together with
+// the room list that was the second guard. That is only safe if the intent is
+// gone by the next render, and it is not: resetShareIntent goes through React
+// state, and it only fires when the shareIntent captured in its own closure
+// still looks present. So the effect ran again with the intent still reported
+// and nothing left to stop it.
+//
+// A boolean cannot say WHICH share was dealt with, which is the thing that
+// needed remembering.
+
+test('THE SAME SHARE IS RECOGNISED AFTER THE HOOK REBUILDS IT', () => {
+  // The hook makes a new object on every refresh, so object identity changes
+  // while the share does not — which is exactly the case the old boolean was
+  // standing in for and got wrong.
+  const a = { files: [{ path: '/cache/a.jpg', fileName: 'A.jpg' }], text: 'hello' };
+  const b = { files: [{ path: '/cache/a.jpg', fileName: 'A.jpg' }], text: 'hello' };
+  assert.strictEqual(shareKey(a), shareKey(b), 'the same share reads as two, so the picker opens twice');
+});
+
+test('…and a DIFFERENT share still gets a picker', () => {
+  // The failure that would be worse than the bug: a guard that sticks, and a
+  // second share that can never be sent anywhere.
+  const a = { files: [{ path: '/cache/a.jpg' }] };
+  assert.notStrictEqual(shareKey(a), shareKey({ files: [{ path: '/cache/b.jpg' }] }),
+    'two different files read as one share');
+  assert.notStrictEqual(shareKey({ text: 'one' }), shareKey({ text: 'two' }),
+    'two different texts read as one share');
+  assert.notStrictEqual(shareKey({ webUrl: 'https://a' }), shareKey({ webUrl: 'https://b' }),
+    'two different links read as one share');
+});
+
+test('…and it is never empty while a share is present', () => {
+  // The key is compared against a ref that starts empty. "" on both sides
+  // would read as "already handled" for a share nobody has touched, and no
+  // picker would ever open.
+  for (const si of [{}, null, undefined, { files: [] }]) {
+    assert.ok(shareKey(si), `an empty share keys to nothing: ${JSON.stringify(si)}`);
+  }
+});
+
+test('BOTH WAYS OUT RECORD WHICH SHARE THEY HANDLED', () => {
+  // Choosing a chat and cancelling both used to disarm the guard instead,
+  // which is what let the picker come back.
+  const choose = /function chooseShareTarget\(r: any\) \{([\s\S]*?)\n  \}/.exec(APP);
+  assert.ok(choose, 'could not find chooseShareTarget');
+  assert.ok(/handledShareRef\.current = shareKey\(si\);/.test(choose[1]),
+    'choosing a chat does not record the share, so the picker opens again');
+  assert.ok(choose[1].indexOf('handledShareRef.current') < choose[1].indexOf('resetShareIntent()'),
+    'the share is recorded after the reset, which is the race that caused this');
+  const cancel = /function cancelShare\(\) \{([\s\S]*?)\n  \}/.exec(APP);
+  assert.ok(cancel, 'could not find cancelShare');
+  assert.ok(/handledShareRef\.current = shareKey\(shareIntent\);/.test(cancel[1]),
+    'cancelling does not stick, so the picker comes straight back');
+});
+
+test('…and neither of them disarms the guard any more', () => {
+  assert.ok(!/sharePickerBuiltRef/.test(APP),
+    'the boolean guard is back; it cannot say which share was handled');
+  const eff = /if \(!hasShareIntent\) \{ handledShareRef\.current = ''; buildingShareRef\.current = ''; return; \}/.exec(APP);
+  assert.ok(eff, 'nothing re-arms for the next share when the intent finally clears');
+});
+
+test('A LIST ALREADY ON ITS WAY IS NOT FETCHED TWICE', () => {
+  // The room list is a round trip and the effect re-runs while it is in
+  // flight, so without this a slow connection buys two requests and two
+  // pickers — the same symptom by a different route.
+  assert.ok(/if \(buildingShareRef\.current === key\) return;/.test(APP),
+    'a second fetch starts while the first is still running');
+  assert.ok(/buildingShareRef\.current = key;/.test(APP), 'nothing records the fetch in flight');
+});
+
+test('THE EFFECT WATCHES THE SHARE IT KEYS ON', () => {
+  // The key is computed from shareIntent, so an effect that does not depend
+  // on it would compare against a stale one.
+  assert.ok(/\}, \[hasShareIntent, screen, shareRooms, shareIntent\]\);/.test(APP),
+    'the picker effect ignores the share it is keyed on');
 });
 
 let passed = 0, failed = 0;

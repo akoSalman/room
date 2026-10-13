@@ -38,7 +38,7 @@ import * as renderCount from './src/renderCount';
 import * as keepAlive from './src/keepAlive';
 import { BUILD_VERSION } from './src/version';
 import * as storage from './src/storage';
-import { overlayVisible, handoffExpired, HANDOFF_GRACE_MS } from './src/shareHandoff';
+import { overlayVisible, handoffExpired, shareKey, HANDOFF_GRACE_MS } from './src/shareHandoff';
 import * as socketNotifier from './src/socketNotifier';
 import * as roomOrder from './src/roomOrder';
 import { C } from './src/theme';
@@ -324,13 +324,34 @@ export default function App() {
     storage.sweep(BUILD_VERSION).catch(() => {});
   }, []);
 
-  const sharePickerBuiltRef = React.useRef(false);
+  // WHICH share has been dealt with, not whether one has.
+  //
+  // Reported as: sharing something opens the chat list twice. This was a
+  // boolean, and both ways out of a share set it back to false as they left,
+  // together with the room list that was the second guard. That is safe only
+  // if the intent is gone by the next render — and it is not, because
+  // resetShareIntent goes through React state and only fires when the value
+  // its closure captured still looks present. The effect then ran again with
+  // the intent still reported and nothing left to stop it.
+  //
+  // A key keeps saying "this one is done" for as long as the intent lingers,
+  // while still letting a genuinely different share through. See
+  // ./src/shareHandoff.
+  const handledShareRef = React.useRef('');
+  // And which one's list is being FETCHED. The room list takes a round trip,
+  // and the effect re-runs while it is in flight — the hook rebuilds its value
+  // on every refresh — so without this a slow connection buys two requests and
+  // two pickers.
+  const buildingShareRef = React.useRef('');
   useEffect(() => {
-    if (!hasShareIntent) { sharePickerBuiltRef.current = false; return; } // armed for the next share
-    if (screen === 'auth' || sharePickerBuiltRef.current) return;
+    if (!hasShareIntent) { handledShareRef.current = ''; buildingShareRef.current = ''; return; }
+    if (screen === 'auth') return;
+    const key = shareKey(shareIntent);
+    if (handledShareRef.current === key) return;   // chosen or cancelled already
+    if (buildingShareRef.current === key) return;  // its list is on its way
     // A picker is already on screen — never build a second one on top of it.
     if (shareRooms) return;
-    sharePickerBuiltRef.current = true;
+    buildingShareRef.current = key;
     (async () => {
       try {
         const [rooms, dms] = await Promise.all([apiFetch('/rooms'), apiFetch('/dm-rooms')]);
@@ -341,7 +362,7 @@ export default function App() {
         setShareRooms(list);
       } catch { setShareRooms([]); }
     })();
-  }, [hasShareIntent, screen, shareRooms]);
+  }, [hasShareIntent, screen, shareRooms, shareIntent]);
 
   // Only used when the sending app gave us no display name at all.
   function readableShareName(f: any) {
@@ -380,16 +401,21 @@ export default function App() {
       })),
       text: caption || null,
     });
+    // Recorded BEFORE the reset, which is what makes it survive an intent
+    // that has not cleared yet — the cause of the second picker.
+    handledShareRef.current = shareKey(si);
     resetShareIntent();
-    sharePickerBuiltRef.current = false;
     setShareRooms(null);
     setRoom({ id: r.id, name: r.name, is_dm: r.is_dm, other_username: r.other_username });
     setScreen('chat');
   }
 
   function cancelShare() {
+    // Cancelling has to stick for the same reason choosing does: without this
+    // the picker came straight back, which is a dialog that cannot be
+    // dismissed.
+    handledShareRef.current = shareKey(shareIntent);
     resetShareIntent();
-    sharePickerBuiltRef.current = false;
     setShareRooms(null);
   }
 

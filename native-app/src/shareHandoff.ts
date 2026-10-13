@@ -25,6 +25,47 @@
 export const HANDOFF_GRACE_MS = 10_000;
 
 /**
+ * A stable identity for one incoming share.
+ *
+ * Reported as: sharing something opens the chat list twice.
+ *
+ * The picker was guarded by a boolean — "a picker has been built" — which both
+ * ways out of the share reset to false on their way past, along with the room
+ * list that served as the second guard. That is safe only if the intent is
+ * gone by the next render, and it is not: resetShareIntent calls a React state
+ * setter, and it calls it only when the shareIntent captured in its closure
+ * still looks present. So the effect could run again with the intent still
+ * reported, both guards freshly cleared, and build a second picker on top of
+ * the first.
+ *
+ * A boolean cannot say WHICH share was dealt with, which is the thing that
+ * actually needs remembering — and it has to keep saying it for as long as the
+ * intent lingers, while still letting a genuinely new share through. Hence a
+ * key: same share, no second picker; different share, a picker.
+ *
+ * Built from what the sender gave us, not from object identity: the hook
+ * rebuilds its value on every refresh, so identity changes while the share
+ * does not.
+ */
+export function shareKey(si: unknown): string {
+  const s = (si || {}) as Record<string, any>;
+  const files = Array.isArray(s.files) ? s.files : [];
+  const parts = files.map((f: any) => {
+    const o = (f || {}) as Record<string, any>;
+    // The path is what identifies a shared file; the rest is description.
+    return String(o.path || o.contentUri || '');
+  });
+  for (const k of ['text', 'webUrl']) {
+    const v = s[k];
+    if (typeof v === 'string' && v) parts.push(`${k}:${v}`);
+  }
+  // Never empty while a share is present: the key is compared against a ref
+  // that starts empty, and "" on both sides would read as "already handled"
+  // for a share nobody has touched.
+  return parts.length ? parts.join('\u0000') : 'share';
+}
+
+/**
  * Should the "preparing" overlay be on screen?
  *
  * Two stages, deliberately one overlay: the intent arriving and the room list
