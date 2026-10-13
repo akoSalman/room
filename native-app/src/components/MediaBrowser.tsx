@@ -45,6 +45,7 @@ import {
   toRows, rowOf, cellSize, shouldLoadMore, restoreToken, shouldRestore, restoreOffset,
 } from '../roomMedia';
 import { mediaSource } from '../mediaSource';
+import { tileUri } from '../galleryOffline';
 import * as videoCoverStore from '../videoCoverStore';
 import { coverKindFor, coverLabel, coverTint } from '../fileCover';
 
@@ -71,7 +72,7 @@ const TABS: [MediaTab, string, string][] = [
  * spinner and a fade cost more than they are worth, and the square is already
  * the placeholder.
  */
-const Cell = memo(function Cell({ item, index, size, marginRight, thumb, onOpen, onMenu }: {
+const Cell = memo(function Cell({ item, index, size, marginRight, thumb, onOpen, onMenu, offlineUri }: {
   item: MediaItem;
   index: number;
   size: number;
@@ -79,7 +80,27 @@ const Cell = memo(function Cell({ item, index, size, marginRight, thumb, onOpen,
   thumb: (path: string, w: number) => string;
   onOpen: (index: number) => void;
   onMenu: (item: MediaItem) => void;
+  /** The device's own copy of this picture, if it is holding one. */
+  offlineUri?: (item: MediaItem) => Promise<string | null>;
 }) {
+  // ── With no connection ───────────────────────────────────────────────────
+  //
+  // Every tile here is a request for a size the server renders on demand, so
+  // offline the grid is empty however many of these pictures the phone has.
+  // It has the full-size ones the person has looked at; see ../galleryOffline
+  // for why they cannot simply be cached as thumbnails instead.
+  //
+  // Asked for only once the thumbnail has actually failed: online that never
+  // happens, so this costs nothing and adds no disk check to the open.
+  const [local, setLocal] = useState<string | null>(null);
+  const asked = useRef(false);
+  const onFailed = useCallback(() => {
+    if (asked.current || !offlineUri) return;
+    asked.current = true;
+    offlineUri(item).then(u => { if (u) setLocal(u); }).catch(() => {});
+  }, [item, offlineUri]);
+  const uri = tileUri({ thumb: thumb(item.url, 96), local });
+
   return (
     <Pressable
       onPress={() => onOpen(index)}
@@ -90,7 +111,8 @@ const Cell = memo(function Cell({ item, index, size, marginRight, thumb, onOpen,
       {/* The SMALLEST thumbnail the server offers: a cell is ~130px, so asking
           for more only makes the grid slower to fill. */}
       <Image
-        source={mediaSource(thumb(item.url, 96))}
+        source={local ? { uri: local } : mediaSource(uri || '')}
+        onError={onFailed}
         style={{ width: size, height: size, backgroundColor: PLACEHOLDER }}
         contentFit="cover"
         // Both caches on: memory for the tiles just scrolled past, disk for
@@ -106,7 +128,7 @@ const Cell = memo(function Cell({ item, index, size, marginRight, thumb, onOpen,
   );
 });
 
-const Row = memo(function Row({ row, first, size, thumb, onOpen, onMenu }: {
+const Row = memo(function Row({ row, first, size, thumb, onOpen, onMenu, offlineUri }: {
   row: MediaItem[];
   /** Index of this row's first photo in the whole list. */
   first: number;
@@ -114,6 +136,7 @@ const Row = memo(function Row({ row, first, size, thumb, onOpen, onMenu }: {
   thumb: (path: string, w: number) => string;
   onOpen: (index: number) => void;
   onMenu: (item: MediaItem) => void;
+  offlineUri?: (item: MediaItem) => Promise<string | null>;
 }) {
   return (
     <View style={{ flexDirection: 'row', marginBottom: GAP }}>
@@ -127,6 +150,7 @@ const Row = memo(function Row({ row, first, size, thumb, onOpen, onMenu }: {
           thumb={thumb}
           onOpen={onOpen}
           onMenu={onMenu}
+          offlineUri={offlineUri}
         />
       ))}
     </View>
@@ -229,7 +253,7 @@ function ListRow({ item, icon, sub, onOpen, onMenu }: {
 
 export default function MediaBrowser({
   visible, title, avatar, state, tab, onTab, onClose, onOpenImage, onLoadMore, loadingMore,
-  thumbUrl, focusIndex, openId, baseUrl, onAction, onMenu,
+  thumbUrl, focusIndex, openId, baseUrl, onAction, onMenu, offlineUri,
 }: {
   visible: boolean;
   title: string;
@@ -247,6 +271,13 @@ export default function MediaBrowser({
   onLoadMore: () => void;
   loadingMore: boolean;
   thumbUrl: (path: string, w: number) => string;
+  /**
+   * The device's own copy of a picture, when it is holding one.
+   *
+   * Only consulted after a thumbnail has failed, which online never happens.
+   * It is what makes the grid work with no connection — see ../galleryOffline.
+   */
+  offlineUri?: (item: MediaItem) => Promise<string | null>;
   /** Photo to land on when reopening, and which open this is. */
   focusIndex: number;
   openId: number;
@@ -368,8 +399,9 @@ export default function MediaBrowser({
   const openMenu = useCallback((item: MediaItem) => setMenuFor(item), []);
 
   const renderRow = useCallback(({ item, index }: { item: MediaItem[]; index: number }) => (
-    <Row row={item} first={index * COLS} size={cell} thumb={thumbUrl} onOpen={openImage} onMenu={openMenu} />
-  ), [cell, thumbUrl, openImage, openMenu]);   // cell changes only on rotation
+    <Row row={item} first={index * COLS} size={cell} thumb={thumbUrl} onOpen={openImage} onMenu={openMenu}
+      offlineUri={offlineUri} />
+  ), [cell, thumbUrl, openImage, openMenu, offlineUri]);   // cell changes only on rotation
 
   const rowHeight = cell + GAP;
   const getItemLayout = useCallback(

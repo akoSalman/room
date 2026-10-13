@@ -95,6 +95,7 @@ import EdgeBack from '../components/EdgeBack';
 import ExpiryRing from '../components/ExpiryRing';
 import TextViewer from '../components/TextViewer';
 import * as mediaCache from '../mediaCache';
+import { fullImageUrl } from '../galleryOffline';
 import { pickVoice, wantsPrefetch, MAX_ON_OPEN } from '../voicePrefetch';
 import * as offline from '../offlineStore';
 import ImageEditor from '../components/ImageEditor';
@@ -4253,6 +4254,13 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   // useCallback because the gallery's thumbnails are memoised on it: a new
   // function every render would re-render every tile in the grid on every
   // render of the chat, which is most of what made the gallery lag.
+  /** The device's own copy of a gallery picture, if it has one. */
+  const offlineTileUri = useCallback(async (item: { url: string }) => {
+    const full = fullImageUrl(item?.url, BASE_URL);
+    if (!full) return null;
+    return mediaCache.peek(full);
+  }, []);
+
   const thumbUrl = useCallback((uploadPath: string, w: number) => {
     const [bare, query] = String(uploadPath).split('?');
     const name = encodeURIComponent(bare.replace(/^\/uploads\//, ''));
@@ -6899,6 +6907,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         onLoadMore={loadMoreMedia}
         loadingMore={mediaLoadingMore}
         thumbUrl={thumbUrl}
+        // With no connection the grid's thumbnails cannot be fetched at all —
+        // the server renders them on demand. This hands back the full-size
+        // picture the device is already holding, which is the one thing that
+        // makes the gallery work offline. See ../galleryOffline for why the
+        // thumbnails themselves must not be cached instead.
+        offlineUri={offlineTileUri}
         baseUrl={BASE_URL}
         focusIndex={mediaFocusIndex}
         openId={mediaOpenId}
