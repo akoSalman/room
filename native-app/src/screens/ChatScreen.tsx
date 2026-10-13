@@ -548,6 +548,9 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   const [cameraMode, setCameraMode] = useState<'photo' | 'video' | null>(null);
   // Preparing a file for the OS share sheet (download happens first).
   const [sharingOut, setSharingOut] = useState(false);
+  // The same thing, readable synchronously. Two taps land in the same frame
+  // and both would see the state as it was before either of them ran.
+  const sharingOutRef = useRef(false);
   // The open video, plus whether it is shrunk to the floating window. The
   // player is NOT a Modal — see VideoPlayer — so minimising keeps it playing.
   const [videoItem, setVideoItem] = useState<VideoItem | null>(null);
@@ -3650,6 +3653,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   // Download first: the OS share sheet needs a real local file, not a URL.
   async function shareOut(msg: Message) {
     if (!msg.file_path) return;
+    // ONE AT A TIME. expo-sharing keeps a single pending promise and throws
+    // "Another share request is being processed now" at anything that arrives
+    // while one is open — so a second tap, or a second file chosen before the
+    // first sheet closes, is that error with no crash involved. The flag was
+    // already here; nothing read it.
+    if (sharingOutRef.current) return;
     if (msg.one_time_seconds) { Alert.alert('Not allowed', 'One-time media cannot be shared.'); return; }
     // A gallery is several files; the share sheet takes one, so share the first.
     let remote = msg.file_path;
@@ -3657,6 +3666,10 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       try { remote = JSON.parse(msg.file_path)[0]; } catch {}
     }
     if (!remote) return;
+    // Raised HERE, with nothing between it and the try that lowers it. Set any
+    // earlier and the returns above leak it, and a flag that is never lowered
+    // is the very thing this guards against: no share would work again.
+    sharingOutRef.current = true;
     try {
       if (!(await Sharing.isAvailableAsync())) {
         Alert.alert('Not available', 'Sharing is not available on this device.');
@@ -3687,6 +3700,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       // how a broken path stayed a mystery through several reports.
       Alert.alert('Could not share', String(e?.message || e || 'Unknown error'));
     } finally {
+      sharingOutRef.current = false;
       setSharingOut(false);
     }
   }

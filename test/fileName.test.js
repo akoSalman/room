@@ -161,9 +161,12 @@ const app = fs.readFileSync(path.join(ROOT, 'public', 'js', 'app.js'), 'utf8');
 const html = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
 
 test('THE CRASH IS FIXED: the share writes to a safe path', () => {
-  const fn = chat.slice(chat.indexOf('async function shareOut('),
-    chat.indexOf('async function shareOut(') + 2200);
-  assert.ok(fn.length > 200, 'shareOut moved');
+  // The function, not a fixed number of characters of it: this sliced 2200
+  // and silently stopped covering its own last assertion the moment a comment
+  // was added above it.
+  const m = /async function shareOut\(msg: Message\) \{([\s\S]*?)\n  \}/.exec(chat);
+  assert.ok(m, 'shareOut moved');
+  const fn = m[1];
   assert.ok(/cacheDirectory \+ cacheName\(/.test(fn),
     'the cache path is still built from the raw name, which is the crash');
   assert.ok(/safeName\(/.test(fn), 'the name handed to the sheet is not made safe');
