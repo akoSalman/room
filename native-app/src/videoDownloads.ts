@@ -103,11 +103,33 @@ export function get(url: string): DownloadState | null {
   return state.get(keyFor(url)) || null;
 }
 
-/** The local copy if there is one, otherwise null. Checks disk on first ask. */
+/**
+ * The local copy if there is one, otherwise null.
+ *
+ * VERIFIED, not remembered. This used to return the remembered path the moment
+ * the state said "done", and check the disk only on the first ask — so a file
+ * that went away afterwards left the app certain it still had it.
+ *
+ * Things do take it away. A phone short of space reclaims; the cleaners these
+ * devices ship with are used, and used often; and this app's own startup sweep
+ * caps the video directory. None of that reaches this map, which lives for as
+ * long as the process does.
+ *
+ * What it produced was a video that said "Saved on this device" in the player
+ * and would not play — the one honest-looking state in which nothing works,
+ * and reported as exactly that. Being wrong here is worse than being slow: a
+ * stat is cheap, and the alternative is a file:// path to nothing.
+ */
 export async function localUri(url: string): Promise<string | null> {
   const key = keyFor(url);
   const known = state.get(key);
-  if (known?.status === 'done' && known.uri) return known.uri;
+  if (known?.status === 'done' && known.uri) {
+    if (await stillThere(known.uri)) return known.uri;
+    // Gone. Forgetting it is what puts the download back on the bubble
+    // instead of leaving a tile that claims to be ready.
+    state.delete(key);
+    emit();
+  }
   const path = pathFor(url);
   try {
     const info = await FileSystem.getInfoAsync(path);
@@ -285,6 +307,23 @@ export async function adopt(localUri: string, remoteUrl: string, canKeep = true)
     emit();
     return true;
   } catch {
+    return false;
+  }
+}
+
+/**
+ * Is the file still where it was left, with bytes in it?
+ *
+ * Both halves matter. A zero-byte file is what an interrupted copy leaves
+ * behind, and it exists — so existence alone would keep saying yes to
+ * something no player can open.
+ */
+async function stillThere(uri: string): Promise<boolean> {
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    return !!(info.exists && (info as any).size > 0);
+  } catch {
+    // Unreadable is the same as absent for every purpose here.
     return false;
   }
 }
