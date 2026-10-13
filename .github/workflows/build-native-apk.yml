@@ -473,6 +473,25 @@ jobs:
               echo "::warning::Attempt $attempt HUNG (no exit within 18 minutes) — thread dump above."
             fi
           done
+          # ── The compiler's own words, where they can be read ──────────
+          #
+          # The Gradle log is uploaded as an artifact and summarised into the
+          # step summary, and neither is reachable through the API a session
+          # has: artifacts redirect to blob storage, and a step summary is not
+          # an endpoint. Annotations ARE. So the error-shaped lines go out as
+          # annotations too — which is the difference between "Gradle did not
+          # produce an APK" and knowing which file would not compile.
+          #
+          # Filtered, not dumped: only lines that look like a compiler saying
+          # no, bounded in number and length, and never a line mentioning the
+          # signing password that is on Gradle's command line.
+          grep -aE '(^|[[:space:]])e: file:|error:|^> Task .* FAILED|What went wrong|Execution failed|^Caused by:' \
+            "$GRADLE_LOG" 2>/dev/null \
+            | grep -avi 'password\|keystore\|signing\|key.alias' \
+            | tail -n 25 \
+            | while IFS= read -r line; do
+                printf '::error::%s\n' "$(printf '%s' "$line" | tr -d '\r' | cut -c1-280)"
+              done
           echo "::error::Gradle did not produce an APK."
           exit 1
 
