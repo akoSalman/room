@@ -2507,7 +2507,21 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     AsyncStorage.getItem('quickEmojiClosed').then(v => { if (v === '1') setQuickEmoji(false); });
   }, []);
 
-  // Files/text shared from another app land staged in the composer
+  // Files/text shared from another app land staged in the composer.
+  //
+  // ON initialShare, NOT ON MOUNT. Reported as: sharing into the app sticks on
+  // "Preparing shared content…" for ever.
+  //
+  // This ran with `[]`, so it fired once when the screen mounted and never
+  // again — and this screen is not keyed by room, so choosing the share's
+  // target chat while already in a chat reuses the same component rather than
+  // mounting a new one. The effect had already run, before the share existed,
+  // with nothing to do. Nothing staged the files and nothing called
+  // onShareConsumed, which is what takes the overlay down.
+  //
+  // Safe to depend on: the parent sets a fresh object per share and clears it
+  // to null on consumption, so this runs exactly twice per share — once to
+  // stage it, once to fall out at the guard below.
   useEffect(() => {
     if (!initialShare) return;
     if (initialShare.files?.length) {
@@ -2527,7 +2541,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     }
     if (initialShare.text) composerRef.current?.setText(initialShare.text);
     onShareConsumed?.();
-  }, []);
+  }, [initialShare]);
 
   // URLs belonging to one-time media: view-only, never saved or screenshotted
   function isOneTimeUrl(url: string | null): boolean {

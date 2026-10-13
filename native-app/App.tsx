@@ -38,6 +38,7 @@ import * as renderCount from './src/renderCount';
 import * as keepAlive from './src/keepAlive';
 import { BUILD_VERSION } from './src/version';
 import * as storage from './src/storage';
+import { overlayVisible, handoffExpired, HANDOFF_GRACE_MS } from './src/shareHandoff';
 import * as socketNotifier from './src/socketNotifier';
 import * as roomOrder from './src/roomOrder';
 import { C } from './src/theme';
@@ -282,6 +283,22 @@ export default function App() {
   const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntent();
   const [shareRooms, setShareRooms] = useState<any[] | null>(null);
   const [pendingShare, setPendingShare] = useState<any>(null);
+  // The backstop. The FIX is in ChatScreen, which now consumes a share when it
+  // arrives rather than only when it mounts; this is here because the failure
+  // it guards against is total — the overlay below has no cancel, and an app
+  // that cannot be used again until it is force-stopped is a worse outcome
+  // than a file that did not attach.
+  useEffect(() => {
+    if (!pendingShare) return;
+    const started = Date.now();
+    const t = setTimeout(() => {
+      // Asked rather than assumed: the timer firing is not by itself proof
+      // that the time has passed, and throwing away a share that is still
+      // being staged would turn a backstop into a bug.
+      if (handoffExpired({ since: started, now: Date.now() })) setPendingShare(null);
+    }, HANDOFF_GRACE_MS);
+    return () => clearTimeout(t);
+  }, [pendingShare]);
 
   // The chat picker must be built exactly ONCE per incoming share. This effect
   // also depends on `screen` (it has to wait for sign-in before it can load the
@@ -910,7 +927,14 @@ export default function App() {
               (pendingShare is cleared by onShareConsumed). Previously it
               stopped at the picker, so after choosing a chat the user watched
               an empty composer with no idea anything was still happening. */}
-          <Modal visible={(hasShareIntent && !shareRooms && screen !== 'auth') || !!pendingShare} transparent animationType="fade">
+          <Modal
+            visible={overlayVisible({ hasShareIntent, shareRooms, screen, pendingShare })}
+            transparent
+            animationType="fade"
+            // Dismissable. Without this, hardware back did nothing and a
+            // hand-off that stopped half way left the app unusable.
+            onRequestClose={() => setPendingShare(null)}
+          >
             <View style={sh.busyOverlay}>
               <View style={sh.busyCard}>
                 <ActivityIndicator size="large" color={C.accent} />
