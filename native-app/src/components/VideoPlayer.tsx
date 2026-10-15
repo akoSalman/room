@@ -17,8 +17,11 @@ import {
   View, Text, StyleSheet, TouchableOpacity, ActivityIndicator,
   Animated, PanResponder, Dimensions, Pressable,
 } from 'react-native';
-import { Video, ResizeMode, AVPlaybackStatus } from 'expo-av';
-import { playbackReason, failureHint } from '../videoFailure';
+import { Video, ResizeMode, AVPlaybackStatus, Audio } from 'expo-av';
+import { playbackReason, failureHint, isBackgroundAudioRefusal } from '../videoFailure';
+// The mode the rest of the app leaves behind, so the retry below changes one
+// thing about it and not the others.
+import { PLAYBACK_MODE } from '../voiceRecorder';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import { C } from '../theme';
@@ -167,9 +170,35 @@ export default function VideoPlayer({
     // onError does not cover it: a file whose container parses and whose
     // first frame draws has already loaded, and what fails afterwards fails
     // here, when the decoder is actually asked for frames.
-    videoRef.current?.playAsync().catch((e: any) => {
+    videoRef.current?.playAsync().catch(async (e: any) => {
+      const why = playbackReason(e);
+      // ── The refusal that is not about the video ────────────────────────
+      //
+      // "AudioFocusNotAcquiredException: This experience is currently in the
+      // background" — said while the person is looking at the player. expo-av
+      // keeps a paused flag set on host pause and cleared on host resume, and
+      // a resume that does not reach it leaves the flag stuck; the audio mode
+      // this app leaves behind (voiceRecorder's, staysActiveInBackground
+      // false) is what turns that stale flag into a refusal.
+      //
+      // Neither half is worth arguing with from here. Saying the audio may
+      // continue in the background makes the check pass, and for this player
+      // it is also true: it has a floating window that keeps playing, and the
+      // app holds a foreground service. Tried ONCE — a second failure is a
+      // real one and is shown.
+      if (isBackgroundAudioRefusal(why)) {
+        try {
+          await Audio.setAudioModeAsync({ ...PLAYBACK_MODE, staysActiveInBackground: true });
+          await videoRef.current?.playAsync();
+          return;
+        } catch (again: any) {
+          setFailed(true);
+          setReason(playbackReason(again) || why || 'The player refused to start');
+          return;
+        }
+      }
       setFailed(true);
-      setReason(playbackReason(e) || 'The player refused to start');
+      setReason(why || 'The player refused to start');
     });
   }, [playing]);
 

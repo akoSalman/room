@@ -68,6 +68,36 @@ function textOf(err: unknown): string {
 }
 
 /**
+ * Is this the refusal that is not about the video at all?
+ *
+ * Reported with a photograph of the error line this file exists to produce:
+ *
+ *     expo.modules.av.AudioFocusNotAcquiredException: This experience is
+ *     currently in the background, so audio focus could not be acquired.
+ *
+ * Nothing to do with the file, the codec or the download — the three things
+ * three rounds of guessing had been spent on. expo-av refuses to start when it
+ * believes the app is in the background:
+ *
+ *     if (mAppIsPaused && !mStaysActiveInBackground) throw …
+ *
+ * mAppIsPaused is set on host pause and cleared on host resume, and a resume
+ * that does not reach the module leaves it stuck — the app is in front of the
+ * person and the player will not start. The other half is ours:
+ * voiceRecorder's modes set staysActiveInBackground false, globally, so the
+ * stale flag is enough on its own to refuse.
+ *
+ * Matched on the exception's own name rather than its sentence, which is
+ * wording and could be translated or reworded; the background phrase is
+ * accepted too because the name alone is a wider net than this deserves.
+ */
+export function isBackgroundAudioRefusal(reason: unknown): boolean {
+  const r = typeof reason === 'string' ? reason : '';
+  if (!r) return false;
+  return /AudioFocusNotAcquired/i.test(r) && /background/i.test(r);
+}
+
+/**
  * What the reason means, in one line, when it is one of the few that have a
  * plain explanation.
  *

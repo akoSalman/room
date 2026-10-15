@@ -34,7 +34,7 @@ if (!fs.existsSync(TSC)) {
 const OUT = fs.mkdtempSync(path.join(os.tmpdir(), 'vidfail-'));
 execFileSync(TSC, [path.join(NAT, 'src', 'videoFailure.ts'),
   '--outDir', OUT, '--module', 'commonjs', '--target', 'es2019', '--skipLibCheck'], { stdio: 'pipe' });
-const { playbackReason, failureHint } = require(path.join(OUT, 'videoFailure.js'));
+const { playbackReason, failureHint, isBackgroundAudioRefusal } = require(path.join(OUT, 'videoFailure.js'));
 
 const PLAYER = fs.readFileSync(path.join(NAT, 'src', 'components', 'VideoPlayer.tsx'), 'utf8');
 
@@ -115,6 +115,69 @@ test('THE HINT EXPLAINS ONLY WHAT IT ACTUALLY KNOWS', () => {
   assert.strictEqual(failureHint(''), '');
 });
 
+// ── The refusal that was not about the video ────────────────────────────────
+//
+// What the error line produced, on its first outing, from a photograph:
+//
+//     expo.modules.av.AudioFocusNotAcquiredException: This experience is
+//     currently in the background, so audio focus could not be acquired.
+//
+// Three rounds had been spent on the codec, the file and the download. It was
+// none of them. expo-av refuses to start when it believes the app is
+// backgrounded — mAppIsPaused && !mStaysActiveInBackground — and that flag is
+// set on host pause and cleared on host resume, so a resume that does not
+// reach the module leaves the player refusing while the person is looking at
+// it. The audio mode this app leaves behind makes the stale flag enough.
+
+test('THE REAL CAUSE IS RECOGNISED', () => {
+  assert.strictEqual(isBackgroundAudioRefusal(
+    'expo.modules.av.AudioFocusNotAcquiredException: This experience is currently in the background, so audio focus could not be acquired.'),
+    true, 'the refusal that actually happened is not recognised');
+});
+
+test('…and nothing else is mistaken for it', () => {
+  // The expensive failure here is silently retrying a REAL problem with a
+  // different audio mode and reporting nothing.
+  for (const other of [
+    'AudioFocusNotAcquiredException: Audio focus could not be acquired from the OS at this time.',
+    'AudioFocusNotAcquiredException: Expo Audio is disabled, so audio focus could not be acquired.',
+    'MediaCodecVideoRenderer error, index=0',
+    'Source error: unable to connect',
+    'The app was in the background',
+    '', null, undefined,
+  ]) {
+    assert.strictEqual(isBackgroundAudioRefusal(other), false,
+      `treated as the background refusal: ${JSON.stringify(other)}`);
+  }
+});
+
+test('THE PLAYER RECOVERS FROM IT, ONCE', () => {
+  // Saying the audio may continue in the background makes the check pass, and
+  // for this player it is true: it has a floating window that keeps playing
+  // and the app holds a foreground service.
+  const fn = /const togglePlay = useCallback\(\(\) => \{([\s\S]*?)\n  \}, \[playing\]\);/.exec(PLAYER);
+  assert.ok(fn, 'could not find togglePlay');
+  assert.ok(/if \(isBackgroundAudioRefusal\(why\)\) \{/.test(fn[1]),
+    'the one refusal that can be recovered from is treated like any other');
+  assert.ok(/setAudioModeAsync\(\{ \.\.\.PLAYBACK_MODE, staysActiveInBackground: true \}\)/.test(fn[1]),
+    'nothing changes the setting that causes the refusal');
+  assert.ok(/await videoRef\.current\?\.playAsync\(\);/.test(fn[1]),
+    'the mode is changed and play is never tried again');
+});
+
+test('…and a second failure is reported, not retried for ever', () => {
+  // A retry loop here would be a video that never plays and never says why.
+  const fn = /const togglePlay = useCallback\(\(\) => \{([\s\S]*?)\n  \}, \[playing\]\);/.exec(PLAYER);
+  const branch = /if \(isBackgroundAudioRefusal\(why\)\) \{([\s\S]*?)\n      \}/.exec(fn[1]);
+  assert.ok(branch, 'could not find the recovery branch');
+  assert.strictEqual((branch[1].match(/isBackgroundAudioRefusal/g) || []).length, 0,
+    'the recovery can recurse, so a persistent refusal retries for ever');
+  assert.ok(/catch \(again: any\) \{[\s\S]*?setFailed\(true\)/.test(branch[1]),
+    'a second failure is swallowed, which is the silence this file exists to end');
+  assert.ok(/setReason\(playbackReason\(again\) \|\| why/.test(branch[1]),
+    'the second failure reports nothing, or loses the first reason');
+});
+
 // ── And that the player actually keeps it ───────────────────────────────────
 
 test('THE PLAYER KEEPS THE REASON AT EVERY POINT IT ARRIVES', () => {
@@ -141,8 +204,13 @@ test('A REFUSAL TO START IS NOT SILENCE EITHER', () => {
   assert.ok(fn, 'could not find togglePlay');
   assert.ok(!/playAsync\(\)\.catch\(\(\) => \{\}\)/.test(fn[1]),
     'a player that refuses to start still fails silently');
-  assert.ok(/playAsync\(\)\.catch\(\(e: any\) => \{[\s\S]*?setReason\(playbackReason\(e\)/.test(fn[1]),
+  // The reason has to be DERIVED from the rejection and reach setReason; how
+  // it travels between them is the recovery's business, not this check's.
+  assert.ok(/playAsync\(\)\.catch\(async \(e: any\) => \{/.test(fn[1]),
+    'the rejection is not caught at all');
+  assert.ok(/const why = playbackReason\(e\);/.test(fn[1]),
     'the reason the player gave for refusing is thrown away');
+  assert.ok(/setReason\(why \|\|/.test(fn[1]), 'the reason never reaches the screen');
   assert.ok(/setFailed\(true\)/.test(fn[1]), 'nothing on screen says it failed');
   // A rejection with nothing to say must still say something.
   assert.ok(/\|\| 'The player refused to start'/.test(fn[1]),
