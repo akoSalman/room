@@ -63,6 +63,30 @@ export function formatDistance(m: number): string {
 }
 
 /** Which tiles cover a viewport, and where to draw each one. */
+/**
+ * How many tiles to fetch beyond the edge of the screen, each way.
+ *
+ * It was none — the tiles tiled the viewport exactly. Which means the instant
+ * a finger moves the map, the edge it is pulling in is empty: there IS no tile
+ * there, because nothing outside the screen was ever asked for. Tiles for the
+ * new position arrive only when the finger lifts and the centre commits, over
+ * a connection where that is a visible wait. So a drag was a map sliding away
+ * off one side with grey following it in, which is most of what "moving around
+ * with one finger does not work fine" is.
+ *
+ * One ring is 256px of real map in every direction: enough that an ordinary
+ * drag has something under it the whole way, and enough that the tiles for
+ * where the drag lands are usually already in the image cache when it gets
+ * there.
+ *
+ * Not two rings. These phones are on metered data and one ring already more
+ * than doubles the tiles for a viewport this size, so the rest is bought on
+ * the user's bill. It is not free even at one — but the tiles a pan is going
+ * to need are tiles it was going to fetch anyway a moment later, so for the
+ * panning this picker exists for it is mostly the same bytes, earlier.
+ */
+export const TILE_MARGIN = 1;
+
 export function tilesForViewport(
   center: LatLng, zoom: number, width: number, height: number,
 ): { x: number; y: number; z: number; left: number; top: number }[] {
@@ -73,10 +97,10 @@ export function tilesForViewport(
   const originX = cx - width / 2;
   const originY = cy - height / 2;
 
-  const firstTileX = Math.floor(originX / TILE_SIZE);
-  const firstTileY = Math.floor(originY / TILE_SIZE);
-  const lastTileX = Math.floor((originX + width) / TILE_SIZE);
-  const lastTileY = Math.floor((originY + height) / TILE_SIZE);
+  const firstTileX = Math.floor(originX / TILE_SIZE) - TILE_MARGIN;
+  const firstTileY = Math.floor(originY / TILE_SIZE) - TILE_MARGIN;
+  const lastTileX = Math.floor((originX + width) / TILE_SIZE) + TILE_MARGIN;
+  const lastTileY = Math.floor((originY + height) / TILE_SIZE) + TILE_MARGIN;
 
   const n = Math.pow(2, z);
   const out: { x: number; y: number; z: number; left: number; top: number }[] = [];

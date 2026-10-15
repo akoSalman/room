@@ -22,7 +22,7 @@ import { C } from '../theme';
 import TileMap from './TileMap';
 import { LatLng, MAX_ZOOM } from '../geo';
 import {
-  Fix, PICK_ZOOM, openingView, chosenLabel, pinMoved,
+  Fix, PICK_ZOOM, openingView, chosenLabel, pinMoved, crosshairOffsets, PIN_SIZE,
 } from '../locationPick';
 
 export default function LocationPicker({
@@ -108,10 +108,19 @@ export default function LocationPicker({
               it. pointerEvents none, or it would eat the drags meant for the
               map beneath it. */}
           <View style={s.crossWrap} pointerEvents="none">
-            <Ionicons name="location" size={40} color={C.danger} />
-            {/* A dot at the exact point, because the pin's tip is what counts
-                and a teardrop icon is drawn above its own anchor. */}
-            <View style={s.crossDot} />
+            {/* Lifted so the teardrop's TIP is on the centre. Centred as it
+                was, the tip sat half a pin below the point being sent, and
+                the dot was moved down to meet the tip rather than the icon
+                up to meet the map — so the whole crosshair pointed twenty
+                pixels south of the answer. See crosshairOffsets. */}
+            <Ionicons
+              name="location"
+              size={PIN_SIZE}
+              color={C.danger}
+              style={{ marginBottom: crosshairOffsets().iconMarginBottom }}
+            />
+            {/* The dot IS the point that gets sent: dead centre, no offset. */}
+            <View style={[s.crossDot, { marginTop: crosshairOffsets().dotMarginTop }]} />
           </View>
 
           <TouchableOpacity style={s.recentre} onPress={() => { setTouched(false); onRecentre(); }}>
@@ -155,12 +164,11 @@ const s = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     alignItems: 'center', justifyContent: 'center',
   },
-  // The icon sits above its anchor point, so it is nudged up by half its own
-  // height and the dot marks the spot it actually refers to.
+  // The offsets that decide where this points live in locationPick, not here:
+  // they have to agree with each other and with the point that is sent.
   crossDot: {
     position: 'absolute', width: 8, height: 8, borderRadius: 4,
     backgroundColor: C.danger, borderWidth: 1.5, borderColor: '#fff',
-    marginTop: 20,
   },
   recentre: {
     position: 'absolute', right: 14, bottom: 14, width: 44, height: 44, borderRadius: 22,

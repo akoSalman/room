@@ -156,3 +156,46 @@ export function formatUpdated(updatedAt: unknown, now: unknown = Date.now()): st
   const days = Math.floor(hours / 24);
   return `updated ${days} d ago`;
 }
+
+// ── Where the crosshair actually points ─────────────────────────────────────
+//
+// Reported as: selecting a location is not precise.
+//
+// It was not. The point SENT is the map's centre — onSend(center) — and the
+// crosshair that is aimed with sat twenty pixels below it:
+//
+//   • the pin icon is a teardrop drawn inside a square box, tip at the bottom
+//     edge. Centred in the viewport, its tip lands half its own height BELOW
+//     the centre;
+//   • the dot was then given marginTop: 20 to meet that tip, which agreed
+//     with the icon and disagreed with the map.
+//
+// So the dot was aimed at a doorway and the point a dot-height north of it was
+// sent. At zoom 18 twenty pixels is roughly a dozen metres; at 16, fifty.
+//
+// The comment beside it described the right fix — "the icon is nudged up by
+// half its own height" — and the code did the other thing.
+//
+// Here rather than in the stylesheet because it is the one piece of geometry
+// in this screen that decides whether the answer is correct, and two numbers
+// that have to agree about a third thing belong where that can be checked.
+
+/** The size the picker draws its teardrop at. */
+export const PIN_SIZE = 40;
+
+/**
+ * What to offset the crosshair's two parts by, so both mark the centre.
+ *
+ * The icon is lifted by a whole size rather than half of one: a bottom margin
+ * grows the box being centred, so a margin of `size` puts the icon's own
+ * bottom edge — its tip — exactly on the centre line.
+ *
+ * The dot is not offset at all. It marks the point that is sent, and the point
+ * that is sent is the centre.
+ */
+export function crosshairOffsets(size: number = PIN_SIZE): {
+  iconMarginBottom: number; dotMarginTop: number;
+} {
+  const s = Number.isFinite(size) && size > 0 ? size : PIN_SIZE;
+  return { iconMarginBottom: s, dotMarginTop: 0 };
+}

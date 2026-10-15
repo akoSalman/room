@@ -30,7 +30,7 @@
 // The maths is untouched. Only the thing that reads fingers changed.
 import React, { useMemo, useRef, useState } from 'react';
 import {
-  View, Text, Image, StyleSheet, TouchableOpacity,
+  View, Text, Image, StyleSheet, TouchableOpacity, Animated,
 } from 'react-native';
 import {
   PanGestureHandler, PinchGestureHandler, TapGestureHandler, State as GHState,
@@ -85,7 +85,30 @@ export default function TileMap({
   zoomRef.current = zoom;
   const sizeRef = useRef({ width, height });
   sizeRef.current = { width, height };
-  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  // ── Why the drag is Animated and not state ───────────────────────────────
+  //
+  // Reported as: moving around with one finger does not work well.
+  //
+  // It was a setState per gesture event. Every one re-rendered every tile and
+  // every marker with new absolute positions — sixteen <Image>es reconciled
+  // and laid out again for each pixel the finger moved, on phones that have
+  // little to spare. The map followed, late and in steps.
+  //
+  // One Animated value pair, applied as a transform on the layer they all sit
+  // in, moves the whole thing with no React render at all — checked in the
+  // installed react-native rather than assumed: setValue on a JS-driven value
+  // flushes to AnimatedProps, and useAnimatedProps calls setNativeProps on the
+  // view for everything except a Fabric instance. This app is on the old
+  // architecture (no newArchEnabled anywhere, Expo 51 / RN 0.74), so that is
+  // the branch taken, and the transform never goes through React.
+  //
+  // Under Fabric it would fall back to re-rendering THIS wrapper — still only
+  // the wrapper, with the tiles inside it bailing out on unchanged children,
+  // so the worst case is far short of what it replaces.
+  //
+  // Nothing else about the gesture changes, which is what keeps the pinch
+  // interaction below intact.
+  const pan = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
   // Pinch is shown by scaling what is already drawn; the tiles for the new
   // zoom level are only fetched once the fingers lift. Re-tiling mid-pinch
   // would mean a round trip per frame.
@@ -187,7 +210,9 @@ export default function TileMap({
   const onPanEvent = (e: any) => {
     if (mode.current === 'pinch') return;   // two fingers own it
     mode.current = 'pan';
-    setDragOffset({ x: e.nativeEvent.translationX, y: e.nativeEvent.translationY });
+    // setValue, not setState: the same numbers, written to the view instead
+    // of through a render of every tile on screen.
+    pan.setValue({ x: e.nativeEvent.translationX, y: e.nativeEvent.translationY });
   };
 
   /** END, FAILED or CANCELLED — a gesture that is over, however it ended. */
@@ -209,7 +234,7 @@ export default function TileMap({
         applied.current.center, applied.current.zoom, translationX, translationY));
     }
     mode.current = 'none';
-    setDragOffset({ x: 0, y: 0 });
+    pan.setValue({ x: 0, y: 0 });
   };
 
   /**
@@ -247,7 +272,7 @@ export default function TileMap({
         liveScale.current = 1;
         pinchStart.current = { dist: 1, fx: focalX, fy: focalY };
         // Whatever the drag had shown is now the pinch's business.
-        setDragOffset({ x: 0, y: 0 });
+        pan.setValue({ x: 0, y: 0 });
         setPinch({ scale: 1, fx: focalX, fy: focalY });
       }
       return;
@@ -315,6 +340,12 @@ export default function TileMap({
       {/* Tiles and markers scale together during a pinch, so the pins stay on
           the streets they belong to while the fingers are still moving. */}
       <View style={[StyleSheet.absoluteFill, pinchTransform ? { transform: pinchTransform } : null]}>
+      {/* Everything that moves with the finger moves as ONE layer. */}
+      <Animated.View
+        style={[StyleSheet.absoluteFill, { transform: [
+          { translateX: pan.x }, { translateY: pan.y },
+        ] }]}
+      >
       {/* Tiles */}
       <View style={StyleSheet.absoluteFill}>
         {tiles.map(t => (
@@ -323,8 +354,8 @@ export default function TileMap({
             source={{ uri: tileUrl(t.x, t.y, t.z, BASE_URL) }}
             style={{
               position: 'absolute',
-              left: t.left + dragOffset.x,
-              top: t.top + dragOffset.y,
+              left: t.left,
+              top: t.top,
               width: TILE_SIZE,
               height: TILE_SIZE,
             }}
@@ -337,10 +368,15 @@ export default function TileMap({
       {/* Markers */}
       {markers.map((m, i) => {
         const p = pointToScreen(m.at, center, zoom, width, height);
-        const x = p.x + dragOffset.x;
-        const y = p.y + dragOffset.y;
+        const x = p.x;
+        const y = p.y;
         // Skip anything well outside the viewport rather than piling up views.
-        if (x < -80 || y < -80 || x > width + 80 || y > height + 80) return null;
+        //
+        // Measured from where the marker sits BEFORE the drag, because the
+        // drag no longer re-renders this. The margin is a viewport wide so a
+        // marker being dragged into view is already mounted when it arrives
+        // rather than appearing from nowhere.
+        if (x < -width || y < -height || x > width * 2 || y > height * 2) return null;
         return (
           <View key={i} style={[s.marker, { left: x - 16, top: y - 38 }]} pointerEvents="none">
             <View style={[s.pin, m.mine && s.pinMine, m.live && s.pinLive]}>
@@ -353,6 +389,7 @@ export default function TileMap({
           </View>
         );
       })}
+      </Animated.View>
       </View>
 
       {interactive && (
