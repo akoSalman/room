@@ -174,6 +174,53 @@ test('…because they all move together, as one transformed layer', () => {
     'Animated is used but never imported, so the screen crashes on open');
 });
 
+// ── 2b. One finger is not a pinch ───────────────────────────────────────────
+
+test('THE BUG: a single finger touching the map does not claim a pinch', () => {
+  // react-native-gesture-handler's pinch handler calls begin() on the FIRST
+  // touch event — one finger, nothing recognised yet — and only activates
+  // when two pointers actually span. Claiming the gesture on BEGAN therefore
+  // claimed it on every touch, and the drag handler's `if pinch return`
+  // discarded every event of every one-finger drag.
+  const body = bodyOf(mapSrc, 'onPinchState');
+  assert.ok(/state === GHState\.BEGAN\) return/.test(body),
+    'BEGAN is being acted on again, so one finger claims the gesture and dragging dies');
+  // And the claim cannot be made from here at all any more: setting the mode
+  // lives in startPinch, which only ACTIVE and a real gesture event reach.
+  assert.ok(!/mode\.current = 'pinch'/.test(body),
+    'onPinchState claims the gesture directly again, which BEGAN can reach');
+});
+
+test('…it is claimed when the pinch actually becomes ACTIVE', () => {
+  const body = bodyOf(mapSrc, 'onPinchState');
+  assert.ok(/state === GHState\.ACTIVE\) \{ startPinch\(/.test(body),
+    'nothing claims the gesture when a real pinch starts, so pinching stops working');
+});
+
+test('…and whichever pinch callback arrives first sets the baseline', () => {
+  // The zoom for the whole gesture is measured from pinchBase. If the first
+  // gesture event ran before ACTIVE had set that baseline, the pinch would be
+  // measured from whatever was left over from last time.
+  const start = bodyOf(mapSrc, 'startPinch');
+  assert.ok(/if \(mode\.current === 'pinch'\) return;/.test(start),
+    'startPinch is not idempotent, so the second caller resets the baseline mid-pinch');
+  for (const f of ['applied.current', 'pinchBase.current', 'liveScale.current']) {
+    assert.ok(start.includes(f), `startPinch no longer sets ${f}`);
+  }
+  assert.ok(/startPinch\(focalX, focalY\);/.test(bodyOf(mapSrc, 'onPinchEvent')),
+    'a gesture event that beats ACTIVE is not establishing the pinch');
+});
+
+test('a one-finger drag is not cancelled by the pinch handler failing', () => {
+  // With BEGAN no longer claiming anything, the pinch handler now FAILS
+  // partway through every single-finger drag (ACTION_UP without two
+  // pointers). Clearing the mode unconditionally there would reach into a
+  // gesture that belongs to the pan.
+  const body = bodyOf(mapSrc, 'onPinchState');
+  assert.ok(/if \(mode\.current === 'pinch'\) mode\.current = 'none';/.test(body),
+    'an ending pinch clears the mode even when a pan owns it');
+});
+
 test('the pinch still owns the gesture when two fingers are down', () => {
   // This is the guard that stopped a pinch from also being committed as a
   // drag, which used to fling the map sideways. Driving the value natively
@@ -212,6 +259,39 @@ test('a marker being dragged into view is already mounted when it arrives', () =
     `cull margin ${bounds[1]}/${bounds[2]} is a fixed few pixels: markers pop in mid-drag`);
   assert.ok(/width/.test(bounds[3]) && /height/.test(bounds[4]),
     `cull margin ${bounds[3]}/${bounds[4]} is a fixed few pixels: markers pop in mid-drag`);
+});
+
+// ── 2c. The pinch preview agrees with what the pinch commits ────────────────
+
+test('THE BUG: on a picker, the preview scales about the centre, not the fingers', () => {
+  // zoomAbout with the focal point at the middle returns the same centre —
+  // that is what pinAtCentre means, and it is what gets COMMITTED. The
+  // preview scaled about the fingers instead, so the map slid out from under
+  // the crosshair while the pinch was happening. The user aimed at what they
+  // could see and the app sent what the crosshair had been over all along.
+  assert.ok(/pinAtCentre \?\s*\{ x: width \/ 2, y: height \/ 2 \}/.test(mapSrc),
+    'the pinch preview no longer honours pinAtCentre, so what you see is not what is sent');
+  const tf = /const pinchTransform[\s\S]*?: undefined;/.exec(mapSrc);
+  assert.ok(tf, 'the pinch transform is not in a shape this can read');
+  assert.ok(!/pinch\.fx/.test(tf[0]) && !/pinch\.fy/.test(tf[0]),
+    'the transform still reads the finger position directly, bypassing pinAtCentre');
+  assert.ok(/pinchFocal\.x/.test(tf[0]) && /pinchFocal\.y/.test(tf[0]),
+    'the transform is not driven by the shared focal point');
+});
+
+test('…and an ordinary map still zooms about the fingers', () => {
+  // Only the picker wants the centre held still. A map in a message bubble
+  // should behave like every other map.
+  assert.ok(/: \{ x: pinch\.fx, y: pinch\.fy \}/.test(mapSrc),
+    'the non-picker case lost its finger-anchored zoom');
+});
+
+test('the zoom that is COMMITTED uses the same rule', () => {
+  // The two have to agree, which is the whole point. applyZoom picks the
+  // centre for a picker; the preview above now picks the same.
+  const body = bodyOf(mapSrc, 'applyZoom');
+  assert.ok(/pinAtCentreRef\.current \? \{ x: w \/ 2, y: h \/ 2 \} : focal/.test(body),
+    'the committed zoom no longer anchors a picker at its centre');
 });
 
 // ── 3. The crosshair points at the point that gets sent ─────────────────────

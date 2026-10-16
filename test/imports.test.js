@@ -279,10 +279,15 @@ test('the checker is looking at the whole app, not at nothing', () => {
   // seeing real uses, including the one this whole file is about.
   const ns = FILES.flatMap(namespaceUses);
   assert.ok(ns.length > 30, `only ${ns.length} namespace uses found — the scope walk is dropping them`);
-  assert.ok(ns.some(u => u.ns === 'pick' && u.name === 'formatUpdated'),
-    'the call that crashed the app is not among the names being checked');
   assert.ok(ns.some(u => u.ns === 'pick' && u.name === 'locationPayload'),
     'namespace calls in general are not being checked');
+  // The name that crashed the app, wherever it is imported from now. It has
+  // already moved once in this file's lifetime — from a namespace call in
+  // ChatScreen to a named import in LiveAge — so this follows the name rather
+  // than the call site it happened to have on the day it was written.
+  assert.ok(all.some(i => i.name === 'formatUpdated' && /locationPick$/.test(i.spec)),
+    'formatUpdated is no longer imported from locationPick anywhere — '
+    + 'either it moved again, or nothing is checking the name that crashed the app');
 });
 
 test('the namespace checker catches a member that is not there', () => {

@@ -122,6 +122,7 @@ import {
 import ChatSearch from '../components/ChatSearch';
 import TileMap from '../components/TileMap';
 import LocationView, { LocationPin } from '../components/LocationView';
+import LiveAge from '../components/LiveAge';
 import * as locationManager from '../locationManager';
 import {
   parseLocation, isLiveNow, formatRemaining, formatCoords, distanceMeters, formatDistance,
@@ -5726,19 +5727,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
                           is that where they are NOW, or where they were before
                           the signal went? On its own line because the line
                           above is already full on a narrow card. */}
+                      {/* Ticks itself. A row only re-renders when its message
+                          or the extraData object changes, and clockTick is
+                          deliberately not in that object — so read from here
+                          this text froze at whatever it said when the row was
+                          drawn, which is the whole of "the last update status
+                          never changes". LiveAge re-renders only itself. */}
                       {live && !!p.updatedAt && (
-                        <Text style={s.locUpdated} numberOfLines={1}>
-                          {/* Re-read on every render; clockTick above ticks
-                              every 30s, which is what keeps "4 min ago" from
-                              freezing at whatever it said when drawn.
-
-                              From locationPick, which is where it is defined.
-                              It was imported from geo, which has never had it
-                              — so this line threw on every live-location card
-                              and took the message list down with it. See
-                              test/imports.test.js. */}
-                          {pick.formatUpdated(p.updatedAt, Date.now())}
-                        </Text>
+                        <LiveAge updatedAt={p.updatedAt} style={s.locUpdated} />
                       )}
                     </View>
                   </View>

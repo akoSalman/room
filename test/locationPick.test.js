@@ -269,26 +269,72 @@ const chatSrc = fsL.readFileSync(require('path').join(__dirname, '..', 'native-a
   'src', 'screens', 'ChatScreen.tsx'), 'utf8');
 
 test('THE CARD SHOWS IT, for a live share', () => {
-  // Qualified, from the module that defines it.
-  //
   // This assertion used to read /formatUpdated\(p\.updatedAt/, which matched
   // happily while the name was imported from '../geo' — a module that has
   // never exported it. The call was `undefined`, every live-location card
-  // threw while rendering, and this test was green the whole time: it had
-  // checked that the text was present, which says nothing about the name
-  // resolving. test/imports.test.js now checks that for the whole app.
-  assert.ok(/pick\.formatUpdated\(p\.updatedAt/.test(chatSrc),
-    'the last update time is never shown, or is called unqualified again');
+  // threw while rendering, and this test was green the whole time: text being
+  // present says nothing about a name resolving. test/imports.test.js now
+  // checks that for the whole app, which is why this one can go back to
+  // asking only what it is for — whether the card shows the time.
+  assert.ok(/<LiveAge updatedAt={p\.updatedAt}/.test(chatSrc),
+    'the last update time is never shown');
   // Only for a live one: a pin dropped once was never going to move, so how
   // long ago it was dropped is the message timestamp's job.
   assert.ok(/live && !!p\.updatedAt/.test(chatSrc),
     'a one-off pin claims to be "updated", which it never is');
 });
 
+const ageSrc = fsL.readFileSync(require('path').join(__dirname, '..', 'native-app',
+  'src', 'components', 'LiveAge.tsx'), 'utf8');
+
+/**
+ * The code, with comments removed.
+ *
+ * Two assertions below are about a name NOT appearing, and both files explain
+ * at length why that name is not used — so matched against the raw text they
+ * found the explanation and failed. This is the third time in this work that
+ * a check has read a comment as if it were code.
+ */
+const code = (src) => src
+  .replace(/\/\*[\s\S]*?\*\//g, ' ')
+  .replace(/^\s*\/\/.*$/gm, ' ')
+  .replace(/\{\/\*[\s\S]*?\*\/\}/g, ' ');
+
 test('…and it does not freeze at whatever it said when drawn', () => {
-  // "4 min ago" is only true for a minute. Something has to re-render it.
-  assert.ok(/setClockTick\(n => n \+ 1\), 30000\)/.test(chatSrc),
-    'nothing re-renders the card, so the age is stuck at what it was');
+  // THE BUG, and this test had been passing over it.
+  //
+  // It asserted that ChatScreen calls setClockTick every 30s, which it does
+  // and always did — and which does nothing for this card. Rows are a
+  // React.memo over the message and one extraData object, and clockTick is
+  // deliberately kept out of that object, so ticking it re-renders the screen
+  // and skips every row. The age froze at whatever it said when the row was
+  // drawn, and the assertion was green because it was pointed at a mechanism
+  // instead of at the outcome.
+  //
+  // So: the text must re-render itself, without needing the row to.
+  assert.ok(/setInterval\(/.test(ageSrc), 'nothing re-renders the age at all');
+  assert.ok(/setTick\(n => n \+ 1\)/.test(ageSrc),
+    'the interval does not cause a render, so the clock is read once and kept');
+  assert.ok(/formatUpdated\(updatedAt, Date\.now\(\)\)/.test(ageSrc),
+    'the clock is not re-read during the render, so ticking changes nothing');
+  assert.ok(/clearInterval/.test(ageSrc),
+    'the timer outlives the card, so a scrolled-away row keeps waking the app');
+  // And it must not have gone back to depending on the row being redrawn.
+  assert.ok(!/clockTick/.test(code(ageSrc)),
+    'the age is back to depending on a row re-render');
+});
+
+test('…without redrawing every row in the chat to do it', () => {
+  // The cheap fix is to put clockTick in the row extraData, which works and
+  // redraws every message twice a minute on phones that cannot spare it. The
+  // comment on that object refuses it for exactly that reason; this keeps
+  // the refusal true.
+  const bare = code(chatSrc);
+  const extra = /const rowExtraData = useMemo\(\s*\(\) => \(\{[\s\S]*?\}\),\s*\[[\s\S]*?\]\s*\);/.exec(bare);
+  assert.ok(extra, 'rowExtraData is no longer in a shape this can read');
+  assert.ok(/maxOtherReadMsgId/.test(extra[0]), 'the slice is not the extraData object');
+  assert.ok(!/\bclockTick\b/.test(extra[0]),
+    'clockTick is back in the row extraData, so every row redraws every 30s');
 });
 
 let passed = 0, failed = 0;

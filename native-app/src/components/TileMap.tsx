@@ -251,9 +251,47 @@ export default function TileMap({
    * the maths wants. The old code had to measure the view's position on screen
    * and subtract it, and got that wrong with two fingers down.
    */
+  /**
+   * Take the gesture for the pinch, if it has not already.
+   *
+   * ── Why this is not done on BEGAN ──────────────────────────────────────
+   *
+   * It was, and that is why one finger could not move the map.
+   *
+   * BEGAN does not mean two fingers. react-native-gesture-handler's pinch
+   * handler calls begin() on the FIRST touch event it sees — one finger,
+   * before anything has been recognised (PinchGestureHandler.kt: `if (state
+   * == STATE_UNDETERMINED) { … begin() }`) — and only reaches ACTIVE once two
+   * pointers actually span. So every single touch on the map announced a
+   * pinch, this set mode to 'pinch', and the drag handler's first line —
+   * `if (mode.current === 'pinch') return` — threw away every event of every
+   * one-finger drag. The commit at the end was skipped for the same reason,
+   * so the map neither moved nor remembered having been moved.
+   *
+   * The note further down about a pinch that began and never activated
+   * leaving the mode stuck for ever found the same wire from the other end
+   * and fixed the clearing, which cured it across gestures but not within
+   * one. This is the other half: nothing is claimed until a pinch is real.
+   *
+   * Idempotent and called from both pinch callbacks, because whichever of
+   * ACTIVE and the first gesture event arrives first has to be the one that
+   * sets the baseline the whole gesture is measured from.
+   */
+  const startPinch = (fx: number, fy: number) => {
+    if (mode.current === 'pinch') return;
+    mode.current = 'pinch';
+    applied.current = { zoom: zoomRef.current, center: centerRef.current };
+    pinchBase.current = zoomRef.current;
+    liveScale.current = 1;
+    pinchStart.current = { dist: 1, fx, fy };
+    // Whatever the drag had shown is now the pinch's business.
+    pan.setValue({ x: 0, y: 0 });
+    setPinch({ scale: 1, fx, fy });
+  };
+
   const onPinchEvent = (e: any) => {
     const { scale, focalX, focalY } = e.nativeEvent;
-    if (mode.current !== 'pinch') return;
+    startPinch(focalX, focalY);
     liveScale.current = scale;
     const f = { x: focalX, y: focalY };
     const want = clampZoom(pinchBase.current + pinchZoomDelta(scale));
@@ -264,30 +302,30 @@ export default function TileMap({
 
   const onPinchState = (e: any) => {
     const { state, oldState, focalX, focalY } = e.nativeEvent;
-    if (state === GHState.BEGAN || state === GHState.ACTIVE) {
-      if (mode.current !== 'pinch') {
-        mode.current = 'pinch';
-        applied.current = { zoom: zoomRef.current, center: centerRef.current };
-        pinchBase.current = zoomRef.current;
-        liveScale.current = 1;
-        pinchStart.current = { dist: 1, fx: focalX, fy: focalY };
-        // Whatever the drag had shown is now the pinch's business.
-        pan.setValue({ x: 0, y: 0 });
-        setPinch({ scale: 1, fx: focalX, fy: focalY });
-      }
-      return;
-    }
+    // BEGAN is one finger and means nothing yet — see startPinch.
+    if (state === GHState.BEGAN) return;
+    if (state === GHState.ACTIVE) { startPinch(focalX, focalY); return; }
     // ANY ending clears the mode, not just one that reached ACTIVE.
     //
-    // This is why the map could not be dragged. A pinch sets mode to 'pinch'
-    // as soon as it BEGINS, and the drag handler refuses to do anything while
-    // that is set — two fingers must own the gesture. But the mode was only
-    // cleared on an END that followed ACTIVE, so a pinch that began and never
-    // activated (a second finger that lands and lifts, a touch the recogniser
-    // rejects) left it set for ever. From then on every drag returned
-    // immediately: pinch worked, dragging did nothing, permanently.
+    // This was once thought to be the whole reason the map could not be
+    // dragged: the mode was only cleared on an END that followed ACTIVE, so a
+    // pinch that began and never activated left 'pinch' set for ever and
+    // every later drag returned immediately. That was real, and clearing on
+    // any ending fixed it — ACROSS gestures.
+    //
+    // It did not fix anything WITHIN one, because the mode was still being
+    // claimed on BEGAN, which one finger is enough to produce. So each drag
+    // set the flag at touch-down and cleared it at lift, and did nothing in
+    // between. See startPinch, which is where that is now not done.
+    //
+    // This stays as it is anyway: a pinch that is cancelled rather than ended
+    // must not leave the map believing two fingers are still on it.
     if (isOver(state)) {
-      mode.current = 'none';
+      // Only if the pinch had actually taken the gesture. A one-finger drag
+      // now makes this handler fail (ACTION_UP without two pointers) while
+      // that drag is still running, and clearing unconditionally would be
+      // reaching into someone else's gesture.
+      if (mode.current === 'pinch') mode.current = 'none';
       liveScale.current = 1;
       setPinch(null);
     }
@@ -313,13 +351,30 @@ export default function TileMap({
 
   // Scaling about the fingers rather than the middle of the view: shift the
   // focal point to the centre, scale, shift it back.
-  const pinchTransform: any[] | undefined = pinch
+  // ── What you watch has to be what you get ────────────────────────────────
+  //
+  // Reported as: a two-finger pinch does not pick the location correctly.
+  //
+  // It did not, and the preview was the half that was lying. Zooming COMMITS
+  // about the centre on a picker — zoomAbout with the focal point at the
+  // middle returns the same centre, which is the whole point of pinAtCentre —
+  // but this scaled the picture about the FINGERS. So the map slid out from
+  // under the crosshair towards wherever the fingers were while the pinch was
+  // happening, the user aimed at what they could see, and the point that was
+  // sent was the one the crosshair had been over all along.
+  //
+  // Both ends now use the same focal point, so the preview moves the way the
+  // answer does.
+  const pinchFocal = pinch
+    ? (pinAtCentre ? { x: width / 2, y: height / 2 } : { x: pinch.fx, y: pinch.fy })
+    : null;
+  const pinchTransform: any[] | undefined = pinch && pinchFocal
     ? [
-        { translateX: pinch.fx - width / 2 },
-        { translateY: pinch.fy - height / 2 },
+        { translateX: pinchFocal.x - width / 2 },
+        { translateY: pinchFocal.y - height / 2 },
         { scale: pinch.scale },
-        { translateX: -(pinch.fx - width / 2) },
-        { translateY: -(pinch.fy - height / 2) },
+        { translateX: -(pinchFocal.x - width / 2) },
+        { translateY: -(pinchFocal.y - height / 2) },
       ]
     : undefined;
 
