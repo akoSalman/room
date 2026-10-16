@@ -115,8 +115,22 @@ export async function startSharing(
     if (!sock) return;
     // Re-checked after the await: the share can end while it is pending.
     if (!active || active.messageId !== messageId) return;
-    lastSentAt = Date.now();
+    // Kept whatever happens next, so the heartbeat has something to repeat.
     lastPos = pos;
+    // ── Not while the socket is down ────────────────────────────────────────
+    //
+    // Reported: "when connection is lost, after that update does not work."
+    //
+    // An emit on a disconnected socket is accepted and queued, and
+    // ensureSocketAlive() — the probe that recovers a zombie connection after
+    // a SIM call or a network switch — does `s.disconnect(); s.connect();`,
+    // and disconnect() throws the queue away. So a position handed over
+    // during an outage could be silently dropped by the very thing that
+    // repairs the connection.
+    //
+    // Nothing is queued now. The heartbeat below retries, so an outage costs
+    // one beat rather than the rest of the share.
+    if (sock.connected === false) return;
     sock.emit('location_update', {
       messageId,
       lat: pos.coords.latitude,
@@ -124,7 +138,19 @@ export async function startSharing(
       accuracy: pos.coords.accuracy ?? null,
     }, (res: any) => {
       // The server says it is over — believe it, and stop the watcher.
-      if (res?.ended) stopSharing({ silent: true });
+      if (res?.ended) { stopSharing({ silent: true }); return; }
+      // ── Sent means ACKNOWLEDGED, not handed over ──────────────────────────
+      //
+      // This used to be set before the emit, which counted a send that
+      // nothing ever received: during an outage the clock was pushed forward
+      // by sends that went nowhere, and the heartbeat sat quiet believing it
+      // was up to date. A reply is the only proof the server heard it.
+      //
+      // Any reply, not only a successful one — the question this answers is
+      // "did the round trip work", and an error that comes back answers it
+      // just as well. `ended` is handled above and is the one reply that
+      // means stop rather than carry on.
+      lastSentAt = Date.now();
     });
   };
 

@@ -114,6 +114,52 @@ test('…and the share is re-checked after that await', () => {
     `only ${guards.length} guard(s): a share that ended mid-await still sends`);
 });
 
+test('THE BUG, second half: an outage does not stop the share for good', () => {
+  // Reported as "when connection is lost, after that update does not work".
+  //
+  // An emit on a disconnected socket is accepted and queued — and
+  // ensureSocketAlive(), the probe that recovers a zombie connection, does
+  // `s.disconnect(); s.connect();`, which throws that queue away. So the
+  // thing that repairs the connection also destroyed the position waiting on
+  // it, and the old code had already counted that position as sent.
+  const push = /const push = async[\s\S]*?\n  \};/.exec(code(fnBody(mgrSrc, 'startSharing')));
+  assert.ok(/if \(sock\.connected === false\) return;/.test(push[0]),
+    'positions are handed to a socket that is down, where they are silently dropped');
+  const guardAt = push[0].indexOf('sock.connected === false');
+  const emitAt = push[0].indexOf("emit('location_update'");
+  assert.ok(guardAt >= 0 && guardAt < emitAt, 'the check comes after the emit it is meant to prevent');
+  // And the repair this depends on must still exist.
+  assert.ok(/export function ensureSocketAlive/.test(apiSrc),
+    'the zombie-connection probe is gone, so a dead socket is never noticed');
+});
+
+test('…and a send counts only once the server has answered', () => {
+  // Set before the emit, the heartbeat's clock was pushed forward by sends
+  // that went nowhere, and it stayed quiet through the whole outage
+  // believing it was up to date.
+  const push = /const push = async[\s\S]*?\n  \};/.exec(code(fnBody(mgrSrc, 'startSharing')));
+  const ack = /\}, \(res: any\) => \{[\s\S]*?\n    \}\);/.exec(push[0]);
+  assert.ok(ack, 'the reply handler is gone');
+  assert.ok(/lastSentAt = Date\.now\(\)/.test(ack[0]),
+    'the send clock is not advanced by the reply');
+  // Exactly once, and inside the reply handler. Slicing at "before the emit
+  // call" was not enough: a mutation that put the assignment among the emit's
+  // own arguments sat after that boundary and passed.
+  const sets = (push[0].match(/lastSentAt = Date\.now\(\)/g) || []).length;
+  assert.strictEqual(sets, 1,
+    `the send clock is advanced in ${sets} places — one of them is not the reply`);
+  assert.strictEqual((ack[0].match(/lastSentAt = Date\.now\(\)/g) || []).length, 1,
+    'the one place that advances the send clock is not the reply handler');
+  // The last position is kept regardless — before the socket is even
+  // consulted — or an outage leaves the heartbeat with nothing to repeat
+  // once the connection comes back.
+  const keptAt = push[0].indexOf('lastPos = pos;');
+  const bailAt = push[0].indexOf('sock.connected === false');
+  assert.ok(keptAt >= 0, 'an outage loses the position the heartbeat would have retried');
+  assert.ok(bailAt < 0 || keptAt < bailAt,
+    'the position is only kept when the socket is up, which is when it is least needed');
+});
+
 test('the warning this ignored is still in api.ts, where it was ignored', () => {
   // If this note ever goes, the reason the bug above is a bug goes with it.
   assert.ok(/Handing a socket out once and hoping nothing replaces it is the bug/.test(apiSrc),
