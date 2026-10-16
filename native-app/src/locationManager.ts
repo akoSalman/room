@@ -10,6 +10,7 @@
 import * as Location from 'expo-location';
 import { getSocket } from './api';
 import { showLiveLocation, hideLiveLocation } from './incomingCall';
+import { sendDue, shareOver, HEARTBEAT_MS } from './liveShare';
 
 type Active = {
   messageId: number | string;
@@ -25,10 +26,15 @@ type Active = {
   room: any;
   until: number;
   sub: Location.LocationSubscription | null;
+  /** The heartbeat that repeats an unchanged position. */
+  beat: any;
   timer: any;
 };
 
 let active: Active | null = null;
+/** When the last position actually went out, and what it was. */
+let lastSentAt: number | null = null;
+let lastPos: Location.LocationObject | null = null;
 const listeners = new Set<() => void>();
 
 export function subscribe(fn: () => void) {
@@ -82,8 +88,45 @@ export async function startSharing(
 ) {
   await stopSharing({ silent: true });
 
-  const sock = await getSocket().catch(() => null);
-  if (!sock) return;
+  // ── The socket is fetched PER SEND, never captured ───────────────────────
+  //
+  // This is what was broken. It read
+  //
+  //     const sock = await getSocket();
+  //     … watchPositionAsync(…, pos => sock.emit('location_update', …))
+  //
+  // — one socket, taken when the share started and used by a callback that
+  // runs for hours. Sockets do not last hours on these connections. Every
+  // send after a reconnect went into an orphaned object, which accepts an
+  // emit and delivers nothing, so the pin froze where the share began while
+  // the phone looked perfectly healthy: network up, permission granted,
+  // watcher running, notification showing. Reported as exactly that.
+  //
+  // api.ts already says so, above onSocket: "Handing a socket out once and
+  // hoping nothing replaces it is the bug." That note was written after the
+  // same mistake made the app deaf to every message. This file was making it
+  // too, out of sight in a closure.
+  //
+  // getSocket() returns the live one, so asking each time costs a promise and
+  // cannot go stale.
+  const push = async (pos: Location.LocationObject) => {
+    if (!active || active.messageId !== messageId) return;
+    const sock = await getSocket().catch(() => null);
+    if (!sock) return;
+    // Re-checked after the await: the share can end while it is pending.
+    if (!active || active.messageId !== messageId) return;
+    lastSentAt = Date.now();
+    lastPos = pos;
+    sock.emit('location_update', {
+      messageId,
+      lat: pos.coords.latitude,
+      lng: pos.coords.longitude,
+      accuracy: pos.coords.accuracy ?? null,
+    }, (res: any) => {
+      // The server says it is over — believe it, and stop the watcher.
+      if (res?.ended) stopSharing({ silent: true });
+    });
+  };
 
   const sub = await Location.watchPositionAsync(
     {
@@ -96,18 +139,32 @@ export async function startSharing(
     },
     (pos) => {
       if (!active || active.messageId !== messageId) return;
-      if (Date.now() > active.until) { stopSharing(); return; }
-      sock.emit('location_update', {
-        messageId,
-        lat: pos.coords.latitude,
-        lng: pos.coords.longitude,
-        accuracy: pos.coords.accuracy ?? null,
-      }, (res: any) => {
-        // The server says it is over — believe it, and stop the watcher.
-        if (res?.ended) stopSharing({ silent: true });
-      });
+      if (shareOver(Date.now(), active.until)) { stopSharing(); return; }
+      push(pos);
     },
   );
+
+  // ── And a heartbeat, because not moving looks like not working ───────────
+  //
+  // The watcher is silent while the phone is still, so "updated 56 min ago"
+  // could mean the person has not moved in an hour or that nothing has
+  // reached the server in an hour. Those need telling apart by whoever is
+  // waiting for them. Repeating the last position on a slow timer makes the
+  // time on the card mean "we heard from them this recently", and makes a
+  // dropped update repair itself at the next beat instead of lasting until
+  // the next real movement.
+  const beat = setInterval(() => {
+    if (!active || active.messageId !== messageId) return;
+    if (shareOver(Date.now(), active.until)) { stopSharing(); return; }
+    if (!sendDue(Date.now(), lastSentAt)) return;
+    const p = lastPos;
+    if (p) { push(p); return; }
+    // Nothing sent yet — the watcher has not produced a fix. A cached one is
+    // free and better than staying silent.
+    Location.getLastKnownPositionAsync()
+      .then(last => { if (last) push(last); })
+      .catch(() => {});
+  }, Math.max(5_000, Math.floor(HEARTBEAT_MS / 4)));
 
   active = {
     messageId,
@@ -115,6 +172,7 @@ export async function startSharing(
     room: room || null,
     until,
     sub,
+    beat,
     timer: setTimeout(() => stopSharing(), Math.max(0, until - Date.now())),
   };
   // Visible in the notification shade for as long as it runs, with Stop on it,
@@ -137,8 +195,14 @@ export async function stopForMessage(messageId: number | string) {
 export async function stopSharing(opts: { silent?: boolean } = {}) {
   const cur = active;
   active = null;
+  // Reset here rather than in startSharing, because startSharing's first act
+  // is to call this — so one place covers both, and a new share can never
+  // inherit the previous one's heartbeat clock and think it is up to date.
+  lastSentAt = null;
+  lastPos = null;
   if (!cur) { if (!opts.silent) emit(); return; }
   clearTimeout(cur.timer);
+  clearInterval(cur.beat);
   try { cur.sub?.remove(); } catch {}
   hideLiveLocation().catch(() => {});
   if (!opts.silent) {
