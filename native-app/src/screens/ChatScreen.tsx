@@ -125,7 +125,6 @@ import LocationView, { LocationPin } from '../components/LocationView';
 import * as locationManager from '../locationManager';
 import {
   parseLocation, isLiveNow, formatRemaining, formatCoords, distanceMeters, formatDistance,
-  formatUpdated,
   type LatLng,
 } from '../geo';
 import CameraScreen from './CameraScreen';
@@ -5731,8 +5730,14 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
                         <Text style={s.locUpdated} numberOfLines={1}>
                           {/* Re-read on every render; clockTick above ticks
                               every 30s, which is what keeps "4 min ago" from
-                              freezing at whatever it said when drawn. */}
-                          {formatUpdated(p.updatedAt, Date.now())}
+                              freezing at whatever it said when drawn.
+
+                              From locationPick, which is where it is defined.
+                              It was imported from geo, which has never had it
+                              — so this line threw on every live-location card
+                              and took the message list down with it. See
+                              test/imports.test.js. */}
+                          {pick.formatUpdated(p.updatedAt, Date.now())}
                         </Text>
                       )}
                     </View>

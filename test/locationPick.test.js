@@ -269,8 +269,16 @@ const chatSrc = fsL.readFileSync(require('path').join(__dirname, '..', 'native-a
   'src', 'screens', 'ChatScreen.tsx'), 'utf8');
 
 test('THE CARD SHOWS IT, for a live share', () => {
-  assert.ok(/formatUpdated\(p\.updatedAt/.test(chatSrc),
-    'the last update time is never shown');
+  // Qualified, from the module that defines it.
+  //
+  // This assertion used to read /formatUpdated\(p\.updatedAt/, which matched
+  // happily while the name was imported from '../geo' — a module that has
+  // never exported it. The call was `undefined`, every live-location card
+  // threw while rendering, and this test was green the whole time: it had
+  // checked that the text was present, which says nothing about the name
+  // resolving. test/imports.test.js now checks that for the whole app.
+  assert.ok(/pick\.formatUpdated\(p\.updatedAt/.test(chatSrc),
+    'the last update time is never shown, or is called unqualified again');
   // Only for a live one: a pin dropped once was never going to move, so how
   // long ago it was dropped is the message timestamp's job.
   assert.ok(/live && !!p\.updatedAt/.test(chatSrc),
