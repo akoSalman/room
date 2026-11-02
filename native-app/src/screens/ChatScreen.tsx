@@ -123,6 +123,8 @@ import ChatSearch from '../components/ChatSearch';
 import TileMap from '../components/TileMap';
 import LocationView, { LocationPin } from '../components/LocationView';
 import LiveAge from '../components/LiveAge';
+import LocatingDialog from '../components/LocatingDialog';
+import { stillWanted } from '../locationWait';
 import * as locationManager from '../locationManager';
 import {
   parseLocation, isLiveNow, formatRemaining, formatCoords, distanceMeters, formatDistance,
@@ -4993,6 +4995,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
   // arrives late can still centre the map.
   const [locFix, setLocFix] = useState<pick.Fix>(null);
   const [locating, setLocating] = useState(false);
+  // The wait for a fix, when it is happening with nothing else on screen.
+  //
+  // Asked for: a processing dialog with a cancel button when the location is
+  // not recognised. Before this, sendLocation closed the menu and the picker
+  // and then waited — so the app looked untouched for however long the phone
+  // took, and the only outcomes were a message appearing from nowhere or an
+  // alert long after the user had given up.
+  const [acquiringAt, setAcquiringAt] = useState<number | null>(null);
+  // Bumped by Cancel and by asking again. A fix that arrives for a superseded
+  // attempt belongs to a question nobody is asking — see stillWanted.
+  const fixAttempt = useRef(0);
   const [showLocationPicker, setShowLocationPicker] = useState(false);
 
   /** Ask the phone where it is, and remember the answer. */
@@ -5041,7 +5054,20 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       Alert.alert('Location needed', 'Allow location access to share where you are.');
       return;
     }
-    const fix = chosen ? locFix : await refreshFix();
+    let fix = chosen ? locFix : null;
+    if (!chosen) {
+      // Only this branch waits: a pin placed by hand already has its answer.
+      const attempt = ++fixAttempt.current;
+      setAcquiringAt(Date.now());
+      try {
+        fix = await refreshFix();
+      } finally {
+        if (stillWanted(attempt, fixAttempt.current)) setAcquiringAt(null);
+      }
+      // Cancelled, or asked again, while that was in flight. Sending now would
+      // post a location the user has explicitly stopped waiting for.
+      if (!stillWanted(attempt, fixAttempt.current)) return;
+    }
     const at = chosen || (fix ? { lat: fix.lat, lng: fix.lng } : null);
     if (!at) { Alert.alert('No position', 'Could not get your location. Try again outdoors.'); return; }
 
@@ -7075,6 +7101,16 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         onCancel={() => setShowLocationPicker(false)}
         onRecentre={refreshFix}
         onSend={(chosen) => sendLocation(0, chosen)}
+      />
+
+      {/* Waiting for a fix, with a way out. The request itself cannot be
+          cancelled — expo-location offers no handle for that — so Cancel
+          means the answer stops being wanted: the attempt counter moves on
+          and whatever arrives for the old one is dropped. */}
+      <LocatingDialog
+        visible={acquiringAt !== null}
+        startedAt={acquiringAt}
+        onCancel={() => { fixAttempt.current++; setAcquiringAt(null); }}
       />
 
       {/* Share location */}

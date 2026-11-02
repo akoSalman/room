@@ -40,7 +40,7 @@ import { C } from '../theme';
 import { BASE_URL } from '../api';
 import {
   LatLng, TILE_SIZE, MIN_ZOOM, MAX_ZOOM,
-  tilesForViewport, pointToScreen, panCenter, tileUrl,
+  tilesForViewport, pointToScreen, panCenter, tileUrl, TILE_MARGIN,
   clampZoom, pinchZoomDelta, zoomAbout, tilesUnavailable,
 } from '../geo';
 
@@ -378,9 +378,13 @@ export default function TileMap({
       ]
     : undefined;
 
+  // The ring of off-screen tiles is for dragging. A map that cannot be
+  // dragged gets none: in a message bubble it was four to six times the
+  // images and the bytes for surroundings nothing can ever reveal. See
+  // TILE_MARGIN.
   const tiles = useMemo(
-    () => tilesForViewport(center, zoom, width, height),
-    [center.lat, center.lng, zoom, width, height],
+    () => tilesForViewport(center, zoom, width, height, interactive ? TILE_MARGIN : 0),
+    [center.lat, center.lng, zoom, width, height, interactive],
   );
 
   // The map itself, with everything drawn on it. Wrapped below in the three

@@ -84,11 +84,27 @@ export function formatDistance(m: number): string {
  * the user's bill. It is not free even at one — but the tiles a pan is going
  * to need are tiles it was going to fetch anyway a moment later, so for the
  * panning this picker exists for it is mostly the same bytes, earlier.
+ *
+ * ── AND ONLY FOR A MAP THAT CAN BE PANNED ────────────────────────────────
+ *
+ * This was applied to every map, which includes the one drawn in a message
+ * bubble — 224x132, interactive={false}, a map nobody can drag. At that size
+ * a ring is not "more than double": the viewport itself needs about two to
+ * four tiles and the ring takes it to twelve or sixteen. Four to six times
+ * the images and four to six times the bytes, on a metered connection, to
+ * pre-fetch the surroundings of a map that has no gesture to reveal them.
+ *
+ * Worse for a LIVE pin, where the centre changes every few seconds: each
+ * change re-runs this and re-lays-out every one of those tiles, and a chat
+ * can hold several such cards at once.
+ *
+ * So the margin is asked for, not assumed. A bubble asks for none.
  */
 export const TILE_MARGIN = 1;
 
 export function tilesForViewport(
   center: LatLng, zoom: number, width: number, height: number,
+  margin: number = TILE_MARGIN,
 ): { x: number; y: number; z: number; left: number; top: number }[] {
   const z = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(zoom)));
   const cx = lngToWorldX(center.lng, z);
@@ -97,10 +113,12 @@ export function tilesForViewport(
   const originX = cx - width / 2;
   const originY = cy - height / 2;
 
-  const firstTileX = Math.floor(originX / TILE_SIZE) - TILE_MARGIN;
-  const firstTileY = Math.floor(originY / TILE_SIZE) - TILE_MARGIN;
-  const lastTileX = Math.floor((originX + width) / TILE_SIZE) + TILE_MARGIN;
-  const lastTileY = Math.floor((originY + height) / TILE_SIZE) + TILE_MARGIN;
+  // A map that cannot be panned asks for 0 — see the note on TILE_MARGIN.
+  const m = Number.isFinite(margin) && margin > 0 ? Math.floor(margin) : 0;
+  const firstTileX = Math.floor(originX / TILE_SIZE) - m;
+  const firstTileY = Math.floor(originY / TILE_SIZE) - m;
+  const lastTileX = Math.floor((originX + width) / TILE_SIZE) + m;
+  const lastTileY = Math.floor((originY + height) / TILE_SIZE) + m;
 
   const n = Math.pow(2, z);
   const out: { x: number; y: number; z: number; left: number; top: number }[] = [];

@@ -11,6 +11,7 @@ import * as Location from 'expo-location';
 import { getSocket } from './api';
 import { showLiveLocation, hideLiveLocation } from './incomingCall';
 import { sendDue, shareOver, HEARTBEAT_MS } from './liveShare';
+import { FIX_TIMEOUT_MS } from './locationWait';
 
 type Active = {
   messageId: number | string;
@@ -69,7 +70,15 @@ export async function ensurePermission(): Promise<boolean> {
  */
 export async function currentPosition(): Promise<{ lat: number; lng: number; accuracy: number | null } | null> {
   try {
-    const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+    // Bounded. getCurrentPositionAsync does not always fail when it cannot get
+    // a fix — indoors it can simply never settle, and the fallback below only
+    // runs when it THROWS. So a wait with no end was a real outcome, and the
+    // dialog that now covers this wait would have spun through it for ever.
+    const pos = await Promise.race([
+      Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('timed out waiting for a fix')), FIX_TIMEOUT_MS)),
+    ]);
     return { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy ?? null };
   } catch {
     // A last known fix is far better than nothing when the sky is blocked.
@@ -86,7 +95,23 @@ export async function startSharing(
   messageId: number | string, roomId: number | string, until: number, chatName?: string,
   room?: any,
 ) {
-  await stopSharing({ silent: true });
+  // ── Ending the previous share PROPERLY ───────────────────────────────────
+  //
+  // Reported as two live locations from one person in one chat, one of them
+  // permanently stale.
+  //
+  // This was `stopSharing({ silent: true })`, and silent means the server is
+  // not told. Only one share can be active here — `active` is a single slot —
+  // so starting a second one dropped the first on this device while its
+  // message still carried a liveUntil hours in the future. The server went on
+  // believing it was live, the card went on counting down and saying "Live
+  // location", and nothing would ever update it again. Everyone watching saw
+  // a share that was still running and had stopped moving, which is
+  // indistinguishable from the fault that took three builds to find.
+  //
+  // Not silent. The old message is closed on the server, its card stops
+  // claiming to be live, and only the new share is.
+  await stopSharing();
 
   // ── The socket is fetched PER SEND, never captured ───────────────────────
   //
