@@ -201,12 +201,45 @@ export function intentStillWanted(o: {
 // them exists — on a cold start there may be no React tree at all yet. So the
 // tap is PARKED here and collected when there is something to collect it.
 let parked: PushData | null = null;
+const waiting = new Set<() => void>();
+
+/**
+ * Be told there is a tap to collect — now, if one is already waiting, and
+ * again whenever another arrives.
+ *
+ * ── WHY PARKING ALONE WAS NOT ENOUGH ───────────────────────────────────────
+ *
+ * Reported as: tapping a notification still does not open the chat, from
+ * rooms and DMs alike.
+ *
+ * Every handler above parks. The foreground one parks, the background one
+ * parks — and the ONLY thing that ever collected was a single read inside a
+ * mount effect in App.tsx, which runs once, when the React tree is created.
+ *
+ * So a cold start worked and nothing else did. Tap a notification with the
+ * app alive in the background and it was parked and left there, because the
+ * mount had happened minutes ago; tap one with the app in front of you and
+ * the same. The comment above says the tap is "collected when there is
+ * something to collect it", and for a warm app there never was.
+ *
+ * Announcing it is the same shape as api.ts's onSocket, and for the same
+ * reason: a one-time read cannot see anything that arrives afterwards.
+ */
+export function onParkedPush(fn: () => void): () => void {
+  waiting.add(fn);
+  // One already waiting — a cold start parks before any screen exists.
+  if (parked) { try { fn(); } catch {} }
+  return () => { waiting.delete(fn); };
+}
 
 /** Remember a tapped notification until the app is ready to act on it. */
 export function parkPush(data: PushData | null | undefined) {
   // Only if it actually names a chat: parking something unusable would
   // displace a real tap that arrived beside it.
-  if (roomIdFromPush(data)) parked = data as PushData;
+  if (!roomIdFromPush(data)) return;
+  parked = data as PushData;
+  // Told after it is stored, so a listener that collects immediately finds it.
+  for (const fn of waiting) { try { fn(); } catch {} }
 }
 
 /** Take the parked tap, if there is one. Reading it clears it. */

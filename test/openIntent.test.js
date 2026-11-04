@@ -363,6 +363,114 @@ test('ALL THREE WAYS IN ARE HANDLED', () => {
   assert.ok(/takeParkedPush\(\)/.test(app), 'a parked tap is never collected');
 });
 
+// ── Collecting what was parked ──────────────────────────────────────────────
+//
+// Reported again, long after the four failures above: tapping a notification
+// STILL does not open the chat, from rooms and DMs alike.
+//
+// Every handler parks — it must, because both run at module scope where there
+// may be no React tree to navigate — and the only thing that ever collected
+// was one read inside a mount effect. Mount happens once. So a cold start
+// worked and nothing else did: tapped with the app alive in the background,
+// the intent sat there with nobody coming for it; tapped with the app in
+// front of you, the same. Both are commoner than a cold start, which is why
+// it reads as "it just does not work".
+//
+// The assertion below this block had been green throughout, because it
+// checked that takeParkedPush() appears in App.tsx. It does. Appearing is not
+// the same as running at a moment when there is anything to collect.
+
+test('THE BUG: parking a tap tells somebody, instead of waiting to be found', () => {
+  let told = 0;
+  const off = O.onParkedPush(() => { told++; });
+  O.parkPush({ roomId: '7' });
+  assert.strictEqual(told, 1, 'a tap is parked silently, so only a cold start finds it');
+  assert.deepStrictEqual(O.takeParkedPush(), { roomId: '7' });
+  off();
+});
+
+test('…and the tap is THERE when it is told, not a moment later', () => {
+  // The listener in the app collects inside the callback — that is the whole
+  // point of it. A counter cannot tell whether the push was stored before the
+  // announcement or after, and mutation moving the announcement above the
+  // store survived every assertion here until this one existed.
+  let collected = null;
+  const off = O.onParkedPush(() => { collected = O.takeParkedPush(); });
+  O.parkPush({ roomId: '21' });
+  assert.deepStrictEqual(collected, { roomId: '21' },
+    'the collector was told before the tap was stored, so it collected nothing');
+  assert.strictEqual(O.takeParkedPush(), null, 'the tap was left behind as well');
+  off();
+});
+
+test('…and a tap parked BEFORE anyone is listening is not lost', () => {
+  // The cold-start case: the handler runs at module scope, long before the
+  // screen that can act on it exists.
+  O.parkPush({ roomId: '11' });
+  let got = 0;
+  const off = O.onParkedPush(() => { got++; });
+  assert.strictEqual(got, 1, 'a tap parked before the app was ready is never collected');
+  assert.deepStrictEqual(O.takeParkedPush(), { roomId: '11' });
+  off();
+});
+
+test('…and nothing is announced when there is nothing to collect', () => {
+  O.takeParkedPush();                       // make sure the slot is empty
+  let told = 0;
+  const off = O.onParkedPush(() => { told++; });
+  assert.strictEqual(told, 0, 'subscribing announces a tap that does not exist');
+  // A push naming no chat is not a tap worth waking anyone for.
+  O.parkPush({ type: 'message' });
+  O.parkPush(null);
+  O.parkPush({ roomId: 'not-a-number' });
+  assert.strictEqual(told, 0, 'an unusable push woke the collector');
+  assert.strictEqual(O.takeParkedPush(), null, 'an unusable push was parked');
+  off();
+});
+
+test('…a listener that throws does not stop the others, or the parking', () => {
+  const off1 = O.onParkedPush(() => { throw new Error('boom'); });
+  let second = 0;
+  const off2 = O.onParkedPush(() => { second++; });
+  O.parkPush({ roomId: '3' });
+  assert.strictEqual(second, 1, 'one broken collector silenced the rest');
+  assert.deepStrictEqual(O.takeParkedPush(), { roomId: '3' }, 'the tap was lost with the throw');
+  off1(); off2();
+});
+
+test('…and unsubscribing stops it being told', () => {
+  let told = 0;
+  const off = O.onParkedPush(() => { told++; });
+  off();
+  O.parkPush({ roomId: '5' });
+  assert.strictEqual(told, 0, 'a removed collector is still called');
+  O.takeParkedPush();
+});
+
+test('reading it clears it, so one tap opens one chat', () => {
+  O.parkPush({ roomId: '9' });
+  assert.deepStrictEqual(O.takeParkedPush(), { roomId: '9' });
+  assert.strictEqual(O.takeParkedPush(), null, 'the same tap is collected twice');
+});
+
+test('THE WIRING: the app collects on announcement AND on becoming active', () => {
+  const app = rd('App.tsx');
+  assert.ok(/openIntentStore\.onParkedPush\(collect\)/.test(app),
+    'the app still waits for a mount that already happened');
+  // Becoming active as well, because a tap can be parked in a context this
+  // subscription does not share.
+  assert.ok(/AppState\.addEventListener\('change', st => \{\s*if \(st === 'active'\) collect\(\);/.test(app),
+    'a tap parked somewhere else is never picked up on resume');
+  assert.ok(/const p = openIntentStore\.takeParkedPush\(\);\s*if \(p\) openChatFromPush\(p\);/.test(app),
+    'collecting no longer opens the chat');
+});
+
+test('…and it stops listening when it goes away', () => {
+  const app = rd('App.tsx');
+  assert.ok(/return \(\) => \{ unsubscribe\(\); appSub\.remove\(\); \};/.test(app),
+    'the collector and the AppState listener outlive the component');
+});
+
 test('…including the background handler, where there is only one', () => {
   // Notifee allows exactly one background event handler, and callPush owns
   // it. The message case has to be handled there or nowhere.

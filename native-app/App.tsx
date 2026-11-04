@@ -567,10 +567,37 @@ export default function App() {
     notifee.getInitialNotification().then(initial => {
       if (initial?.notification?.data) openChatFromPush(initial.notification.data as any);
     }).catch(() => {});
-    // Anything a handler parked before there was a screen to act on it.
-    const parked = openIntentStore.takeParkedPush();
-    if (parked) openChatFromPush(parked);
     return () => { sub.remove(); respSub.remove(); recvSub.remove(); };
+  }, []);
+
+  // ── Collecting a tapped notification, however the app got here ───────────
+  //
+  // Reported as: tapping a notification still does not open the chat, from
+  // rooms and DMs alike.
+  //
+  // Every notifee handler PARKS the tap — it has to, because both run at
+  // module scope where there may be no React tree to navigate. Collecting it
+  // was one read, here, inside the effect above: mount-only. So a cold start
+  // worked and nothing else did. Tapped with the app alive in the background,
+  // the intent was parked and nobody ever came for it; tapped with the app in
+  // front of you, the same. Both of those are far commoner than a cold start,
+  // which is why this reads as "it just does not work".
+  //
+  // Collected three ways now, because the tap can arrive in three states:
+  // subscribing picks up one already parked (cold start), the subscription
+  // fires for one parked while we are running (foreground press, and a
+  // background press in this same JS context), and becoming active catches
+  // anything parked somewhere this subscription could not reach.
+  useEffect(() => {
+    const collect = () => {
+      const p = openIntentStore.takeParkedPush();
+      if (p) openChatFromPush(p);
+    };
+    const unsubscribe = openIntentStore.onParkedPush(collect);
+    const appSub = AppState.addEventListener('change', st => {
+      if (st === 'active') collect();
+    });
+    return () => { unsubscribe(); appSub.remove(); };
   }, []);
 
   /**
