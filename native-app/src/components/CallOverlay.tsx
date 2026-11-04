@@ -7,6 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { RTCView } from 'react-native-webrtc';
 import { C } from '../theme';
 import { callManager } from '../callManager';
+import { callFacts } from '../callFailure';
 import {
   canMinimize, clampToScreen, snapToEdge, defaultPosition, isDrag,
   videoPanes, canSwapVideos, mirrors, shareFailureText, paneKey,
@@ -259,6 +260,24 @@ export default function CallOverlay() {
       <View style={isVideo && cm.remoteStream ? s.infoOnVideo : s.info}>
         <Text style={s.callerName} numberOfLines={1}>{cm.title.replace(/^[^ ]+ /, '')}</Text>
         <Text style={s.callState}>{elapsed ?? cm.status}</Text>
+        {/* WHY it failed, when it did.
+            *
+            * "Connection failed" on its own is what the video player used to
+            * say, and three rounds of guessing went into that before it
+            * started printing its reason. The causes here — nobody answered,
+            * no relay configured, a relay that could not be reached — have
+            * completely different fixes, and one of them is not a code
+            * change at all.
+            *
+            * Counts underneath, because these arrive as photographs of a
+            * screen and the counts are what make the sentence checkable.
+            * Neither line can contain an address: see callFailure. */}
+        {!!cm.failureReason && !elapsed && (
+          <>
+            <Text style={s.callWhy}>{cm.failureReason}</Text>
+            <Text style={s.callFacts}>{callFacts(cm.iceFacts)}</Text>
+          </>
+        )}
       </View>
 
       {/* One positioned bar holding the message AND the buttons.
@@ -427,6 +446,14 @@ const s = StyleSheet.create({
   bigAvatarText: { color: '#fff', fontSize: 44, fontWeight: '800' },
   callerName: { color: '#fff', fontSize: 26, fontWeight: '800', marginTop: 22, paddingHorizontal: 24, textAlign: 'center' },
   callState: { color: 'rgba(255,255,255,0.65)', fontSize: 16, marginTop: 8, fontVariant: ['tabular-nums'] },
+  callWhy: {
+    color: 'rgba(255,255,255,0.9)', fontSize: 13.5, marginTop: 10,
+    textAlign: 'center', paddingHorizontal: 24, lineHeight: 19,
+  },
+  callFacts: {
+    color: 'rgba(255,255,255,0.45)', fontSize: 11.5, marginTop: 4,
+    fontVariant: ['tabular-nums'],
+  },
   info: { alignItems: 'center' },
   infoOnVideo: {
     position: 'absolute', top: 54, left: 0, right: 0, alignItems: 'center',

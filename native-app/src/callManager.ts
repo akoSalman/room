@@ -6,10 +6,11 @@ import { PermissionsAndroid, Platform } from 'react-native';
 import { Audio } from 'expo-av';
 import { mediaDevices, RTCPeerConnection, MediaStream } from 'react-native-webrtc';
 import { scaleFor, madeNoProgress, MAX_BITRATE, SAMPLE_AFTER_MS } from './screenShare';
-import { apiFetch, getSocket } from './api';
+import { apiFetch, getSocket, onSocket } from './api';
 import { stopRinging } from './incomingCall';
 import { routeFor, outgoingStatus, endStopsCall, RING_TIMEOUT_MS, NO_ANSWER_MS, CONNECT_WAIT_MS, CallMode, CallPhase, OutgoingState } from './callAudio';
 import { toneFor, toneVolume, toneLoops, toneStillWanted } from './callTones';
+import { candidateKind, callFailureReason, callFacts, offersRelay } from './callFailure';
 import { canMinimize, canSwapVideos, CallPhase as WindowPhase } from './callWindow';
 import * as ongoing from './ongoingCall';
 import { audioManager } from './audioManager';
@@ -616,6 +617,14 @@ class CallManager {
   private pcs = new Map<number, RTCPeerConnection>();
   private pendingIce = new Map<number, any[]>(); // candidates that arrived before the pc was ready
   private iceServers: any[] = [{ urls: ['stun:stun.l.google.com:19302'] }];
+  // What ICE actually managed, per call. The four facts that tell the causes
+  // of a failed call apart — see callFailure. Counts and flags only: a
+  // candidate carries IP addresses and this ends up on a screen.
+  private ice = { host: 0, srflx: 0, relay: 0, answered: false, relayOffered: false };
+  /** Why the last call failed, in one sentence, for the call UI. */
+  failureReason: string | null = null;
+  /** The counts behind that sentence, for the line underneath it. */
+  get iceFacts() { return { ...this.ice }; }
   private roomVoiceId: number | null = null;
   private listeners = new Set<Listener>();
   private initPromise: Promise<void> | null = null;
@@ -647,14 +656,77 @@ class CallManager {
     return this.initPromise;
   }
 
+  /**
+   * Hand the call's ICE facts to the server, the moment they mean something.
+   *
+   * Rides the call_diag channel the screen-share report already uses, which
+   * sanitises everything it prints and names no user. `what: 'call'` is the
+   * only new thing on the wire.
+   */
+  private reportCall(outcome: string) {
+    try {
+      this.sock?.emit('call_diag', {
+        what: 'call',
+        outcome,
+        kind: this.mode || 'none',
+        host: this.ice.host, srflx: this.ice.srflx, relay: this.ice.relay,
+        answered: this.ice.answered ? 1 : 0,
+        turn: this.ice.relayOffered ? 1 : 0,
+      });
+    } catch {}
+  }
+
+  /** Start a call's tally from nothing, so it never reports the last one's. */
+  private resetIceFacts() {
+    this.ice = {
+      host: 0, srflx: 0, relay: 0, answered: false,
+      // Read from the configuration actually in use, so "there is no relay"
+      // is a fact about this call and not an assumption about the server.
+      relayOffered: offersRelay(this.iceServers),
+    };
+    this.failureReason = null;
+  }
+
   private async doInit() {
     await this.refreshIce();
-    const s = await getSocket();
+    // ── Bound to EVERY socket, not to the one that existed at startup ───────
+    //
+    // Reported as: on one device the call never connects; it used to work.
+    //
+    // This read `const s = await getSocket(); this.sock = s;` and hung every
+    // call listener on that one object. init() memoises its promise for the
+    // life of the process, so it runs exactly once — and the socket does not
+    // last that long. disconnectSocket() drops it on sign-out, and a session
+    // that expires signs the user out for them, so an expired token is enough
+    // to do it without anybody choosing to. Signing back in builds a NEW
+    // socket, init() returns its old memoised promise and binds nothing, and
+    // from then on call_offer, call_answer and call_ice arrive on a socket
+    // nobody is listening to.
+    //
+    // Calls are then dead on that device until the app is force-killed, while
+    // everything else keeps working, because everything else asks for the
+    // socket when it needs one. One device, no longer able to call, with no
+    // visible reason — which is the report.
+    //
+    // api.ts says it plainly above onSocket: "Handing a socket out once and
+    // hoping nothing replaces it is the bug." This is the third place in this
+    // app making it. onSocket is what it is for: it fires for the socket that
+    // exists now and for every one built afterwards, and a fresh socket has
+    // no listeners, so re-binding cannot double up.
+    onSocket(s => this.bindSocket(s));
+    // Callers that await init() expect a socket to exist afterwards. The
+    // subscriber above has already run by the time this resolves, because
+    // getSocket notifies subscribers before it returns.
+    await getSocket();
+  }
+
+  private bindSocket(s: any) {
     this.sock = s;
     s.on('call_offer', (offer: any) => this.onOffer(offer));
     s.on('call_answer', async ({ fromUserId, sdp }: any) => {
       const pc = this.pcs.get(fromUserId);
       if (pc) await pc.setRemoteDescription(sdp).catch(() => {});
+      this.ice.answered = true;
       this.flushIce(fromUserId);
       // Answer received = signaling done; real "Connected" comes from ICE
       if (this.mode !== 'room-voice') {
@@ -766,9 +838,21 @@ class CallManager {
   }
 
   private newPc(userId: number): RTCPeerConnection {
+    // Once per CALL, not once per peer: a room call builds a connection per
+    // person, and resetting on each would leave the tally describing whoever
+    // joined last instead of the call.
+    if (this.pcs.size === 0) this.resetIceFacts();
     const pc = new RTCPeerConnection({ iceServers: this.iceServers });
     (pc as any).onicecandidate = (e: any) => {
-      if (e.candidate) this.sock.emit('call_ice', { toUserId: userId, candidate: e.candidate });
+      if (e.candidate) {
+        // Tallied by TYPE only — see callFailure.candidateKind, which cannot
+        // return anything but one of four words.
+        const kind = candidateKind(e.candidate);
+        if (kind === 'host') this.ice.host++;
+        else if (kind === 'srflx') this.ice.srflx++;
+        else if (kind === 'relay') this.ice.relay++;
+        this.sock?.emit('call_ice', { toUserId: userId, candidate: e.candidate });
+      }
     };
     (pc as any).ontrack = (e: any) => {
       if (this.mode === 'dm-video') {
@@ -790,6 +874,11 @@ class CallManager {
     (pc as any).onconnectionstatechange = () => {
       const st = (pc as any).connectionState;
       if (st === 'failed') {
+        // WHY it failed, not just that it did. "Connection failed" sent three
+        // rounds of guessing at the video player before it started saying
+        // what the error was; this is the same decision.
+        this.failureReason = callFailureReason(this.ice);
+        this.reportCall('failed');
         if (this.mode?.startsWith('dm')) {
           this.status = 'Connection failed';
           this.emit();

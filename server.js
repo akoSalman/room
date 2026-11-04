@@ -3545,7 +3545,32 @@ io.on('connection', (socket) => {
   socket.on('call_diag', (d) => {
     const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : '?');
     const word = (v) => String(v || 'unknown').replace(/[^a-z-]/gi, '').slice(0, 20) || 'unknown';
-    if (!d || word(d.what) !== 'share') return;
+    if (!d) return;
+    // ── Why a call did not connect ──────────────────────────────────────────
+    //
+    // Reported as: on one device the call never connects, it used to work.
+    // There was nothing to look at — not one [call] line existed anywhere in
+    // this file, so "check the server logs" had no answer even with the
+    // server in front of you.
+    //
+    // Counts by ICE candidate TYPE, which is what separates the causes:
+    // srflx=0 means STUN told this phone nothing (ours points at a Google
+    // host, which these networks block); relay=0 with turn=0 means no TURN is
+    // configured, so a phone behind carrier NAT has no way through; turn=1
+    // with relay=0 means a relay IS configured and could not be reached.
+    // ans=0 means the other side never answered and none of the rest matters.
+    //
+    // No addresses. A candidate carries this phone's local and public IPs and
+    // none of it comes near here: the app sends counts, and the only words
+    // that pass are put through word() like every other line in this handler.
+    if (word(d.what) === 'call') {
+      console.log(`[call] user=${socket.user.id} outcome=${word(d.outcome)}`
+        + ` kind=${word(d.kind)}`
+        + ` host=${n(d.host)} srflx=${n(d.srflx)} relay=${n(d.relay)}`
+        + ` ans=${n(d.answered)} turn=${n(d.turn)}`);
+      return;
+    }
+    if (word(d.what) !== 'share') return;
     console.log(`[share] user=${socket.user.id} outcome=${word(d.outcome)}`
       // Which failure it was. Stripped to letters and hyphens, so a message
       // carrying a path or a name cannot reach a log that is read into a
