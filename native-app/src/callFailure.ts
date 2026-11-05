@@ -116,16 +116,31 @@ export function callFacts(facts: Partial<CallFacts> | null | undefined): string 
     + ` ans=${f.answered === true ? 1 : 0} turn=${f.relayOffered === true ? 1 : 0}`;
 }
 
-/** Does this ICE configuration offer somewhere to relay through? */
+/**
+ * Does this ICE configuration offer somewhere it is actually possible to
+ * relay through?
+ *
+ * A url is not enough. TURN with lt-cred-mech answers an unauthenticated
+ * allocate with 401, so a `turn:` entry carrying no username or credential
+ * produces no relay candidate and looks exactly like a blocked network from
+ * the outside. This was reporting turn=1 for that case, which would have been
+ * read — by me, out loud — as "a relay was offered and could not be reached".
+ *
+ * So both halves are required: somewhere to go, and something to say on
+ * arrival.
+ */
 export function offersRelay(iceServers: unknown): boolean {
   if (!Array.isArray(iceServers)) return false;
   for (const entry of iceServers) {
     if (!entry || typeof entry !== 'object') continue;
-    const urls = (entry as Record<string, unknown>).urls;
+    const e = entry as Record<string, unknown>;
+    const urls = e.urls;
     const list = Array.isArray(urls) ? urls : [urls];
-    for (const u of list) {
-      if (typeof u === 'string' && /^turns?:/i.test(u.trim())) return true;
-    }
+    const hasTurn = list.some(u => typeof u === 'string' && /^turns?:/i.test(u.trim()));
+    if (!hasTurn) continue;
+    const user = typeof e.username === 'string' ? e.username.trim() : '';
+    const cred = typeof e.credential === 'string' ? e.credential.trim() : '';
+    if (user && cred) return true;
   }
   return false;
 }

@@ -184,19 +184,32 @@ test('the short line is readable off a photograph', () => {
 });
 
 test('whether a relay was even offered is read from the config', () => {
-  assert.strictEqual(F.offersRelay([{ urls: ['turn:example.org:3478'] }]), true);
-  assert.strictEqual(F.offersRelay([{ urls: 'turns:example.org:5349' }]), true);
+  const creds = { username: 'u', credential: 'p' };
+  assert.strictEqual(F.offersRelay([{ urls: ['turn:example.org:3478'], ...creds }]), true);
+  assert.strictEqual(F.offersRelay([{ urls: 'turns:example.org:5349', ...creds }]), true);
   assert.strictEqual(F.offersRelay([{ urls: ['stun:stun.l.google.com:19302'] }]), false);
   assert.strictEqual(F.offersRelay([
-    { urls: ['stun:a'] }, { urls: ['turn:b', 'turn:b?transport=tcp'] },
+    { urls: ['stun:a'] }, { urls: ['turn:b', 'turn:b?transport=tcp'], ...creds },
   ]), true, 'a relay later in the list is missed');
+  // A url with nothing to authenticate with is not a relay you can use: TURN
+  // answers an unauthenticated allocate with 401, which produces no relay
+  // candidate and looks identical to a blocked network. Reporting turn=1 for
+  // that would be read as "offered and unreachable", which is a different
+  // problem with a different fix.
+  assert.strictEqual(F.offersRelay([{ urls: ['turn:example.org:3478'] }]), false,
+    'a relay url with no credentials counts as a usable relay');
+  for (const half of [{ username: 'u' }, { credential: 'p' },
+                      { username: '', credential: 'p' }, { username: 'u', credential: '  ' }]) {
+    assert.strictEqual(F.offersRelay([{ urls: ['turn:example.org:3478'], ...half }]), false,
+      `half-credentials ${JSON.stringify(half)} counted as a usable relay`);
+  }
   // The SCHEME decides, not the presence of the word anywhere in the string.
   // "stun:turn.example.org" does not distinguish those two readings — it has
   // no "turn:" in it at all — so it passed either way and proved nothing.
   // These do: each contains "turn:" somewhere that is not the scheme.
   for (const notRelay of ['stun:turn.example.org', 'xturn:example.org',
     'stun:a.example.org/turn:b', 'stun:example.org?next=turn:c']) {
-    assert.strictEqual(F.offersRelay([{ urls: [notRelay] }]), false,
+    assert.strictEqual(F.offersRelay([{ urls: [notRelay], ...creds }]), false,
       `"${notRelay}" was counted as a relay — the scheme is not what is being checked`);
   }
   for (const bad of [null, undefined, 'turn:x', 42, [null], [{}], [{ urls: null }]]) {
