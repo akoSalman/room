@@ -1,6 +1,6 @@
 # Call report — bistbarg
 
-Generated 2026-11-05T09:37Z by .github/workflows/call-report.yml
+Generated 2026-11-05T10:00Z by .github/workflows/call-report.yml
 
 ```
 Warning: Permanently added '185.8.174.198' (ED25519) to the list of known hosts.
@@ -46,17 +46,21 @@ lines coturn logged at all: 2
 ### every call, oldest first
 Nov 05 09:30:53 srv5524755161 node[2957335]: [call] user=- outcome=failed kind=dm-voice host=1 srflx=1 relay=0 ans=0 turn=1
 Nov 05 09:30:54 srv5524755161 node[2957335]: [call] user=- outcome=failed kind=dm-voice host=1 srflx=0 relay=0 ans=1 turn=1
+Nov 05 09:58:38 srv5524755161 node[2966329]: [call] user=- outcome=failed kind=dm-voice host=1 srflx=1 relay=0 ans=0 turn=1
+Nov 05 09:58:38 srv5524755161 node[2966329]: [call] user=- outcome=failed kind=dm-voice host=1 srflx=0 relay=0 ans=1 turn=1
+Nov 05 09:59:04 srv5524755161 node[2966329]: [call] user=- outcome=failed kind=dm-voice host=1 srflx=1 relay=0 ans=0 turn=1
+Nov 05 09:59:05 srv5524755161 node[2966329]: [call] user=- outcome=failed kind=dm-voice host=1 srflx=0 relay=0 ans=1 turn=1
 
 ### how they ended
-      2 outcome=failed
+      6 outcome=failed
 
 ### what ICE managed, counted
-ans=0 : 1
-ans=1 : 1
+ans=0 : 3
+ans=1 : 3
 turn=0 : 0
-turn=1 : 2
-srflx=0 : 1
-relay=0 : 2
+turn=1 : 6
+srflx=0 : 3
+relay=0 : 6
 
 (ssh exit 0)
 ```
