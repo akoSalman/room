@@ -8,7 +8,7 @@ import { mediaDevices, RTCPeerConnection, MediaStream } from 'react-native-webrt
 import { scaleFor, madeNoProgress, MAX_BITRATE, SAMPLE_AFTER_MS } from './screenShare';
 import { apiFetch, getSocket, onSocket } from './api';
 import { stopRinging } from './incomingCall';
-import { routeFor, outgoingStatus, endStopsCall, RING_TIMEOUT_MS, NO_ANSWER_MS, CONNECT_WAIT_MS, CallMode, CallPhase, OutgoingState } from './callAudio';
+import { routeFor, outgoingStatus, endStopsCall, RING_TIMEOUT_MS, NO_ANSWER_MS, CONNECT_WAIT_MS, CONNECT_DEADLINE_MS, CallMode, CallPhase, OutgoingState } from './callAudio';
 import { toneFor, toneVolume, toneLoops, toneStillWanted } from './callTones';
 import { candidateKind, callFailureReason, callFacts, offersRelay } from './callFailure';
 import { canMinimize, canSwapVideos, CallPhase as WindowPhase } from './callWindow';
@@ -625,6 +625,8 @@ class CallManager {
   failureReason: string | null = null;
   /** The counts behind that sentence, for the line underneath it. */
   get iceFacts() { return { ...this.ice }; }
+  /** Armed while ICE is checking; a call that never gets anywhere ends here. */
+  private connectDeadline: any = null;
   private roomVoiceId: number | null = null;
   private listeners = new Set<Listener>();
   private initPromise: Promise<void> | null = null;
@@ -663,6 +665,40 @@ class CallManager {
    * sanitises everything it prints and names no user. `what: 'call'` is the
    * only new thing on the wire.
    */
+  /**
+   * Give up on an ICE check that is going nowhere.
+   *
+   * Reported as: the call sits on "Connecting…" and never connects. That word
+   * is the `checking` state, and a checking agent that finds no working pair
+   * is not obliged to move on — `failed` may be tens of seconds away or may
+   * never come. Every explanation in this file hangs off `failed`, so the one
+   * state people actually sit in said nothing, showed nothing and logged
+   * nothing. The server's call report was empty for that reason alone.
+   */
+  private armConnectDeadline(userId: number | string) {
+    if (this.connectDeadline || this.connectedAt) return;
+    this.connectDeadline = setTimeout(() => {
+      this.connectDeadline = null;
+      if (this.connectedAt) return;            // it got there in the meantime
+      this.failureReason = callFailureReason(this.ice);
+      // Told apart from 'failed' on purpose: a call that gave up checking and
+      // one the agent declared failed are different events, and the counts
+      // beside them mean different things.
+      this.reportCall('stalled');
+      if (this.mode?.startsWith('dm')) {
+        this.status = 'Connection failed';
+        this.emit();
+        setTimeout(() => this.end(), 2500);
+        return;
+      }
+      this.dropPeer(userId);
+    }, CONNECT_DEADLINE_MS);
+  }
+
+  private clearConnectDeadline() {
+    if (this.connectDeadline) { clearTimeout(this.connectDeadline); this.connectDeadline = null; }
+  }
+
   private reportCall(outcome: string) {
     try {
       this.sock?.emit('call_diag', {
@@ -873,6 +909,7 @@ class CallManager {
     };
     (pc as any).onconnectionstatechange = () => {
       const st = (pc as any).connectionState;
+      if (st === 'failed' || st === 'closed' || st === 'connected') this.clearConnectDeadline();
       if (st === 'failed') {
         // WHY it failed, not just that it did. "Connection failed" sent three
         // rounds of guessing at the video player before it started saying
@@ -895,11 +932,18 @@ class CallManager {
     };
     (pc as any).oniceconnectionstatechange = () => {
       const st = (pc as any).iceConnectionState;
+      if (st === 'checking' && !this.connectedAt) {
+        // The deadline covers exactly the state the user is stuck in.
+        this.armConnectDeadline(userId);
+      }
       if (this.mode?.startsWith('dm') && !this.connectedAt) {
         if (st === 'checking') { this.status = 'Connecting…'; this.emit(); }
       }
       if (st === 'disconnected' && this.mode?.startsWith('dm') && this.connectedAt) {
         this.status = 'Reconnecting…'; this.emit();
+      }
+      if (st === 'connected' || st === 'completed' || st === 'failed' || st === 'closed') {
+        this.clearConnectDeadline();
       }
       if (st === 'connected' || st === 'completed') {
         if (this.mode === 'room-voice') this.markRoomAudioStarted();
@@ -976,6 +1020,9 @@ class CallManager {
   }
 
   private teardown() {
+    // Before anything else: a deadline that outlives the call would fire on a
+    // call that is already over and report it as stalled.
+    this.clearConnectDeadline();
     // Log the DM call outcome before clearing state (rooms aren't logged).
     // An OUTGOING call that never got as far as sending its offer is not a
     // missed call: nobody's phone rang, and the entry would appear in the

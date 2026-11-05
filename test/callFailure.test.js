@@ -257,6 +257,71 @@ test('the screen shows it', () => {
     'a stale failure can appear over a call that is working');
 });
 
+// ── The state people actually sit in ────────────────────────────────────────
+
+test('THE BUG: a check that goes nowhere gives up and says so', () => {
+  // "Connecting…" IS the ICE `checking` state, and a checking agent that
+  // finds no working pair is not obliged to move on — `failed` may be tens of
+  // seconds away or never arrive. Every explanation here hung off `failed`,
+  // so the one state a user sits in said nothing, showed nothing and logged
+  // nothing. The server's call report was empty for exactly that reason: not
+  // a logging fault, nothing to log.
+  const m = code(mgrSrc);
+  assert.ok(/private armConnectDeadline\(/.test(m),
+    'a call can sit on "Connecting…" for ever again');
+  const arm = /private armConnectDeadline\([\s\S]*?\n  \}/.exec(m);
+  assert.ok(arm, 'the deadline is not in a shape this can read');
+  assert.ok(/this\.failureReason = callFailureReason\(this\.ice\)/.test(arm[0]),
+    'a stalled call still explains nothing');
+  assert.ok(/this\.reportCall\('stalled'\)/.test(arm[0]),
+    'a stalled call is never reported, so the logs stay empty');
+});
+
+test('…armed by the checking state itself', () => {
+  const m = code(mgrSrc);
+  assert.ok(/st === 'checking' && !this\.connectedAt/.test(m),
+    'the deadline does not cover the state the user is stuck in');
+  assert.ok(/this\.armConnectDeadline\(userId\)/.test(m), 'nothing arms it');
+});
+
+test('…told apart from a call the agent declared failed', () => {
+  // Different events with different meanings beside the same counts.
+  const m = code(mgrSrc);
+  assert.ok(/reportCall\('stalled'\)/.test(m) && /reportCall\('failed'\)/.test(m),
+    'a stall and a failure are reported as the same thing');
+});
+
+test('…and it never fires on a call that got there, or ended', () => {
+  const m = code(mgrSrc);
+  const arm = /private armConnectDeadline\([\s\S]*?\n  \}/.exec(m)[0];
+  assert.ok(/if \(this\.connectDeadline \|\| this\.connectedAt\) return;/.test(arm),
+    'a second check re-arms the deadline, or it arms after connecting');
+  assert.ok(/if \(this\.connectedAt\) return;/.test(arm),
+    'a call that connected just before the deadline is still reported as stalled');
+  // Cleared on every way out.
+  for (const [where, what] of [
+    ["connected', 'completed', 'failed' or 'closed'", /st === 'connected' \|\| st === 'completed' \|\| st === 'failed' \|\| st === 'closed'\) \{\s*this\.clearConnectDeadline/],
+    ['teardown', /private teardown\(\) \{[\s\S]{0,200}?this\.clearConnectDeadline\(\);/],
+  ]) {
+    assert.ok(what.test(m), `the deadline is not cleared on ${where} — it fires after the call is over`);
+  }
+});
+
+test('the deadline is long enough for a relay and short enough to matter', () => {
+  const audio = fs.readFileSync(path.join(SRC, 'callAudio.ts'), 'utf8');
+  const m = /export const CONNECT_DEADLINE_MS = (\d+);/.exec(audio);
+  assert.ok(m, 'the deadline is gone');
+  const ms = Number(m[1]);
+  // A TURN allocation can take several seconds to appear on a bad network.
+  assert.ok(ms >= 12000, `${ms}ms gives up before a relay candidate is likely`);
+  // And nobody watches an unchanging word for longer than this.
+  assert.ok(ms <= 45000, `${ms}ms is barely different from waiting for ever`);
+  // It must outlast the socket wait, or a call is killed while still placing.
+  const wait = /export const CONNECT_WAIT_MS = (\d+);/.exec(audio);
+  assert.ok(wait && ms > Number(wait[1]),
+    'the connect deadline is shorter than the wait for a socket');
+});
+
 // ── The server line ─────────────────────────────────────────────────────────
 
 test('the server logs the call, which it never did before', () => {

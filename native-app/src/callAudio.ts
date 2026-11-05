@@ -207,6 +207,28 @@ export const NO_ANSWER_MS = 45000;
  */
 export const CONNECT_WAIT_MS = 8000;
 
+/**
+ * How long ICE may spend getting nowhere before the call admits it.
+ *
+ * Reported as: on some devices the call never connects and sits on
+ * "Connecting…" for ever.
+ *
+ * It really is for ever. "Connecting…" is what the ICE state `checking`
+ * puts on screen, and a checking agent that finds no working pair does not
+ * reliably move on: it can keep rechecking while candidates trickle in, and
+ * the `failed` state the rest of this code waits for may be tens of seconds
+ * away or may never arrive at all. Everything that reports a reason — the
+ * line on screen, the [call] log — hangs off `failed`, so the one state a
+ * user actually sits in was the one state nothing said anything about. The
+ * server had no record of these calls for exactly that reason: not a logging
+ * fault, nothing to log.
+ *
+ * Long enough that a relay allocation on a bad network still has room — a
+ * TURN candidate can take several seconds to appear — and short enough that
+ * nobody is left watching a word that is not going to change.
+ */
+export const CONNECT_DEADLINE_MS = 20000;
+
 function idOf(v: unknown): string | null {
   if (v === null || v === undefined || v === '') return null;
   const s = String(v).trim();
