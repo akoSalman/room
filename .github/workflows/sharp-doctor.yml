@@ -1,0 +1,70 @@
+name: Sharp Doctor
+
+# Why bistbarg makes no thumbnails, with the error in full.
+#
+# The last run established that sharp does not load there — akosalman is fine,
+# 49 thumbnails and a clean require — but it learned nothing about WHY, twice
+# over, and both were my mistakes:
+#
+#   • the check ended in `tail -1`, and the last line of a Node crash is the
+#     "Node.js v…" footer, not the error. The reinstall's result read as
+#     success-shaped output and was a stack trace with its head cut off;
+#
+#   • the journal was capped and vacuumed BEFORE being grepped for the
+#     startup message, so the one log line that says why sharp was disabled
+#     had just been deleted by the step above it.
+#
+# Both are fixed here: the whole of stderr is shown, and the service is
+# restarted first so it logs the reason afresh into the now-capped journal.
+on:
+  workflow_dispatch:
+
+jobs:
+  doctor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Diagnose bistbarg
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.DEPLOY_HOST_BISTBARG }}
+          SERVICE: ${{ secrets.DEPLOY_SERVICE_BISTBARG }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/k
+          chmod 600 ~/.ssh/k
+          ssh -i ~/.ssh/k -o StrictHostKeyChecking=accept-new -o ConnectTimeout=25 \
+            "root@$HOST" "SERVICE='$SERVICE' bash -s" <<'EOF'
+          set +e
+          cd "$(systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null)" 2>/dev/null || cd /root
+          echo "### the error, in full"
+          # 2>&1 and no tail. The reason is in the FIRST lines of a Node
+          # failure — the module it could not find, or the symbol it could not
+          # link — and the version footer at the end is the only part the last
+          # run captured.
+          node -e "require('sharp'); console.log('SHARP OK')" 2>&1 | head -30 | sed 's/^/  /'
+
+          echo ""
+          echo "### what it was built against"
+          echo -n "  node:  "; node -v
+          echo -n "  npm:   "; npm -v
+          echo -n "  libc:  "; (ldd --version 2>&1 | head -1) || echo unknown
+          echo -n "  arch:  "; uname -m
+          echo "  sharp in package.json:"
+          grep -E '"sharp"' package.json 2>/dev/null | sed 's/^/    /'
+          echo "  sharp installed:"
+          node -e "console.log(require('sharp/package.json').version)" 2>&1 | head -2 | sed 's/^/    /'
+          echo "  platform binaries present:"
+          ls -d node_modules/@img/sharp-* 2>/dev/null | sed 's|.*/|    |' || echo "    (none — @img/sharp-* is how sharp 0.33+ ships them)"
+
+          echo ""
+          echo "### what the service itself says, logged fresh"
+          # Restarted FIRST, so the startup message exists in the journal that
+          # was capped and vacuumed in the previous run. Grepping before this
+          # is how the last run found nothing.
+          systemctl restart "$SERVICE"
+          sleep 4
+          systemctl is-active "$SERVICE" | sed 's/^/  service: /'
+          journalctl -u "$SERVICE" --since '2 min ago' --no-pager 2>/dev/null \
+            | grep -iE 'sharp|thumbnail' | tail -10 | sed 's/^/  /'
+          echo "  (no lines above means sharp loaded cleanly this time)"
+          EOF
