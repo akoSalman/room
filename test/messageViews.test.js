@@ -280,6 +280,58 @@ test('the time shown includes the DATE', () => {
   assert.ok(/messageInfo\.fullWhen/.test(chat), 'the screen does not use it');
 });
 
+// ── The rule has to be the one the SERVER uses ─────────────────────────────
+//
+// Everything above tests the rule. The rule was right, and was wired into the
+// path that runs when somebody opens a message — and the sweep that runs every
+// thirty seconds had its own older copy, on messages.viewed_at, which is the
+// FIRST member's open. So in a room the message was destroyed one countdown
+// after the first person opened it, including for the sender, and this file
+// stayed green the whole time because nothing here asked who was using the
+// rule. Reported as: the sender loses it before everyone has seen it.
+
+const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+
+test('THE GAP: the sweep decides with allViewsExpired, not with viewed_at', () => {
+  const sweep = /function sweepExpired\([\s\S]*?\n\}/.exec(srv);
+  assert.ok(sweep, 'sweepExpired is no longer in a shape this can read');
+  assert.ok(/mviews\.allViewsExpired\(/.test(sweep[0]),
+    'the sweep destroys one-time messages on the first open again');
+  assert.ok(/memberIds: getRoomMemberIds\(room\)/.test(sweep[0]),
+    'the sweep asks the rule without telling it who the members are — '
+    + 'allViewsExpired fails closed on that and nothing would ever be destroyed');
+});
+
+test('…and there is only ONE copy of that decision', () => {
+  // The periodic sweep used to delete one-time messages itself AND call
+  // sweepExpired. Two copies of a rule is how one of them ends up being the
+  // old one, and that is exactly what happened.
+  const others = srv.split('forEach(destroyMessage)').length - 1;
+  assert.ok(others <= 1,
+    `destroyMessage is applied wholesale in ${others} places — one of them will be the stale rule`);
+});
+
+test('a disappearing deadline is not gated on who has opened it', () => {
+  // A message can carry both clocks. Its expiry is a promise about time.
+  const sweep = /function sweepExpired\([\s\S]*?\n\}/.exec(srv)[0];
+  assert.ok(/m\.expires_at != null && m\.expires_at <= now\) return true/.test(sweep),
+    'a message past its disappearing deadline now waits for members to open it');
+});
+
+test('the expiry timer cannot spin on a deadline it will not act on', () => {
+  // scheduleNextExpiry used to take MIN over one-time deadlines as well. Once
+  // the sweep began refusing to act on those, such a deadline in the past
+  // meant: delay 0, destroy nothing, reschedule on the same past moment,
+  // delay 0 — a tight loop for as long as one unopened one-time message
+  // existed. They are covered by their own per-view timer and by the periodic
+  // sweep, so they do not belong here at all.
+  const fn = /function scheduleNextExpiry\([\s\S]*?\n\}/.exec(srv);
+  assert.ok(fn, 'scheduleNextExpiry is gone');
+  assert.ok(!/one_time_seconds/.test(fn[0]),
+    'one-time deadlines are back in the expiry timer, which can now spin');
+  assert.ok(/MIN\(expires_at\)/.test(fn[0]), 'the timer no longer schedules anything');
+});
+
 let passed = 0, failed = 0;
 for (const { n, f } of tests) {
   try { f(); console.log(`  ✓ ${n}`); passed++; }

@@ -1397,7 +1397,16 @@ test('THE BUG: a one-time message whose minute ran out is destroyed too', async 
   // A minute is far too long for a test, and the setTimeout made at view time
   // is not the path under test — a restart is what kills that. So the view is
   // backdated and the SWEEP is asked, exactly as it is at startup.
-  db.prepare('UPDATE messages SET viewed_at = ? WHERE id = ?').run(Date.now() - 61_000, msg.id);
+  //
+  // BOTH clocks, because the server writes both: message_views carries each
+  // member's own open and messages.viewed_at records the first one, at the
+  // same instant. Backdating only the second produced a state the server
+  // cannot reach — a first view a minute ago whose only member opened it just
+  // now — and that fixture passed for as long as the sweep looked at nothing
+  // else. It is the per-member time that decides now.
+  const minuteAgo = Date.now() - 61_000;
+  db.prepare('UPDATE messages SET viewed_at = ? WHERE id = ?').run(minuteAgo, msg.id);
+  db.prepare('UPDATE message_views SET viewed_at = ? WHERE message_id = ?').run(minuteAgo, msg.id);
   const destroyed = require('../server.js').sweepExpired();
   assert.ok(destroyed >= 1, 'the sweep does not know about the one-time clock');
   assert.ok(!(await api(`/messages/${room.id}`, 'GET', null, b.token))
@@ -1422,6 +1431,95 @@ test('a one-time message nobody opened is left alone by the sweep', async () => 
   assert.ok((await api(`/messages/${room.id}`, 'GET', null, b.token))
     .some(m => m.content === 'never opened'),
     'an unopened one-time message was destroyed by the sweep');
+});
+
+test('a one-time message in a room lives until the LAST member has opened it', async () => {
+  // Reported as: in a room the one-time message is taken away from the SENDER
+  // before everyone has opened it, so they can never see who it reached.
+  //
+  // The rule for this was written, tested and wired into the path that runs
+  // when somebody opens a message. It was not wired into the SWEEP, which ran
+  // every thirty seconds on messages.viewed_at — the FIRST member's open — and
+  // therefore undid it. messageViews.test.js was green throughout, because it
+  // tests the rule and nothing asked whether the sweep used it.
+  //
+  // Two recipients, because one cannot tell the two rules apart: with a single
+  // recipient "the first to open" and "the last to open" are the same person,
+  // which is why the existing tests above pass either way.
+  const db = require('../db.js');
+  const a = await signUp('otlastsender');
+  const b = await signUp('otlastone');
+  const c = await signUp('otlasttwo');
+  const room = await api('/rooms', 'POST', { name: 'one-time-last' }, a.token);
+  const sa = await connect(a.token);
+  const sb = await connect(b.token);
+  const sc = await connect(c.token);
+  await emit(sb, 'accept_invite', { roomId: room.id });
+  await emit(sc, 'accept_invite', { roomId: room.id });
+
+  await emit(sa, 'send_message', {
+    roomId: room.id, type: 'text', content: 'all of you', oneTimeSeconds: 60,
+  });
+  await new Promise(r => setTimeout(r, 200));
+  const msg = (await api(`/messages/${room.id}`, 'GET', null, a.token))
+    .find(m => m.content === 'all of you');
+  assert.ok(msg, 'the message was not stored');
+
+  // ONE of them opens it, and their countdown is backdated past its end.
+  sb.emit('view_one_time', { messageId: msg.id });
+  await new Promise(r => setTimeout(r, 250));
+  const past = Date.now() - 61_000;
+  db.prepare('UPDATE messages SET viewed_at = ? WHERE id = ?').run(past, msg.id);
+  db.prepare('UPDATE message_views SET viewed_at = ? WHERE message_id = ?').run(past, msg.id);
+
+  require('../server.js').sweepExpired();
+  assert.ok((await api(`/messages/${room.id}`, 'GET', null, a.token))
+    .some(m => String(m.id) === String(msg.id)),
+    'the sweep destroyed it before the second member had opened it — '
+    + 'the sender can no longer see who it reached');
+
+  // …and when the last one has opened it and run down, it goes.
+  sc.emit('view_one_time', { messageId: msg.id });
+  await new Promise(r => setTimeout(r, 250));
+  db.prepare('UPDATE message_views SET viewed_at = ? WHERE message_id = ?').run(past, msg.id);
+  const finished = require('../server.js').sweepExpired();
+  assert.ok(finished >= 1, 'the sweep never finishes a message everyone has opened');
+  assert.ok(!(await api(`/messages/${room.id}`, 'GET', null, a.token))
+    .some(m => String(m.id) === String(msg.id)),
+    'a one-time message everyone opened and ran down was kept for ever');
+});
+
+test('a disappearing message still disappears on time, one-time or not', async () => {
+  // A message can carry BOTH clocks: a one-time message sent into a room that
+  // has disappearing messages switched on. The expiry is not about who has
+  // looked at it, and making it wait for every member to open it would keep
+  // something past the moment it was promised to vanish — which is the one
+  // guarantee a disappearing message makes.
+  //
+  // Mutation found this: deleting the expires_at fast path from the sweep
+  // broke nothing, because every existing case had one clock or the other.
+  const db = require('../db.js');
+  const a = await signUp('bothclocksa');
+  const b = await signUp('bothclocksb');
+  const room = await api('/rooms', 'POST', { name: 'both-clocks' }, a.token);
+  const sa = await connect(a.token);
+  const sb = await connect(b.token);
+  await emit(sb, 'accept_invite', { roomId: room.id });
+  await emit(sa, 'send_message', {
+    roomId: room.id, type: 'text', content: 'both clocks', oneTimeSeconds: 60,
+  });
+  await new Promise(r => setTimeout(r, 200));
+  const msg = (await api(`/messages/${room.id}`, 'GET', null, a.token))
+    .find(m => m.content === 'both clocks');
+  assert.ok(msg, 'the message was not stored');
+
+  // Its disappearing deadline has passed. Nobody has opened it, so the
+  // one-time rule alone would keep it indefinitely.
+  db.prepare('UPDATE messages SET expires_at = ? WHERE id = ?').run(Date.now() - 1000, msg.id);
+  require('../server.js').sweepExpired();
+  assert.ok(!(await api(`/messages/${room.id}`, 'GET', null, a.token))
+    .some(m => String(m.id) === String(msg.id)),
+    'a message past its disappearing deadline was kept because nobody had opened it');
 });
 
 test('a deadline that passed while the server was down is honoured at startup', async () => {

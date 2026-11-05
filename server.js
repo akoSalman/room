@@ -1571,13 +1571,14 @@ function destroyMessage(msg) {
 setInterval(() => {
   try {
     const now = Date.now();
-    db.prepare('SELECT * FROM messages WHERE one_time_seconds IS NOT NULL AND viewed_at IS NOT NULL')
-      .all()
-      .filter(m => now >= m.viewed_at + m.one_time_seconds * 1000)
-      .forEach(destroyMessage);
-    // Disappearing messages. Swept the same way, so a timer that elapsed while
-    // the server was down is still honoured on the next tick rather than
-    // leaving the message sitting there forever.
+    // One sweep, not two. This used to destroy one-time messages itself, on
+    // messages.viewed_at — the first member's open — and then call
+    // sweepExpired as well. Two copies of a rule is how one of them ends up
+    // being the old one, and this was the old one: it deleted the message out
+    // from under the per-member countdown that sweepExpired now honours.
+    // Disappearing messages are swept there too, so a timer that elapsed
+    // while the server was down is still honoured on the next tick rather
+    // than leaving the message sitting there forever.
     sweepExpired(now);
   } catch (err) {
     console.error('[one-time] sweep error:', err.message);
@@ -1612,21 +1613,62 @@ function sweepExpired(now = Date.now()) {
         OR (one_time_seconds IS NOT NULL AND viewed_at IS NOT NULL
             AND viewed_at + one_time_seconds * 1000 <= ?)
   `).all(now, now);
-  due.forEach(destroyMessage);
-  return due.length;
+  // ── A one-time message is due here, and may still not be finished ────────
+  //
+  // Reported as: in a room, a one-time message is taken away from the SENDER
+  // before everyone has opened it, so they can never see who it reached.
+  //
+  // messages.viewed_at is the FIRST view, by anybody. Destroying on it starts
+  // one global clock from one member's open — which is the exact bug
+  // view_one_time's own comment says was fixed, and it was, in the path that
+  // runs when somebody opens a message. It was not fixed here, and this runs
+  // every thirty seconds, so this is the one that decided.
+  //
+  // The rule lives in messageViews.js and is tested: nobody left who could
+  // still see it. The SQL above stays as it is — it is a cheap way to find
+  // candidates — and the decision is made below.
+  const finished = due.filter((m) => {
+    // A disappearing message is due on the clock alone; it is not about who
+    // has looked at it.
+    if (m.expires_at != null && m.expires_at <= now) return true;
+    if (!m.one_time_seconds) return true;
+    const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(m.room_id);
+    // No room left to have an audience: there is nobody who could still see
+    // it, so it is finished. Not a reason to keep it forever.
+    if (!room) return true;
+    return mviews.allViewsExpired({
+      memberIds: getRoomMemberIds(room),
+      senderId: m.user_id,
+      oneTimeSeconds: m.one_time_seconds,
+      views: db.prepare('SELECT user_id, viewed_at FROM message_views WHERE message_id = ?').all(m.id),
+      now,
+    });
+  });
+  finished.forEach(destroyMessage);
+  return finished.length;
 }
 
 function scheduleNextExpiry() {
   clearTimeout(expiryTimer);
   let next;
   try {
+    // ── Only deadlines that can actually come due ─────────────────────────
+    //
+    // One-time messages are deliberately NOT here any more.
+    //
+    // viewed_at is the first member's open, and that moment stopped being a
+    // deadline when the sweep started requiring every member's countdown to
+    // have run out. Left in, it would have been a deadline in the past that
+    // the sweep then declines to act on — delay 0, nothing destroyed,
+    // reschedule on the same past moment, delay 0 again. A tight loop pinning
+    // a CPU for as long as one unopened one-time message exists in a room.
+    //
+    // They lose nothing by going: each member's open creates its own exact
+    // timer (see view_one_time, which calls the same rule when it fires), and
+    // the thirty-second sweep covers the one case those timers cannot — a
+    // countdown that elapsed while the process was not running.
     next = db.prepare(`
-      SELECT MIN(at) AS at FROM (
-        SELECT expires_at AS at FROM messages WHERE expires_at IS NOT NULL
-        UNION ALL
-        SELECT viewed_at + one_time_seconds * 1000 AS at FROM messages
-         WHERE one_time_seconds IS NOT NULL AND viewed_at IS NOT NULL
-      )
+      SELECT MIN(expires_at) AS at FROM messages WHERE expires_at IS NOT NULL
     `).get();
   } catch { return; }
   if (!next || next.at == null) return;   // nothing is counting down

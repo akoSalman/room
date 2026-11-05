@@ -76,7 +76,11 @@ test('…and gives it no sender header', () => {
 test('THE APP PUTS IT IN THE MIDDLE', () => {
   const i = chat.indexOf("if (msg.type === 'call') {");
   assert.ok(i > 0, 'the app no longer draws call logs');
-  const body = chat.slice(i, i + 1400);
+  // The whole branch, by brace matching. This was a fixed 1400-character
+  // slice, which stopped containing the markup the moment a comment was added
+  // above it — the fourth time a fixed slice in this suite has drifted off the
+  // thing it was reading.
+  const body = callBranch();
   assert.ok(/s\.systemRow/.test(body), 'the call log is not in a centred row');
   // Returned early, like a system notice — not drawn inside a bubble.
   assert.ok(i < chat.indexOf("if (msg.type === 'system') {"),
@@ -87,8 +91,7 @@ test('THE APP PUTS IT IN THE MIDDLE', () => {
 
 test('…and can still be long-pressed, like any other message', () => {
   // Deleting a call log is the thing somebody actually wants to do with one.
-  const i = chat.indexOf("if (msg.type === 'call') {");
-  const body = chat.slice(i, i + 1400);
+  const body = callBranch();
   assert.ok(/onLongPress=\{\(\) => onMessageLongPress\(msg\)\}/.test(body),
     'a call log cannot be deleted, because nothing opens its menu');
 });
@@ -136,6 +139,65 @@ test('ONE CALL IS STILL ONE ENTRY from the web too', () => {
   // Both ends report and the server keeps the first; the web must also not
   // report the same call twice itself.
   assert.ok(/if \(logged \|\|/.test(CALLS), 'the web can report the same call more than once');
+});
+
+// ── Selecting one, and being able to see that you have ─────────────────────
+//
+// Reported with a photograph: the header reads "1 selected" and not one row on
+// screen shows anything. Long-pressing a call log really did select it — that
+// is why the counter moved — and the row had no way of saying so, so the app
+// had silently ticked something invisible.
+//
+// Every other message is drawn inside SelectedRow, which subscribes to the
+// selection and paints the row while it is ticked. A call log returns from the
+// top of renderMessage, above all of that.
+
+/** The call branch of renderMessage, by brace matching from its own `if`. */
+function callBranch() {
+  const at = chat.indexOf("if (msg.type === 'call') {");
+  assert.ok(at >= 0, 'the call branch is gone from renderMessage');
+  const open = chat.indexOf('{', at);
+  let depth = 0;
+  for (let i = open; i < chat.length; i++) {
+    if (chat[i] === '{') depth++;
+    else if (chat[i] === '}' && --depth === 0) return chat.slice(open, i + 1);
+  }
+  throw new Error('the call branch never closes');
+}
+
+test('THE BUG: a ticked call log is drawn as ticked', () => {
+  const b = callBranch();
+  assert.ok(/<SelectedRow id={msg\.id}/.test(b),
+    'a selected call log shows nothing at all — the count moves and the row does not');
+  assert.ok(/picked={s\.msgRowPicked}/.test(b),
+    'the row is wrapped but given no ticked appearance, which is the same thing');
+  // And it must still be the row it was: SelectedRow replaces the wrapper.
+  assert.ok(/base={s\.systemRow}/.test(b), 'the call log lost its own layout');
+});
+
+test('…and tapping one in select mode ticks and unticks it', () => {
+  // There was no onPress at all. A call log could be selected by long press
+  // and then not deselected, and tapping a second one did nothing — so the
+  // only way out of select mode was the close button.
+  const b = callBranch();
+  assert.ok(/onPress={\(\) => \{ if \(selectMode\) toggleSelected\(msg\); \}}/.test(b),
+    'a call log cannot be ticked or unticked by tapping in select mode');
+  // Only in select mode: a plain tap on a call log must not start selecting.
+  assert.ok(!/onPress={\(\) => toggleSelected/.test(b),
+    'tapping a call log selects it even when nothing is selected');
+});
+
+test('…and a long press still starts select mode', () => {
+  const b = callBranch();
+  assert.ok(/onLongPress={\(\) => onMessageLongPress\(msg\)}/.test(b),
+    'call logs can no longer be selected at all');
+});
+
+test('the row style it is painted with exists', () => {
+  // A style name that does not resolve is `undefined`, which React happily
+  // renders as no change — the exact symptom this is fixing.
+  assert.ok(/msgRowPicked: \{/.test(chat), 'msgRowPicked is not a style any more');
+  assert.ok(/systemRow: \{/.test(chat), 'systemRow is not a style any more');
 });
 
 let passed = 0, failed = 0;

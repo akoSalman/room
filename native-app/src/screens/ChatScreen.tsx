@@ -5307,10 +5307,26 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
         : 'Call failed';
       const bad = c.outcome !== 'completed';
       const color = bad ? '#f87171' : C.accent;
+      // ── A ticked call log has to LOOK ticked ──────────────────────────
+      //
+      // Reported with a photograph: the header says "1 selected" and not one
+      // row on screen shows anything at all.
+      //
+      // Every other message is drawn inside SelectedRow, which subscribes to
+      // the selection and paints the row while it is ticked. A call log
+      // returns from here, above all of that, so it was long-pressable — it
+      // really did go into the selection, which is why the counter moved — and
+      // had no way to say so. From the user's side the app had silently
+      // selected something invisible, and the only clue was a number.
+      //
+      // And once in select mode, a TAP has to tick and untick like any other
+      // row. There was no onPress at all, so a call log could be selected and
+      // then not deselected, and tapping a second one did nothing.
       return (
-        <View style={s.systemRow}>
+        <SelectedRow id={msg.id} base={s.systemRow} picked={s.msgRowPicked}>
           <TouchableOpacity
             activeOpacity={0.85}
+            onPress={() => { if (selectMode) toggleSelected(msg); }}
             onLongPress={() => onMessageLongPress(msg)}
             delayLongPress={350}
           >
@@ -5323,7 +5339,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
               <Text style={[s.callLogText, bad && { color: '#f87171' }]}>{label}</Text>
             </View>
           </TouchableOpacity>
-        </View>
+        </SelectedRow>
       );
     }
     if (msg.type === 'system') {
