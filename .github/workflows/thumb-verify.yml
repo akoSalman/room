@@ -1,0 +1,93 @@
+name: Thumbnail Verify
+
+# Does the pure-JS thumbnailer actually work, on the real server, against the
+# photos people really sent?
+#
+# The unit tests scale arrays this repository made up, and the round-trip test
+# encodes its own JPEG. Neither has seen a photo from a phone: progressive
+# JPEGs, CMYK, EXIF orientation, 4:2:0 chroma, the odd truncated file. The one
+# way to know is to run the worker over what is in uploads/.
+#
+# It runs the worker directly rather than going through HTTP, because the
+# route needs a signed url and a logged-in user, and what is being tested here
+# is the decode-scale-encode path, not the signature.
+#
+# Read-only with respect to users' media: it writes thumbnails, which is what
+# the server does anyway, and deletes nothing.
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Thumbnail real photos on bistbarg
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.DEPLOY_HOST_BISTBARG }}
+          SERVICE: ${{ secrets.DEPLOY_SERVICE_BISTBARG }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/k
+          chmod 600 ~/.ssh/k
+          ssh -i ~/.ssh/k -o StrictHostKeyChecking=accept-new -o ConnectTimeout=90 \
+            "root@$HOST" "SERVICE='$SERVICE' bash -s" <<'EOF'
+          set +e
+          cd "$(systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null)" 2>/dev/null || cd /root
+          echo "### is the new code actually here?"
+          for f in thumbScale.js thumbWorker.js thumbnailer.js diskGuard.js uploadDedup.js; do
+            printf '  %-18s %s\n' "$f" "$([ -f "$f" ] && echo present || echo MISSING)"
+          done
+          echo -n "  jpeg-js installed: "
+          node -e "console.log(require('jpeg-js/package.json').version)" 2>&1 | tail -1
+
+          echo ""
+          echo "### thumbnail eight real photos, through the worker"
+          # Real files, not a synthetic image: phone JPEGs are progressive,
+          # chroma-subsampled, sometimes EXIF-rotated and occasionally
+          # truncated, and none of that is exercised by an array this
+          # repository made up.
+          node -e "
+            const fs = require('fs'), path = require('path');
+            const { Worker } = require('worker_threads');
+            const files = fs.readdirSync('uploads')
+              .filter(f => /\.(jpg|jpeg)\$/i.test(f))
+              .slice(0, 8);
+            if (!files.length) { console.log('  no jpegs in uploads/'); process.exit(0); }
+            let ok = 0, bad = 0, saved = 0, done = 0;
+            const run = (f) => new Promise(res => {
+              const src = path.join('uploads', f);
+              const out = path.join('uploads/.thumbs', f + '_200.jpg');
+              const t0 = Date.now();
+              const w = new Worker('./thumbWorker.js', {
+                workerData: { src, out, size: 200, quality: 72 },
+              });
+              const t = setTimeout(() => { try { w.terminate(); } catch {} res({ ok: false, why: 'timeout' }); }, 60000);
+              w.on('message', m => { clearTimeout(t); res({ ...m, ms: Date.now() - t0 }); });
+              w.on('error', e => { clearTimeout(t); res({ ok: false, why: String(e.message) }); });
+            });
+            (async () => {
+              for (const f of files) {
+                const r = await run(f);
+                const orig = fs.statSync(path.join('uploads', f)).size;
+                done++;
+                if (r.ok) {
+                  ok++; saved += orig - r.bytes;
+                  console.log('  ok   ' + String(Math.round(orig/1024)).padStart(5) + ' KB -> '
+                    + String(Math.round(r.bytes/1024)).padStart(4) + ' KB  in ' + String(r.ms).padStart(5) + ' ms');
+                } else { bad++; console.log('  FAIL ' + (r.error || r.why)); }
+              }
+              console.log('');
+              console.log('  ' + ok + ' of ' + done + ' thumbnailed, ' + bad + ' failed');
+              if (ok) console.log('  bytes saved on these ' + ok + ': ' + Math.round(saved/1024) + ' KB'
+                + ' (' + Math.round(100 * saved / (saved + files.length)) + '% smaller, roughly)');
+            })();
+          " 2>&1 | head -24
+
+          echo ""
+          echo "### what is in the thumbnail directory now"
+          echo -n "  files: "; find uploads/.thumbs -type f 2>/dev/null | wc -l
+          du -sh uploads/.thumbs 2>/dev/null | sed 's/^/  /'
+          # Left in place on purpose: these are exactly the thumbnails the
+          # server would have made, so the first viewers get them free.
+          EOF
