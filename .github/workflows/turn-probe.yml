@@ -95,22 +95,44 @@ jobs:
           # Resolved on the runner, compared on the runner, and NEITHER
           # printed: both are masked secrets, and these reports get pasted
           # into a repository that has been public. Only the verdict matters.
-          RESOLVED=$(getent hosts "$DOMAIN" | awk '{print $1; exit}')
+          # ── The host the APP is handed, which is the one that matters ──────
+          #
+          # This read $DOMAIN and announced "the app hands phones
+          # turn:$DOMAIN:3478" on every run. That was true until TURN_URL was
+          # repointed and false immediately afterwards, while still being
+          # printed in bold — a line asserting something it had not measured,
+          # which is the fault that has cost the most time here. It now takes
+          # the host out of TURN_URL itself.
+          TURN_HOST=$(printf '%s' "$CREDS" | sed -n 's/^TURN_URL=//p' | head -1 | tr -d '\r')
+          TURN_HOST=${TURN_HOST#*:}; TURN_HOST=${TURN_HOST%%\?*}; TURN_HOST=${TURN_HOST%%:*}
+          echo "  the host in TURN_URL, which is what phones are given: $TURN_HOST"
+          RESOLVED=$(getent hosts "$TURN_HOST" | awk '{print $1; exit}')
           [ -n "$RESOLVED" ] && echo "::add-mask::$RESOLVED"
-          if [ -z "$RESOLVED" ]; then
-            echo "  $DOMAIN does not resolve from here at all"
-          elif [ "$RESOLVED" = "$HOST" ]; then
-            echo "  the name resolves to the same host this deploys to"
-            python3 -I scripts/turn-probe.py "$RESOLVED" 3478 3478/tcp 443 || true
+          if [ -z "$TURN_HOST" ]; then
+            echo "  TURN_URL has no host — nothing to resolve"
+          elif [ -z "$RESOLVED" ]; then
+            echo "  it does not resolve from here at all"
+          elif [ "$RESOLVED" = "$HOST" ] || [ "$TURN_HOST" = "$HOST" ]; then
+            echo "  it points at the deploy host, which is where coturn runs."
+            python3 -I scripts/turn-probe.py "$TURN_HOST" 3478 3478/tcp 443 || true
           else
-            echo "  THE NAME DOES NOT RESOLVE TO THE DEPLOY HOST."
-            echo "  The app hands phones turn:$DOMAIN:3478, so their STUN and"
-            echo "  TURN go wherever this points — not to the coturn that is"
-            echo "  running. That alone is relay=0 on every phone."
-            echo "  -- probing the NAME's address --"
-            python3 -I scripts/turn-probe.py "$RESOLVED" 3478 3478/tcp 443 || true
+            echo "  THE HOST IN TURN_URL IS NOT THE DEPLOY HOST."
+            echo "  Phones send their STUN and TURN wherever it points, not to"
+            echo "  the coturn that is running. That alone is relay=0 on every"
+            echo "  phone, and srflx=0 with it, since our STUN is the same host."
+            echo "  -- probing what TURN_URL points at --"
+            python3 -I scripts/turn-probe.py "$TURN_HOST" 3478 3478/tcp 443 || true
             echo "  -- probing the DEPLOY host directly --"
             python3 -I scripts/turn-probe.py "$HOST" 3478 3478/tcp 443 || true
+          fi
+          # And the web name separately, because the two being different is
+          # the whole finding and is worth seeing rather than inferring.
+          WEB=$(getent hosts "$DOMAIN" | awk '{print $1; exit}')
+          [ -n "$WEB" ] && echo "::add-mask::$WEB"
+          if [ -n "$WEB" ] && [ "$WEB" != "$HOST" ]; then
+            echo "  (for the record: $DOMAIN still resolves somewhere other than"
+            echo "   the deploy host. That is fine for HTTPS and fatal for TURN,"
+            echo "   which is why TURN_URL no longer uses it.)"
           fi
 
           echo ""
