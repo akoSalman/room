@@ -1,0 +1,117 @@
+name: Disk Report
+
+# Read-only. How much room is left, what is using it, and how fast it grows —
+# because "the disk is limited" has several different best answers and which
+# one is right depends on numbers nobody has looked at.
+#
+# The three that decide it:
+#   • how long until it is full at the current rate;
+#   • whether the bulk is media people still open, or media nobody has touched
+#     in months;
+#   • whether anything is already leaking (abandoned upload parts, thumbnails
+#     whose originals are gone, logs).
+on:
+  workflow_dispatch:
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: bistbarg
+            host_secret: DEPLOY_HOST_BISTBARG
+            service_secret: DEPLOY_SERVICE_BISTBARG
+          - name: akosalman
+            host_secret: DEPLOY_HOST_AKOSALMAN
+            service_secret: DEPLOY_SERVICE_AKOSALMAN
+    steps:
+      - name: Measure ${{ matrix.name }}
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets[matrix.host_secret] }}
+          SERVICE: ${{ secrets[matrix.service_secret] }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/k
+          chmod 600 ~/.ssh/k
+          ssh -i ~/.ssh/k -o StrictHostKeyChecking=accept-new -o ConnectTimeout=25 \
+            "root@$HOST" "SERVICE='$SERVICE' bash -s" <<'EOF'
+          set +e
+          cd "$(systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null)" 2>/dev/null || cd /root
+          echo "### the filesystem uploads sit on"
+          df -h . | sed 's/^/  /'
+          echo ""
+
+          echo "### where the space has gone"
+          du -sh uploads db.sqlite* 2>/dev/null | sed 's/^/  /'
+          du -sh uploads/.thumbs 2>/dev/null | sed 's/^/  /'
+          echo -n "  journal (this service): "
+          journalctl -u "$SERVICE" --disk-usage 2>/dev/null | grep -o '[0-9.]*[KMG]' | tail -1
+          echo -n "  journal (all units):    "
+          journalctl --disk-usage 2>/dev/null | grep -oE '[0-9.]+[KMG]' | tail -1
+          echo ""
+
+          echo "### uploads, counted"
+          # -maxdepth 1 so thumbnails are counted separately rather than twice.
+          echo -n "  files: "; find uploads -maxdepth 1 -type f 2>/dev/null | wc -l
+          echo -n "  thumbs: "; find uploads/.thumbs -type f 2>/dev/null | wc -l
+          echo -n "  abandoned upload parts: "; find uploads -maxdepth 1 -name '*.part' 2>/dev/null | wc -l
+          echo ""
+
+          echo "### HOW FAST IT GROWS — bytes added, by age"
+          # The number that turns "limited" into a date. Buckets rather than a
+          # single total: a flat month-on-month figure and a recent spike need
+          # different answers.
+          for d in 7 30 90 365; do
+            printf '  last %3s days: ' "$d"
+            find uploads -maxdepth 1 -type f -mtime -$d -printf '%s\n' 2>/dev/null \
+              | awk '{t+=$1; n++} END {printf "%8.1f MB in %d files\n", t/1048576, n}'
+          done
+          printf '  older than 1y: '
+          find uploads -maxdepth 1 -type f -mtime +365 -printf '%s\n' 2>/dev/null \
+            | awk '{t+=$1; n++} END {printf "%8.1f MB in %d files\n", t/1048576, n+0}'
+          echo ""
+
+          echo "### COLD DATA — never read since written"
+          # atime vs mtime answers the question that decides whether archiving
+          # or deleting old media would cost anybody anything. If the mount is
+          # noatime this is meaningless, so it says so.
+          if findmnt -no OPTIONS --target . 2>/dev/null | grep -q noatime; then
+            echo "  (mounted noatime — read times are not recorded, so this cannot be measured)"
+          else
+            for d in 30 90 180; do
+              printf '  not opened in %3s days: ' "$d"
+              find uploads -maxdepth 1 -type f -atime +$d -printf '%s\n' 2>/dev/null \
+                | awk '{t+=$1; n++} END {printf "%8.1f MB in %d files\n", t/1048576, n+0}'
+            done
+          fi
+          echo ""
+
+          echo "### what KIND of file is using it"
+          find uploads -maxdepth 1 -type f -printf '%s %f\n' 2>/dev/null \
+            | awk '{n=split($2,p,"."); ext=(n>1?tolower(p[n]):"none");
+                    t[ext]+=$1; c[ext]++}
+                   END {for (e in t) printf "  %-6s %8.1f MB  %d files\n", e, t[e]/1048576, c[e]}' \
+            | sort -k2 -rn | head -12
+          echo ""
+
+          echo "### orphans — on disk with no message pointing at them"
+          # Files whose message was deleted without the file going with it, and
+          # thumbnails whose original is gone. Counted, never deleted here:
+          # this workflow only reads.
+          if [ -f db.sqlite ] && command -v sqlite3 >/dev/null 2>&1; then
+            sqlite3 db.sqlite "SELECT COUNT(*) FROM messages WHERE content LIKE '%/uploads/%';" \
+              | sed 's/^/  messages referencing an upload: /'
+          else
+            echo "  (sqlite3 not installed here, or the database is elsewhere — skipped)"
+          fi
+          echo -n "  thumbnails whose original is missing: "
+          miss=0
+          for t in $(find uploads/.thumbs -type f -name '*_*.jpg' 2>/dev/null | head -4000); do
+            b=$(basename "$t"); orig=${b%_*}
+            [ -f "uploads/$orig" ] || miss=$((miss+1))
+          done
+          echo "$miss (of up to 4000 sampled)"
+          EOF
