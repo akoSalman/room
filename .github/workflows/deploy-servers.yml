@@ -21,6 +21,8 @@ on:
       - 'najva.js'
       - 'messageViews.js'
       - 'iceConfig.js'
+      - 'diskGuard.js'
+      - 'uploadDedup.js'
       - 'readReceipts.js'
       - 'roomVoice.js'
       - 'mutes.js'
