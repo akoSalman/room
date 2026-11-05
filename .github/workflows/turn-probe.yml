@@ -1,0 +1,81 @@
+name: TURN Probe
+
+# Read-only. Changes nothing on the server; asks it, in its own protocol,
+# whether each transport the app offers a phone actually works.
+#
+# This replaces turnutils_uclient, which was run under `timeout` and therefore
+# SIGTERMed with its buffered output still in it: three transports reported
+# FAILED with not one line of explanation, a verdict indistinguishable from
+# "the client was killed before it said anything".
+#
+# scripts/turn-probe.py sends a STUN binding request, then an unauthenticated
+# Allocate, then a credentialed one, and names which step stopped — so
+# "nothing is listening", "TURN is not serving this port" and "the credentials
+# are wrong" stop looking alike. Its own test (test/turnProbe.test.js) checks
+# it against a responder that verifies MESSAGE-INTEGRITY independently, after
+# the first version misread the STUN header and called a working server
+# unreachable.
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: bistbarg
+            domain: chat.bistbarg.com
+            host_secret: DEPLOY_HOST_BISTBARG
+            service_secret: DEPLOY_SERVICE_BISTBARG
+          - name: akosalman
+            domain: chat.akosalman.com
+            host_secret: DEPLOY_HOST_AKOSALMAN
+            service_secret: DEPLOY_SERVICE_AKOSALMAN
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Probe ${{ matrix.name }}
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets[matrix.host_secret] }}
+          SERVICE: ${{ secrets[matrix.service_secret] }}
+          DOMAIN: ${{ matrix.domain }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/k
+          chmod 600 ~/.ssh/k
+          SSH="ssh -i $HOME/.ssh/k -o StrictHostKeyChecking=accept-new -o ConnectTimeout=25 root@$HOST"
+
+          # From the service's own environment, whichever file put it there.
+          # A guessed drop-in path is what made an earlier run exit before it
+          # measured anything.
+          CREDS=$($SSH "systemctl show \"$SERVICE\" -p Environment --value | tr ' ' '\n' | grep -E '^TURN_(USERNAME|PASSWORD|URL|ALT_PORT)='" || true)
+          export TURN_USERNAME=$(printf '%s' "$CREDS" | sed -n 's/^TURN_USERNAME=//p' | head -1 | tr -d '\r')
+          export TURN_PASSWORD=$(printf '%s' "$CREDS" | sed -n 's/^TURN_PASSWORD=//p' | head -1 | tr -d '\r')
+          [ -n "$TURN_PASSWORD" ] && echo "::add-mask::$TURN_PASSWORD"
+          [ -n "$TURN_USERNAME" ] && echo "::add-mask::$TURN_USERNAME"
+
+          # Which of the four the app depends on are even set. Names and the
+          # port only — the url carries the host, which the domain above
+          # already names, and the other two are masked.
+          echo "the service's TURN configuration:"
+          for v in TURN_URL TURN_USERNAME TURN_PASSWORD TURN_ALT_PORT; do
+            printf '  %-16s %s\n' "$v" \
+              "$(printf '%s' "$CREDS" | grep -q "^$v=" && echo set || echo 'NOT SET')"
+          done
+          # The alt port decides whether a phone is offered the 443 route at
+          # all, and it is a port number, not a secret.
+          printf '  %-16s %s\n' 'TURN_ALT_PORT =' \
+            "$(printf '%s' "$CREDS" | sed -n 's/^TURN_ALT_PORT=//p' | head -1)"
+          echo ""
+
+          # 3478 both ways, and 443 — the three the app hands a phone. A
+          # non-OK transport exits 1, so the step must not die on the first.
+          python3 -I scripts/turn-probe.py "$DOMAIN" 3478 3478/tcp 443 || true
+
+          echo ""
+          echo "# UNREACHABLE on all three means the phones have nowhere to relay."
+          echo "# OK on any one means relay=0 in the [call] log is about the phone's"
+          echo "# network or the ice configuration it was handed, not this server."

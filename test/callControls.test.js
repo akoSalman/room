@@ -476,9 +476,38 @@ test('THE SHARE LOG LINE IS COUNTS AND ONE WORD', () => {
   const server = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
   const block = /socket\.on\('call_diag'[\s\S]*?\n  \}\);/.exec(server);
   assert.ok(block, 'could not find the call_diag handler');
-  assert.ok(/replace\(\/\[\^a-z-\]\/gi, ''\)/.test(block[0]),
+  // ── Comments stripped FIRST ────────────────────────────────────────────
+  //
+  // This handler is mostly commentary explaining what must not reach the log,
+  // so the word "username" appears in it repeatedly — in sentences saying
+  // there is no username. Matching the raw source makes every such sentence a
+  // failure, and the fix is then to stop writing down why the rule exists,
+  // which is the wrong thing to be pressured into. Several regexes in this
+  // suite have been caught reading their own comments this week.
+  const body = block[0]
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/^\s*\/\/.*$/gm, ' ');
+  assert.ok(/replace\(\/\[\^a-z-\]\/gi, ''\)/.test(body),
     'the outcome word is logged unsanitised');
-  assert.ok(!/username/.test(block[0]), 'the share log line names the user');
+  assert.ok(!/username/.test(body), 'the share log line names the user');
+  // ── And what the lines DO interpolate ──────────────────────────────────
+  //
+  // Stronger than the absence of one word: every value that reaches a log
+  // line here must be the numeric user id or something that has been through
+  // word() or n(). A field added later with a different name — fromUsername,
+  // avatar, a path — would pass the test above and fail this one.
+  const logs = body.match(/console\.log\(([\s\S]*?)\);/g) || [];
+  assert.ok(logs.length >= 2, `expected the call_diag log lines, found ${logs.length}`);
+  for (const line of logs) {
+    for (const [, expr] of line.matchAll(/\$\{([^}]*)\}/g)) {
+      const e = expr.trim();
+      assert.ok(
+        e === 'socket.user.id' || /^(word|n)\(d\.[A-Za-z]+\)$/.test(e),
+        `a call_diag log line interpolates ${e}, which is neither the user id `
+        + 'nor a value put through word() or n()',
+      );
+    }
+  }
 });
 
 test('A SHARE FAILURE DOES NOT REARRANGE THE BUTTONS', () => {
