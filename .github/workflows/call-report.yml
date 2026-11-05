@@ -126,6 +126,7 @@ jobs:
           echo ""
 
           echo "### did the phones' allocate requests reach coturn"
+          STRIP="s/[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}/-/g"
           # ── NO CLIENT ADDRESSES ─────────────────────────────────────────
           #
           # coturn logs the address of every client that talks to it, and
@@ -139,7 +140,23 @@ jobs:
           # the phone could not reach coturn at all, and one that was
           # requested and refused means it got there and was turned away.
           # Those have nothing in common as problems.
-          STRIP="s/[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}/-/g"
+          # WHERE coturn logs, before reading anything. The journal came back
+          # with two lines for a three-hour window that definitely contained a
+          # successful allocation from a CI runner — which does not mean
+          # nothing happened, it means the journal is not where this is
+          # written. coturn's default is a log-file of its own. Reading an
+          # empty journal and concluding the phones never arrived would have
+          # been a confident wrong answer.
+          echo "-- where coturn writes --"
+          grep -hE '^[[:space:]]*(log-file|simple-log|verbose|no-stdout-log|syslog)' /etc/turnserver.conf 2>/dev/null \
+            || echo "(nothing set: coturn defaults to /var/log/turn_*.log)"
+          LOGS=$(ls -1t /var/log/turn*.log /var/log/turnserver/*.log 2>/dev/null | head -3)
+          echo "log files present: ${LOGS:-none}"
+          for f in $LOGS; do
+            echo "-- $(basename "$f"): $(wc -l < "$f") lines, last modified $(date -u -r "$f" +%H:%MZ) --"
+            grep -iE 'allocat|401|403|unauthor' "$f" 2>/dev/null | sed "$STRIP" | tail -8
+          done
+          echo "-- the journal --"
           if journalctl -u coturn --since "$SINCE" --no-pager >/dev/null 2>&1; then
             echo -n "lines coturn logged at all: "
             journalctl -u coturn --since "$SINCE" --no-pager 2>/dev/null | wc -l
