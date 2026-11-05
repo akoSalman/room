@@ -1,0 +1,140 @@
+name: TURN on 443
+
+# A SECOND coturn, on UDP 443, beside the one on 3478.
+#
+# Established so far: coturn answers on UDP and TCP 3478, the relay range is
+# open, and a real allocation with relay echo succeeds from a GitHub runner.
+# Every phone still reports relay=0 — a relay offered and never obtained. What
+# nothing can say is whether their allocate requests ARRIVE and are refused, or
+# never arrive at all. Those are unrelated problems with unrelated fixes, and
+# coturn is the only thing that knows.
+#
+# It currently writes nowhere: no log-file set, no files in /var/log, two lines
+# in the journal for a window that contained a successful allocation.
+#
+# NOT verbose. coturn's default level already records allocations and session
+# events, which is the whole question; verbose logs per-packet detail that
+# would fill a disk nothing on these servers prunes. A size-bounded logrotate
+# goes in at the same time for the same reason.
+#
+# Idempotent: re-running adds nothing it has already added.
+on:
+  workflow_dispatch:
+    inputs:
+      brand:
+        description: 'Which server'
+        required: false
+        default: 'bistbarg'
+
+jobs:
+  turn-logging:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start coturn on UDP 443
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ inputs.brand == 'akosalman' && secrets.DEPLOY_HOST_AKOSALMAN || secrets.DEPLOY_HOST_BISTBARG }}
+        run: |
+          if [ -z "$HOST" ] || [ -z "$SSH_KEY" ]; then
+            echo "::error::deploy secrets are not configured for ${{ inputs.brand }}"; exit 1
+          fi
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/k && chmod 600 ~/.ssh/k
+          ssh -i ~/.ssh/k -o StrictHostKeyChecking=accept-new -o ConnectTimeout=25 "root@$HOST" bash -s <<'EOF'
+          set +e
+          MAIN=/etc/turnserver.conf
+          ALT=/etc/turnserver-443.conf
+
+          # ── Why a second instance ──────────────────────────────────────────
+          #
+          # alt-listening-port=443 was tried and coturn ignored it: its log
+          # never mentions 443 at all. That option is for RFC 5780 NAT
+          # discovery, which coturn disables when the host has one address,
+          # and this host has one. It is not a general "also listen here".
+          #
+          # coturn takes one listening-port per process, so a second port means
+          # a second process. It is additive: 3478 keeps serving everybody it
+          # already serves.
+          #
+          # UDP only. TCP 443 is Apache's and must stay Apache's, so no-tcp
+          # and no-tls keep this process away from it entirely rather than
+          # relying on a bind failing harmlessly.
+          #
+          # Its own relay range, so two instances cannot hand out the same
+          # port: 35000-35999, which this host's firewall already accepts.
+          sed -e '/^[[:space:]]*listening-port=/d' \
+              -e '/^[[:space:]]*alt-listening-port=/d' \
+              -e '/^[[:space:]]*tls-listening-port=/d' \
+              -e '/^[[:space:]]*min-port=/d' \
+              -e '/^[[:space:]]*max-port=/d' \
+              -e '/^[[:space:]]*log-file=/d' \
+              -e '/^[[:space:]]*pidfile=/d' \
+              -e '/^[[:space:]]*no-tcp$/d' \
+              -e '/^[[:space:]]*no-tls$/d' \
+              "$MAIN" > "$ALT"
+          cat >> "$ALT" <<'ALTCONF'
+          listening-port=443
+          min-port=35000
+          max-port=35999
+          no-tcp
+          no-tls
+          log-file=/var/log/turnserver/turn-443.log
+          pidfile=/run/turnserver-443.pid
+          ALTCONF
+          sed -i 's/^[[:space:]]*//' "$ALT"
+
+          cat > /etc/systemd/system/coturn-443.service <<'UNIT'
+          [Unit]
+          Description=coturn on UDP 443 (for networks that filter 3478)
+          After=network.target
+          [Service]
+          Type=simple
+          User=turnserver
+          # 443 is a privileged port and this does not run as root. Without the
+          # capability the bind fails, the service never starts, and the check
+          # below would roll the whole thing back for a reason that has nothing
+          # to do with whether the idea works.
+          AmbientCapabilities=CAP_NET_BIND_SERVICE
+          CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+          ExecStart=/usr/bin/turnserver -c /etc/turnserver-443.conf --pidfile=/run/turnserver-443.pid
+          Restart=on-failure
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+
+          systemctl daemon-reload
+          systemctl enable --now coturn-443
+          sleep 3
+
+          OK=1
+          systemctl is-active --quiet coturn-443 || OK=0
+          ss -lnup 'sport = :443' 2>/dev/null | tail -n +2 | grep -q . || OK=0
+          # Nothing may have disturbed Apache or the original instance.
+          systemctl is-active --quiet coturn || OK=0
+          ss -lnup 'sport = :3478' 2>/dev/null | tail -n +2 | grep -q . || OK=0
+          curl -s -o /dev/null -k --max-time 10 https://127.0.0.1/ || OK=0
+
+          if [ "$OK" != "1" ]; then
+            echo "!! did not come up cleanly — removing it again"
+            systemctl disable --now coturn-443 2>/dev/null
+            rm -f /etc/systemd/system/coturn-443.service "$ALT"
+            systemctl daemon-reload
+            echo "--- state after rollback ---"
+            systemctl is-active coturn; ss -lnup 'sport = :3478' | tail -n +2 | wc -l
+            curl -s -o /dev/null -w 'local https: %{http_code}\n' -k https://127.0.0.1/ --max-time 10
+            echo "ROLLED BACK"
+            exit 1
+          fi
+
+          echo "### both instances"
+          echo -n "coturn (3478): "; systemctl is-active coturn
+          echo -n "coturn-443:    "; systemctl is-active coturn-443
+          echo -n "udp 3478 listeners: "; ss -lnup 'sport = :3478' | tail -n +2 | wc -l
+          echo -n "udp 443 listeners:  "; ss -lnup 'sport = :443'  | tail -n +2 | wc -l
+          echo -n "tcp 443 still apache: "; ss -lntp 'sport = :443' | tail -n +2 | grep -c httpd
+          curl -s -o /dev/null -w 'local https: %{http_code}\n' -k https://127.0.0.1/ --max-time 10
+          echo ""
+          echo "### what the new one said"
+          tail -15 /var/log/turnserver/turn-443.log 2>/dev/null \
+            | sed 's/[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}/-/g' | tail -10
+          EOF
