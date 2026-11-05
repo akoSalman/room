@@ -88,8 +88,35 @@ jobs:
           grep -q "console.log(\`\[push\]" server.js 2>/dev/null && echo yes || echo no
           echo ""
 
-          echo "### push_tokens table"
           DB=$(find "$APP_DIR" -maxdepth 3 -name '*.db' -o -maxdepth 3 -name '*.sqlite*' 2>/dev/null | head -1)
+          echo "### WHICH PUSH ROUTE, and is the second one switched on"
+          # Why this matters more than anything else in this file.
+          #
+          # FCM is Google. The server reaches Google's API perfectly well —
+          # the [push] lines below show sends accepted in a few hundred
+          # milliseconds. Whether GOOGLE then reaches the PHONE is a different
+          # question, and on these networks it is the one that fails: the same
+          # reason the map tiles are proxied and the same reason STUN at
+          # stun.l.google.com returned nothing for a phone that could not call.
+          #
+          # Najva exists in this repository for exactly that. If it is not
+          # configured, or no device is registered with it, then FCM is the
+          # only route and a phone that cannot reach Google never rings until
+          # its socket comes back — which is until somebody opens the app.
+          #
+          # No token is printed. Only whether one is set.
+          echo -n "NAJVA configured in the service environment: "
+          systemctl show "$SERVICE" -p Environment 2>/dev/null | tr ' ' '\n' \
+            | grep -q '^NAJVA_AUTH_TOKEN=.\+' && echo yes || echo "NO  <-- FCM is the only route"
+          echo "tokens by provider:"
+          sqlite3 "$DB" "SELECT provider, COUNT(*) FROM push_tokens GROUP BY provider;" 2>/dev/null \
+            | sed 's/^/  /' || echo "  (could not read)"
+          echo "najva lines in the last 2 hours:"
+          journalctl -u "$SERVICE" --since "-2h" --no-pager 2>/dev/null | grep -c '\[najva\]' | sed 's/^/  /'
+          journalctl -u "$SERVICE" --since "-2h" --no-pager 2>/dev/null | grep '\[najva\]' | tail -5
+          echo ""
+
+          echo "### push_tokens table"
           echo "db file found: ${DB:-NONE}"
           if [ -n "$DB" ] && command -v sqlite3 >/dev/null 2>&1; then
             echo -n "total rows: "; sqlite3 "$DB" 'SELECT COUNT(*) FROM push_tokens;' 2>&1
