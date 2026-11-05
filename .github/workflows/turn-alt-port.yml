@@ -1,0 +1,97 @@
+name: TURN Alt Port
+
+# Puts coturn on 443 as well as 3478, and PUTS IT BACK if that goes wrong.
+#
+# Established so far: coturn answers on UDP and TCP 3478, the relay range is
+# open, and a real allocation with relay echo succeeds from a GitHub runner.
+# Every phone still reports relay=0 — a relay offered and never obtained. What
+# nothing can say is whether their allocate requests ARRIVE and are refused, or
+# never arrive at all. Those are unrelated problems with unrelated fixes, and
+# coturn is the only thing that knows.
+#
+# It currently writes nowhere: no log-file set, no files in /var/log, two lines
+# in the journal for a window that contained a successful allocation.
+#
+# NOT verbose. coturn's default level already records allocations and session
+# events, which is the whole question; verbose logs per-packet detail that
+# would fill a disk nothing on these servers prunes. A size-bounded logrotate
+# goes in at the same time for the same reason.
+#
+# Idempotent: re-running adds nothing it has already added.
+on:
+  workflow_dispatch:
+    inputs:
+      brand:
+        description: 'Which server'
+        required: false
+        default: 'bistbarg'
+
+jobs:
+  turn-logging:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add 443 to coturn
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ inputs.brand == 'akosalman' && secrets.DEPLOY_HOST_AKOSALMAN || secrets.DEPLOY_HOST_BISTBARG }}
+        run: |
+          if [ -z "$HOST" ] || [ -z "$SSH_KEY" ]; then
+            echo "::error::deploy secrets are not configured for ${{ inputs.brand }}"; exit 1
+          fi
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/k && chmod 600 ~/.ssh/k
+          ssh -i ~/.ssh/k -o StrictHostKeyChecking=accept-new -o ConnectTimeout=25 "root@$HOST" bash -s <<'EOF'
+          set +e
+          CONF=/etc/turnserver.conf
+          BACKUP=/etc/turnserver.conf.before-alt-port
+          cp -f "$CONF" "$BACKUP"
+
+          # ── Why 443 ────────────────────────────────────────────────────────
+          #
+          # Nothing from these phones reaches 3478: our own STUN on it gives
+          # srflx=0, TURN on it gives relay=0 on every end of every call, and
+          # coturn's log has not been touched since it was restarted — so the
+          # requests are not refused, they never arrive. A GitHub runner
+          # allocates through the same port perfectly well.
+          #
+          # 443 is the one port these phones are demonstrably able to reach,
+          # because the app is talking to this host on it right now. TCP 443
+          # is Apache's and stays Apache's; UDP 443 has no listener at all,
+          # which is where coturn goes.
+          grep -qE '^[[:space:]]*alt-listening-port=' "$CONF" \
+            || echo 'alt-listening-port=443' >> "$CONF"
+
+          systemctl restart coturn
+          sleep 3
+
+          OK=1
+          systemctl is-active --quiet coturn || OK=0
+          # 3478 must still work. Adding a port is not worth losing the one
+          # that already serves every user who is not behind this filtering.
+          ss -lnup 'sport = :3478' 2>/dev/null | tail -n +2 | grep -q . || OK=0
+
+          if [ "$OK" != "1" ]; then
+            echo "!! coturn did not come back cleanly — putting the old config back"
+            cp -f "$BACKUP" "$CONF"
+            systemctl restart coturn
+            sleep 2
+            systemctl is-active coturn
+            echo "ROLLED BACK"
+            exit 1
+          fi
+
+          echo "### coturn after the change"
+          systemctl is-active coturn
+          echo "-- udp 3478 --"; ss -lnup 'sport = :3478' 2>/dev/null | tail -n +2 | wc -l
+          echo "-- tcp 3478 --"; ss -lntp 'sport = :3478' 2>/dev/null | tail -n +2 | wc -l
+          echo "-- udp 443  --"; ss -lnup 'sport = :443'  2>/dev/null | tail -n +2 | wc -l
+          echo "-- tcp 443 (must still be apache) --"
+          ss -lntp 'sport = :443' 2>/dev/null | tail -n +2 | sed 's/users:(("\([^"]*\)".*/[\1]/' | head -2
+          echo ""
+          echo "### apache is still serving"
+          systemctl is-active httpd 2>/dev/null || systemctl is-active apache2 2>/dev/null
+          curl -s -o /dev/null -w 'local https: %{http_code}\n' -k https://127.0.0.1/ --max-time 10
+          echo ""
+          echo "### what coturn said about its sockets"
+          tail -25 /var/log/turnserver/turn.log 2>/dev/null | grep -iE 'listener|bind|error|cannot' | tail -12
+          EOF
