@@ -1,6 +1,6 @@
 # Call report — bistbarg
 
-Generated 2026-11-05T09:31Z by .github/workflows/call-report.yml
+Generated 2026-11-05T09:34Z by .github/workflows/call-report.yml
 
 ```
 Warning: Permanently added '185.8.174.198' (ED25519) to the list of known hosts.
@@ -11,11 +11,28 @@ TURN_* actually in the service environment: yes
 
 ### coturn
 active
+-- UDP listeners --
 UNCONN 0      0                          185.8.174.198:3478        0.0.0.0:*     users:(("turnserver",pid=930,fd=49))                                           
 UNCONN 0      0                          185.8.174.198:3478        0.0.0.0:*     users:(("turnserver",pid=930,fd=48))                                           
 UNCONN 0      0                          185.8.174.198:3478        0.0.0.0:*     users:(("turnserver",pid=930,fd=47))                                           
 UNCONN 0      0                          185.8.174.198:3478        0.0.0.0:*     users:(("turnserver",pid=930,fd=46))                                           
-UNCONN 0      0                          185.8.174.198:3478        0.0.0.0:*     users:(("turnserver",pid=930,fd=45))                                           
+-- TCP listeners --
+LISTEN 0      1024                       185.8.174.198:3478        0.0.0.0:*     users:(("turnserver",pid=930,fd=149))                                          
+LISTEN 0      1024                       185.8.174.198:3478        0.0.0.0:*     users:(("turnserver",pid=930,fd=142))                                          
+LISTEN 0      1024                       185.8.174.198:3478        0.0.0.0:*     users:(("turnserver",pid=930,fd=119))                                          
+LISTEN 0      1024                           127.0.0.1:3478        0.0.0.0:*     users:(("turnserver",pid=930,fd=115))                                          
+-- how coturn is configured (no credentials printed) --
+listening-port=3478
+lt-cred-mech
+realm=chat.bistbarg.com
+no-tcp-relay
+-- firewall on the TURN ports --
+-A INPUT ! -i lo -p tcp -m conntrack --ctstate NEW -m tcp --dport 3478 -j ACCEPT
+-A INPUT ! -i lo -p udp -m conntrack --ctstate NEW -m udp --dport 3478 -j ACCEPT
+-A INPUT ! -i lo -p udp -m conntrack --ctstate NEW -m udp --dport 49152:65535 -j ACCEPT
+-A OUTPUT ! -o lo -p tcp -m conntrack --ctstate NEW -m tcp --dport 3478 -j ACCEPT
+-A OUTPUT ! -o lo -p udp -m conntrack --ctstate NEW -m udp --dport 3478 -j ACCEPT
+-A OUTPUT ! -o lo -p udp -m conntrack --ctstate NEW -m udp --dport 49152:65535 -j ACCEPT
 
 ### every call, oldest first
 Nov 05 09:30:53 srv5524755161 node[2957335]: [call] user=- outcome=failed kind=dm-voice host=1 srflx=1 relay=0 ans=0 turn=1
