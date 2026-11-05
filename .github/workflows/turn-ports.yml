@@ -61,10 +61,22 @@ jobs:
           ip -4 -o addr show scope global 2>/dev/null | awk '{print $2, $4}'
           echo ""
           echo "### what holds the useful ports"
+          # COUNTED, and not truncated. head -4 of an unordered list cannot
+          # answer "is it bound publicly": it showed four 127.0.0.1 rows for
+          # 3478 and I could not tell whether the public ones were simply
+          # further down. The public address is masked in this log as ***,
+          # so "local=***" IS the answer being looked for.
           for p in 80 443 3478 5349; do
             echo "-- :$p --"
-            ss -lntp "sport = :$p" 2>/dev/null | tail -n +2 | sed 's/users:(("\([^"]*\)".*/[\1]/' | head -4
-            ss -lnup "sport = :$p" 2>/dev/null | tail -n +2 | sed 's/users:(("\([^"]*\)".*/[\1]/' | head -4
+            for proto in tcp udp; do
+              flag=$([ "$proto" = tcp ] && echo -lntp || echo -lnup)
+              n=$(ss $flag "sport = :$p" 2>/dev/null | tail -n +2 | wc -l)
+              echo "  $proto: $n listener(s)"
+              ss $flag "sport = :$p" 2>/dev/null | tail -n +2 \
+                | awk '{for(i=1;i<=NF;i++) if ($i ~ /:'"$p"'$/) {print $i; break}}' \
+                | sed 's/:[0-9]*$//' | sort | uniq -c \
+                | sed 's/^/    local=/' 
+            done
           done
           echo ""
           echo "### is UDP 443 free? (apache holds TCP 443; QUIC uses UDP 443)"
