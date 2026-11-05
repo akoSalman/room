@@ -107,8 +107,25 @@ jobs:
 
           echo "### coturn"
           systemctl is-active coturn 2>/dev/null || echo "coturn not a known unit"
-          echo "-- UDP listeners --"
-          ss -lnup 2>/dev/null | grep -E ':3478|:5349' | head -4
+          # COUNTED BY ADDRESS, not the first four rows. This printed head -4
+          # of each list, and after a restart reordered them it showed four
+          # 127.0.0.1 lines — which reads exactly like "coturn is no longer
+          # reachable from the internet" and is nothing of the kind. A
+          # truncated list cannot answer the question being asked of it.
+          echo "-- listeners by address (udp/tcp), both instances --"
+          for port in 3478 443; do
+            echo "  :$port"
+            printf '    udp '; ss -lnup "sport = :$port" 2>/dev/null | tail -n +2 \
+              | awk '{print $5}' | sed 's/:[0-9]*$//' | sort | uniq -c | tr '\n' ' '; echo
+            printf '    tcp '; ss -lntp "sport = :$port" 2>/dev/null | tail -n +2 \
+              | awk '{print $4}' | sed 's/:[0-9]*$//' | sort | uniq -c | tr '\n' ' '; echo
+          done
+          echo "-- the 443 instance --"
+          systemctl is-active coturn-443 2>/dev/null || echo "not installed"
+          echo "-- its own log --"
+          tail -40 /var/log/turnserver/turn-443.log 2>/dev/null \
+            | sed 's/[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}/-/g' \
+            | grep -iE 'allocat|401|403|unauthor|listener|bind|error' | tail -12 || echo "(nothing)"
           # TCP MATTERS AS MUCH AS UDP. The ICE config offers both
           # turn:host:3478 and turn:host:3478?transport=tcp, and a carrier that
           # blocks or throttles UDP leaves the TCP url as the only way a phone
@@ -116,8 +133,6 @@ jobs:
           # existing turn-test looks at `ss -lunp`, which is UDP only, and its
           # allocation probe runs from a runner where UDP works fine. Both
           # phones reported relay=0 while that probe said OK.
-          echo "-- TCP listeners --"
-          ss -lntp 2>/dev/null | grep -E ':3478|:5349' | head -4 || echo "NOTHING ON TCP 3478 <-- a UDP-blocked phone cannot allocate"
           echo "-- how coturn is configured (no credentials printed) --"
           grep -hE '^[[:space:]]*(listening-port|tls-listening-port|listening-ip|relay-ip|external-ip|min-port|max-port|no-tcp|no-udp|no-tls|no-dtls|realm|lt-cred-mech|use-auth-secret)' \
             /etc/turnserver.conf 2>/dev/null | head -20
