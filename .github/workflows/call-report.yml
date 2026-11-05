@@ -1,0 +1,155 @@
+name: Call Report
+
+# Why this exists.
+#
+# Reported: on some devices a call never connects and sits on "Connecting…".
+# "Check the logs" had no answer, because until recently there was not one
+# [call] line anywhere in server.js. There is now, and this reads it.
+#
+# What the numbers mean, and they are the whole point:
+#
+#   ans=0                  the far end never answered. Nothing about the
+#                          network can be read from this call.
+#   turn=0                 no TURN server was offered in the ICE config, so a
+#                          phone behind carrier NAT had no way through.
+#   turn=1 relay=0         a relay WAS offered and could not be reached from
+#                          that device's network.
+#   turn=1 relay>0         the relay worked; the fault is elsewhere.
+#   srflx=0                STUN told the phone nothing. Ours points at a
+#                          Google host, which these networks block.
+#   outcome=stalled        ICE never finished and never admitted failure —
+#                          the call the user watches sit on "Connecting…".
+#
+# NOTHING SECRET IS WRITTEN. The [call] line carries a numeric user id and
+# counts; this report drops the id too. No addresses — an ICE candidate holds
+# the phone's local AND public IP and none of it reaches the log by
+# construction (see native-app/src/callFailure.ts). No tokens, no usernames,
+# no SDP. diagnostics/ is committed to a repository that has been public, so
+# it is written as if anyone will read it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      brand:
+        description: 'Which server to inspect'
+        required: false
+        default: 'bistbarg'
+      since:
+        description: 'How far back to look (journalctl --since, e.g. -14d)'
+        required: false
+        default: '-14d'
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      # Never fails the job. A diagnostic that disappears when the thing it is
+      # diagnosing goes wrong is the opposite of useful: the report is always
+      # written and always committed, and says so when it could not get an
+      # answer.
+      - name: Ask the server
+        continue-on-error: true
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST_B: ${{ secrets.DEPLOY_HOST_BISTBARG }}
+          DIR_B: ${{ secrets.DEPLOY_DIR_BISTBARG }}
+          SVC_B: ${{ secrets.DEPLOY_SERVICE_BISTBARG }}
+          HOST_A: ${{ secrets.DEPLOY_HOST_AKOSALMAN }}
+          DIR_A: ${{ secrets.DEPLOY_DIR_AKOSALMAN }}
+          SVC_A: ${{ secrets.DEPLOY_SERVICE_AKOSALMAN }}
+          BRAND: ${{ inputs.brand }}
+          SINCE: ${{ inputs.since }}
+        run: |
+          set -u
+          if [ "$BRAND" = "akosalman" ]; then
+            HOST="$HOST_A"; APP_DIR="$DIR_A"; SERVICE="$SVC_A"
+          else
+            HOST="$HOST_B"; APP_DIR="$DIR_B"; SERVICE="$SVC_B"
+          fi
+          if [ -z "${HOST:-}" ] || [ -z "${SSH_KEY:-}" ]; then
+            echo "Secrets for $BRAND are not configured." | tee report.txt
+            exit 0
+          fi
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/k && chmod 600 ~/.ssh/k
+          set +e
+          # Quoted for the REMOTE shell, which re-parses this command line.
+          # Without it a value with spaces in it — "14 days ago", the default
+          # until this was written — is split, and the remote tries to run
+          # `days` as a command. That is what the first run of this workflow
+          # did, and it is why the report is written even when the step fails:
+          # the answer was exit 127 and nothing would have said so.
+          Q_DIR=$(printf '%q' "$APP_DIR")
+          Q_SVC=$(printf '%q' "$SERVICE")
+          Q_SINCE=$(printf '%q' "$SINCE")
+          ssh -i ~/.ssh/k -o StrictHostKeyChecking=accept-new -o ConnectTimeout=25 "root@$HOST" \
+            "APP_DIR=$Q_DIR SERVICE=$Q_SVC SINCE=$Q_SINCE bash -s" > report.txt 2>&1 <<'EOF'
+          set +e
+          cd "$APP_DIR" 2>/dev/null || { echo "APP_DIR missing"; exit 0; }
+
+          echo "### is the version that reports this even running here"
+          # The deploy is scp, not git, so git HEAD lies. The file is the
+          # evidence — this is the check that caught bistbarg running code
+          # from three weeks earlier.
+          echo -n "server logs [call] at all: "
+          grep -q "\[call\]" server.js 2>/dev/null && echo yes || echo "NO  <-- the deploy did not carry it"
+          echo -n "ICE config offers a relay: "
+          grep -q 'TURN_URL' server.js 2>/dev/null && echo "yes (if TURN_URL is set in the environment)" || echo "NO"
+          echo -n "TURN_* actually in the service environment: "
+          systemctl show "$SERVICE" -p Environment 2>/dev/null | grep -q 'TURN_URL' && echo yes || echo "NO  <-- /ice-config will offer STUN only"
+          echo ""
+
+          echo "### coturn"
+          systemctl is-active coturn 2>/dev/null || echo "coturn not a known unit"
+          ss -lnup 2>/dev/null | grep -E ':3478|:5349' | head -5
+          echo ""
+
+          echo "### every call, oldest first"
+          # The user id is dropped: nothing here needs to say WHO called.
+          journalctl -u "$SERVICE" --since "$SINCE" --no-pager 2>/dev/null \
+            | grep -F '[call]' \
+            | sed 's/user=[0-9]*/user=-/' \
+            | tail -200
+          echo ""
+
+          echo "### how they ended"
+          journalctl -u "$SERVICE" --since "$SINCE" --no-pager 2>/dev/null \
+            | grep -F '[call]' | grep -o 'outcome=[a-z-]*' | sort | uniq -c | sort -rn
+          echo ""
+
+          echo "### what ICE managed, counted"
+          for k in 'ans=0' 'ans=1' 'turn=0' 'turn=1' 'srflx=0' 'relay=0'; do
+            n=$(journalctl -u "$SERVICE" --since "$SINCE" --no-pager 2>/dev/null \
+                  | grep -F '[call]' | grep -c -- "$k")
+            echo "$k : $n"
+          done
+          EOF
+          rc=$?
+          echo "" >> report.txt
+          echo "(ssh exit $rc)" >> report.txt
+          exit 0
+
+      - name: Commit the report
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          {
+            echo "# Call report — ${{ inputs.brand }}"
+            echo ""
+            echo "Generated $(date -u +%Y-%m-%dT%H:%MZ) by .github/workflows/call-report.yml"
+            echo ""
+            echo '```'
+            cat report.txt 2>/dev/null || echo "(the server step produced no output at all)"
+            echo '```'
+          } > "diagnostics/call-report.md"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add diagnostics/call-report.md
+          git commit -m "Call report for ${{ inputs.brand }} [skip ci]" || echo "no change"
+          git push origin HEAD:${{ github.ref_name }} || echo "push failed"
