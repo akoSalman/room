@@ -54,7 +54,7 @@ jobs:
               .filter(f => /\.(jpg|jpeg)\$/i.test(f))
               .slice(0, 8);
             if (!files.length) { console.log('  no jpegs in uploads/'); process.exit(0); }
-            let ok = 0, bad = 0, saved = 0, done = 0;
+            let ok = 0, bad = 0, saved = 0, done = 0, total = 0;
             const run = (f) => new Promise(res => {
               const src = path.join('uploads', f);
               const out = path.join('uploads/.thumbs', f + '_200.jpg');
@@ -72,15 +72,21 @@ jobs:
                 const orig = fs.statSync(path.join('uploads', f)).size;
                 done++;
                 if (r.ok) {
-                  ok++; saved += orig - r.bytes;
+                  ok++; saved += orig - r.bytes; total += orig;
                   console.log('  ok   ' + String(Math.round(orig/1024)).padStart(5) + ' KB -> '
                     + String(Math.round(r.bytes/1024)).padStart(4) + ' KB  in ' + String(r.ms).padStart(5) + ' ms');
                 } else { bad++; console.log('  FAIL ' + (r.error || r.why)); }
               }
               console.log('');
               console.log('  ' + ok + ' of ' + done + ' thumbnailed, ' + bad + ' failed');
-              if (ok) console.log('  bytes saved on these ' + ok + ': ' + Math.round(saved/1024) + ' KB'
-                + ' (' + Math.round(100 * saved / (saved + files.length)) + '% smaller, roughly)');
+              // Divided by the ORIGINAL total. The first version divided by
+              // (saved + number of files), which is not a quantity of
+              // anything, and duly printed "100% smaller" for a real saving
+              // of 97%. A made-up denominator in a report is how a good
+              // result becomes an unbelievable one.
+              if (ok) console.log('  ' + Math.round(total/1024) + ' KB of photos became '
+                + Math.round((total - saved)/1024) + ' KB of thumbnails — '
+                + (100 * saved / total).toFixed(1) + '% less to send');
             })();
           " 2>&1 | head -24
 
