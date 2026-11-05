@@ -1,0 +1,134 @@
+name: Disk Fix
+
+# Two things the disk report found, both server-side:
+#
+#  1. THE JOURNAL IS BIGGER THAN ALL THE MEDIA. 3.9 GB of logs against 2.7 GB
+#     of every file users have ever sent, and it is uncapped, so it only
+#     grows — faster now, because [call], [ring] and [presence] lines were
+#     added to diagnose the call fault. Capping it frees more at once than
+#     every photo, voice note and video on the server put together.
+#
+#  2. THUMBNAILS ARE NOT BEING MADE on bistbarg: zero files in uploads/.thumbs
+#     and no such directory, while akosalman has 49. server.js disables them
+#     and logs a reason when sharp will not load. So every photo view pulls
+#     the full file — 1336 JPEGs averaging about 550 KB — from people on
+#     metered connections, which costs them money rather than costing disk.
+#
+# The second half DIAGNOSES before it touches anything: the fix for a missing
+# native binary is not the fix for a missing directory, and this week has
+# already shown what guessing costs.
+on:
+  workflow_dispatch:
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - name: bistbarg
+            host_secret: DEPLOY_HOST_BISTBARG
+            service_secret: DEPLOY_SERVICE_BISTBARG
+          - name: akosalman
+            host_secret: DEPLOY_HOST_AKOSALMAN
+            service_secret: DEPLOY_SERVICE_AKOSALMAN
+    steps:
+      - name: Fix ${{ matrix.name }}
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets[matrix.host_secret] }}
+          SERVICE: ${{ secrets[matrix.service_secret] }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/k
+          chmod 600 ~/.ssh/k
+          ssh -i ~/.ssh/k -o StrictHostKeyChecking=accept-new -o ConnectTimeout=25 \
+            "root@$HOST" "SERVICE='$SERVICE' bash -s" <<'EOF'
+          set +e
+          echo "######## 1. cap the journal ########"
+          df -h / | tail -1 | sed 's/^/  before: /'
+          journalctl --disk-usage 2>/dev/null | sed 's/^/  /'
+
+          # A cap, not a one-off vacuum. Vacuuming alone frees space today and
+          # the same 3.9 GB is back in a few months; SystemMaxUse is what
+          # bounds it for good. 500M keeps weeks of history at the current
+          # rate, which is far more than any of these investigations has
+          # needed — the call diagnosis used two hours of it.
+          mkdir -p /etc/systemd/journald.conf.d
+          # printf, not a heredoc. This whole block is itself inside a heredoc
+          # being fed to a remote bash, and a nested <<'CONF' needs its
+          # terminator at column zero — indented here, as everything in this
+          # file is, bash would not recognise it and would swallow the rest of
+          # the script as journald config. The lines would also have carried
+          # ten leading spaces into the file.
+          printf '%s\n' \
+            '[Journal]' \
+            'SystemMaxUse=500M' \
+            'SystemKeepFree=2G' \
+            'SystemMaxFileSize=50M' \
+            'MaxRetentionSec=1month' \
+            > /etc/systemd/journald.conf.d/00-size-cap.conf
+          echo "  the file written:"
+          sed 's/^/    /' /etc/systemd/journald.conf.d/00-size-cap.conf
+          systemctl restart systemd-journald
+          sleep 2
+          journalctl --vacuum-size=500M 2>&1 | tail -3 | sed 's/^/  /'
+          echo "  --- after ---"
+          journalctl --disk-usage 2>/dev/null | sed 's/^/  /'
+          df -h / | tail -1 | sed 's/^/  after:  /'
+          # ── A check that can fail ─────────────────────────────────────────
+          #
+          # A workflow that writes a file, restarts a service and reports
+          # success without reading anything back is exactly what happened with
+          # the systemd drop-in earlier today: green, and nothing changed. So
+          # the cap is read back from journald itself, not from the file.
+          echo -n "  journald's effective cap: "
+          sys=$(journalctl --disk-usage 2>/dev/null | grep -oE '[0-9.]+[KMG]' | tail -1)
+          cap=$(systemd-analyze cat-config systemd/journald.conf 2>/dev/null \
+                | grep -iE '^[[:space:]]*SystemMaxUse' | tail -1)
+          echo "${cap:-NOT SET}"
+          case "$cap" in
+            *500M*) echo "  cap is in effect; journal now at ${sys:-unknown}" ;;
+            *) echo "  THE CAP DID NOT TAKE — the journal is still uncapped." ;;
+          esac
+
+          echo ""
+          echo "######## 2. why are there no thumbnails? ########"
+          cd "$(systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null)" 2>/dev/null || cd /root
+          echo -n "  thumbnails on disk: "; find uploads/.thumbs -type f 2>/dev/null | wc -l
+          echo -n "  the directory exists: "; [ -d uploads/.thumbs ] && echo yes || echo NO
+
+          # server.js logs exactly this when the module will not load, so the
+          # journal answers "is sharp broken" without guessing. Looked at
+          # before anything is installed, because a missing native binary and
+          # a missing directory need different fixes.
+          echo "  what the service said about sharp:"
+          journalctl -u "$SERVICE" --no-pager 2>/dev/null \
+            | grep -i 'sharp' | tail -5 | sed 's/^/    /'
+          echo -n "  sharp loads in this checkout: "
+          node -e "require('sharp'); console.log('yes')" 2>&1 | tail -1 | sed 's/^/  /'
+
+          # The directory is created by the thumbnail path on first use; if
+          # that path has never run it will not exist. Making it costs nothing
+          # and rules one cause out.
+          mkdir -p uploads/.thumbs
+          chown --reference=uploads uploads/.thumbs 2>/dev/null
+          echo -n "  after mkdir, exists: "; [ -d uploads/.thumbs ] && echo yes || echo NO
+
+          # Only if sharp is the problem. npm install here, not a deploy:
+          # sharp ships platform-specific binaries and a checkout copied from
+          # elsewhere, or restored, brings the wrong ones.
+          if ! node -e "require('sharp')" 2>/dev/null; then
+            echo "  sharp does not load — reinstalling it for this platform"
+            npm install --no-audit --no-fund sharp 2>&1 | tail -5 | sed 's/^/    /'
+            echo -n "  sharp loads now: "
+            node -e "require('sharp'); console.log('yes')" 2>&1 | tail -1 | sed 's/^/  /'
+            systemctl restart "$SERVICE"
+            sleep 3
+            systemctl is-active "$SERVICE" | sed 's/^/  service: /'
+          else
+            echo "  sharp loads fine — thumbnails were not blocked by it"
+          fi
+          EOF

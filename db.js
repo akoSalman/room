@@ -46,6 +46,14 @@ db.exec(`
 `);
 
 // Migrations
+// Identical bytes are stored once: the hash is what makes a duplicate
+// recognisable, and the size is checked beside it so a hash collision alone
+// cannot substitute the wrong file. Null on every row written before this —
+// such a row simply never matches, so old uploads are left exactly as they
+// are and only new ones are collapsed. See uploadDedup.js.
+try { db.exec('ALTER TABLE uploads ADD COLUMN sha256 TEXT'); } catch {}
+try { db.exec('ALTER TABLE uploads ADD COLUMN size INTEGER'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_uploads_sha256 ON uploads(sha256)'); } catch {}
 try { db.exec('ALTER TABLE messages ADD COLUMN edited INTEGER DEFAULT 0'); } catch {}
 try { db.exec('ALTER TABLE rooms ADD COLUMN created_by INTEGER'); } catch {}
 try { db.exec('ALTER TABLE rooms ADD COLUMN is_dm INTEGER DEFAULT 0'); } catch {}

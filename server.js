@@ -4,6 +4,8 @@ const { Server } = require('socket.io');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
+const diskGuard = require('./diskGuard');
+const uploadDedup = require('./uploadDedup');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -378,12 +380,80 @@ function numericId(v) {
 }
 
 /** Record who put a file on the server, at both places a file can arrive. */
+// ── Is there room for this? ──────────────────────────────────────────────────
+//
+// Both upload paths ask before writing. See diskGuard.js for why it fails
+// open when free space cannot be read, and for the measurements behind the
+// reserve.
+const UPLOAD_RESERVE_BYTES = (() => {
+  const n = Number(process.env.UPLOAD_RESERVE_BYTES);
+  return Number.isFinite(n) && n >= 0 ? n : diskGuard.DEFAULT_RESERVE_BYTES;
+})();
+
+function roomForUpload(incomingBytes) {
+  return diskGuard.spaceVerdict({
+    freeBytes: diskGuard.freeBytesFor(path.join(__dirname, 'uploads')),
+    incomingBytes,
+    reserveBytes: UPLOAD_RESERVE_BYTES,
+  });
+}
+
+/** 507 and a sentence, used by every path that declines for want of space. */
+function refuseForSpace(res) {
+  console.log('[disk] upload refused: low space');
+  return res.status(507).json({ error: 'No space', message: diskGuard.lowSpaceMessage() });
+}
+
+/**
+ * Replace a just-stored upload with an identical one already here.
+ *
+ * Returns the name to use — the existing file's when the bytes match
+ * something already stored, otherwise the one passed in. NEVER throws and
+ * never returns a name whose file is missing: every failure keeps the new
+ * file, because losing a photo to save a megabyte is not a trade worth
+ * making. See uploadDedup.js.
+ */
+async function dedupeUpload(filename) {
+  const name = mediaAccess.safeUploadName(filename);
+  if (!name) return filename;
+  const abs = path.join(__dirname, 'uploads', name);
+  try {
+    const size = fs.statSync(abs).size;
+    if (!uploadDedup.worthDeduping(size)) return filename;
+    const hash = await uploadDedup.hashFile(abs);
+    const rows = db.prepare(
+      'SELECT name, size, sha256 FROM uploads WHERE sha256 = ? AND name <> ? LIMIT 20'
+    ).all(hash, name);
+    const keep = uploadDedup.pickExisting(rows, {
+      hash, size,
+      exists: n => fs.existsSync(path.join(__dirname, 'uploads', n)),
+    });
+    if (keep) {
+      // The new copy is redundant. Unlinked AFTER the existing one has been
+      // confirmed present by pickExisting, never before.
+      fs.unlink(abs, () => {});
+      console.log('[disk] dedup: a duplicate upload reused an existing file');
+      return keep;
+    }
+    // First time these bytes have been seen: record them so the NEXT copy
+    // can be collapsed into this one.
+    db.prepare('UPDATE uploads SET sha256 = ?, size = ? WHERE name = ?').run(hash, size, name);
+    return filename;
+  } catch (err) {
+    console.error('[disk] dedup skipped:', err.message);
+    return filename;
+  }
+}
+
 function rememberUpload(filename, userId) {
   const name = mediaAccess.safeUploadName(filename);
   if (!name) return;
   try {
     db.prepare('INSERT OR IGNORE INTO uploads (name, user_id, created_at) VALUES (?, ?, ?)')
       .run(name, userId, Date.now());
+    // A deduped upload reuses a row that already exists; INSERT OR IGNORE
+    // leaves it alone, which is what should happen — the original uploader
+    // and time stay as they were.
   } catch (err) {
     console.error('[media] could not record an upload:', err.message);
   }
@@ -2935,14 +3005,34 @@ app.get('/reactions/:messageId', authMiddleware, (req, res) => {
 });
 
 // Upload
-app.post('/upload', authMiddleware, upload.single('file'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file' });
-  rememberUpload(req.file.filename, req.user.id);
-  res.json({
-    url: '/uploads/' + req.file.filename,
-    name: req.file.originalname,
-    mimetype: req.file.mimetype
-  });
+//
+// The space check sits BEFORE upload.single, so a refusal costs no bytes on a
+// disk that has none to spare. Content-Length overstates the file slightly —
+// it counts the multipart envelope too — which is the right direction to err.
+app.post('/upload', authMiddleware, (req, res, next) => {
+  const declared = parseInt(req.headers['content-length'], 10);
+  const verdict = roomForUpload(declared);
+  if (!verdict.ok) return refuseForSpace(res);
+  next();
+}, upload.single('file'), async (req, res, next) => {
+  // try/catch, because this handler is now async. Express 4 catches a
+  // synchronous throw and turns it into a 500; it does not catch a rejected
+  // promise, which instead becomes an unhandled rejection and a request that
+  // never answers. Making the handler async quietly removed that safety net,
+  // so it is put back by hand.
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file' });
+    // Awaited, so the reply names the file the message will actually point
+    // at. Replying first and deduping after would race the client's next
+    // request, which may already be sending the message.
+    const filename = await dedupeUpload(req.file.filename);
+    rememberUpload(filename, req.user.id);
+    res.json({
+      url: '/uploads/' + filename,
+      name: req.file.originalname,
+      mimetype: req.file.mimetype,
+    });
+  } catch (err) { next(err); }
 });
 
 // ── Resumable uploads ────────────────────────────────────────────────────────
@@ -3006,6 +3096,13 @@ app.post('/upload/session', authMiddleware, (req, res) => {
   const size = parseInt(req.body?.size, 10);
   if (!isFinite(size) || size <= 0) return res.status(400).json({ error: 'Bad size' });
   if (size > MAX_UPLOAD_BYTES) return res.status(413).json({ error: 'File too large' });
+  // ── Refused here, before a single chunk ────────────────────────────────
+  //
+  // A resumable upload declares its whole length up front, which makes this
+  // the one place the question can be answered honestly. Finding out at the
+  // last chunk would mean the person had already spent the data — and these
+  // are metered connections.
+  if (!roomForUpload(size).ok) return refuseForSpace(res);
   const name = String(req.body?.name || 'file').slice(0, 200);
   const id = crypto.randomBytes(16).toString('hex');
   const meta = {
@@ -3195,47 +3292,56 @@ function streamChunkToPart(req, res, s) {
 }
 
 // All bytes in: turn the partial into a real upload.
-app.post('/upload/session/:id/finish', authMiddleware, (req, res) => {
-  // Already finished, and this is a retry of a reply that never arrived.
-  // Answered before openSession, which would say "no such upload" — the meta
-  // is gone precisely BECAUSE this worked.
-  const rawId = String(req.params.id || '');
-  if (/^[a-f0-9]{32}$/.test(rawId)) {
+app.post('/upload/session/:id/finish', authMiddleware, async (req, res, next) => {
+  // try/catch, because this handler is now async: Express 4 catches a
+  // synchronous throw but not a rejected promise, which would become an
+  // unhandled rejection and a request that never answers.
+  try {
+    // Already finished, and this is a retry of a reply that never arrived.
+    // Answered before openSession, which would say "no such upload" — the meta
+    // is gone precisely BECAUSE this worked.
+    const rawId = String(req.params.id || '');
+    if (/^[a-f0-9]{32}$/.test(rawId)) {
+      try {
+        const done = JSON.parse(fs.readFileSync(donePath(rawId), 'utf8'));
+        if (done && done.userId === req.user.id && done.url) {
+          return res.json({ url: done.url, name: done.name, mimetype: done.mimetype });
+        }
+      } catch {}
+    }
+    const s = openSession(req, res);
+    if (!s) return;
+    if (s.offset !== s.meta.size) {
+      return res.status(409).json({ error: 'Incomplete', offset: s.offset, size: s.meta.size });
+    }
+    const unique = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    let filename = unique + path.extname(s.meta.name);
     try {
-      const done = JSON.parse(fs.readFileSync(donePath(rawId), 'utf8'));
-      if (done && done.userId === req.user.id && done.url) {
-        return res.json({ url: done.url, name: done.name, mimetype: done.mimetype });
-      }
+      fs.renameSync(partPath(s.id), path.join('uploads', filename));
+      fs.unlinkSync(metaPath(s.id));
+    } catch {
+      return res.status(500).json({ error: 'Could not finish upload' });
+    }
+    // Before the done-marker below, which is the answer a retry gets: the two
+    // must name the same file or a resumed upload ends up pointing at the copy
+    // that was just removed.
+    filename = await dedupeUpload(filename);
+    // Written AFTER the rename and before replying, so a retry that overtakes a
+    // lost reply finds the same answer. Swept by the reaper with the partials.
+    try {
+      fs.writeFileSync(donePath(s.id), JSON.stringify({
+        userId: req.user.id,
+        url: '/uploads/' + filename,
+        name: s.meta.name,
+        mimetype: s.meta.mime,
+        at: Date.now(),
+      }));
     } catch {}
-  }
-  const s = openSession(req, res);
-  if (!s) return;
-  if (s.offset !== s.meta.size) {
-    return res.status(409).json({ error: 'Incomplete', offset: s.offset, size: s.meta.size });
-  }
-  const unique = Date.now() + '-' + Math.round(Math.random() * 1e9);
-  const filename = unique + path.extname(s.meta.name);
-  try {
-    fs.renameSync(partPath(s.id), path.join('uploads', filename));
-    fs.unlinkSync(metaPath(s.id));
-  } catch {
-    return res.status(500).json({ error: 'Could not finish upload' });
-  }
-  // Written AFTER the rename and before replying, so a retry that overtakes a
-  // lost reply finds the same answer. Swept by the reaper with the partials.
-  try {
-    fs.writeFileSync(donePath(s.id), JSON.stringify({
-      userId: req.user.id,
-      url: '/uploads/' + filename,
-      name: s.meta.name,
-      mimetype: s.meta.mime,
-      at: Date.now(),
-    }));
-  } catch {}
-  // Deliberately the same shape as POST /upload, so the two paths are
-  // interchangeable to everything downstream.
-  rememberUpload(filename, req.user.id);
-  res.json({ url: '/uploads/' + filename, name: s.meta.name, mimetype: s.meta.mime });
+    // Deliberately the same shape as POST /upload, so the two paths are
+    // interchangeable to everything downstream.
+    rememberUpload(filename, req.user.id);
+    res.json({ url: '/uploads/' + filename, name: s.meta.name, mimetype: s.meta.mime });
+  } catch (err) { next(err); }
 });
 
 // Given up on. Dropping the bytes now rather than waiting for the reaper.
@@ -5187,6 +5293,43 @@ io.on('connection', (socket) => {
       emitRoomOnline(info.roomId);
     }
   });
+});
+
+// ── Every error leaves as JSON ──────────────────────────────────────────────
+//
+// There was no error handler here at all, so Express used its default one and
+// replied with an HTML page. Every client of this server speaks JSON:
+// apiFetch parses the body, so an HTML 500 surfaces on the phone as an
+// unparseable-response error with nothing in it a person can act on — and for
+// a resumable upload the client's answer to an error it cannot read is to
+// retry, which is the worst possible response to a disk that is full.
+//
+// Registered last, after every route, because Express picks the first
+// four-argument middleware declared AFTER the one that failed.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  // A file larger than the limit. multer's own error, and the only one of
+  // these the person can do something about, so it says what to do.
+  if (err && err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({
+      error: 'File too large',
+      message: `Files up to ${Math.floor(MAX_UPLOAD_BYTES / (1024 * 1024))} MB can be sent.`,
+    });
+  }
+  // The disk filled while the bytes were being written — the pre-flight check
+  // passed and the volume ran out anyway, or something else was writing at the
+  // same time. multer has already removed the partial file by this point
+  // (remove-uploaded-files.js), so there is nothing left behind to clean up.
+  if (err && (err.code === 'ENOSPC' || err.code === 'EDQUOT')) {
+    console.log('[disk] write failed: out of space');
+    return res.status(507).json({ error: 'No space', message: diskGuard.lowSpaceMessage() });
+  }
+  // Anything else. The message is NOT sent to the client: it can carry paths
+  // and query fragments, and this server's own logs are read into a
+  // repository that has been public. It goes to the journal and the client
+  // gets a shape it can parse.
+  console.error('[http]', req.method, req.path, '->', err && err.message);
+  res.status(500).json({ error: 'Server error' });
 });
 
 server.listen(PORT, () => console.log(`Chat server running on http://localhost:${server.address().port}`));
