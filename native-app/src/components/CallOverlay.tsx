@@ -345,34 +345,24 @@ export default function CallOverlay() {
             <Text style={s.actionLabel}>{cm.sharingScreen ? 'Stop' : 'Share'}</Text>
           </View>
         )}
-        {/* Silence and hide the OTHER end, on this device only.
+        {/* "Mute them" and "Hide them" used to sit here.
             *
-            * Asked for as: when muting a call, a control to mute the other
-            * person too, and the same for the camera. Nothing here reaches
-            * across to switch off somebody else's microphone — what it does
-            * is stop playing what they send. */}
-        <View style={s.actionCol}>
-          <TouchableOpacity
-            style={[s.roundBtn, s.ctrlBtn, cm.peerMuted && s.ctrlActive]}
-            onPress={() => cm.togglePeerMuted()}>
-            <Ionicons
-              name={cm.peerMuted ? 'volume-mute' : 'volume-high'}
-              size={25} color={cm.peerMuted ? '#111827' : '#fff'} />
-          </TouchableOpacity>
-          <Text style={s.actionLabel}>{cm.peerMuted ? 'Unmute them' : 'Mute them'}</Text>
-        </View>
-        {isVideo && (
-          <View style={s.actionCol}>
-            <TouchableOpacity
-              style={[s.roundBtn, s.ctrlBtn, cm.peerVideoHidden && s.ctrlActive]}
-              onPress={() => cm.togglePeerVideo()}>
-              <Ionicons
-                name={cm.peerVideoHidden ? 'eye-off' : 'eye'}
-                size={25} color={cm.peerVideoHidden ? '#111827' : '#fff'} />
-            </TouchableOpacity>
-            <Text style={s.actionLabel}>{cm.peerVideoHidden ? 'Show them' : 'Hide them'}</Text>
-          </View>
-        )}
+            * Removed because seven controls do not fit across a phone: the row
+            * wrapped, and a video call showed five buttons on one line and two
+            * more on a second, with End beside Hide them rather than under the
+            * picture. Reported with a photograph of exactly that.
+            *
+            * Five is the number that fits — Mute, Camera, Flip, Share, End —
+            * and these two were the ones to go: they act on this device only
+            * (they stop playing what the other end sends; nothing reaches
+            * across to switch off somebody's microphone), so losing them
+            * costs nobody the ability to speak, hang up or be seen.
+            *
+            * callManager keeps togglePeerMuted/togglePeerVideo and the
+            * applyPeerMedia that honours them. They are inert with no button
+            * to call them, and they are left alone deliberately: they sit in
+            * the ontrack path that was debugged recently, and withdrawing a
+            * button is not a reason to edit live call code. */}
         <View style={s.actionCol}>
           <TouchableOpacity style={[s.roundBtn, s.callBtn, s.declineBtn]} onPress={() => cm.end()}>
             <Ionicons name="call" size={28} color="#fff" style={s.endIcon} />
@@ -477,8 +467,18 @@ const s = StyleSheet.create({
   bottomBar: { position: 'absolute', bottom: 60, left: 0, right: 0 },
   controls: {
     flexDirection: 'row', justifyContent: 'space-evenly',
-    // Wraps, because a video call now carries seven of these and seven do
-    // not fit across a phone. Without it they shrink into each other.
+    // ── One line, and a net under it ──────────────────────────────────────
+    //
+    // A video call carries five of these now: Mute, Camera, Flip, Share, End.
+    // At 62pt each that is 310pt, which fits across the narrowest phone in
+    // use, so the row no longer wraps — which is the whole point of having
+    // removed the two that made it seven.
+    //
+    // flexWrap STAYS, as a net rather than as the plan. flexShrink defaults
+    // to 0 in React Native, so without it a row that does not fit does not
+    // squeeze: it runs off the edge of the screen, taking End with it. A
+    // second line is survivable on a very small screen or at a large font
+    // scale; a hang-up button nobody can reach is not.
     flexWrap: 'wrap', rowGap: 14,
   },
   actionCol: { alignItems: 'center', gap: 8 },

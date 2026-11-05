@@ -589,16 +589,101 @@ test('THE CHOICE DOES NOT OUTLIVE THE CALL', () => {
   assert.ok(/this\.remoteTracks = \[\];/.test(mgr), 'the old call\'s tracks are held for ever');
 });
 
-test('THE BUTTONS FIT, because there are now seven of them', () => {
+test('THE BUTTONS FIT ON ONE LINE, because there are five of them', () => {
+  // Reported with a photograph: on a video call the row wrapped — five
+  // buttons on one line, then Hide them and End on a second. Seven controls
+  // do not fit across a phone.
+  //
+  // So "Mute them" and "Hide them" were removed from the screen. They were
+  // the right two to lose: both act on this device only, stopping what the
+  // other end sends from being played, so neither is needed to speak, hang
+  // up or be seen.
   const src = fs.readFileSync(path.join(ROOT, 'native-app', 'src', 'components', 'CallOverlay.tsx'), 'utf8');
-  assert.ok(/togglePeerMuted\(\)/.test(src), 'the control is not on the screen');
-  assert.ok(/togglePeerVideo\(\)/.test(src), 'the camera control is not on the screen');
-  // Hiding their camera is meaningless on a voice call.
-  const vid = /\{isVideo && \(\n          <View style=\{s\.actionCol\}>\n            <TouchableOpacity\n              style=\{\[s\.roundBtn, s\.ctrlBtn, cm\.peerVideoHidden/.test(src);
-  assert.ok(vid, 'the hide-their-camera button shows on a voice call');
-  const controls = /  controls: \{([\s\S]*?)\},/.exec(src);
-  assert.ok(controls && /flexWrap: 'wrap'/.test(controls[1]),
-    'seven buttons are squeezed into one row across a phone');
+  const code = src
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/\{\/\*[\s\S]*?\*\/\}/g, ' ')
+    .replace(/^\s*\/\/.*$/gm, ' ');
+  assert.ok(!/togglePeerMuted\(\)/.test(code), 'the Mute them button is back on the screen');
+  assert.ok(!/togglePeerVideo\(\)/.test(code), 'the Hide them button is back on the screen');
+  assert.ok(!/Mute them|Hide them|Unmute them|Show them/.test(code),
+    'a label for the removed controls is still rendered');
+
+  // ── What a video call shows, counted ────────────────────────────────────
+  //
+  // The count is the point: this row has grown twice before and wrapped both
+  // times, and nothing was checking. Each actionCol is one control, and a
+  // sixth would put the row back on two lines.
+  const row = /<View style=\{s\.controls\}>([\s\S]*?)\n      <\/View>/.exec(code);
+  assert.ok(row, 'could not find the controls row');
+
+  // Counted PER MODE, not by counting blocks in the file. Six actionCols are
+  // written here and no call ever shows six: the speaker toggle is voice-only
+  // and three others are video-only. A flat count said 6 and was wrong about
+  // every screen the user can actually be looking at.
+  //
+  // Each block's guard is whatever sits between the end of the previous
+  // control and the start of this one.
+  const parts = row[1].split('<View style={s.actionCol}>');
+  const guards = parts.slice(0, -1).map(p => {
+    const tail = p.slice(p.lastIndexOf('</View>') + 1);
+    if (/\{\s*!isVideo\s*&&\s*\(/.test(tail)) return 'voice';
+    if (/\{\s*isVideo\s*&&\s*!cm\.sharingScreen\s*&&\s*\(/.test(tail)) return 'video-not-sharing';
+    if (/\{\s*isVideo\s*&&\s*\(/.test(tail)) return 'video';
+    return 'always';
+  });
+  const shown = mode => guards.filter(g =>
+    g === 'always'
+    || (mode === 'voice' && g === 'voice')
+    || (mode === 'video' && (g === 'video' || g === 'video-not-sharing'))).length;
+
+  assert.strictEqual(shown('video'), 5,
+    `a video call shows ${shown('video')} controls; five is what fits across a phone`
+    + ` (guards: ${guards.join(', ')})`);
+  assert.strictEqual(shown('voice'), 3,
+    `a voice call shows ${shown('voice')} controls (guards: ${guards.join(', ')})`);
+  // Sharing the screen drops Flip — there is no camera in the call to flip —
+  // so that case is smaller still and cannot be the one that wraps.
+  assert.ok(guards.includes('video-not-sharing'),
+    'Flip is no longer hidden while the screen is shared');
+
+  // The ones that must survive, by what they do rather than by their labels.
+  for (const [what, re] of [
+    ['mute this microphone', /cm\.toggleMute\(\)/],
+    ['turn this camera off', /cm\.toggleCamera\(\)/],
+    ['flip the camera', /cm\.switchCamera\(\)/],
+    ['share the screen', /cm\.toggleScreenShare\(\)/],
+    ['end the call', /cm\.end\(\)/],
+  ]) assert.ok(re.test(code), `there is no way to ${what}`);
+
+  // Two of those five are voice-only or video-only, so a VOICE call shows
+  // Mute, Speaker and End — three — and never more than five either way.
+  assert.ok(/!isVideo && \(/.test(code), 'the speaker toggle is no longer voice-only');
+
+  // ── The wrap stays, as a net ────────────────────────────────────────────
+  //
+  // flexShrink is 0 by default in React Native, so a row that does not fit
+  // does not squeeze — it runs off the edge, taking End with it. At a large
+  // font scale or on a very small screen a second line is survivable; a
+  // hang-up button nobody can reach is not.
+  const controls = /  controls: \{([\s\S]*?)\n  \},/.exec(src);
+  assert.ok(controls, 'could not find the controls style');
+  assert.ok(/flexWrap: 'wrap'/.test(controls[1]),
+    'without the wrap a row that overflows puts End off the screen');
+});
+
+test('the peer controls are gone from the SCREEN, not from the call code', () => {
+  // Deliberate, and worth stating: callManager keeps togglePeerMuted,
+  // togglePeerVideo and the applyPeerMedia that honours them. They are inert
+  // with no button to reach them.
+  //
+  // They sit in the ontrack path, which was debugged recently and is the
+  // thing that decides whether the far end is heard at all. Withdrawing a
+  // button is not a reason to edit live call code, so the three tests above
+  // still guard that logic and it is still correct — it simply has no entry
+  // point on the screen any more.
+  const mgr = fs.readFileSync(path.join(ROOT, 'native-app', 'src', 'callManager.ts'), 'utf8');
+  assert.ok(/togglePeerMuted\(\)/.test(mgr), 'the manager lost its peer controls too');
+  assert.ok(/private applyPeerMedia\(\)/.test(mgr), 'applyPeerMedia is gone');
 });
 
 let passed = 0, failed = 0;
