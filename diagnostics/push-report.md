@@ -1,6 +1,6 @@
 # Push report — bistbarg
 
-Generated 2026-11-05T12:56Z by .github/workflows/push-report.yml
+Generated 2026-11-05T12:57Z by .github/workflows/push-report.yml
 
 ```
 Warning: Permanently added '185.8.174.198' (ED25519) to the list of known hosts.
@@ -10,6 +10,13 @@ server.js sends the collapse key (burst fix): yes
 server.js puts the tag in the DATA payload (expo reads only this): yes
 notify.js has the FIXED rule (no bare-404 delete): yes
 server.js logs [push] lines: yes
+
+### WHICH PUSH ROUTE, and is the second one switched on
+NAJVA configured in the service environment: NO  <-- FCM is the only route
+tokens by provider:
+  fcm|6
+najva lines in the last 2 hours:
+  0
 
 ### push_tokens table
 db file found: /opt/chatroom-chat.bistbarg.com/chat.db
@@ -30,7 +37,7 @@ users who have sent a message in the last 7 days: 15
 #                      good on its build: its socket dies when the
 #                      app closes, and no notification code helps.
 # A phone on an old build has none of the app-side fixes.
-[device] user=1 build=447 keepalive=running state=active received=95 msgs=1448 raised=1451 skipped=5481 renders=72 rows=292 shareCap=0 shareSend=0 shareSwap=0 why=read-elsewhere failed=0
+[device] user=1 build=447 keepalive=running state=background received=95 msgs=1448 raised=1451 skipped=5483 renders=119 rows=814 shareCap=0 shareSend=0 shareSwap=0 why=read-elsewhere failed=0
 [device] user=11 build=423 keepalive=running state=background received=21 msgs=22 raised=22 skipped=479 renders=33 rows=108 shareCap=0 shareSend=0 shareSwap=0 why=read-elsewhere failed=0
 [device] user=15 build=339 keepalive=running state=background received=13 msgs=103 raised=103 skipped=227 renders=? rows=? shareCap=? shareSend=? shareSwap=? why=app-active failed=0
 [device] user=16 build=435 keepalive=running state=background received=0 msgs=82 raised=84 skipped=127 renders=142 rows=645 shareCap=0 shareSend=0 shareSwap=0 why=read-elsewhere failed=0
@@ -47,7 +54,6 @@ users who have sent a message in the last 7 days: 15
 #                         the process killed outright).
 # held=Ns              -> how long it lasted. Compare with when the
 #                         app was closed.
-Nov 05 12:00:04 srv5524755161 node[2969692]: [presence] disconnect user=8 held=57s reason=transport-error sockets=0
 Nov 05 12:00:06 srv5524755161 node[2969692]: [presence] connect user=8 sockets=1
 Nov 05 12:01:22 srv5524755161 node[2969692]: [presence] disconnect user=8 held=76s reason=transport-close sockets=0
 Nov 05 12:01:23 srv5524755161 node[2969692]: [presence] connect user=8 sockets=1
@@ -87,6 +93,7 @@ Nov 05 12:32:45 srv5524755161 node[2969692]: [presence] disconnect user=16 held=
 Nov 05 12:37:37 srv5524755161 node[2969692]: [presence] connect user=1 sockets=1
 Nov 05 12:40:10 srv5524755161 node[2984851]: [presence] connect user=1 sockets=1
 Nov 05 12:52:40 srv5524755161 node[2984851]: [presence] connect user=6 sockets=1
+Nov 05 12:56:50 srv5524755161 node[2984851]: [presence] disconnect user=6 held=250s reason=ping-timeout sockets=0
 (end of presence lines)
 
 ### what a screen share actually did, last 24 hours
