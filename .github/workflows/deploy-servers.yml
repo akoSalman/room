@@ -271,11 +271,30 @@ jobs:
           # Now it happens last, is bounded, and cannot cost anything: the
           # service is already running the new code before this line.
           if ! node -e "require('sharp')" 2>/dev/null; then
-            echo "sharp has no usable binary — trying to repair it (thumbnails only)."
-            timeout 240 npm install --omit=dev --os=linux --cpu=x64 sharp || true
-            node -e "require('sharp')" 2>/dev/null \
-              && systemctl restart "$SERVICE" \
-              || echo "::warning::sharp is unavailable, so thumbnails are disabled and full-size images are served instead. The app is otherwise fine. Node must be >=20.9.0 for sharp 0.35's prebuilt binary."
+            # ── Is this a CPU sharp can ever run on? ────────────────────────
+            #
+            # Asked before trying, because on one of these servers the answer
+            # is no and the repair below cannot succeed: /proc/cpuinfo reads
+            # "Common KVM processor" with no sse4_2 (nor sse3, ssse3, sse4_1
+            # or popcnt — instructions from 2004, so a hypervisor is
+            # presenting a generic baseline model). sharp 0.33+ prebuilt
+            # binaries need x86-64-v2 and the WebAssembly fallback needs SIMD,
+            # which V8 will not enable without SSE4.1.
+            #
+            # Running the install anyway cost four minutes of a deploy, every
+            # deploy, and then printed a warning blaming the Node version —
+            # which was simply wrong here: Node is v22. A wrong reason in a
+            # log is worse than no reason, because the next person believes
+            # it.
+            if ! grep -qm1 '\bsse4_2\b' /proc/cpuinfo; then
+              echo "::notice::sharp cannot run on this CPU (x86-64-v2 instructions are absent), so thumbnails are produced by the pure-JS fallback instead — see thumbScale.js. Nothing to repair."
+            else
+              echo "sharp has no usable binary — trying to repair it (thumbnails only)."
+              timeout 240 npm install --omit=dev --os=linux --cpu=x64 sharp || true
+              node -e "require('sharp')" 2>/dev/null \
+                && systemctl restart "$SERVICE" \
+                || echo "::warning::sharp is unavailable here, so thumbnails fall back to the pure-JS path. The app is otherwise fine."
+            fi
           fi
           # "active" only means the process exists. Ask it for something over
           # HTTP too: a server that is up but not answering is exactly what a
