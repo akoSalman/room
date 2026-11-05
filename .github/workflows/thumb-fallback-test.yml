@@ -1,0 +1,90 @@
+name: Thumbnail Fallback Test
+
+# Can a pure-JavaScript resizer do this job on bistbarg? Tested on the machine,
+# in a scratch directory, before any dependency is added.
+#
+# ── WHY SHARP CANNOT BE MADE TO WORK HERE ──────────────────────────────────
+#
+# Two independent walls, each enough on its own:
+#
+#   1. THE CPU. /proc/cpuinfo says "Common KVM processor" and is missing
+#      popcnt, sse3, ssse3, sse4_1 and sse4_2 — instructions from 2004, so
+#      this is a hypervisor presenting a generic baseline model rather than
+#      genuinely ancient hardware. sharp 0.33+ prebuilt binaries need
+#      x86-64-v2; the WebAssembly fallback needs SIMD, which V8 will not
+#      enable without SSE4.1 either.
+#
+#   2. THE NETWORK. sharp 0.32.6, the last release below that baseline,
+#      fetches a prebuilt libvips tarball from GitHub during install, and
+#      that died with "Installation error: aborted". GitHub downloads are
+#      blocked or throttled from these networks — the same fact that has this
+#      app proxying its map tiles and running its own STUN. npm itself is
+#      fine; it is the binary fetch that fails.
+#
+# Building from source would need libvips built too: this is glibc 2.31,
+# whose libvips is far older than any current sharp accepts.
+#
+# A pure-JS decoder has neither problem: no native code to mismatch a CPU, and
+# nothing to download beyond the npm tarball that already works. It is slower,
+# which costs nothing here — a thumbnail is produced once and then cached
+# forever, and the alternative in place today is sending the full-size photo
+# to someone on a metered connection, every time.
+#
+# jimp 0.22 rather than 1.x: 1.x is ESM-only and this server is CommonJS.
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Does jimp work on bistbarg?
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.DEPLOY_HOST_BISTBARG }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/k
+          chmod 600 ~/.ssh/k
+          ssh -i ~/.ssh/k -o StrictHostKeyChecking=accept-new -o ConnectTimeout=90 \
+            "root@$HOST" bash -s <<'EOF'
+          set +e
+          rm -rf /tmp/thumb-probe && mkdir -p /tmp/thumb-probe && cd /tmp/thumb-probe
+          npm init -y >/dev/null 2>&1
+          echo "### installing jimp@0.22.12"
+          npm install --no-audit --no-fund jimp@0.22.12 2>&1 | tail -4 | sed 's/^/  /'
+
+          echo ""
+          echo "### can it produce a thumbnail, and how fast?"
+          # A real photo-sized image, not a 64x64 toy: the question is whether
+          # a pure-JS decoder is fast enough for the biggest thing a phone
+          # sends, and a tiny test would answer a question nobody asked.
+          node -e "
+            const Jimp = require('jimp');
+            const t0 = Date.now();
+            new Jimp(4000, 3000, 0x4080c0ff, (err, img) => {
+              if (err) { console.log('CREATE FAILED', String(err)); return; }
+              img.quality(85).getBufferAsync(Jimp.MIME_JPEG)
+                .then(buf => {
+                  console.log('source: ' + (buf.length/1024).toFixed(0) + ' KB, 4000x3000');
+                  const t1 = Date.now();
+                  return Jimp.read(buf).then(im => {
+                    // cover() is what the route wants: fill the square and
+                    // crop, rather than letterbox.
+                    im.cover(400, 400).quality(72);
+                    return im.writeAsync('/tmp/thumb-probe/out.jpg').then(() => {
+                      const st = require('fs').statSync('/tmp/thumb-probe/out.jpg');
+                      console.log('JIMP WORKS — 400x400 thumb in ' + (Date.now()-t1) + ' ms, ' + st.size + ' bytes');
+                      console.log('(decode+encode of the source took ' + (t1-t0) + ' ms and is not part of the real path)');
+                    });
+                  });
+                })
+                .catch(e => { console.log('JIMP FAILED'); console.log(String(e).split('\n').slice(0,6).join('\n')); });
+            });
+          " 2>&1 | head -14 | sed 's/^/  /'
+
+          echo ""
+          echo "### memory, which is the real risk with a pure-JS decoder"
+          free -m | sed 's/^/  /'
+          rm -rf /tmp/thumb-probe
+          EOF
