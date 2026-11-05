@@ -1,0 +1,133 @@
+name: TURN Repair
+
+# ── Undoing the line that unplugged TURN ────────────────────────────────────
+#
+# Per-pid attribution finally answered it. The main coturn, the one the phones
+# are told about, listens on NOTHING but loopback:
+#
+#   main (pid …894, -c /etc/turnserver.conf)   6 tcp 127.0.0.1:3478
+#                                             6 udp 127.0.0.1:3478
+#
+# No public address, TCP or UDP. TURN on 3478 has been unreachable from the
+# internet, which is as complete an explanation of relay=0 on every end of
+# every call as there could be.
+#
+# The cause is a line I added at 12:32 today:
+#
+#   15:alt-listening-port=443
+#
+# I had looked at that line twice and called it a harmless no-op, on the
+# grounds that RFC 5780's alternate-address discovery needs a second IP and
+# this host has one. What I never checked is what coturn DOES with it anyway:
+# it tries to bind the alt port on every address it serves. 443 is privileged,
+# this process drops to the turnserver user with no CAP_NET_BIND_SERVICE, and
+# Apache holds the TCP side — so every one of those binds fails, and the
+# failures took the public address down with them. The errno=13 lines I read
+# as belonging to the 443 instance were this process all along; the two share
+# nothing but a log directory, and I was reading the wrong file.
+#
+# /etc/turnserver.conf.before-alt-port is that exact file from before the
+# change, taken after the logging change, so restoring it keeps the logging
+# and drops only the damage.
+on:
+  workflow_dispatch:
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install the TURN client
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq coturn > /dev/null
+
+      - name: Repair and prove it
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.DEPLOY_HOST_BISTBARG }}
+          SERVICE: ${{ secrets.DEPLOY_SERVICE_BISTBARG }}
+          DOMAIN: chat.bistbarg.com
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/k
+          chmod 600 ~/.ssh/k
+          SSH="ssh -i $HOME/.ssh/k -o StrictHostKeyChecking=accept-new -o ConnectTimeout=25 root@$HOST"
+
+          echo "######## restore the config from before the alt-port line ########"
+          $SSH bash -s <<'EOF'
+          set -e
+          cd /etc
+          if [ ! -f turnserver.conf.before-alt-port ]; then
+            echo "no backup to restore from; removing the line directly instead"
+            cp -a turnserver.conf turnserver.conf.before-repair
+            sed -i '/^[[:space:]]*alt-listening-port[[:space:]]*=/d' turnserver.conf
+          else
+            cp -a turnserver.conf turnserver.conf.before-repair
+            cp -a turnserver.conf.before-alt-port turnserver.conf
+          fi
+          echo "--- the config now, the keys that decide where it listens ---"
+          grep -nE '^[[:space:]]*(listening-ip|listening-port|alt-listening-port|external-ip|relay-ip|no-udp|no-tcp|log-file|simple-log)' turnserver.conf | sed 's/^/  /'
+          echo -n "alt-listening-port still present: "
+          grep -qE '^[[:space:]]*alt-listening-port' turnserver.conf && echo "YES (repair failed)" || echo no
+
+          # Stop, WAIT for the port to be free, then start. A plain restart
+          # raced the old process this morning and the new one fell back to
+          # loopback, which is how one fault became two.
+          systemctl stop coturn
+          for i in $(seq 1 20); do
+            ss -lnup 'sport = :3478' 2>/dev/null | tail -n +2 | grep -q . || break
+            sleep 1
+          done
+          systemctl start coturn
+          sleep 4
+          systemctl is-active coturn
+
+          echo "--- listeners, attributed to the MAIN pid only ---"
+          pid=$(systemctl show coturn -p MainPID --value)
+          for proto in tcp udp; do
+            flag=$([ "$proto" = tcp ] && echo -lntp || echo -lnup)
+            ss $flag 2>/dev/null | grep "pid=$pid," \
+              | awk -v p="$proto" '{for(i=1;i<=NF;i++) if ($i ~ /:[0-9]+$/) {print "  "p" "$i; break}}' \
+              | sort | uniq -c
+          done
+          echo "--- its own log, not the other instance's ---"
+          tail -25 /var/log/turnserver/turn.log 2>/dev/null \
+            | grep -iE 'listener opened|cannot bind|errno' | tail -8 | sed 's/^/  /'
+          echo "--- the 443 instance, untouched ---"
+          systemctl is-active coturn-443
+          EOF
+
+          echo ""
+          echo "######## GROUND TRUTH: allocate from the public internet ########"
+          # From the service's own environment rather than a guessed drop-in
+          # path — that guess is what made the last run exit before it got
+          # here. systemctl is authoritative about what the process was given,
+          # whichever file it came from.
+          CREDS=$($SSH "systemctl show \"$SERVICE\" -p Environment --value | tr ' ' '\n' | grep -E '^TURN_(USERNAME|PASSWORD)='")
+          TURN_USER=$(printf '%s' "$CREDS" | sed -n 's/^TURN_USERNAME=//p' | head -1 | tr -d '\r')
+          TURN_PASS=$(printf '%s' "$CREDS" | sed -n 's/^TURN_PASSWORD=//p' | head -1 | tr -d '\r')
+          # Masked before anything else can echo them.
+          [ -n "$TURN_PASS" ] && echo "::add-mask::$TURN_PASS"
+          [ -n "$TURN_USER" ] && echo "::add-mask::$TURN_USER"
+          if [ -z "$TURN_USER" ] || [ -z "$TURN_PASS" ]; then
+            echo "The service has no TURN_USERNAME/TURN_PASSWORD in its environment."
+            echo "That is itself the bug: without them the app hands phones a"
+            echo "relay url with no credentials, TURN answers 401, and no relay"
+            echo "candidate is ever gathered."
+            exit 1
+          fi
+
+          # -y relays traffic through the allocation, so OK means the relay
+          # actually forwarded, not merely that something replied.
+          probe() {
+            label="$1"; shift
+            printf '%-26s' "$label"
+            out=$(timeout 45 turnutils_uclient -u "$TURN_USER" -w "$TURN_PASS" -y -c -n 3 "$@" "$DOMAIN" 2>&1)
+            if printf '%s' "$out" | grep -qiE 'success|total transmit time'; then
+              echo OK
+            else
+              echo FAILED
+              printf '%s' "$out" | grep -viE '^$' | tail -3 | sed 's/^/      /'
+            fi
+          }
+          probe "udp 3478 (ordinary)"   -p 3478
+          probe "tcp 3478 (udp blocked)" -p 3478 -t
+          probe "udp 443  (only 443)"   -p 443
