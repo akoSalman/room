@@ -1,0 +1,139 @@
+name: TURN Ground Truth
+
+# ── Why this exists, and why it is one workflow and not three ────────────────
+#
+# Two things went wrong today, and both were measurement rather than TURN.
+#
+#  1. There are now TWO coturn instances on this host, and they write to the
+#     SAME log file. Every log line read today came out of a merged stream, so
+#     "coturn says it cannot bind" could have been either process, and the one
+#     I blamed was the one I was not reading. The last run proved it: the main
+#     instance was restarted and the log tail that followed was all about
+#     127.0.0.1:443, which is the other process entirely.
+#
+#  2. Listener surveys have been standing in for reachability. They cannot.
+#     A bind on the public address does not prove a packet gets in, and six
+#     sockets on 127.0.0.1 do not prove one does not — coturn's socket layout
+#     depends on listening-ip, relay-threads and what it found at startup, and
+#     I have been reading a changing number as if it were an answer.
+#
+# So: every fact below is attributed to ONE instance, and the verdict comes
+# from an actual TURN allocation attempted from this runner, which is on the
+# public internet and is the only vantage point that matches a phone's.
+on:
+  workflow_dispatch:
+
+jobs:
+  truth:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install the TURN client
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq coturn > /dev/null
+
+      - name: Ground truth
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.DEPLOY_HOST_BISTBARG }}
+          SERVICE: ${{ secrets.DEPLOY_SERVICE_BISTBARG }}
+          DOMAIN: chat.bistbarg.com
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/k
+          chmod 600 ~/.ssh/k
+          SSH="ssh -i $HOME/.ssh/k -o StrictHostKeyChecking=accept-new -o ConnectTimeout=25 root@$HOST"
+
+          echo "######## 1. the two instances, kept apart ########"
+          $SSH bash -s <<'EOF'
+          set +e
+          for unit in coturn coturn-443; do
+            echo "=== $unit ==="
+            systemctl is-active "$unit" 2>/dev/null || echo "(not a unit)"
+            # Which config file this unit actually runs, from the unit itself
+            # rather than from my memory of what I wrote.
+            systemctl cat "$unit" 2>/dev/null | grep -E '^ExecStart' | sed 's/^/  /'
+          done
+          echo ""
+          echo "=== the processes, with their real arguments ==="
+          # Attributes each listening socket to a pid, and each pid to the
+          # config it was started with. This is the join that was missing.
+          ps -eo pid,comm,args | grep -E '[t]urnserver' | sed 's/^/  /'
+          echo ""
+          for cfg in /etc/turnserver.conf /etc/turnserver-443.conf; do
+            echo "=== $cfg ==="
+            [ -f "$cfg" ] || { echo "  (absent)"; continue; }
+            # Only the lines that decide WHERE it listens and WHERE it logs.
+            # No user/password/secret lines are printed.
+            grep -nE '^[[:space:]]*(listening-ip|relay-ip|external-ip|listening-port|alt-listening-port|tls-listening-port|min-port|max-port|no-udp|no-tcp|no-tls|no-dtls|log-file|simple-log|pidfile|relay-threads|verbose)' "$cfg" \
+              | sed 's/^/  /' || echo "  (none of those keys set)"
+            echo "  --- any backup of it ---"
+            ls -la "$cfg".* 2>/dev/null | sed 's/^/    /' || echo "    (no backups)"
+          done
+          EOF
+
+          echo ""
+          echo "######## 2. the question the last run could not answer ########"
+          echo "# Does the MAIN instance have a public listener, and is its log its own?"
+          $SSH bash -s <<'EOF'
+          set +e
+          main_pid=$(systemctl show coturn -p MainPID --value 2>/dev/null)
+          alt_pid=$(systemctl show coturn-443 -p MainPID --value 2>/dev/null)
+          echo "main pid=$main_pid  alt pid=$alt_pid"
+          for label in main alt; do
+            pid=$([ "$label" = main ] && echo "$main_pid" || echo "$alt_pid")
+            [ -n "$pid" ] && [ "$pid" != 0 ] || { echo "$label: no pid"; continue; }
+            echo "=== $label (pid $pid) listening sockets, by address ==="
+            # ss can attribute a socket to a pid, so this is per-INSTANCE
+            # rather than per-port. That is the distinction that was missing.
+            for proto in tcp udp; do
+              flag=$([ "$proto" = tcp ] && echo -lntp || echo -lnup)
+              ss $flag 2>/dev/null | grep "pid=$pid," \
+                | awk -v p="$proto" '{for(i=1;i<=NF;i++) if ($i ~ /:[0-9]+$/) {print p" "$i; break}}' \
+                | sort | uniq -c | sed 's/^/    /'
+            done
+            echo "=== $label open log files ==="
+            ls -l /proc/$pid/fd 2>/dev/null | grep -oE '/var/log[^ ]*' | sort -u | sed 's/^/    /'
+          done
+          EOF
+
+          echo ""
+          echo "######## 3. GROUND TRUTH: allocate from the public internet ########"
+          # Credentials come from the service drop-in, the same ones the phones
+          # are handed, so this tests what they test.
+          TURN_USER=$($SSH "grep -hoP 'TURN_USERNAME=\K.*' /etc/systemd/system/\"$SERVICE\".service.d/*.conf 2>/dev/null | head -1" | tr -d '\r')
+          TURN_PASS=$($SSH "grep -hoP 'TURN_PASSWORD=\K.*' /etc/systemd/system/\"$SERVICE\".service.d/*.conf 2>/dev/null | head -1" | tr -d '\r')
+          if [ -z "$TURN_USER" ] || [ -z "$TURN_PASS" ]; then
+            echo "Could not read TURN credentials from the drop-in — stopping."
+            exit 1
+          fi
+          echo "::add-mask::$TURN_PASS"
+          echo "::add-mask::$TURN_USER"
+
+          # -y echoes traffic through the relay, so success proves allocation
+          # AND forwarding, not just that something answered.
+          #
+          # Three transports, because they fail for different reasons and the
+          # app offers all three:
+          #   udp 3478  the ordinary path
+          #   tcp 3478  the fallback for networks that block UDP
+          #   udp 443   the port added today, for networks that allow only 443
+          probe() {
+            label="$1"; shift
+            printf '%-24s' "$label"
+            out=$(timeout 45 turnutils_uclient -u "$TURN_USER" -w "$TURN_PASS" -y -c -n 3 "$@" "$DOMAIN" 2>&1)
+            if printf '%s' "$out" | grep -qiE 'success|total transmit time'; then
+              echo "OK"
+            else
+              echo "FAILED"
+              # The first refusal only. Enough to tell "no answer" from
+              # "answered and said no", which need opposite fixes.
+              printf '%s' "$out" | grep -viE '^$' | tail -3 | sed 's/^/      /'
+            fi
+          }
+          probe "udp 3478 (ordinary)" -p 3478
+          probe "tcp 3478 (udp blocked)" -p 3478 -t
+          probe "udp 443  (only 443)"  -p 443
+
+          echo ""
+          echo "# A phone offered all three. If every line above says OK, the"
+          echo "# relay is reachable from the internet and relay=0 on the"
+          echo "# phones is not about this server."
