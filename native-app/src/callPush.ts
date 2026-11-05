@@ -20,6 +20,8 @@ import * as Notifications from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
 import notifee, { EventType } from '@notifee/react-native';
 import { ringIncoming, stopRinging, ensureCallChannel } from './incomingCall';
+import { AppState } from 'react-native';
+import * as callRing from './callRing';
 
 // ── What actually rings, and when ────────────────────────────────────────────
 //
@@ -66,17 +68,43 @@ export function registerCallPush() {
       // depending on Android version and whether the app was alive.
       const d = data?.notification?.data || data?.data || data || {};
       if (String(d.type) !== 'call') return;
-      const rang = await ringIncoming(
-        String(d.fromUsername || 'Someone'),
-        d.kind === 'video' ? 'video' : 'voice',
-        d.fromUserId,
-      );
+      // ── Both routes claim through the same place ─────────────────────────
+      //
+      // The offer now also rings from the socket (callRinger.ts), and for the
+      // six devices that do have an FCM token both can arrive for one call.
+      // The notification id is shared, so the second would REPLACE the first
+      // — and replacing a loopSound notification restarts the ring from the
+      // beginning. Whichever gets here first rings; the other is told
+      // 'already-ringing' and does nothing. Same arrangement as notifyOnce.ts
+      // for messages, for the same reason.
+      //
+      // In a process Android started for this push there is no previous
+      // claim, so this rings, which is the case the push exists for.
+      const decision = callRing.claimRing({
+        event: 'call_offer',
+        fromUserId: d.fromUserId,
+        appState: AppState.currentState,
+      });
+      const rang = decision.ring
+        ? await ringIncoming(
+            String(d.fromUsername || 'Someone'),
+            d.kind === 'video' ? 'video' : 'voice',
+            d.fromUserId,
+          )
+        : false;
+      if (decision.ring && !rang) callRing.releaseRing();
       // Notifee has taken over with the looping, full-screen version, so the
       // plain notification Android already put up has to go — otherwise the
       // two ring over each other and there are two entries in the shade for
       // one call. Only once the replacement is actually up: dismissing it
       // after a failed ring would leave nothing at all.
-      if (rang) await dismissPlainCallNotification();
+      // Also when the ring was refused because the app is in front of the
+      // person: callManager's own screen is showing the call, so the plain
+      // notification is a duplicate of something already on screen rather
+      // than the only sign of it.
+      if (rang || decision.reason === 'app-active' || decision.reason === 'already-ringing') {
+        await dismissPlainCallNotification();
+      }
     } catch {}
   });
   Notifications.registerTaskAsync(CALL_PUSH_TASK).catch(() => {});

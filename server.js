@@ -3636,6 +3636,25 @@ io.on('connection', (socket) => {
         + ` ans=${n(d.answered)} turn=${n(d.turn)}`);
       return;
     }
+    // ── What a device did with an offer it received ────────────────────────
+    //
+    // Reported as: I am calling this phone with a good connection and it does
+    // not ring until I open the app.
+    //
+    // The offer reaches the callee's socket before this server even considers
+    // a push, and the keep-alive service holds that socket open with the app
+    // closed. Whether the phone then rings was, until now, decided entirely
+    // inside the app with nothing said about it anywhere — so "it did not
+    // ring" and "it never arrived" were indistinguishable from here, which is
+    // the pair of possibilities that has cost the most time this week.
+    //
+    // reason=ok means this device drew the ring from its own socket.
+    // Everything else names the rule that refused, through the same word()
+    // filter as every other field: no username, no address.
+    if (word(d.what) === 'ring') {
+      console.log(`[ring] user=${socket.user.id} reason=${word(d.reason)}`);
+      return;
+    }
     if (word(d.what) !== 'share') return;
     console.log(`[share] user=${socket.user.id} outcome=${word(d.outcome)}`
       // Which failure it was. Stripped to letters and hyphens, so a message

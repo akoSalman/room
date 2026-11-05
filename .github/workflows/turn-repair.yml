@@ -117,15 +117,26 @@ jobs:
 
           # -y relays traffic through the allocation, so OK means the relay
           # actually forwarded, not merely that something replied.
+          # `|| true` on the substitution, and not because of style: this step
+          # runs under `bash -e`, so when timeout killed the client at the
+          # limit the assignment failed and took the whole step with it — the
+          # first probe printed its label and the job exited 124 with nothing
+          # measured. A verification harness that aborts on the thing it is
+          # measuring reports nothing at all.
           probe() {
             label="$1"; shift
-            printf '%-26s' "$label"
-            out=$(timeout 45 turnutils_uclient -u "$TURN_USER" -w "$TURN_PASS" -y -c -n 3 "$@" "$DOMAIN" 2>&1)
-            if printf '%s' "$out" | grep -qiE 'success|total transmit time'; then
-              echo OK
+            out=$(timeout 30 turnutils_uclient -u "$TURN_USER" -w "$TURN_PASS" \
+                    -y -c -n 3 "$@" "$DOMAIN" 2>&1 || true)
+            # An Allocate that was ANSWERED is the thing being tested. The
+            # client's own exit is not: with -y it keeps echoing until it is
+            # stopped, so a clean exit is not available to wait for.
+            if printf '%s' "$out" | grep -qiE 'allocate response|success|total transmit time'; then
+              printf '%-26s OK\n' "$label"
             else
-              echo FAILED
-              printf '%s' "$out" | grep -viE '^$' | tail -3 | sed 's/^/      /'
+              printf '%-26s FAILED\n' "$label"
+              # Whatever it did say. "no response" and "401" need opposite
+              # fixes and are the two outcomes worth telling apart.
+              printf '%s' "$out" | grep -viE '^$' | tail -4 | sed 's/^/      /'
             fi
           }
           probe "udp 3478 (ordinary)"   -p 3478

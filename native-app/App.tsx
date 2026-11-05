@@ -40,6 +40,7 @@ import { BUILD_VERSION } from './src/version';
 import * as storage from './src/storage';
 import { overlayVisible, handoffExpired, shareKey, HANDOFF_GRACE_MS } from './src/shareHandoff';
 import * as socketNotifier from './src/socketNotifier';
+import * as callRinger from './src/callRinger';
 import * as roomOrder from './src/roomOrder';
 import { C } from './src/theme';
 import * as notifyOnce from './src/notifyOnce';
@@ -854,6 +855,16 @@ export default function App() {
     const stop = onSocket(sock => {
       if (cancelled) return;
       socketNotifier.attach(sock, { pushRegistered: () => pushRegisteredRef.current });
+      // ── The ring, on the same terms as the notifications ────────────────
+      //
+      // ringIncoming() had one caller in the whole app: the FCM background
+      // task. So a call rang if and only if a Google push arrived, and the
+      // measurement says nine of fifteen active users have no token for one
+      // to be delivered to. The offer was reaching the socket the whole time
+      // — the keep-alive service holds it open with the app closed — and
+      // nothing turned it into a ring, which is exactly "it does not ring
+      // until I open the app". See src/callRinger.ts.
+      callRinger.attach(sock);
       // The device's copy of the chat list, kept in order while the list
       // itself is closed — which is what makes it open in the right order
       // instead of being corrected while somebody is reaching for a row.
@@ -907,6 +918,7 @@ export default function App() {
     audioManager.stop();
     disconnectSocket();
     socketNotifier.detach();
+    callRinger.detach();
     setScreen('auth');
     setRoom(null);
   }

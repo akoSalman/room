@@ -21,6 +21,7 @@ import notifee, {
   AndroidCategory, AndroidImportance, AndroidVisibility, EventType,
 } from '@notifee/react-native';
 import * as notificationIcon from './notificationIcon';
+import { RING_CLAIM_MS, releaseRing } from './callRing';
 
 export const CALL_CHANNEL = 'calls-v3';
 /** One notification id, so a second offer replaces the first rather than stacking. */
@@ -87,7 +88,12 @@ export async function ringIncoming(
           { title: 'Accept', pressAction: { id: 'accept', launchActivity: 'default' } },
           { title: 'Decline', pressAction: { id: 'decline' } },
         ],
-        timeoutAfter: 45000,   // stop ringing if nobody ever picks up
+        // Stop ringing if nobody ever picks up. This is also exactly how long
+        // callRing holds its claim to be "the call that is ringing", so the
+        // two are ONE constant rather than two copies that agree today: the
+        // calls channel and the push tag have both been broken before by a
+        // value duplicated in two files and changed in one.
+        timeoutAfter: RING_CLAIM_MS,
       },
     });
     return true;
@@ -98,6 +104,12 @@ export async function ringIncoming(
 
 /** Stop ringing — answered here, answered elsewhere, cancelled, or timed out. */
 export async function stopRinging(): Promise<void> {
+  // Give the claim back FIRST, and unconditionally. Every one of those endings
+  // arrives here, so this is the one place that cannot be forgotten — and if
+  // cancelNotification throws, the claim must still go, or a second call from
+  // the same person would be refused as a duplicate of a ring that has already
+  // stopped.
+  releaseRing();
   try { await notifee.cancelNotification(CALL_NOTIFICATION_ID); } catch {}
 }
 
