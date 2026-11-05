@@ -119,13 +119,30 @@ class Transport:
     def __init__(self, host: str, port: int, tcp: bool, timeout: float = 3.0):
         self.host, self.port, self.tcp, self.timeout = host, port, tcp, timeout
         self.sock = None
+        self.family = None
+        self.sockaddr = None
 
     def __enter__(self):
-        family = socket.SOCK_STREAM if self.tcp else socket.SOCK_DGRAM
-        self.sock = socket.socket(socket.AF_INET, family)
+        kind = socket.SOCK_STREAM if self.tcp else socket.SOCK_DGRAM
+        # ── The address family comes from the address ────────────────────
+        #
+        # Hardcoding AF_INET made an IPv6 host report "UNREACHABLE: address
+        # family for hostname not supported", which reads as a verdict about
+        # the server and is really a limitation of the probe. One of the two
+        # domains resolves to IPv6, so this was not hypothetical: it produced
+        # exactly the kind of confident wrong reading this file exists to
+        # replace.
+        #
+        # getaddrinfo also resolves names, so a name and a literal of either
+        # family all arrive here the same way.
+        info = socket.getaddrinfo(self.host, self.port, socket.AF_UNSPEC, kind)
+        if not info:
+            raise socket.gaierror(f"no address for {self.host}")
+        self.family, _, _, _, self.sockaddr = info[0]
+        self.sock = socket.socket(self.family, kind)
         self.sock.settimeout(self.timeout)
         if self.tcp:
-            self.sock.connect((self.host, self.port))
+            self.sock.connect(self.sockaddr)
         return self
 
     def __exit__(self, *_):
@@ -141,7 +158,9 @@ class Transport:
                 if self.tcp:
                     self.sock.sendall(payload)
                 else:
-                    self.sock.sendto(payload, (self.host, self.port))
+                    # The resolved sockaddr, not (host, port): IPv6 needs a
+                    # four-tuple and re-resolving per send is pointless.
+                    self.sock.sendto(payload, self.sockaddr)
                 # A STUN server may be answering somebody else at the same
                 # time; only the reply to THIS request counts.
                 for _ in range(4):

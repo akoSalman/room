@@ -1,0 +1,137 @@
+name: TURN URL Fix
+
+# ── Hand phones an address that actually reaches the relay ──────────────────
+#
+# Measured, from three vantage points, with a probe that speaks the protocol:
+#
+#   by NAME  chat.bistbarg.com   udp 3478 UNREACHABLE  tcp 3478 UNREACHABLE
+#            …and the name does not resolve to the deploy host at all
+#   by IP    the deploy host     udp 3478 OK  relay allocated
+#                                tcp 3478 OK  relay allocated
+#   on host  127.0.0.1           all three OK
+#
+# coturn is working and IS reachable from the public internet — at the
+# server's own address. The name resolves somewhere else: a proxy that serves
+# HTTPS (which is why messages, logins and call signalling all work) and
+# silently drops STUN and TURN.
+#
+# The app is handed turn:<that name>:3478 by /ice-config, so every relay
+# request any phone has ever made went to a host that never answers. That is
+# relay=0 on both ends of every call, and srflx=0 with it, because this app's
+# own STUN is the same host and port.
+#
+# So TURN_URL is pointed at the deploy address instead. Three things make this
+# the right fix rather than a workaround:
+#
+#   • callManager.refreshIce() re-fetches /ice-config on every call and caches
+#     nothing, so this reaches the phones people already have, on their next
+#     call, with no new build;
+#   • the scheme is turn:, not turns:, so there is no certificate to match a
+#     name against — an address is as valid as a name here;
+#   • iceConfig.js derives the STUN url and the alt-port url from TURN_URL, so
+#     all three entries move together and cannot disagree.
+#
+# The durable alternative is a DNS-only A record (turn.<domain>) pointing at
+# the server, which survives the address changing. That needs a DNS change
+# this cannot make; the note at the end says so.
+on:
+  workflow_dispatch:
+  # The akosalman server has no coturn on 443 — probed from the server itself,
+  # udp 443 is unreachable there — so its TURN_ALT_PORT is deliberately left
+  # unset and only TURN_URL is corrected.
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - name: bistbarg
+            domain: chat.bistbarg.com
+            host_secret: DEPLOY_HOST_BISTBARG
+            service_secret: DEPLOY_SERVICE_BISTBARG
+          - name: akosalman
+            domain: chat.akosalman.com
+            host_secret: DEPLOY_HOST_AKOSALMAN
+            service_secret: DEPLOY_SERVICE_AKOSALMAN
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Point ${{ matrix.name }} at a reachable relay
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets[matrix.host_secret] }}
+          SERVICE: ${{ secrets[matrix.service_secret] }}
+          DOMAIN: ${{ matrix.domain }}
+        run: |
+          set -o pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/k
+          chmod 600 ~/.ssh/k
+          SSH="ssh -i $HOME/.ssh/k -o StrictHostKeyChecking=accept-new -o ConnectTimeout=25 root@$HOST"
+
+          CREDS=$($SSH "systemctl show \"$SERVICE\" -p Environment --value | tr ' ' '\n' | grep -E '^TURN_'" || true)
+          OLD_URL=$(printf '%s' "$CREDS" | sed -n 's/^TURN_URL=//p' | head -1 | tr -d '\r')
+          export TURN_USERNAME=$(printf '%s' "$CREDS" | sed -n 's/^TURN_USERNAME=//p' | head -1 | tr -d '\r')
+          export TURN_PASSWORD=$(printf '%s' "$CREDS" | sed -n 's/^TURN_PASSWORD=//p' | head -1 | tr -d '\r')
+          [ -n "$TURN_PASSWORD" ] && echo "::add-mask::$TURN_PASSWORD"
+          [ -n "$TURN_USERNAME" ] && echo "::add-mask::$TURN_USERNAME"
+          if [ -z "$OLD_URL" ]; then
+            echo "TURN_URL is not set on this service — nothing to repoint."
+            exit 1
+          fi
+
+          # Keep the scheme and the port; replace only the host. Parsed rather
+          # than assumed: this is the value phones are actually handed, and
+          # "the app hands phones turn:$DOMAIN:3478" was my assumption in an
+          # earlier report, not a reading.
+          SCHEME=${OLD_URL%%:*}
+          REST=${OLD_URL#*:}
+          REST=${REST%%\?*}
+          OLD_HOST=${REST%%:*}
+          PORT=${REST##*:}
+          case "$PORT" in ''|*[!0-9]*) PORT=3478;; esac
+          echo "current TURN host: $OLD_HOST   scheme: $SCHEME   port: $PORT"
+
+          if [ "$OLD_HOST" = "$HOST" ]; then
+            echo "already pointed at the deploy address — nothing to change."
+          else
+            NEW_URL="$SCHEME:$HOST:$PORT"
+            # A LATER-SORTING drop-in, so the existing file keeps the
+            # credentials and is not rewritten by a sed I would have to get
+            # right. systemd applies drop-ins in lexical order and a later
+            # Environment= for the same name wins.
+            $SSH "set -e
+              d=/etc/systemd/system/\"$SERVICE\".service.d
+              mkdir -p \"\$d\"
+              printf '[Service]\nEnvironment=TURN_URL=%s\n' '$NEW_URL' > \"\$d/zz-turn-host.conf\"
+              systemctl daemon-reload
+              systemctl restart \"$SERVICE\"
+              sleep 3
+              systemctl is-active \"$SERVICE\""
+          fi
+
+          echo ""
+          echo "== what the service now holds =="
+          NOW=$($SSH "systemctl show \"$SERVICE\" -p Environment --value | tr ' ' '\n' | grep -E '^TURN_URL='" || true)
+          NOW_URL=$(printf '%s' "$NOW" | sed -n 's/^TURN_URL=//p' | head -1 | tr -d '\r')
+          NOW_HOST=${NOW_URL#*:}; NOW_HOST=${NOW_HOST%%:*}
+          echo "  TURN host is now: $NOW_HOST"
+          if [ "$NOW_HOST" = "$HOST" ]; then
+            echo "  (the deploy address — masked above)"
+          fi
+
+          echo ""
+          echo "== the three transports, at the address phones will now use =="
+          python3 -I scripts/turn-probe.py "$NOW_HOST" "$PORT" "$PORT/tcp" 443 || true
+
+          echo ""
+          echo "# A phone calls /ice-config before every call and caches nothing,"
+          echo "# so this applies to the apps already installed, on the next call."
+          echo "#"
+          echo "# Durable alternative, which needs a DNS change: a DNS-only A"
+          echo "# record such as turn.${DOMAIN#chat.} pointing at this server,"
+          echo "# then TURN_URL=turn:that-name:$PORT. It survives the address"
+          echo "# changing; pinning the address does not."
