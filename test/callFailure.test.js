@@ -274,6 +274,23 @@ test('THE BUG: the side that ANSWERS is not reported as unanswered', () => {
   }
 });
 
+test('THE GAP: a call that CONNECTED is reported too', () => {
+  // Only failures were reported, so an empty report meant either "nobody
+  // called" or "every call worked", with no way to tell those apart. A call
+  // was made, the report came back empty, and it answered nothing.
+  const m = code(mgrSrc);
+  assert.ok(/this\.reportCall\('connected'\)/.test(m),
+    'a successful call is invisible, so an empty report means nothing');
+  // Once per CALL. A room call connects once per peer, and reporting each
+  // would read as several calls.
+  const marked = /private markConnected\(\)[\s\S]*?\n  \}/.exec(m);
+  assert.ok(marked, 'markConnected is gone');
+  const guard = marked[0].indexOf('if (!this.connectedAt)');
+  const report = marked[0].indexOf("reportCall('connected')");
+  assert.ok(guard >= 0 && report > guard,
+    'a connected call is reported outside the once-per-call guard');
+});
+
 test('a failure computes the reason and reports it', () => {
   const m = code(mgrSrc);
   assert.ok(/this\.failureReason = callFailureReason\(this\.ice\)/.test(m),

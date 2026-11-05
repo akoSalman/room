@@ -196,6 +196,16 @@ class CallManager {
     try { InCallManager?.stopRingback?.(); InCallManager?.stopRingtone?.(); } catch {}
     if (!this.connectedAt) {
       this.connectedAt = Date.now();
+      // ── A call that WORKED says so ────────────────────────────────────
+      //
+      // Only failures were reported, so an empty call report meant either
+      // "nobody called" or "every call worked" and there was no way to tell
+      // them apart. That cost a whole round: a call was made, the report was
+      // empty, and the empty report answered nothing.
+      //
+      // Guarded by connectedAt, so this is once per call and not once per
+      // peer — a room call connects several times over.
+      this.reportCall('connected');
       // The session is already open (it was opened when the call started, so
       // the ringback would route properly); this settles the final speaker
       // choice for the conversation itself.
