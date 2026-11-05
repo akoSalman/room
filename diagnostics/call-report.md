@@ -1,6 +1,6 @@
 # Call report — bistbarg
 
-Generated 2026-11-05T09:34Z by .github/workflows/call-report.yml
+Generated 2026-11-05T09:36Z by .github/workflows/call-report.yml
 
 ```
 Warning: Permanently added '185.8.174.198' (ED25519) to the list of known hosts.
@@ -33,6 +33,11 @@ no-tcp-relay
 -A OUTPUT ! -o lo -p tcp -m conntrack --ctstate NEW -m tcp --dport 3478 -j ACCEPT
 -A OUTPUT ! -o lo -p udp -m conntrack --ctstate NEW -m udp --dport 3478 -j ACCEPT
 -A OUTPUT ! -o lo -p udp -m conntrack --ctstate NEW -m udp --dport 49152:65535 -j ACCEPT
+
+### did the phones' allocate requests reach coturn
+lines coturn logged at all: 2
+-- what happened, counted --
+-- the most recent few, addresses removed --
 
 ### every call, oldest first
 Nov 05 09:30:53 srv5524755161 node[2957335]: [call] user=- outcome=failed kind=dm-voice host=1 srflx=1 relay=0 ans=0 turn=1
