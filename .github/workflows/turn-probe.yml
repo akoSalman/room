@@ -129,6 +129,30 @@ jobs:
                 rm -f /tmp/turn-probe.py" || true
 
           echo ""
+          echo "== is the RUNNING server.js the one that builds this list? =="
+          # The env can be perfect and reach nobody if the deployed code
+          # predates iceConfig.js. /ice-config needs a login so it cannot be
+          # curled from here, and "the config is right" has stood in for "the
+          # phones are handed it" once too often today.
+          $SSH "cd \$(systemctl show \"$SERVICE\" -p WorkingDirectory --value) 2>/dev/null || cd /root
+                pwd | sed 's|^|  running from: |'
+                if [ -f iceConfig.js ]; then echo '  iceConfig.js: present'
+                else echo '  iceConfig.js: MISSING — the deployed code cannot build the list'; fi
+                if grep -q 'iceConfig.iceServersFor' server.js 2>/dev/null; then
+                  echo '  /ice-config routes through iceConfig: yes'
+                else
+                  echo '  /ice-config routes through iceConfig: NO — deployed server.js is older'
+                  grep -n -A3 \"get('/ice-config'\" server.js 2>/dev/null | head -8 | sed 's/^/    /'
+                fi
+                # Whether the restart actually picked up this env, from the
+                # process rather than from the unit file.
+                pid=\$(systemctl show \"$SERVICE\" -p MainPID --value)
+                if [ -n \"\$pid\" ] && [ \"\$pid\" != 0 ]; then
+                  tr '\\0' '\n' < /proc/\$pid/environ 2>/dev/null \
+                    | grep -c '^TURN_URL=' | sed 's|^|  TURN_URL in the live process: |'
+                fi" || true
+
+          echo ""
           echo "# UNREACHABLE on all three means the phones have nowhere to relay."
           echo "# OK on any one means relay=0 in the [call] log is about the phone's"
           echo "# network or the ice configuration it was handed, not this server."
