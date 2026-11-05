@@ -6,6 +6,7 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const diskGuard = require('./diskGuard');
 const uploadDedup = require('./uploadDedup');
+const thumbnailer = require('./thumbnailer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -910,7 +911,21 @@ app.get('/thumb/:name', async (req, res) => {
   try {
     if (!fs.existsSync(out)) {
       const sharp = getSharp();
-      if (!sharp) return original();
+      if (!sharp) {
+        // ── No sharp: still answer now, and build it for next time ────────
+        //
+        // The redirect below is unchanged — the picture appears, and only
+        // the bandwidth is wasted. What is new is that the bandwidth is
+        // wasted ONCE: a worker makes the thumbnail behind this reply and
+        // the next view of this size finds it cached.
+        //
+        // Queued rather than awaited. The pure-JS path measured 3.6 seconds
+        // for a 4000x3000 photo on the machine that needs it, and three and
+        // a half seconds inside a request handler would stall every socket
+        // on the server. See thumbnailer.js.
+        thumbnailer.queue(src, out, width);
+        return original();
+      }
       fs.mkdirSync(THUMB_DIR, { recursive: true });
       await sharp(src)
         .rotate()                       // honour EXIF orientation
