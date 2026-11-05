@@ -207,6 +207,37 @@ jobs:
                   | grep -F '[call]' | grep -c -- "$k")
             echo "$k : $n"
           done
+          echo ""
+
+          # ── Did the callee's phone RING, and if not which rule refused ──────
+          #
+          # Reported as: I am calling this phone with a good connection and it
+          # does not ring on the receiver until I open the app.
+          #
+          # ringIncoming() used to have one caller in the whole app, the FCM
+          # background task, so a phone rang only if a Google push arrived —
+          # and nine of the fifteen users active this week have no push token
+          # at all. The offer was reaching the socket the whole time. Calls now
+          # ring from there, and each device says what it decided.
+          #
+          # reason=ok is a ring drawn from the app's own socket. Everything
+          # else names the rule: app-active means the call was already on
+          # screen, already-ringing means a re-delivered offer was not allowed
+          # to restart the tone, room-call and no-sender are offers that must
+          # not ring, ring-failed means the native ringer was unavailable.
+          #
+          # NO [ring] LINES AT ALL, with calls in the list above, means the
+          # callee's app is older than this and has only the push route.
+          echo "### whether the callee's phone rang, and why not"
+          journalctl -u "$SERVICE" --since "$SINCE" --no-pager 2>/dev/null \
+            | grep -F '[ring]' | grep -o 'reason=[a-z-]*' | sort | uniq -c | sort -rn
+          echo -n "[ring] lines at all: "
+          journalctl -u "$SERVICE" --since "$SINCE" --no-pager 2>/dev/null \
+            | grep -c -F '[ring]'
+          echo ""
+          echo "### the ring decisions, oldest first (user id dropped)"
+          journalctl -u "$SERVICE" --since "$SINCE" --no-pager 2>/dev/null \
+            | grep -F '[ring]' | sed 's/user=[0-9]*/user=-/' | tail -60
           EOF
           rc=$?
           echo "" >> report.txt

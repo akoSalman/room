@@ -73,7 +73,60 @@ jobs:
 
           # 3478 both ways, and 443 — the three the app hands a phone. A
           # non-OK transport exits 1, so the step must not die on the first.
+          echo "== from the public internet (this runner), by NAME =="
           python3 -I scripts/turn-probe.py "$DOMAIN" 3478 3478/tcp 443 || true
+
+          # ── Where the packets are lost ──────────────────────────────────────
+          #
+          # The runner reported all three transports unreachable while
+          # per-pid attribution showed coturn listening on the public address
+          # for both protocols. Those two facts cannot both be about coturn,
+          # so the next question is not "is it listening" but "where does the
+          # packet stop" — and the same probe, run in three places, says.
+          #
+          #   loopback      coturn itself answers, or it does not
+          #   own public IP the host's own stack and any local firewall
+          #   by name       DNS, and everything between here and there
+          #
+          # Working on loopback and failing by name from outside is a path
+          # problem, and no amount of coturn configuration will touch it.
+          echo ""
+          echo "== by IP from the public internet, to rule DNS in or out =="
+          # Resolved on the runner, compared on the runner, and NEITHER
+          # printed: both are masked secrets, and these reports get pasted
+          # into a repository that has been public. Only the verdict matters.
+          RESOLVED=$(getent hosts "$DOMAIN" | awk '{print $1; exit}')
+          [ -n "$RESOLVED" ] && echo "::add-mask::$RESOLVED"
+          if [ -z "$RESOLVED" ]; then
+            echo "  $DOMAIN does not resolve from here at all"
+          elif [ "$RESOLVED" = "$HOST" ]; then
+            echo "  the name resolves to the same host this deploys to"
+            python3 -I scripts/turn-probe.py "$RESOLVED" 3478 3478/tcp 443 || true
+          else
+            echo "  THE NAME DOES NOT RESOLVE TO THE DEPLOY HOST."
+            echo "  The app hands phones turn:$DOMAIN:3478, so their STUN and"
+            echo "  TURN go wherever this points — not to the coturn that is"
+            echo "  running. That alone is relay=0 on every phone."
+            echo "  -- probing the NAME's address --"
+            python3 -I scripts/turn-probe.py "$RESOLVED" 3478 3478/tcp 443 || true
+            echo "  -- probing the DEPLOY host directly --"
+            python3 -I scripts/turn-probe.py "$HOST" 3478 3478/tcp 443 || true
+          fi
+
+          echo ""
+          echo "== from the server itself: is coturn answering anyone? =="
+          scp -q -i ~/.ssh/k -o StrictHostKeyChecking=accept-new \
+            scripts/turn-probe.py "root@$HOST:/tmp/turn-probe.py" || true
+          $SSH "TURN_USERNAME='$TURN_USERNAME' TURN_PASSWORD='$TURN_PASSWORD' \
+                python3 -I /tmp/turn-probe.py 127.0.0.1 3478 3478/tcp 443; \
+                echo '-- and on its own public address --'; \
+                TURN_USERNAME='$TURN_USERNAME' TURN_PASSWORD='$TURN_PASSWORD' \
+                python3 -I /tmp/turn-probe.py \"\$(hostname -I | awk '{print \$1}')\" 3478 3478/tcp 443; \
+                echo '-- any firewall in the way --'; \
+                { nft list ruleset 2>/dev/null | head -30; iptables -S 2>/dev/null | head -30; \
+                  ufw status 2>/dev/null | head -20; } | grep -vE '^\s*$' | head -40; \
+                echo '(end of firewall rules)'; \
+                rm -f /tmp/turn-probe.py" || true
 
           echo ""
           echo "# UNREACHABLE on all three means the phones have nowhere to relay."
