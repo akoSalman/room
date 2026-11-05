@@ -1,6 +1,6 @@
 # Call report — bistbarg
 
-Generated 2026-11-05T12:58Z by .github/workflows/call-report.yml
+Generated 2026-11-05T14:33Z by .github/workflows/call-report.yml
 
 ```
 Warning: Permanently added '185.8.174.198' (ED25519) to the list of known hosts.
@@ -43,30 +43,27 @@ no-tcp-relay
 log-file=/var/log/turnserver/turn.log
 simple-log
 log files present: /var/log/turnserver/turn.log
-/var/log/turnserver/turn_2988051_2026-11-05.log
-/var/log/turnserver/turn_2987606_2026-11-05.log
--- turn.log: 1155 lines, last modified 12:58Z --
--- turn_2988051_2026-11-05.log: 4 lines, last modified 12:57Z --
--- turn_2987606_2026-11-05.log: 4 lines, last modified 12:56Z --
+/var/log/turnserver/turn_2998750_2026-11-05.log
+/var/log/turnserver/turn_2998652_2026-11-05.log
+-- turn.log: 756 lines, last modified 14:33Z --
+-- turn_2998750_2026-11-05.log: 4 lines, last modified 14:33Z --
+-- turn_2998652_2026-11-05.log: 4 lines, last modified 14:32Z --
 -- the journal --
-lines coturn logged at all: 149
+lines coturn logged at all: 361
 -- what happened, counted --
 -- the most recent few, addresses removed --
 
 ### every call, oldest first
-Nov 05 12:52:58 srv5524755161 node[2984851]: [call] user=- outcome=failed kind=dm-voice host=1 srflx=1 relay=0 ans=1 turn=1
-Nov 05 12:52:58 srv5524755161 node[2984851]: [call] user=- outcome=failed kind=dm-voice host=1 srflx=0 relay=0 ans=1 turn=1
 
 ### how they ended
-      2 outcome=failed
 
 ### what ICE managed, counted
 ans=0 : 0
-ans=1 : 2
+ans=1 : 0
 turn=0 : 0
-turn=1 : 2
-srflx=0 : 1
-relay=0 : 2
+turn=1 : 0
+srflx=0 : 0
+relay=0 : 0
 
 (ssh exit 0)
 ```
