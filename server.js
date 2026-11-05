@@ -14,6 +14,7 @@ const { recipientsFor, tokenIsDead, notificationTag, collapseKeyFor, presenceLin
 const { createHolder } = require('./pushHold');
 const najva = require('./najva');
 const mviews = require('./messageViews');
+const iceConfig = require('./iceConfig');
 const { seenByAllUpTo } = require('./readReceipts');
 const roomVoice = require('./roomVoice');
 const mutes = require('./mutes');
@@ -1885,17 +1886,19 @@ app.get('/unread-counts', authMiddleware, (req, res) => {
 // STUN is always available; add a TURN server via env for reliability on
 // restrictive networks: TURN_URL, TURN_USERNAME, TURN_PASSWORD.
 app.get('/ice-config', authMiddleware, (req, res) => {
-  const ice = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
-  if (process.env.TURN_URL && process.env.TURN_USERNAME && process.env.TURN_PASSWORD) {
-    ice.push({
-      // UDP first; TCP fallback rescues networks that block/throttle UDP
-      // (a common cause of 'connection failed' on video calls).
-      urls: [process.env.TURN_URL, process.env.TURN_URL + '?transport=tcp'],
-      username: process.env.TURN_USERNAME,
-      credential: process.env.TURN_PASSWORD,
-    });
-  }
-  res.json({ iceServers: ice });
+  // OUR OWN STUN FIRST. Every failed call reported srflx=0 from the calling
+  // phone — Google's STUN told it nothing, so its whole offer was one
+  // candidate, its own local address. Google is blocked or throttled from
+  // these networks, which this app already knows: the map tiles are proxied
+  // through this same server for that exact reason. coturn answers STUN on
+  // the same port it answers TURN, so the phone is told to ask the host it is
+  // already talking to. Google stays as a fallback, after ours. See
+  // iceConfig.js.
+  res.json({
+    iceServers: iceConfig.iceServersFor(process.env, [
+      'stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302',
+    ]),
+  });
 });
 
 // ── End-to-end encryption key storage ────────────────────────────────────────

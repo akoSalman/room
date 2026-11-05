@@ -20,6 +20,7 @@ on:
       - 'notify.js'
       - 'najva.js'
       - 'messageViews.js'
+      - 'iceConfig.js'
       - 'readReceipts.js'
       - 'roomVoice.js'
       - 'mutes.js'
