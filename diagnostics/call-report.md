@@ -1,6 +1,6 @@
 # Call report — bistbarg
 
-Generated 2026-11-05T12:53Z by .github/workflows/call-report.yml
+Generated 2026-11-05T12:54Z by .github/workflows/call-report.yml
 
 ```
 Warning: Permanently added '185.8.174.198' (ED25519) to the list of known hosts.
@@ -10,17 +10,22 @@ ICE config offers a relay: yes (if TURN_URL is set in the environment)
 TURN_* actually in the service environment: yes
 
 ### coturn
+activating
+coturn not a known unit
+-- listeners by address (udp/tcp), both instances --
+  :3478
+    udp       6 0.0.0.0:* 
+    tcp       6 127.0.0.1 
+  :443
+    udp      12 0.0.0.0:*       6 [::]:* 
+    tcp       1 * 
+-- the 443 instance --
 active
--- UDP listeners --
-UNCONN 0      0                              127.0.0.1:3478        0.0.0.0:*     users:(("turnserver",pid=2986593,fd=55))                                       
-UNCONN 0      0                              127.0.0.1:3478        0.0.0.0:*     users:(("turnserver",pid=2986593,fd=52))                                       
-UNCONN 0      0                              127.0.0.1:3478        0.0.0.0:*     users:(("turnserver",pid=2986593,fd=54))                                       
-UNCONN 0      0                              127.0.0.1:3478        0.0.0.0:*     users:(("turnserver",pid=2986593,fd=53))                                       
--- TCP listeners --
-LISTEN 0      1024                           127.0.0.1:3478        0.0.0.0:*     users:(("turnserver",pid=2986593,fd=49))                                       
-LISTEN 0      1024                           127.0.0.1:3478        0.0.0.0:*     users:(("turnserver",pid=2986593,fd=45))                                       
-LISTEN 0      1024                           127.0.0.1:3478        0.0.0.0:*     users:(("turnserver",pid=2986593,fd=38))                                       
-LISTEN 0      1024                           127.0.0.1:3478        0.0.0.0:*     users:(("turnserver",pid=2986593,fd=37))                                       
+-- its own log --
+0: Listener address to use: -
+0: Listener address to use: -
+0: Listener address to use: ::1
+0: IO method (main listener thread): epoll (with changelist)
 -- how coturn is configured (no credentials printed) --
 listening-port=3478
 lt-cred-mech
@@ -39,13 +44,13 @@ no-tcp-relay
 log-file=/var/log/turnserver/turn.log
 simple-log
 log files present: /var/log/turnserver/turn.log
-/var/log/turnserver/turn_2986592_2026-11-05.log
-/var/log/turnserver/turn_2986495_2026-11-05.log
--- turn.log: 336 lines, last modified 12:53Z --
--- turn_2986592_2026-11-05.log: 4 lines, last modified 12:52Z --
--- turn_2986495_2026-11-05.log: 4 lines, last modified 12:51Z --
+/var/log/turnserver/turn_2987066_2026-11-05.log
+/var/log/turnserver/turn_2986879_2026-11-05.log
+-- turn.log: 42 lines, last modified 12:54Z --
+-- turn_2987066_2026-11-05.log: 4 lines, last modified 12:54Z --
+-- turn_2986879_2026-11-05.log: 4 lines, last modified 12:53Z --
 -- the journal --
-lines coturn logged at all: 127
+lines coturn logged at all: 138
 -- what happened, counted --
 -- the most recent few, addresses removed --
 
