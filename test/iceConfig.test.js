@@ -132,6 +132,85 @@ test('and with nothing configured anywhere, an empty list — not a broken one',
   }
 });
 
+// ── The second port ─────────────────────────────────────────────────────────
+//
+// Measured: nothing from the phones that cannot call reaches 3478. Our STUN
+// on it returns no reflexive candidate, TURN on it returns no relay candidate
+// on either end of any call, and coturn's log is not written to while those
+// calls happen — not refused, never arrived. A CI runner allocates through
+// the same port perfectly well, and the app is talking to that host on 443
+// throughout, which is how the calls are signalled at all. So there is a
+// second coturn on UDP 443, and these are the rules for telling a phone.
+
+const withAlt = { ...full, TURN_ALT_PORT: '443' };
+
+test('THE SECOND PORT: it is offered, for STUN and for the relay', () => {
+  const urls = urlsOf(I.iceServersFor(withAlt, FALLBACK));
+  assert.ok(urls.includes('stun:chat.example.org:443'), 'the reachable port is not offered for STUN');
+  assert.ok(urls.includes('turn:chat.example.org:443'), 'the reachable port is not offered as a relay');
+});
+
+test('…and it comes FIRST, being the one they can reach', () => {
+  const urls = urlsOf(I.iceServersFor(withAlt, FALLBACK));
+  assert.ok(urls.indexOf('stun:chat.example.org:443') < urls.indexOf('stun:chat.example.org:3478'),
+    'the port that works is offered after the one that does not');
+});
+
+test('THE APACHE TRAP: no TCP transport is advertised for it', () => {
+  // TCP 443 on that host is Apache. A ?transport=tcp url for this port hands
+  // a client a TURN address pointing at a web server, where it waits and
+  // fails for a reason nothing can explain. The MAIN port keeps its TCP
+  // fallback; this one must never have one.
+  const list = I.iceServersFor(withAlt, FALLBACK);
+  const onAlt = list.filter(e => e.urls.some(u => u.includes(':443')));
+  for (const e of onAlt) {
+    for (const u of e.urls) {
+      assert.ok(!/transport=tcp/i.test(u), `${u} advertises TCP on Apache's port`);
+    }
+  }
+  // …while the main relay still has one.
+  const main = list.find(e => e.urls.some(u => u === full.TURN_URL));
+  assert.ok(main.urls.some(u => /transport=tcp/.test(u)),
+    'the main relay lost its TCP fallback');
+});
+
+test('…and it carries the credentials, or it is a 401 and no relay', () => {
+  const relay443 = I.iceServersFor(withAlt, FALLBACK)
+    .find(e => e.urls.includes('turn:chat.example.org:443'));
+  assert.strictEqual(relay443.username, 'u');
+  assert.strictEqual(relay443.credential, 'p');
+});
+
+test('an alt port is derived from the host, not pasted onto the url', () => {
+  assert.deepStrictEqual(I.altFor('turn:h.example.org:3478', 443),
+    { turn: 'turn:h.example.org:443', stun: 'stun:h.example.org:443' });
+  // A url that already carries a transport must not grow a second one.
+  assert.deepStrictEqual(I.altFor('turn:h.example.org:3478?transport=tcp', 443),
+    { turn: 'turn:h.example.org:443', stun: 'stun:h.example.org:443' });
+  // And a url with no port at all still works.
+  assert.deepStrictEqual(I.altFor('turn:h.example.org', 443),
+    { turn: 'turn:h.example.org:443', stun: 'stun:h.example.org:443' });
+});
+
+test('a nonsense alt port is simply not offered', () => {
+  for (const bad of [0, -1, 70000, 1.5, NaN, '', 'https', null, undefined, {}]) {
+    assert.strictEqual(I.altFor('turn:h:3478', bad), null, `port ${String(bad)} was accepted`);
+    const urls = urlsOf(I.iceServersFor({ ...full, TURN_ALT_PORT: bad }, FALLBACK));
+    assert.ok(!urls.some(u => /:(0|-1|70000|NaN|undefined)\b/.test(u)),
+      `a broken url was offered for port ${String(bad)}`);
+  }
+  for (const bad of ['stun:h:3478', 'h:3478', '', null, 42]) {
+    assert.strictEqual(I.altFor(bad, 443), null, `${JSON.stringify(bad)} produced an alt url`);
+  }
+});
+
+test('with no alt port configured, nothing changes at all', () => {
+  assert.deepStrictEqual(I.iceServersFor(full, FALLBACK),
+    I.iceServersFor({ ...full, TURN_ALT_PORT: '' }, FALLBACK));
+  const urls = urlsOf(I.iceServersFor(full, FALLBACK));
+  assert.ok(!urls.some(u => /:443/.test(u)), 'a second port appeared without being configured');
+});
+
 // ── The wiring ──────────────────────────────────────────────────────────────
 
 const srv = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
