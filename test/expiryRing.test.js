@@ -233,11 +233,16 @@ const web = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'app.js')
 test('THE BUG: the server no longer waits for a thirty-second sweep', () => {
   assert.ok(server.includes('function scheduleNextExpiry()'),
     'expiry is still only handled by the periodic sweep, so a 30s timer can take 60s');
-  // The earliest deadline across BOTH clocks — a union now, since a one-time
-  // message's deadline is computed rather than stored.
-  assert.ok(/SELECT MIN\(at\) AS at FROM \(/.test(server), 'the next deadline is never looked up');
-  assert.ok(/SELECT expires_at AS at FROM messages WHERE expires_at IS NOT NULL/.test(server),
-    'the disappearing clock dropped out of the scheduler');
+  // The earliest deadline across BOTH clocks. Asserted by what it consults,
+  // not by the shape of a query: a one-time message's deadline cannot be
+  // expressed in SQL any more, because it depends on room membership — see
+  // the test below.
+  assert.ok(/SELECT MIN\(expires_at\) AS at FROM messages/.test(server),
+    'the next disappearing deadline is never looked up');
+  assert.ok(/mviews\.finishesAt\(/.test(server),
+    'the next one-time deadline is never looked up');
+  // (The disappearing clock is the MIN(expires_at) asserted just above. It
+  // used to be one arm of a UNION, and this asserted that arm's exact text.)
   // Inside the handler, not merely somewhere after it: the module's export
   // list mentions the function too, and a slice running to the end of the file
   // matched that instead — passing while the re-arm was gone.
@@ -283,8 +288,24 @@ test('the server sweeps and schedules BOTH clocks', () => {
     'the sweep ignores one-time messages, so a restart strands them');
   const sched = server.slice(server.indexOf('function scheduleNextExpiry()'),
     server.indexOf('// At startup, and after every sweep'));
-  assert.ok(sched.includes('viewed_at + one_time_seconds * 1000'),
+  // ── The moment it wakes at has been wrong twice ─────────────────────────
+  //
+  // It was `viewed_at + one_time_seconds * 1000`, which is the FIRST member's
+  // open. In a room the message may not be destroyed then, so the timer woke
+  // to a sweep that declined to act, rescheduled on the same past moment, and
+  // would have spun a CPU flat.
+  //
+  // Then it was removed from here altogether, which stopped one-time messages
+  // being destroyed on the second they were promised — the whole point of
+  // this test — and is what it caught.
+  //
+  // It is finishesAt now: null until everybody owed a sight of it has opened
+  // it, and the end of the last of their countdowns once they have. So the
+  // assertion is that the timer consults THAT, and no longer the first open.
+  assert.ok(/mviews\.finishesAt\(/.test(sched),
     'the exact timer never wakes for a one-time deadline');
+  assert.ok(!/viewed_at \+ one_time_seconds \* 1000/.test(sched),
+    'the timer is back to waking at the first member\'s open, which it cannot act on');
   assert.ok(/scheduleNextExpiry\(\);/.test(server.slice(server.indexOf("socket.on('view_one_time'"),
     server.indexOf("socket.on('toggle_reaction'"))),
     'opening a one-time message does not re-arm the scheduler');

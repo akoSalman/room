@@ -1087,7 +1087,20 @@ class CallManager {
           this.flushIce(offer.fromUserId);
           const ans = await pc.createAnswer();
           await pc.setLocalDescription(ans);
-          this.sock.emit('call_answer', { toUserId: offer.fromUserId, sdp: (pc as any).localDescription });
+          // ── Signalling is done for THIS side too ──────────────────────────
+      //
+      // `answered` was set only in the call_answer handler, which only the
+      // CALLER ever receives — the callee answers, it is not answered to. So
+      // every failed call produced one report saying ans=0 and the reason
+      // "The other phone never answered the call", shown to the person who
+      // had just picked it up. Half of every diagnosis was a plain untruth,
+      // and the counts in the server log read as three unanswered calls that
+      // had all been answered.
+      //
+      // What the flag is for is whether both descriptions are in place, which
+      // is exactly what sending this answer completes.
+      this.ice.answered = true;
+      this.sock.emit('call_answer', { toUserId: offer.fromUserId, sdp: (pc as any).localDescription });
         } catch {
           this.dropPeer(offer.fromUserId);
         }
@@ -1238,6 +1251,19 @@ class CallManager {
       this.flushIce(offer.fromUserId);
       const ans = await pc.createAnswer();
       await pc.setLocalDescription(ans);
+      // ── Signalling is done for THIS side too ──────────────────────────
+      //
+      // `answered` was set only in the call_answer handler, which only the
+      // CALLER ever receives — the callee answers, it is not answered to. So
+      // every failed call produced one report saying ans=0 and the reason
+      // "The other phone never answered the call", shown to the person who
+      // had just picked it up. Half of every diagnosis was a plain untruth,
+      // and the counts in the server log read as three unanswered calls that
+      // had all been answered.
+      //
+      // What the flag is for is whether both descriptions are in place, which
+      // is exactly what sending this answer completes.
+      this.ice.answered = true;
       this.sock.emit('call_answer', { toUserId: offer.fromUserId, sdp: (pc as any).localDescription });
     } catch {
       this.end();

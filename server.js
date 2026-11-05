@@ -1654,22 +1654,43 @@ function scheduleNextExpiry() {
   try {
     // ── Only deadlines that can actually come due ─────────────────────────
     //
-    // One-time messages are deliberately NOT here any more.
+    // A one-time message's deadline is NOT messages.viewed_at + seconds. That
+    // is the first member's open, and in a room the message may not be
+    // destroyed then — the sweep requires every member's countdown to have run
+    // out. Waking to a moment the sweep declines to act on means: delay 0,
+    // nothing destroyed, reschedule on the same past moment, delay 0 again.
+    // A tight loop, for as long as one unopened one-time message exists.
     //
-    // viewed_at is the first member's open, and that moment stopped being a
-    // deadline when the sweep started requiring every member's countdown to
-    // have run out. Left in, it would have been a deadline in the past that
-    // the sweep then declines to act on — delay 0, nothing destroyed,
-    // reschedule on the same past moment, delay 0 again. A tight loop pinning
-    // a CPU for as long as one unopened one-time message exists in a room.
+    // Dropping them from here entirely was the other wrong answer: these
+    // messages are meant to vanish ON the second they were promised, not up
+    // to thirty seconds later when the sweep next runs. That was reported,
+    // fixed, and is tested.
     //
-    // They lose nothing by going: each member's open creates its own exact
-    // timer (see view_one_time, which calls the same rule when it fires), and
-    // the thirty-second sweep covers the one case those timers cannot — a
-    // countdown that elapsed while the process was not running.
-    next = db.prepare(`
+    // So the deadline asked for is the one that can actually be met —
+    // mviews.finishesAt, which is null until everybody who is owed a sight of
+    // it has opened it, and is the end of the LAST of their countdowns once
+    // they have. Nothing to wake to while it cannot be met; an exact wake as
+    // soon as it can.
+    const soonest = db.prepare(`
       SELECT MIN(expires_at) AS at FROM messages WHERE expires_at IS NOT NULL
     `).get();
+    let at = soonest && soonest.at != null ? Number(soonest.at) : null;
+    for (const m of db.prepare(`
+      SELECT id, room_id, user_id, one_time_seconds FROM messages
+       WHERE one_time_seconds IS NOT NULL AND viewed_at IS NOT NULL
+    `).all()) {
+      const room = db.prepare('SELECT * FROM rooms WHERE id = ?').get(m.room_id);
+      if (!room) continue;
+      const when = mviews.finishesAt({
+        memberIds: getRoomMemberIds(room),
+        senderId: m.user_id,
+        oneTimeSeconds: m.one_time_seconds,
+        views: db.prepare('SELECT user_id, viewed_at FROM message_views WHERE message_id = ?').all(m.id),
+      });
+      if (when == null) continue;              // nobody can meet it yet
+      if (at == null || when < at) at = when;
+    }
+    next = { at };
   } catch { return; }
   if (!next || next.at == null) return;   // nothing is counting down
   // Capped, so a week-long timer does not sit in a single setTimeout for a

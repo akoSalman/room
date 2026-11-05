@@ -61,28 +61,61 @@ function audienceFor(o) {
  * it is finished. Returning false there would leave it forever.
  */
 function allViewsExpired(o) {
-  // FAILS CLOSED. Called with nothing, this returned true — because an empty
-  // audience means "nobody left who could see it" — and true here means
-  // destroy the message. An unknown input must never be an instruction to
-  // delete, so the caller has to have actually supplied a member list.
-  if (!o || typeof o !== 'object' || !Array.isArray(o.memberIds)) return false;
-  const audience = audienceFor(o);
+  const at = finishesAt(o);
+  if (at === null) return false;
+  const now = Number(o && o.now);
+  if (!Number.isFinite(now)) return false;     // fails closed, as below
+  return now >= at;
+}
+
+/**
+ * WHEN this one-time message becomes destroyable — or null if that moment is
+ * not knowable yet.
+ *
+ * Null means somebody who is owed a sight of it has not opened it, so there is
+ * no deadline: it could be a minute away or never. A number means every one of
+ * them has opened it and this is the instant the last countdown ends.
+ *
+ * ── WHY A MOMENT AND NOT JUST A YES/NO ─────────────────────────────────────
+ *
+ * The server wants both, and asking the yes/no question alone cost it one or
+ * the other. It keeps an exact timer so a message vanishes ON the second it
+ * was promised rather than up to thirty seconds later — which was reported and
+ * fixed and is tested. That timer needs a MOMENT to wake at.
+ *
+ * It used to take that moment from messages.viewed_at, the FIRST member's
+ * open, which is not when the message may be destroyed in a room. Dropping
+ * one-time messages from the timer altogether stopped them being destroyed on
+ * time; keeping the old moment made the timer wake to a sweep that now
+ * declines to act, reschedule on the same past moment, and spin.
+ *
+ * A deadline that exists only once it can actually be met solves both: an
+ * exact wake when there is one, and nothing to wake to when there is not.
+ *
+ * FAILS CLOSED, like the question above it: called with nothing this returns
+ * null, and null is never an instruction to delete. An empty audience — a note
+ * to self, or everyone else has left — is finished the moment it is sent,
+ * since there is nobody who could still see it; that is 0, a deadline already
+ * past, not null.
+ */
+function finishesAt(o) {
+  if (!o || typeof o !== 'object' || !Array.isArray(o.memberIds)) return null;
   const seconds = Number(o && o.oneTimeSeconds);
-  if (!Number.isFinite(seconds) || seconds < 0) return false;
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  const audience = audienceFor(o);
   const views = new Map();
   for (const v of (Array.isArray(o && o.views) ? o.views : [])) {
     const id = Number(v && v.user_id);
     const at = Number(v && v.viewed_at);
     if (Number.isFinite(id) && Number.isFinite(at)) views.set(id, at);
   }
-  const now = Number(o && o.now);
-  if (!Number.isFinite(now)) return false;
+  let last = 0;
   for (const id of audience) {
     const at = views.get(id);
-    if (at == null) return false;              // never opened it
-    if (now < at + seconds * 1000) return false; // still counting down
+    if (at == null) return null;               // never opened it
+    if (at + seconds * 1000 > last) last = at + seconds * 1000;
   }
-  return true;
+  return last;
 }
 
 /**
@@ -189,6 +222,6 @@ function marksToPrune(o) {
 }
 
 module.exports = {
-  audienceFor, allViewsExpired, visibleTo, seenBy, notSeenBy,
+  audienceFor, allViewsExpired, finishesAt, visibleTo, seenBy, notSeenBy,
   marksToPrune, MARKS_KEPT,
 };

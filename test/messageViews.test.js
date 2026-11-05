@@ -327,8 +327,18 @@ test('the expiry timer cannot spin on a deadline it will not act on', () => {
   // sweep, so they do not belong here at all.
   const fn = /function scheduleNextExpiry\([\s\S]*?\n\}/.exec(srv);
   assert.ok(fn, 'scheduleNextExpiry is gone');
-  assert.ok(!/one_time_seconds/.test(fn[0]),
-    'one-time deadlines are back in the expiry timer, which can now spin');
+  // Written when the fix was to drop one-time messages from the timer
+  // altogether, and asserted that their NAME did not appear. That was the
+  // wrong fix — it stopped them being destroyed on the second they were
+  // promised, which expiryRing.test.js caught — and the assertion was about
+  // the wrong thing either way. What must not appear is the wrong MOMENT:
+  // viewed_at is the first member's open, which in a room is not a moment the
+  // sweep can act on. Asking finishesAt gives a deadline only once there is
+  // one, so there is nothing to wake to and spin on.
+  assert.ok(!/viewed_at \+ one_time_seconds \* 1000/.test(fn[0]),
+    'the timer wakes at the first member\'s open again, which it cannot act on');
+  assert.ok(/mviews\.finishesAt\(/.test(fn[0]),
+    'the timer does not consult the rule that says when a one-time message is due');
   assert.ok(/MIN\(expires_at\)/.test(fn[0]), 'the timer no longer schedules anything');
 });
 

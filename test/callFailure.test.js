@@ -247,6 +247,33 @@ test('the facts are gathered by type, and the raw candidate is not kept', () => 
   assert.ok(!/this\.ice\.\w+ = e\.candidate/.test(m), 'a candidate is stored in the tally');
 });
 
+test('THE BUG: the side that ANSWERS is not reported as unanswered', () => {
+  // `answered` was set only in the call_answer handler, which only the CALLER
+  // receives — a callee answers, it is not answered to. So every failed call
+  // produced one report saying ans=0, and showed the person who had just
+  // picked up the words "The other phone never answered the call". Three real
+  // failed calls logged six lines, three of them claiming nobody answered.
+  const m = code(mgrSrc);
+  const answers = (m.match(/this\.ice\.answered = true;/g) || []).length;
+  assert.ok(answers >= 2,
+    'only one side records that signalling finished, so the other reports ans=0 for ever');
+  // After an answer actually EXISTS, not merely after an offer arrived: an
+  // offer that fails to produce one has completed nothing.
+  //
+  // Ordering, not adjacency. The first version of this required the flag to
+  // sit immediately before the emit, which is not a property worth having —
+  // just after it is equally correct — and it passed a mutation anyway,
+  // because the OTHER of the two callee paths still matched the pattern.
+  for (const m2 of m.matchAll(/await pc\.setRemoteDescription\(offer\.sdp\);[\s\S]*?call_answer'[^;]*;/g)) {
+    const block = m2[0];
+    const flag = block.indexOf('this.ice.answered = true');
+    const local = block.indexOf('setLocalDescription');
+    assert.ok(flag >= 0, 'a callee path does not record that it answered');
+    assert.ok(local >= 0 && flag > local,
+      'a callee marks itself answered before an answer has been produced');
+  }
+});
+
 test('a failure computes the reason and reports it', () => {
   const m = code(mgrSrc);
   assert.ok(/this\.failureReason = callFailureReason\(this\.ice\)/.test(m),
