@@ -1,6 +1,6 @@
 # Call report — bistbarg
 
-Generated 2026-11-05T12:54Z by .github/workflows/call-report.yml
+Generated 2026-11-05T12:58Z by .github/workflows/call-report.yml
 
 ```
 Warning: Permanently added '185.8.174.198' (ED25519) to the list of known hosts.
@@ -10,8 +10,7 @@ ICE config offers a relay: yes (if TURN_URL is set in the environment)
 TURN_* actually in the service environment: yes
 
 ### coturn
-activating
-coturn not a known unit
+active
 -- listeners by address (udp/tcp), both instances --
   :3478
     udp       6 0.0.0.0:* 
@@ -44,13 +43,13 @@ no-tcp-relay
 log-file=/var/log/turnserver/turn.log
 simple-log
 log files present: /var/log/turnserver/turn.log
-/var/log/turnserver/turn_2987066_2026-11-05.log
-/var/log/turnserver/turn_2986879_2026-11-05.log
--- turn.log: 42 lines, last modified 12:54Z --
--- turn_2987066_2026-11-05.log: 4 lines, last modified 12:54Z --
--- turn_2986879_2026-11-05.log: 4 lines, last modified 12:53Z --
+/var/log/turnserver/turn_2988051_2026-11-05.log
+/var/log/turnserver/turn_2987606_2026-11-05.log
+-- turn.log: 1155 lines, last modified 12:58Z --
+-- turn_2988051_2026-11-05.log: 4 lines, last modified 12:57Z --
+-- turn_2987606_2026-11-05.log: 4 lines, last modified 12:56Z --
 -- the journal --
-lines coturn logged at all: 138
+lines coturn logged at all: 149
 -- what happened, counted --
 -- the most recent few, addresses removed --
 
