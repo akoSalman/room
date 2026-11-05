@@ -99,18 +99,40 @@ jobs:
             echo "already pointed at the deploy address — nothing to change."
           else
             NEW_URL="$SCHEME:$HOST:$PORT"
-            # A LATER-SORTING drop-in, so the existing file keeps the
-            # credentials and is not rewritten by a sed I would have to get
-            # right. systemd applies drop-ins in lexical order and a later
-            # Environment= for the same name wins.
+            # ── The drop-in directory comes from systemd, not from me ──────
+            #
+            # The first version built it as "$SERVICE".service.d. The service
+            # name in the secret already ends in .service, so that produced
+            # …service.service.d — a directory systemd never reads. The
+            # workflow wrote the file, restarted cleanly, reported success,
+            # and changed nothing. (An older workflow in this repo tries both
+            # "$SERVICE".service.d and "$SERVICE".d, which was the hint that
+            # the form was uncertain and should have been asked for.)
+            #
+            # `systemctl show -p Id` gives the canonical unit name, so the
+            # directory is derived rather than assumed — and DropInPaths is
+            # checked afterwards, so a file systemd is not reading can no
+            # longer pass for a change that was applied.
+            #
+            # Still a LATER-SORTING drop-in: the existing file keeps the
+            # credentials untouched, and systemd applies drop-ins in lexical
+            # order with a later Environment= for the same name winning.
             $SSH "set -e
-              d=/etc/systemd/system/\"$SERVICE\".service.d
+              unit=\$(systemctl show \"$SERVICE\" -p Id --value)
+              [ -n \"\$unit\" ] || { echo 'cannot resolve the unit name'; exit 1; }
+              echo \"unit: \$unit\"
+              d=/etc/systemd/system/\$unit.d
               mkdir -p \"\$d\"
               printf '[Service]\nEnvironment=TURN_URL=%s\n' '$NEW_URL' > \"\$d/zz-turn-host.conf\"
+              # Clean up the directory the first attempt invented, so a stale
+              # file cannot confuse the next person reading this host.
+              rm -rf /etc/systemd/system/\"$SERVICE\".service.d 2>/dev/null || true
               systemctl daemon-reload
               systemctl restart \"$SERVICE\"
               sleep 3
-              systemctl is-active \"$SERVICE\""
+              systemctl is-active \"$SERVICE\"
+              echo 'drop-ins systemd is actually reading:'
+              systemctl show \"$SERVICE\" -p DropInPaths --value | tr ' ' '\n' | sed 's|.*/||' | sed 's/^/  /'"
           fi
 
           echo ""
@@ -119,7 +141,19 @@ jobs:
           NOW_URL=$(printf '%s' "$NOW" | sed -n 's/^TURN_URL=//p' | head -1 | tr -d '\r')
           NOW_HOST=${NOW_URL#*:}; NOW_HOST=${NOW_HOST%%:*}
           echo "  TURN host is now: $NOW_HOST"
-          if [ "$NOW_HOST" = "$HOST" ]; then
+          # ── The check that can fail ────────────────────────────────────────
+          #
+          # The first run of this workflow reported success while leaving
+          # TURN_URL exactly as it was: it wrote a file, restarted the
+          # service, printed "active", and verified nothing. A green workflow
+          # that changed nothing is worse than a red one, because it is
+          # believed.
+          if [ "$NOW_HOST" != "$HOST" ]; then
+            echo "  THE CHANGE DID NOT TAKE. TURN_URL still points at a host"
+            echo "  that does not answer STUN or TURN, so calls will still"
+            echo "  gather relay=0. Not reporting this as done."
+            FAILED=1
+          else
             echo "  (the deploy address — masked above)"
           fi
 
@@ -135,3 +169,7 @@ jobs:
           echo "# record such as turn.${DOMAIN#chat.} pointing at this server,"
           echo "# then TURN_URL=turn:that-name:$PORT. It survives the address"
           echo "# changing; pinning the address does not."
+
+          # Non-zero when nothing changed, so this cannot sit green in the
+          # run list while the fault it names is still live.
+          exit ${FAILED:-0}
