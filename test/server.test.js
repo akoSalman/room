@@ -4332,4 +4332,121 @@ test('A JUNK "I drew it" DOES NOT UPSET THE SERVER', async () => {
   assert.ok(Array.isArray(rooms), 'the server stopped answering after a junk acknowledgement');
 });
 
+// ── A RESEND IS NOT A NEW MESSAGE ──────────────────────────────────────────
+
+test('RETRYING A SEND DOES NOT POST IT TWICE', async () => {
+  // Reported: a message that fails to send, retried, sometimes arrives
+  // several times.
+  //
+  // The client acks with an 8-second deadline. On these networks a send
+  // routinely takes longer, so the server receives it, inserts it, and the
+  // ack misses the deadline — the sender is shown a failure for a message
+  // that was delivered. They retry, and because every retry carries a
+  // brand-new clientId BY DESIGN (outbox.ts: "Each retry dispatches a
+  // brand-new clientId"), nothing on the server could tell the resend from a
+  // new message.
+  const me = await signUp('dedup1');
+  const sock = await connect(me.token);
+  const room = await api('/rooms', 'POST', { name: 'dedup-room-1' }, me.token);
+
+  const origin = 'origin-aaa-111';
+  const first = await emit(sock, 'send_message', {
+    roomId: room.id, type: 'text', content: 'only once', clientId: 'attempt-1', originId: origin,
+  });
+  assert.ok(first && first.ok !== false, 'the first send was refused');
+
+  // The retry: same origin, different clientId, exactly as the app does it.
+  const second = await emit(sock, 'send_message', {
+    roomId: room.id, type: 'text', content: 'only once', clientId: 'attempt-2', originId: origin,
+  });
+  assert.strictEqual(second.duplicate, true, 'the resend was not recognised');
+
+  const msgs = await api(`/messages/${room.id}`, 'GET', null, me.token);
+  const list = Array.isArray(msgs) ? msgs : (msgs.page || msgs.messages || []);
+  const mine = list.filter(m => m.content === 'only once');
+  assert.strictEqual(mine.length, 1,
+    `the retry posted a second copy — ${mine.length} messages in the room`);
+});
+
+test('the resend is answered as a success, with the ORIGINAL message', async () => {
+  // The sender must be able to settle their optimistic bubble. Answering a
+  // resend with an error would leave it stuck as failed for a message that
+  // is in the room — the exact state being complained about, inverted.
+  const me = await signUp('dedup2');
+  const sock = await connect(me.token);
+  const room = await api('/rooms', 'POST', { name: 'dedup-room-2' }, me.token);
+  const origin = 'origin-bbb-222';
+  await emit(sock, 'send_message', {
+    roomId: room.id, type: 'text', content: 'settle me', clientId: 'a1', originId: origin,
+  });
+  // The echo is what settles the bubble — the media sends have no ack
+  // handler at all and reconcile purely from it, so a resend that only acked
+  // would leave an image stuck as "failed" for a message that is in the room.
+  const echoed = waitFor(sock, 'message_received',
+    m => m.content === 'settle me' && String(m.client_id) === 'a2');
+  const again = await emit(sock, 'send_message', {
+    roomId: room.id, type: 'text', content: 'settle me', clientId: 'a2', originId: origin,
+  });
+  assert.ok(again.ok, 'a resend was reported as a failure');
+  assert.strictEqual(again.duplicate, true);
+  const m = await echoed;
+  // Keyed on THIS attempt's clientId, not the one that first delivered it,
+  // or the bubble the user is looking at is never matched.
+  assert.strictEqual(String(m.client_id), 'a2',
+    'the echo carries the first attempt\'s clientId, which no bubble matches');
+});
+
+test('one person\'s origin id can never return another person\'s message', async () => {
+  // Scoped to the sender. Unscoped, a client could fish for other people's
+  // messages by guessing ids — and ids a client chooses are not secret.
+  const a = await signUp('dedup3a');
+  const b = await signUp('dedup3b');
+  const sockA = await connect(a.token);
+  const sockB = await connect(b.token);
+  const room = await api('/rooms', 'POST', { name: 'dedup-room-3' }, a.token);
+  await emit(sockB, 'accept_invite', { roomId: room.id });
+  const origin = 'origin-ccc-333';
+  await emit(sockA, 'send_message', {
+    roomId: room.id, type: 'text', content: 'mine', clientId: 'x1', originId: origin,
+  });
+  const theirs = await emit(sockB, 'send_message', {
+    roomId: room.id, type: 'text', content: 'theirs', clientId: 'y1', originId: origin,
+  });
+  assert.notStrictEqual(theirs.duplicate, true,
+    'the same origin id from a DIFFERENT user was treated as a resend');
+  const msgs = await api(`/messages/${room.id}`, 'GET', null, a.token);
+  const list = Array.isArray(msgs) ? msgs : (msgs.page || msgs.messages || []);
+  assert.ok(list.some(m => m.content === 'theirs'),
+    "the second person's message was swallowed as somebody else's duplicate");
+});
+
+test('a send with no origin id still works, exactly as before', async () => {
+  // Older clients send none, and must keep the old behaviour rather than all
+  // colliding on NULL — which would make every send from every old client
+  // look like a resend of the first.
+  const me = await signUp('dedup4');
+  const sock = await connect(me.token);
+  const room = await api('/rooms', 'POST', { name: 'dedup-room-4' }, me.token);
+  await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: 'one' });
+  await emit(sock, 'send_message', { roomId: room.id, type: 'text', content: 'two' });
+  const msgs = await api(`/messages/${room.id}`, 'GET', null, me.token);
+  const list = Array.isArray(msgs) ? msgs : (msgs.page || msgs.messages || []);
+  assert.ok(list.some(m => m.content === 'one') && list.some(m => m.content === 'two'),
+    'two distinct messages from a client with no origin id were collapsed into one');
+});
+
+test('a junk origin id cannot upset the handler', async () => {
+  const me = await signUp('dedup5');
+  const sock = await connect(me.token);
+  const room = await api('/rooms', 'POST', { name: 'dedup-room-5' }, me.token);
+  for (const originId of [null, 42, {}, [], '   ', 'x'.repeat(5000), true]) {
+    const r = await emit(sock, 'send_message', {
+      roomId: room.id, type: 'text', content: 'junk ' + JSON.stringify(originId), originId,
+    });
+    assert.ok(r && !r.error, `origin id ${JSON.stringify(originId)} broke the send`);
+  }
+  const rooms = await api('/rooms', 'GET', null, me.token);
+  assert.ok(Array.isArray(rooms), 'the server stopped answering');
+});
+
 main().catch(err => { console.error(err); process.exit(1); });

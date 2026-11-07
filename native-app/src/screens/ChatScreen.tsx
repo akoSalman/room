@@ -2732,6 +2732,12 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       (sock as any).timeout(8000).emit('send_message', {
         roomId: room.id, type: 'text', content: wire, replyToId,
         clientId, oneTimeSeconds: oneTime ?? undefined, parentId,
+        // Stable across every attempt at this one send, so the server can
+        // tell a resend from a new message. The ack below gives up after 8
+        // seconds, which on these networks is routinely less than a send
+        // takes — so "failed" often means "delivered, answer lost", and the
+        // retry that follows used to insert a second copy.
+        originId: outbox.originOf(clientId).originId,
       }, (err: any, res: any) => {
         if (err || !res?.ok) { markUploadFailed(clientId); return; }
         // The server has it. Clear the crash-safety copy here rather than
@@ -3491,7 +3497,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       }
       socketRef.current?.emit('send_message', {
         roomId: room.id, type, content: caption, filePath: res.url, fileName: name, replyToId, clientId, oneTimeSeconds: oneTime,
-        parentId: sendingParentId(),
+        parentId: sendingParentId(), originId: outbox.originOf(clientId).originId,
       });
     } catch (err) {
       settleUpload(clientId, err);
@@ -3544,6 +3550,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       socketRef.current?.emit('send_message', {
         roomId: room.id, type: 'gallery', content: caption, filePath, fileName: null,
         replyToId, clientId, oneTimeSeconds: oneTime, parentId: sendingParentId(),
+        originId: outbox.originOf(clientId).originId,
       });
     } catch (err) {
       settleUpload(clientId, err);
@@ -3572,7 +3579,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       pendingUploadPaths.current[clientId] = res.url;
       socketRef.current?.emit('send_message', {
         roomId: room.id, type: 'audio', content: caption, filePath: res.url, fileName: peakStr, replyToId, clientId, oneTimeSeconds: oneTime,
-        parentId: sendingParentId(),
+        parentId: sendingParentId(), originId: outbox.originOf(clientId).originId,
       });
     } catch (err) {
       settleUpload(clientId, err);

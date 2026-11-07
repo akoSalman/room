@@ -51,6 +51,15 @@ db.exec(`
 // cannot substitute the wrong file. Null on every row written before this —
 // such a row simply never matches, so old uploads are left exactly as they
 // are and only new ones are collapsed. See uploadDedup.js.
+// ── Which SEND this row came from, as opposed to which attempt ─────────────
+//
+// A retry carries a brand-new clientId by design (see outbox.ts), so the
+// server could not tell a resend from a new message and inserted both. The
+// origin id is stable across every attempt at one send, which is what makes
+// a repeat recognisable. Null on every row written before this and on any
+// client that does not send one — those simply never match.
+try { db.exec('ALTER TABLE messages ADD COLUMN origin_id TEXT'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_messages_origin ON messages(user_id, origin_id)'); } catch {}
 try { db.exec('ALTER TABLE uploads ADD COLUMN sha256 TEXT'); } catch {}
 try { db.exec('ALTER TABLE uploads ADD COLUMN size INTEGER'); } catch {}
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_uploads_sha256 ON uploads(sha256)'); } catch {}

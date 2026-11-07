@@ -3927,8 +3927,30 @@ io.on('connection', (socket) => {
   // notices, call logs and invitations.
   const CLIENT_MSG_TYPES = new Set(['text', 'image', 'gallery', 'video', 'audio', 'music', 'file', 'location']);
 
+  /**
+   * One message in the shape the sender is sent back.
+   *
+   * Factored out so the duplicate-suppression path returns EXACTLY what a
+   * fresh insert returns. Two copies of this query would drift, and the
+   * difference would show only on a resend — the rarest path, and the one
+   * nobody would think to check.
+   */
+  function loadMessageForSender(id) {
+    return db.prepare(`
+      SELECT m.*, u.username, u.avatar, ${COMMENT_COUNT_SQL},
+        rm.content AS reply_content, rm.type AS reply_type, rm.file_name AS reply_file_name,
+        ru.username AS reply_username
+      FROM messages m
+      JOIN users u ON m.user_id = u.id
+      LEFT JOIN messages rm ON m.reply_to_id = rm.id
+      LEFT JOIN users ru ON rm.user_id = ru.id
+      WHERE m.id = ?
+    `).get(id);
+  }
+
   socket.on('send_message', (data, ack) => {
-    const { roomId, type, content, filePath, fileName, replyToId, clientId, oneTimeSeconds, parentId } = data;
+    const { roomId, type, content, filePath, fileName, replyToId, clientId,
+            oneTimeSeconds, parentId, originId } = data;
     const reply = (r) => { if (typeof ack === 'function') ack(r); };
 
     // Authorization: you may only post to a room you are a MEMBER of. Without
@@ -4015,26 +4037,70 @@ io.on('connection', (socket) => {
     const refusal = refuseAttachment(socket.user.id, stripSig(filePath));
     if (refusal) return reply({ error: refusal });
 
+    // ── A RESEND IS NOT A NEW MESSAGE ──────────────────────────────────────
+    //
+    // Reported: a message that fails to send, retried, sometimes arrives
+    // several times.
+    //
+    // The client acks with an 8-second deadline. On these networks a send
+    // routinely takes longer than that, so the server receives it, inserts
+    // it, and the ack misses the deadline — the sender is shown a failure for
+    // a message that was delivered. They retry, and because every retry
+    // carries a brand-new clientId by design (outbox.ts: "Each retry
+    // dispatches a brand-new clientId"), nothing here could tell the resend
+    // from a new message. Both were inserted.
+    //
+    // originId is stable across every attempt at one send, so a repeat is
+    // recognisable. The original is returned as though it had just been
+    // accepted, which is the truth: it had been, and only the answer was
+    // lost.
+    //
+    // Scoped to this user, so one person's id can never return another's
+    // message. Null origin ids never match — older clients keep the old
+    // behaviour rather than colliding on NULL.
+    const origin = typeof originId === 'string' && originId.trim()
+      ? originId.trim().slice(0, 64) : null;
+    if (origin) {
+      const already = db.prepare(
+        'SELECT id FROM messages WHERE user_id = ? AND origin_id = ? LIMIT 1'
+      ).get(socket.user.id, origin);
+      if (already) {
+        const prev = loadMessageForSender(already.id);
+        if (prev) {
+          // The sender's optimistic bubble is keyed on THIS attempt's
+          // clientId, so the echo must carry that rather than the id of the
+          // attempt that actually delivered — which no bubble on their screen
+          // matches any more.
+          if (clientId) prev.client_id = clientId;
+          // ── To the sender ONLY ──────────────────────────────────────────
+          //
+          // Everyone else received this message when it was first delivered;
+          // re-broadcasting would put a second copy on their screens, which
+          // is the very complaint being fixed. The sender is the one with a
+          // bubble still waiting to be settled, and settling it is what the
+          // echo is for — the media sends have no ack handler at all and
+          // reconcile purely from this.
+          io.to('user:' + socket.user.id).emit('message_received', signMessage(prev, socket.user.id));
+          console.log(`[send] user=${socket.user.id} duplicate suppressed`);
+          // The same shape a first delivery acks with, plus the flag. A
+          // different shape here would be a difference that shows up only on
+          // a resend, which is the path nobody looks at.
+          return reply({ ok: true, duplicate: true });
+        }
+      }
+    }
+
     const result = db.prepare(`
-      INSERT INTO messages (room_id, user_id, type, content, file_path, file_name, reply_to_id, one_time_seconds, disappear_seconds, blocked_delivery, parent_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO messages (room_id, user_id, type, content, file_path, file_name, reply_to_id, one_time_seconds, disappear_seconds, blocked_delivery, parent_id, origin_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(roomId, socket.user.id, msgType, content || null, stripSig(filePath),
       // Bounded and stripped of control characters before it is stored. It
       // used to go in exactly as it arrived, and the web rendered it with
       // innerHTML — a stored XSS with the session token behind it. See
       // inputLimits.js.
-      inputLimits.cleanFileName(fileName), replyToId || null, oneTime, disappearing || null, blockedDelivery, parent ? parent.id : null);
+      inputLimits.cleanFileName(fileName), replyToId || null, oneTime, disappearing || null, blockedDelivery, parent ? parent.id : null, origin);
 
-    const msg = db.prepare(`
-      SELECT m.*, u.username, u.avatar, ${COMMENT_COUNT_SQL},
-        rm.content AS reply_content, rm.type AS reply_type, rm.file_name AS reply_file_name,
-        ru.username AS reply_username
-      FROM messages m
-      JOIN users u ON m.user_id = u.id
-      LEFT JOIN messages rm ON m.reply_to_id = rm.id
-      LEFT JOIN users ru ON rm.user_id = ru.id
-      WHERE m.id = ?
-    `).get(result.lastInsertRowid);
+    const msg = loadMessageForSender(result.lastInsertRowid);
     if (clientId) msg.client_id = clientId; // lets the sender reconcile its optimistic local bubble
     rememberUploadRefs(msg);
 

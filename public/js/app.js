@@ -2895,8 +2895,25 @@ function sendText() {
 }
 
 // Appears in the chat instantly; a failed/timed-out send shows tap-to-retry.
-function dispatchText(plain, roomId, replyToId, oneTimeSeconds, parentId) {
+/**
+ * Send one text message, and remember WHICH send it is across retries.
+ *
+ * Reported: a message that fails to send, retried, sometimes arrives several
+ * times.
+ *
+ * The ack below gives up after 8 seconds. On these networks a send routinely
+ * takes longer, so the server receives it, stores it, and the answer misses
+ * the deadline — the bubble says "Failed to send, tap to retry" for a message
+ * that was delivered. Tapping it called this function again, which minted a
+ * fresh clientId, and the server had no way to know the two were one message.
+ *
+ * originId is that way: the same for every attempt at one send, so the server
+ * recognises the repeat and returns the original instead of storing a second
+ * copy. It defaults to the first attempt's clientId, which is already unique.
+ */
+function dispatchText(plain, roomId, replyToId, oneTimeSeconds, parentId, originId) {
   const clientId = 'tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+  const origin = originId || clientId;
   const tempMsg = {
     id: clientId, username, avatar: localStorage.getItem('avatar') || '',
     type: 'text', content: plain, file_path: null, file_name: null,
@@ -2923,10 +2940,13 @@ function dispatchText(plain, roomId, replyToId, oneTimeSeconds, parentId) {
     }
     socket.timeout(8000).emit('send_message', {
       roomId, type: 'text', content: wire, replyToId, clientId, oneTimeSeconds,
-      parentId,
+      parentId, originId: origin,
     }, (err, res) => {
       if ((err || !res?.ok) && pendingUploads[clientId]) {
-        markUploadFailed(wrapper, clientId, () => dispatchText(plain, roomId, replyToId, oneTimeSeconds, parentId));
+        // The SAME origin on the retry — that is the whole point. Passing a
+        // new one would recreate the bug this parameter exists to fix.
+        markUploadFailed(wrapper, clientId,
+          () => dispatchText(plain, roomId, replyToId, oneTimeSeconds, parentId, origin));
       }
     });
   }, 0);
