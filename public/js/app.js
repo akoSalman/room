@@ -2911,6 +2911,18 @@ function sendText() {
  * recognises the repeat and returns the original instead of storing a second
  * copy. It defaults to the first attempt's clientId, which is already unique.
  */
+/**
+ * How long to wait for the server to acknowledge a send.
+ *
+ * 8 seconds is what produced the duplicates: on these networks a send
+ * routinely takes longer, so the server stored the message and the answer
+ * missed the deadline — "failed" was shown for a message that had been
+ * delivered, and the retry stored a second copy. The server now recognises a
+ * resend by its origin id, which is what makes a longer wait safe; a longer
+ * wait is what stops the false failure that starts the retry.
+ */
+const SEND_ACK_TIMEOUT_MS = 15000;
+
 function dispatchText(plain, roomId, replyToId, oneTimeSeconds, parentId, originId) {
   const clientId = 'tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2);
   const origin = originId || clientId;
@@ -2938,7 +2950,7 @@ function dispatchText(plain, roomId, replyToId, oneTimeSeconds, parentId, origin
     if (currentRoomIsDM && currentDMPeerPk && String(roomId) === String(currentRoomId)) {
       wire = E2E.encrypt(plain, currentDMPeerPk) || plain;
     }
-    socket.timeout(8000).emit('send_message', {
+    socket.timeout(SEND_ACK_TIMEOUT_MS).emit('send_message', {
       roomId, type: 'text', content: wire, replyToId, clientId, oneTimeSeconds,
       parentId, originId: origin,
     }, (err, res) => {
@@ -3321,8 +3333,11 @@ function markUploadFailed(wrapper, clientId, retryFn) {
 // uploadFilename: name given to the multipart upload (needs a real extension).
 // messageFileName: what's stored/shown as the message's fileName (voice notes
 // stash their waveform peaks here instead of a real filename).
-async function uploadAndSendMedia(file, type, uploadFilename, messageFileName, roomId, replyToId, caption = null, oneTimeSeconds = undefined) {
+async function uploadAndSendMedia(file, type, uploadFilename, messageFileName, roomId, replyToId, caption = null, oneTimeSeconds = undefined, originId = undefined) {
   const clientId = 'tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+  // Stable across retries; a fresh clientId each attempt is what duplicated.
+  const origin = originId || clientId;
+  const retryThis = () => uploadAndSendMedia(file, type, uploadFilename, messageFileName, roomId, replyToId, caption, oneTimeSeconds, origin);
   const previewUrl = (type === 'image' || type === 'video' || type === 'audio') ? URL.createObjectURL(file) : null;
   const tempMsg = {
     id: clientId, username, avatar: localStorage.getItem('avatar') || '',
@@ -3341,14 +3356,27 @@ async function uploadAndSendMedia(file, type, uploadFilename, messageFileName, r
     if (!res) return;                      // cancelled: the bubble is gone
     if (res.error) throw new Error(res.error);
     if (!pendingUploads[clientId]) return; // user already dismissed/retried
-    socket.emit('send_message', {
+    socket.timeout(SEND_ACK_TIMEOUT_MS).emit('send_message', {
       roomId, type, content: caption, filePath: res.url,
       fileName: messageFileName, replyToId, clientId, oneTimeSeconds,
-      parentId: sendingParentId(),
+      parentId: sendingParentId(), originId: origin,
+    }, (err, res) => {
+      // ── An answer, at last ────────────────────────────────────────────
+      //
+      // Reported: sending some images and videos sticks at 100% and nothing
+      // happens after that. The upload finished, the bar reached 100%, and
+      // this emit went out with NO ack and NO timeout — the catch below only
+      // ever covered the UPLOAD. So a send lost on the wire produced nothing
+      // at all: not sent, not failed, no retry offered.
+      //
+      // Retrying is safe now: the server recognises a resend by its origin.
+      if (err || res?.error || res?.ok === false) {
+        if (pendingUploads[clientId]) markUploadFailed(wrapper, clientId, retryThis);
+      }
     });
   } catch (err) {
     if (pendingUploads[clientId]) {
-      markUploadFailed(wrapper, clientId, () => uploadAndSendMedia(file, type, uploadFilename, messageFileName, roomId, replyToId, caption, oneTimeSeconds));
+      markUploadFailed(wrapper, clientId, retryThis);
     }
   }
 }
@@ -3717,8 +3745,11 @@ function stagedSendOne(p, caption, oneTimeSeconds, roomId, replyToId) {
 }
 
 // Uploads several images and sends them as ONE gallery message.
-async function sendGallery(images, caption, oneTimeSeconds, roomId, replyToId) {
+async function sendGallery(images, caption, oneTimeSeconds, roomId, replyToId, originId = undefined) {
   const clientId = 'tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+  // Stable across retries; a fresh clientId each attempt is what duplicated.
+  const origin = originId || clientId;
+  const retryThis = () => sendGallery(images, caption, oneTimeSeconds, roomId, replyToId, origin);
   const tempMsg = {
     id: clientId, username, avatar: localStorage.getItem('avatar') || '',
     type: 'gallery', content: caption,
@@ -3747,14 +3778,27 @@ async function sendGallery(images, caption, oneTimeSeconds, roomId, replyToId) {
     }
     if (!pendingUploads[clientId]) return;
     images.forEach(p => URL.revokeObjectURL(p.url));
-    socket.emit('send_message', {
+    socket.timeout(SEND_ACK_TIMEOUT_MS).emit('send_message', {
       roomId, type: 'gallery', content: caption, filePath: JSON.stringify(urls),
       fileName: null, replyToId, clientId, oneTimeSeconds,
-      parentId: sendingParentId(),
+      parentId: sendingParentId(), originId: origin,
+    }, (err, res) => {
+      // ── An answer, at last ────────────────────────────────────────────
+      //
+      // Reported: sending some images and videos sticks at 100% and nothing
+      // happens after that. The upload finished, the bar reached 100%, and
+      // this emit went out with NO ack and NO timeout — the catch below only
+      // ever covered the UPLOAD. So a send lost on the wire produced nothing
+      // at all: not sent, not failed, no retry offered.
+      //
+      // Retrying is safe now: the server recognises a resend by its origin.
+      if (err || res?.error || res?.ok === false) {
+        if (pendingUploads[clientId]) markUploadFailed(wrapper, clientId, retryThis);
+      }
     });
   } catch {
     if (pendingUploads[clientId]) {
-      markUploadFailed(wrapper, clientId, () => sendGallery(images, caption, oneTimeSeconds, roomId, replyToId));
+      markUploadFailed(wrapper, clientId, retryThis);
     }
   }
 }

@@ -2729,7 +2729,7 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     // phone must never delay the send button's visual feedback.
     setTimeout(() => {
       const wire = (room.is_dm && dmPeerPk.current) ? (e2eEncrypt(plain, dmPeerPk.current) || plain) : plain;
-      (sock as any).timeout(8000).emit('send_message', {
+      (sock as any).timeout(outbox.SEND_ACK_TIMEOUT_MS).emit('send_message', {
         roomId: room.id, type: 'text', content: wire, replyToId,
         clientId, oneTimeSeconds: oneTime ?? undefined, parentId,
         // Stable across every attempt at this one send, so the server can
@@ -3495,9 +3495,28 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       if (type === 'video' && !oneTime && !disappearing) {
         attachments.adopt(uri, `${BASE_URL}${res.url}`).catch(() => {});
       }
-      socketRef.current?.emit('send_message', {
+      (socketRef.current as any)?.timeout(outbox.SEND_ACK_TIMEOUT_MS).emit('send_message', {
         roomId: room.id, type, content: caption, filePath: res.url, fileName: name, replyToId, clientId, oneTimeSeconds: oneTime,
         parentId: sendingParentId(), originId: outbox.originOf(clientId).originId,
+      }, (err: any, res: any) => {
+        // ── An answer, at last ──────────────────────────────────────────
+        //
+        // Reported: sending some images and videos sticks at 100% and
+        // nothing happens after that.
+        //
+        // The upload finishes, the bar reaches 100%, and then this emit went
+        // out with NO ack and NO timeout. If it never reached the server —
+        // the socket dropped at that moment, the connection changed hands —
+        // nothing ever came back, nothing timed out, and the bubble sat at
+        // 100% for ever: not sent, not failed, and offering no retry,
+        // because markUploadFailed is the only thing that offers one and
+        // nothing could call it.
+        //
+        // A failure here is now visible and retryable, and retrying is safe:
+        // the server recognises a resend by its origin id.
+        if (err || res?.error || res?.ok === false) { markUploadFailed(clientId); return; }
+        outbox.markDone(clientId);
+        outbox.forget(room.id, clientId);
       });
     } catch (err) {
       settleUpload(clientId, err);
@@ -3547,10 +3566,29 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       if (cancelledNow(up.get(clientId)?.phase)) { removeCancelled(clientId); return; }
       const filePath = JSON.stringify(urls);
       pendingUploadPaths.current[clientId] = filePath;
-      socketRef.current?.emit('send_message', {
+      (socketRef.current as any)?.timeout(outbox.SEND_ACK_TIMEOUT_MS).emit('send_message', {
         roomId: room.id, type: 'gallery', content: caption, filePath, fileName: null,
         replyToId, clientId, oneTimeSeconds: oneTime, parentId: sendingParentId(),
         originId: outbox.originOf(clientId).originId,
+      }, (err: any, res: any) => {
+        // ── An answer, at last ──────────────────────────────────────────
+        //
+        // Reported: sending some images and videos sticks at 100% and
+        // nothing happens after that.
+        //
+        // The upload finishes, the bar reaches 100%, and then this emit went
+        // out with NO ack and NO timeout. If it never reached the server —
+        // the socket dropped at that moment, the connection changed hands —
+        // nothing ever came back, nothing timed out, and the bubble sat at
+        // 100% for ever: not sent, not failed, and offering no retry,
+        // because markUploadFailed is the only thing that offers one and
+        // nothing could call it.
+        //
+        // A failure here is now visible and retryable, and retrying is safe:
+        // the server recognises a resend by its origin id.
+        if (err || res?.error || res?.ok === false) { markUploadFailed(clientId); return; }
+        outbox.markDone(clientId);
+        outbox.forget(room.id, clientId);
       });
     } catch (err) {
       settleUpload(clientId, err);
@@ -3577,9 +3615,28 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
       const res = await uploadWithProgress(clientId, uri, `voice-${Date.now()}.m4a`, 'audio/m4a',
         (f, sent, total) => up.report(clientId, 'uploading', f, sent, total));
       pendingUploadPaths.current[clientId] = res.url;
-      socketRef.current?.emit('send_message', {
+      (socketRef.current as any)?.timeout(outbox.SEND_ACK_TIMEOUT_MS).emit('send_message', {
         roomId: room.id, type: 'audio', content: caption, filePath: res.url, fileName: peakStr, replyToId, clientId, oneTimeSeconds: oneTime,
         parentId: sendingParentId(), originId: outbox.originOf(clientId).originId,
+      }, (err: any, res: any) => {
+        // ── An answer, at last ──────────────────────────────────────────
+        //
+        // Reported: sending some images and videos sticks at 100% and
+        // nothing happens after that.
+        //
+        // The upload finishes, the bar reaches 100%, and then this emit went
+        // out with NO ack and NO timeout. If it never reached the server —
+        // the socket dropped at that moment, the connection changed hands —
+        // nothing ever came back, nothing timed out, and the bubble sat at
+        // 100% for ever: not sent, not failed, and offering no retry,
+        // because markUploadFailed is the only thing that offers one and
+        // nothing could call it.
+        //
+        // A failure here is now visible and retryable, and retrying is safe:
+        // the server recognises a resend by its origin id.
+        if (err || res?.error || res?.ok === false) { markUploadFailed(clientId); return; }
+        outbox.markDone(clientId);
+        outbox.forget(room.id, clientId);
       });
     } catch (err) {
       settleUpload(clientId, err);
@@ -5081,9 +5138,17 @@ export default function ChatScreen({ room, onBack, onOpenDM, onOpenProfile, onOp
     const liveUntil = liveMinutes > 0 ? Date.now() + liveMinutes * 60_000 : null;
     const payload = pick.locationPayload({ chosen: at, fix, liveUntil, now: Date.now() });
 
-    socketRef.current?.emit('send_message', {
+    (socketRef.current as any)?.timeout(outbox.SEND_ACK_TIMEOUT_MS).emit('send_message', {
       roomId: room.id, type: 'location', content: JSON.stringify(payload),
-    }, (res: any) => {
+    }, (err: any, res: any) => {
+      // TWO arguments, because this emit now carries a timeout and socket.io
+      // calls a timed callback as (err, res). Left as (res) it would read the
+      // error slot as the reply: null on success, so `res?.error` is
+      // undefined and a genuine refusal would pass silently — and a timeout
+      // would hand it an Error whose .error is undefined, which is the same
+      // silence. The deadline is worth having here for the same reason as
+      // the media sends; the signature has to follow it.
+      if (err) { Alert.alert('Could not share location', 'The server did not answer. Please try again.'); return; }
       if (res?.error) { Alert.alert('Could not share location', res.error); return; }
     });
 

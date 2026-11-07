@@ -25,6 +25,22 @@ const discardKeyFor = (roomId: number | string) => `discarded-msgs-${roomId}`;
 // every failure, and looped forever.
 export const MAX_AUTO_RETRIES = 3;
 
+/**
+ * How long to wait for the server to acknowledge a send.
+ *
+ * Was 8 seconds, and that is what produced the duplicates: on these networks
+ * a send routinely takes longer, so the server stored the message and the
+ * answer missed the deadline. The sender saw "failed" for a message that had
+ * been delivered, retried, and — because every retry carries a new clientId —
+ * the server stored it twice.
+ *
+ * The server now recognises a resend by its origin id, so a late answer can
+ * no longer duplicate anything. That makes a longer wait safe, and a longer
+ * wait is what stops a delivered message being shown as failed in the first
+ * place.
+ */
+export const SEND_ACK_TIMEOUT_MS = 15000;
+
 // Each retry dispatches a brand-new clientId, so the identity the user sees
 // would change on every attempt. `originId` is the stable identity across
 // retries: it is what the attempt counter counts, and what a delete
