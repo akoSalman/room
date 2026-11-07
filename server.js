@@ -4080,7 +4080,13 @@ io.on('connection', (socket) => {
           // bubble still waiting to be settled, and settling it is what the
           // echo is for — the media sends have no ack handler at all and
           // reconcile purely from this.
-          io.to('user:' + socket.user.id).emit('message_received', signMessage(prev, socket.user.id));
+          // emitMessageTo, not a raw emit: it is what stamps `muted` and
+          // `seenElsewhere` per recipient, and both clients raise their own
+          // notification off this event. A raw emit here would be the
+          // seventh delivery path to skip that — the helper's own comment
+          // records that six existed and only one stamped it. Caught by
+          // test/mutedRinging.test.js, which checks every path.
+          emitMessageTo(socket.user.id, signMessage(prev, socket.user.id), roomId);
           console.log(`[send] user=${socket.user.id} duplicate suppressed`);
           // The same shape a first delivery acks with, plus the flag. A
           // different shape here would be a difference that shows up only on
