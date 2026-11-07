@@ -106,4 +106,27 @@ jobs:
               }
             }
           " 2>&1 | head -40
+
+          echo ""
+          echo "### what the clients reported, and when"
+          # The whole point of the [e2e] line: which of the five rules
+          # refused. Only one of them is about the password.
+          #
+          #   wrong-password  the blob really does not open with it
+          #   offline         the request never completed; never checked
+          #   server-error    /keys/me answered with an error; never checked
+          #   no-blob         a public key with no private blob
+          #   key-exists      the server refused a replacement keypair, 409
+          #   login-*         it failed at SIGN-IN, where the password was
+          #                   certainly correct — which narrows it further
+          echo -n "  [e2e] lines in the last 7 days: "
+          journalctl -u "$SERVICE" --since '7 days ago' --no-pager 2>/dev/null \
+            | grep -c -F '[e2e]'
+          journalctl -u "$SERVICE" --since '7 days ago' --no-pager 2>/dev/null \
+            | grep -F '[e2e]' | grep -o 'reason=[a-z-]*' | sort | uniq -c | sed 's/^/  /'
+          echo "  most recent, user id dropped:"
+          journalctl -u "$SERVICE" --since '7 days ago' --no-pager 2>/dev/null \
+            | grep -F '[e2e]' | sed 's/user=[0-9]*/user=-/' | tail -15 | sed 's/^/    /'
+          echo "  (none at all, with somebody stuck, means they are on a cached"
+          echo "   page from before this shipped — a hard reload fixes that)"
           EOF
