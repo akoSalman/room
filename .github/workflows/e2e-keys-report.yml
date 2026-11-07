@@ -1,0 +1,109 @@
+name: E2E Keys Report
+
+# Reported: on the web, after a long time away, login succeeds but opening a
+# chat asks for the account password and never accepts it — the same prompt,
+# again and again.
+#
+# Reading the code gives three ways E2E.setup() can return false, and they
+# need completely different fixes:
+#
+#   1. the server has a publicKey but NO encPriv. setup() then takes the
+#      "create an identity" branch, POSTs a fresh keypair, and the server
+#      refuses it 409 public_key_exists because the public key is write-once.
+#      THE PASSWORD IS NEVER EVEN TESTED, so no password can ever work and
+#      the prompt repeats for ever;
+#
+#   2. encPriv exists and the password does not open it. Recoverable, but
+#      only with the password the blob was wrapped with;
+#
+#   3. /keys/me itself failed, and the catch falls back to local storage,
+#      which after a long absence a browser may have evicted. The app then
+#      says "could not unlock with that password" about a password it never
+#      tried.
+#
+# Which one it is decides the fix, and guessing between them has already cost
+# this session hours on other faults. So: counts, from the database.
+#
+# NOTHING SECRET IS PRINTED. No username, no public key, no private blob, no
+# salt or nonce — only counts, and whether the stored JSON has the three
+# fields the client needs. User ids are numeric and already appear in logs.
+on:
+  workflow_dispatch:
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: bistbarg
+            host_secret: DEPLOY_HOST_BISTBARG
+            service_secret: DEPLOY_SERVICE_BISTBARG
+          - name: akosalman
+            host_secret: DEPLOY_HOST_AKOSALMAN
+            service_secret: DEPLOY_SERVICE_AKOSALMAN
+    steps:
+      - name: Key state on ${{ matrix.name }}
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets[matrix.host_secret] }}
+          SERVICE: ${{ secrets[matrix.service_secret] }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/k
+          chmod 600 ~/.ssh/k
+          ssh -i ~/.ssh/k -o StrictHostKeyChecking=accept-new -o ConnectTimeout=25 \
+            "root@$HOST" "SERVICE='$SERVICE' bash -s" <<'EOF'
+          set +e
+          cd "$(systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null)" 2>/dev/null || cd /root
+          node -e "
+            const Database = require('better-sqlite3');
+            const fs = require('fs');
+            const file = ['db.sqlite','data/db.sqlite','chat.db','data.db']
+              .find(f => fs.existsSync(f));
+            if (!file) { console.log('  no database file found here'); process.exit(0); }
+            const db = new Database(file, { readonly: true });
+            const rows = db.prepare('SELECT id, public_key, enc_priv FROM users').all();
+            let pk = 0, blob = 0, deadEnd = 0, neither = 0, malformed = 0;
+            const dead = [];
+            for (const r of rows) {
+              const hasPk = !!(r.public_key && String(r.public_key).trim());
+              const hasBlob = !!(r.enc_priv && String(r.enc_priv).trim());
+              if (hasPk) pk++;
+              if (hasBlob) blob++;
+              if (!hasPk && !hasBlob) neither++;
+              // ── The unrecoverable state ────────────────────────────────
+              // A published key with no private blob behind it. setup() can
+              // only try to create a new identity, and the server refuses
+              // that 409 for ever.
+              if (hasPk && !hasBlob) { deadEnd++; dead.push(r.id); }
+              if (hasBlob) {
+                try {
+                  const b = JSON.parse(r.enc_priv);
+                  if (!b || !b.salt || !b.nonce || !b.ct) { malformed++; dead.push(r.id); }
+                } catch { malformed++; dead.push(r.id); }
+              }
+            }
+            console.log('  users:                          ' + rows.length);
+            console.log('  with a published public key:    ' + pk);
+            console.log('  with a password-wrapped blob:   ' + blob);
+            console.log('  with NEITHER (never set up):    ' + neither);
+            console.log('');
+            console.log('  DEAD END, public key but no blob: ' + deadEnd);
+            console.log('  blob present but malformed:       ' + malformed);
+            if (dead.length) console.log('  affected user ids: ' + dead.join(', '));
+            console.log('');
+            // How recently each affected person was here, so the report says
+            // whether this is live or historical.
+            if (dead.length) {
+              const q = db.prepare('SELECT MAX(created_at) AS t FROM messages WHERE user_id = ?');
+              for (const id of dead.slice(0, 10)) {
+                let t = null;
+                try { t = q.get(id).t; } catch {}
+                console.log('    user ' + id + ' last sent a message: '
+                  + (t ? new Date(Number(t)).toISOString().slice(0,10) : 'never'));
+              }
+            }
+          " 2>&1 | head -40
+          EOF
