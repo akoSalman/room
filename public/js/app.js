@@ -80,6 +80,24 @@ const E2E_FAILURES = {
     retry: true,
     say: 'Could not set up encryption on this device. Please try again.',
   },
+  // The server confirmed this IS the account password, and the key still did
+  // not open. Trying again cannot help, and saying "wrong password" would be
+  // false — the server has just proved otherwise.
+  'stale-key': {
+    retry: false,
+    offerReset: true,
+    say: 'That IS your account password — the server confirmed it.\n\n'
+       + 'Your encryption key was locked with a DIFFERENT password, so it '
+       + 'cannot be opened with this one. If you remember the password you '
+       + 'used when you first set up this account, close this and try that.\n\n'
+       + 'Otherwise the key cannot be recovered.',
+  },
+  'password-typo': {
+    retry: true,
+    say: 'That is not your account password.\n\n'
+       + 'If your browser filled the sign-in form for you, the saved password '
+       + 'may differ from the one you typed here.',
+  },
 };
 
 async function ensureE2EUnlocked() {
@@ -90,7 +108,24 @@ async function ensureE2EUnlocked() {
   if (!pw) { e2eUnlockAsked = false; return false; }
   const res = await E2E.setup(pw, api);
   if (res && res.ok) return true;
-  const reason = (res && res.reason) || 'unknown';
+  let reason = (res && res.reason) || 'unknown';
+  // ── Was it really the wrong password? ──────────────────────────────────
+  //
+  // "The blob did not open" has two causes that look identical: the wrong
+  // password was typed, or the right one was and the key is sealed with a
+  // different one. Only the server can tell them apart, and until it did the
+  // advice was the same for both — which is how somebody ends up typing a
+  // correct password over and over.
+  //
+  // Checked only after an unlock has already failed, so the ordinary case
+  // costs nothing.
+  if (reason === 'wrong-password') {
+    try {
+      const v = await api('/password/verify', 'POST', { password: pw });
+      if (v && v.ok === true) reason = 'stale-key';       // right password, wrong key
+      else if (v && v.ok === false) reason = 'password-typo';
+    } catch { /* leave it as wrong-password: we could not find out */ }
+  }
   reportE2E(reason);
   const f = E2E_FAILURES[reason];
   // Only re-arm the prompt where another attempt could actually work.
@@ -99,6 +134,15 @@ async function ensureE2EUnlocked() {
   if (!f || f.retry) e2eUnlockAsked = false;
   alert(f ? f.say
           : 'Could not unlock encryption on this device (' + reason + ').');
+  // ── The only way out, offered only once it is the only way out ──────────
+  //
+  // Reached when the server has CONFIRMED the password is correct and the key
+  // still will not open. Nothing typed can fix that, so the choice is to live
+  // without encrypted messages on this account or to start a new key.
+  //
+  // Asked after the explanation above, so the reset is never the first thing
+  // somebody sees, and asked twice, because it cannot be undone.
+  if (f && f.offerReset) await offerIdentityReset(pw);
   return false;
 }
 
@@ -109,6 +153,37 @@ async function ensureE2EUnlocked() {
  * prints — no username, no password, no key material. The same arrangement
  * that turned the call fault from guesswork into a log line.
  */
+/**
+ * Offer to start a new encryption key, and be honest about the cost.
+ *
+ * Two confirmations, because this is not undoable and the thing it destroys
+ * is somebody's conversations. The second asks them to type the word, so it
+ * cannot be dismissed by reflex the way a second OK can.
+ */
+async function offerIdentityReset(password) {
+  const warning =
+    'Start a NEW encryption key?\n\n'
+  + 'This is the only way to use encrypted chats again on this account.\n\n'
+  + 'WHAT YOU LOSE: every message already in your encrypted chats stays '
+  + 'locked to the old key. They will never be readable again, on any '
+  + 'device, including this one. New messages from now on will work '
+  + 'normally.\n\n'
+  + 'This cannot be undone.';
+  if (!confirm(warning)) return;
+  const typed = prompt('To confirm, type:  RESET');
+  if (String(typed || '').trim().toUpperCase() !== 'RESET') return;
+  const r = await E2E.resetIdentity(password, api);
+  reportE2E(r && r.ok ? 'reset-done' : 'reset-' + ((r && r.reason) || 'failed'));
+  if (r && r.ok) {
+    e2eUnlockAsked = false;
+    alert('A new encryption key is set up. New messages in your chats will be '
+        + 'readable from now on; older encrypted ones stay locked to the old key.');
+    repaintEncrypted();
+  } else {
+    alert('Could not set up a new key. Nothing has been changed — please try again.');
+  }
+}
+
 function reportE2E(reason) {
   try { socket && socket.emit('call_diag', { what: 'e2e', reason: String(reason) }); } catch {}
 }

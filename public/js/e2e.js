@@ -119,6 +119,27 @@ const E2E = (() => {
       // for ever asking for a password it never checks.
       return { ok: false, reason: 'no-blob' };
     }
+    // ── AN IDENTITY IS NEVER SEALED WITH AN UNVERIFIED PASSWORD ────────────
+    //
+    // This is how an account ends up permanently locked out, and it is
+    // reachable today: the unlock prompt calls this same function, and its
+    // own comment says "unlock (or create)". So somebody with no identity
+    // yet opens a DM, is asked for "your account password", types something
+    // that is not it — an old one, a typo, another site's — and an identity
+    // is created SEALED WITH THAT STRING. From then on the real account
+    // password never opens it, and no message ever says why.
+    //
+    // The server is asked first. It costs one request, once per account,
+    // because this branch runs only when no identity exists; and it makes
+    // the rule unconditional rather than depending on which screen called.
+    try {
+      const v = await api('/password/verify', 'POST', { password });
+      if (!v || v.ok !== true) return { ok: false, reason: 'password-typo' };
+    } catch (e) {
+      // Unverified means not created. A key sealed with the wrong password
+      // cannot be undone; waiting for a working connection can.
+      return { ok: false, reason: 'offline' };
+    }
     try {
       const keys = nacl.box.keyPair();
       const r = await api('/keys', 'POST', {
@@ -132,6 +153,44 @@ const E2E = (() => {
     } catch (e) {
       return { ok: false, reason: 'offline' };
     }
+  }
+
+  /**
+   * Throw the old identity away and publish a new one. DESTRUCTIVE.
+   *
+   * Only for the case the server has confirmed: the account password is
+   * correct and the stored key is sealed with a different one, so nothing
+   * anybody types will ever open it.
+   *
+   * WHAT IS LOST. Every message in every encrypted DM was sealed to the old
+   * key pair, in both directions. Replacing it does not re-encrypt them —
+   * they become permanently unreadable on every device this account uses.
+   * Peers keep their own copies; this account does not.
+   *
+   * The caller must have asked, plainly and twice. This function does not
+   * confirm anything; it carries out a decision already made.
+   */
+  async function resetIdentity(password, api) {
+    const keys = nacl.box.keyPair();
+    let r;
+    try {
+      r = await api('/keys', 'POST', {
+        publicKey: b64.enc(keys.publicKey),
+        encPriv: makeEncPrivBlob(keys.secretKey, password),
+        force: true,
+        // The server re-checks this itself; a token alone must not be enough
+        // to destroy an account's history.
+        currentPassword: password,
+      });
+    } catch (e) {
+      return { ok: false, reason: 'offline' };
+    }
+    if (r?.error === 'password_required') return { ok: false, reason: 'password-typo' };
+    if (r?.error) return { ok: false, reason: 'reset-failed' };
+    // Only once the server has accepted it: storing first would leave this
+    // device holding a key the server has never heard of.
+    storeLocal(keys);
+    return { ok: true, reason: 'reset' };
   }
 
   // Re-wrap the private key when the user changes their password.
@@ -243,7 +302,7 @@ const E2E = (() => {
   const ready = () => !!myKeys || loadLocal();
 
   return {
-    setup, rewrap, getPeerKey, encrypt, decrypt, isEncrypted, clear, ready,
+    setup, rewrap, resetIdentity, getPeerKey, encrypt, decrypt, isEncrypted, clear, ready,
     forgetPlaintext, decodeKey: b64.dec,
     /** Tests only; see test/webE2eCache.test.js. */
     _setKeysForTest(keys) { myKeys = keys; sharedCache.clear(); sharedFor = null; },

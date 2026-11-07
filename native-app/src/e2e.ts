@@ -93,6 +93,18 @@ export async function e2eSetup(password: string): Promise<boolean> {
       }
       return false; // wrong password — stay locked, do NOT overwrite keys
     }
+    // ── AN IDENTITY IS NEVER SEALED WITH AN UNVERIFIED PASSWORD ──────────
+    //
+    // ChatScreen's unlock prompt calls this same function, so somebody with
+    // no identity yet who types the wrong password there does not get "wrong
+    // password" — they get an identity CREATED AND SEALED with what they
+    // typed. The real account password never opens it afterwards, and
+    // nothing says why. That is a permanent lockout produced by a typo.
+    //
+    // One request, once per account: this branch runs only when no identity
+    // exists.
+    const v = await apiFetch('/password/verify', 'POST', { password });
+    if (!v || v.ok !== true) return false;
     // First-ever identity for this account.
     const keys = nacl.box.keyPair();
     const r = await apiFetch('/keys', 'POST', {

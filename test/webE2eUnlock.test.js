@@ -187,6 +187,7 @@ test('a brand-new account still creates an identity', async () => {
   const { E2E } = loadE2E();
   let body = null;
   const api = async (p, m, b) => {
+    if (p === '/password/verify') return { ok: true };
     if (m === 'POST') { body = b; return { ok: true }; }
     return { publicKey: null, encPriv: null };
   };
@@ -198,9 +199,10 @@ test('a brand-new account still creates an identity', async () => {
 
 test('a refused keypair is reported as that, not as a password', async () => {
   const { E2E } = loadE2E();
-  const api = async (p, m) => (m === 'POST'
-    ? { error: 'public_key_exists' }
-    : { publicKey: null, encPriv: null });
+  const api = async (p, m) => {
+    if (p === '/password/verify') return { ok: true };
+    return m === 'POST' ? { error: 'public_key_exists' } : { publicKey: null, encPriv: null };
+  };
   const r = await E2E.setup('pw', api);
   // Field by field, not deepStrictEqual: the object is built inside the VM
   // context, so its prototype is that realm's Object and a deep-strict
@@ -330,6 +332,168 @@ test('the [e2e] line carries no username, password or key', () => {
                    'create-failed', 'login-wrong-password', 'login-offline']) {
     assert.strictEqual(word(r), r, `reason "${r}" is mangled to "${word(r)}"`);
   }
+});
+
+test('AN IDENTITY IS NEVER SEALED WITH AN UNVERIFIED PASSWORD', async () => {
+  // How an account becomes permanently unreadable, and it is reachable
+  // today: the unlock prompt calls this same setup(), whose own comment says
+  // "unlock (or create)". Somebody with no identity opens a DM, is asked for
+  // "your account password", types something that is not it, and an identity
+  // is CREATED SEALED WITH THAT STRING. The real password never opens it
+  // afterwards and nothing ever says why.
+  const { E2E } = loadE2E();
+  let posted = false;
+  const api = async (p, m, b) => {
+    if (p === '/password/verify') return { ok: false };     // not the account password
+    if (m === 'POST') { posted = true; return { ok: true }; }
+    return { publicKey: null, encPriv: null };              // no identity yet
+  };
+  const r = await E2E.setup('a-typo', api);
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.reason, 'password-typo');
+  assert.strictEqual(posted, false,
+    'an identity was published sealed with a password the server rejected');
+});
+
+test('…and an unreachable server creates nothing either', async () => {
+  // Unverified means not created. A key sealed with the wrong password
+  // cannot be undone; waiting for a connection can.
+  const { E2E } = loadE2E();
+  let posted = false;
+  const api = async (p, m) => {
+    if (p === '/password/verify') throw new Error('network down');
+    if (m === 'POST') { posted = true; return { ok: true }; }
+    return { publicKey: null, encPriv: null };
+  };
+  const r = await E2E.setup('pw', api);
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.reason, 'offline');
+  assert.strictEqual(posted, false, 'it published a key it could not verify');
+});
+
+test('the native client has the same guard', () => {
+  // Most people are on the phone, so the hole that creates these accounts
+  // matters more there than on the web.
+  const nat = code(fs.readFileSync(
+    path.join(ROOT, 'native-app', 'src', 'e2e.ts'), 'utf8'));
+  const fn = nat.slice(nat.indexOf('export async function e2eSetup'));
+  const body = fn.slice(0, fn.indexOf('\nexport '));
+  assert.match(body, /\/password\/verify/,
+    'the native app can still seal an identity with an unverified password');
+  const verify = body.indexOf('/password/verify');
+  const post = body.indexOf("apiFetch('/keys', 'POST'");
+  assert.ok(verify > 0 && post > verify,
+    'the native app publishes the key before verifying the password');
+});
+
+// ── TELLING A TYPO FROM A KEY THAT WILL NEVER OPEN ─────────────────────────
+
+test('a confirmed-correct password turns wrong-password into stale-key', () => {
+  // The log said reason=wrong-password twice, which has two causes that look
+  // identical and need opposite advice: a typo (try again) and a key sealed
+  // with a different password (trying again is futile). Only the server can
+  // tell them apart, because only the server holds the hash.
+  const fn = appCode.slice(appCode.indexOf('async function ensureE2EUnlocked'));
+  const body = fn.slice(0, fn.indexOf('\nfunction '));
+  assert.match(body, /\/password\/verify/, 'the password is never verified');
+  assert.match(body, /v\.ok === true\)\s*reason = 'stale-key'/,
+    'a confirmed password should stop being reported as the wrong one');
+  assert.match(body, /v\.ok === false\)\s*reason = 'password-typo'/);
+  // Only after an unlock has already failed, so the ordinary case costs
+  // nothing and no password is sent when it was not needed.
+  assert.ok(body.indexOf('E2E.setup(') < body.indexOf('/password/verify'),
+    'the password is sent to the server before the key is even tried');
+  // If the check itself fails we must not invent an answer.
+  assert.match(body, /catch \{[^}]*\}/, 'a failed verify is not tolerated');
+});
+
+test('stale-key does not blame the password, and password-typo does', () => {
+  const m = /const E2E_FAILURES = \{([\s\S]*?)\n\};/.exec(appCode);
+  const table = m[1];
+  const stale = table.slice(table.indexOf("'stale-key'"));
+  const sbody = stale.slice(0, stale.indexOf('},'));
+  assert.match(sbody, /retry:\s*false/, 'a key that cannot open invites a retry');
+  assert.match(sbody, /IS your account password/,
+    'it should say plainly that the password was right');
+  assert.match(sbody, /offerReset:\s*true/, 'there is no way out offered');
+  const typo = table.slice(table.indexOf("'password-typo'"));
+  const tbody = typo.slice(0, typo.indexOf('},'));
+  assert.match(tbody, /retry:\s*true/);
+  // The autofill trap: the sign-in form filled by the browser, the prompt
+  // typed by hand.
+  assert.match(tbody, /browser/i);
+});
+
+// ── THE RESET, WHICH DESTROYS THINGS ───────────────────────────────────────
+
+test('the reset is offered ONLY when nothing else can work', () => {
+  const m = /const E2E_FAILURES = \{([\s\S]*?)\n\};/.exec(appCode);
+  // Exactly one reason may offer it: the one the server has confirmed.
+  const offers = (m[1].match(/offerReset:\s*true/g) || []).length;
+  assert.strictEqual(offers, 1, `${offers} reasons offer a destructive reset`);
+  const stale = m[1].slice(m[1].indexOf("'stale-key'"));
+  assert.match(stale.slice(0, stale.indexOf('},')), /offerReset:\s*true/,
+    'the one that offers it is not the confirmed-stale one');
+});
+
+test('IT ASKS TWICE, and the second cannot be dismissed by reflex', () => {
+  // It cannot be undone and what it destroys is somebody's conversations.
+  const fn = appCode.slice(appCode.indexOf('async function offerIdentityReset'));
+  const body = fn.slice(0, fn.indexOf('\nfunction '));
+  assert.match(body, /confirm\(/, 'no confirmation at all');
+  assert.match(body, /RESET/, 'the second step does not ask for a typed word');
+  assert.ok(body.indexOf('confirm(') < body.indexOf("prompt('To confirm"),
+    'the typed confirmation comes before the explanation');
+  // The warning must say what is lost, in those words.
+  assert.match(body, /never be readable again/i,
+    'the warning does not say the old messages are lost for good');
+  assert.match(body, /cannot be undone/i);
+  // And nothing happens unless the word matches.
+  assert.match(body, /!==\s*'RESET'\)\s*return;/);
+});
+
+test('A STOLEN TOKEN CANNOT DESTROY AN IDENTITY', () => {
+  // force replaces the published key and discards the old one, making every
+  // message a peer ever encrypted to it unreadable for good. It was reachable
+  // with a valid token and nothing else, and no client had ever sent it —
+  // making it reachable from a button is what makes that matter.
+  const h = srvCode.slice(srvCode.indexOf("app.post('/keys', authMiddleware"));
+  const body = h.slice(0, h.indexOf('\napp.'));
+  assert.match(body, /if \(force && existing\?\.public_key\)/,
+    'a forced reset is not gated at all');
+  assert.match(body, /bcrypt\.compare\(String\(currentPassword/,
+    'the password is not checked on a forced reset');
+  assert.match(body, /password_required/);
+  assert.match(body, /authRateLimited\('reset\|/,
+    'a forced reset is not rate-limited');
+  // Checked here, not taken from the client's own verify call, which proves
+  // nothing to this endpoint.
+  assert.doesNotMatch(body, /verified|trustClient/i);
+});
+
+test('the reset publishes before it stores, never the other way round', () => {
+  // Storing first would leave the device holding a key the server has never
+  // heard of — unreadable to every peer, and no way back.
+  const c = code(e2eSrc);
+  const fn = c.slice(c.indexOf('async function resetIdentity'));
+  const body = fn.slice(0, fn.indexOf('\n  }') + 4);
+  const post = body.indexOf("api('/keys', 'POST'");
+  const store = body.indexOf('storeLocal(keys)');
+  assert.ok(post > 0 && store > post,
+    'the new key is stored locally before the server has accepted it');
+  // A refusal must leave this device exactly as it was.
+  assert.match(body, /if \(r\?\.error\) return \{ ok: false/);
+});
+
+test('the password-verify endpoint gives away nothing but yes or no', () => {
+  const h = srvCode.slice(srvCode.indexOf("app.post('/password/verify'"));
+  const body = h.slice(0, h.indexOf('\napp.'));
+  assert.match(body, /authRateLimited\('verify\|/,
+    'a password oracle with no rate limit');
+  assert.match(body, /res\.json\(\{ ok \}\)/,
+    'it returns more than the verdict');
+  // No hint about length, shape, or how close the guess was.
+  assert.doesNotMatch(body, /length|hint|close|partial/i);
 });
 
 // Build a sealing helper against the loaded module's own deriveKey, by

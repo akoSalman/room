@@ -1989,10 +1989,31 @@ app.get('/ice-config', authMiddleware, (req, res) => {
 // ── End-to-end encryption key storage ────────────────────────────────────────
 // The private key blob is encrypted client-side with a password-derived key;
 // the server only ever stores/relays opaque strings.
-app.post('/keys', authMiddleware, (req, res) => {
-  const { publicKey, encPriv, force } = req.body;
+app.post('/keys', authMiddleware, async (req, res) => {
+  const { publicKey, encPriv, force, currentPassword } = req.body;
   if (!publicKey || !encPriv) return res.status(400).json({ error: 'publicKey and encPriv required' });
-  const existing = db.prepare('SELECT public_key FROM users WHERE id = ?').get(req.user.id);
+  const existing = db.prepare('SELECT public_key, password_hash FROM users WHERE id = ?').get(req.user.id);
+  // ── A forced reset needs the password, not just a token ──────────────────
+  //
+  // `force` replaces the published key and throws away the old one, which
+  // makes every message a peer ever encrypted to it permanently unreadable.
+  // It was reachable with nothing but a valid token, and no client had ever
+  // sent it — now that one does, somebody who has only stolen a session can
+  // destroy an account's entire encrypted history with a single request.
+  //
+  // So the password is required for that one path. It is checked here rather
+  // than trusted from the client's own verify call, which proves nothing to
+  // this endpoint.
+  if (force && existing?.public_key) {
+    const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim();
+    if (authRateLimited('reset|' + ip + '|' + req.user.id)) {
+      return res.status(429).json({ error: 'Too many attempts — please wait a minute and try again.' });
+    }
+    let ok = false;
+    try { ok = await bcrypt.compare(String(currentPassword || ''), existing.password_hash); } catch {}
+    if (!ok) return res.status(401).json({ error: 'password_required' });
+    console.log(`[e2e] user=${req.user.id} reason=identity-reset`);
+  }
   // The public key is WRITE-ONCE. A reinstalled/new device that generates a
   // different keypair must never clobber the published one, or every message
   // peers encrypted to the original key becomes permanently undecryptable.
@@ -2017,6 +2038,44 @@ app.post('/keys/rewrap', authMiddleware, (req, res) => {
     .run(JSON.stringify(encPriv), req.user.id);
   res.json({ ok: true });
 });
+// ── Is this actually my account password? ────────────────────────────────────
+//
+// Reported: the web asks for the account password to unlock encryption and
+// never accepts it. The [e2e] log says reason=wrong-password, which means the
+// stored blob did not open — and that has two completely different causes
+// that look identical from the outside:
+//
+//   • the password typed was not the account password (a typo, or a browser
+//     that autofills the login form while the prompt is typed by hand);
+//   • it WAS the account password, and the key is sealed with a different one
+//     — in which case no amount of trying helps and only a reset will.
+//
+// Only the server can tell those apart, because only the server holds the
+// password hash. Without this the client can only guess, and guessing is what
+// put somebody in a loop typing the same correct password over and over.
+//
+// It is an oracle for one password, for the user who is already signed in as
+// that account — and PUT /profile has been exactly that oracle all along, via
+// its "Current password is incorrect". It is rate-limited with the same
+// counter as sign-in, so a stolen token cannot be used to grind through
+// guesses, and it returns nothing but true or false.
+app.post('/password/verify', authMiddleware, async (req, res) => {
+  const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim();
+  if (authRateLimited('verify|' + ip + '|' + req.user.id)) {
+    return res.status(429).json({ error: 'Too many attempts — please wait a minute and try again.' });
+  }
+  const { password } = req.body || {};
+  if (!password || typeof password !== 'string') {
+    return res.status(400).json({ error: 'password required' });
+  }
+  const user = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(req.user.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  let ok = false;
+  try { ok = await bcrypt.compare(password, user.password_hash); } catch {}
+  // Nothing but the verdict. No hint about length, shape or how close it was.
+  res.json({ ok });
+});
+
 app.get('/keys/me', authMiddleware, (req, res) => {
   const u = db.prepare('SELECT public_key, enc_priv FROM users WHERE id = ?').get(req.user.id);
   res.json({ publicKey: u?.public_key || null, encPriv: u?.enc_priv ? JSON.parse(u.enc_priv) : null });
