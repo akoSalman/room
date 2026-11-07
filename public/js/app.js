@@ -28,18 +28,89 @@ let e2eUnlockAsked = false;
 
 // Sessions started before E2E existed never ran key setup at login — unlock
 // (or create) the identity with the password when a DM is first opened.
+/**
+ * What to say, and whether trying again can possibly help.
+ *
+ * Reported: after a long time away, login is accepted, opening a chat asks
+ * for the account password, and it is never accepted — the same prompt, over
+ * and over.
+ *
+ * Every failure used to say "Could not unlock encryption with that password",
+ * and then clear e2eUnlockAsked so the next chat asked again. Of the reasons
+ * E2E.setup can return, only ONE is about the password; for the rest that
+ * sentence is untrue and the retry it invites cannot ever succeed. That is
+ * the loop that was reported, and the message is what kept somebody typing
+ * into it.
+ */
+const E2E_FAILURES = {
+  'wrong-password': {
+    retry: true,
+    say: 'That password did not unlock your encryption key.\n\n'
+       + 'If you have changed your account password since you first used this '
+       + 'app, the key is still locked with the OLD one — try that.',
+  },
+  'offline': {
+    retry: true,
+    say: 'Could not reach the server to unlock encryption.\n\n'
+       + 'Your password was not checked. Try again when the connection is back.',
+  },
+  'server-error': {
+    retry: true,
+    say: 'The server could not return your encryption key just now.\n\n'
+       + 'Your password was not checked. Please try again in a moment.',
+  },
+  // Nothing typed here can change any of these, so they do not invite a retry.
+  'no-blob': {
+    retry: false,
+    say: 'Your account has an encryption key published, but the locked copy of '
+       + 'it is missing from the server, so no password can open it.\n\n'
+       + 'Messages in this chat cannot be read on this device. Please report this.',
+  },
+  'bad-blob': {
+    retry: false,
+    say: 'Your stored encryption key is damaged and cannot be opened by any '
+       + 'password.\n\nPlease report this.',
+  },
+  'key-exists': {
+    retry: false,
+    say: 'The server already has an encryption key for your account that this '
+       + 'device cannot match.\n\nPlease report this.',
+  },
+  'create-failed': {
+    retry: true,
+    say: 'Could not set up encryption on this device. Please try again.',
+  },
+};
+
 async function ensureE2EUnlocked() {
   if (E2E.ready()) return true;
   if (e2eUnlockAsked) return false;
   e2eUnlockAsked = true;
   const pw = prompt('🔒 Enter your account password to unlock end-to-end encryption on this device:');
   if (!pw) { e2eUnlockAsked = false; return false; }
-  const ok = await E2E.setup(pw, api);
-  if (!ok) {
-    e2eUnlockAsked = false; // let them try again with the right password
-    alert('Could not unlock encryption with that password. Please try again.');
-  }
-  return ok;
+  const res = await E2E.setup(pw, api);
+  if (res && res.ok) return true;
+  const reason = (res && res.reason) || 'unknown';
+  reportE2E(reason);
+  const f = E2E_FAILURES[reason];
+  // Only re-arm the prompt where another attempt could actually work.
+  // Leaving it armed for the others is what turned one failure into an
+  // endless series of identical ones.
+  if (!f || f.retry) e2eUnlockAsked = false;
+  alert(f ? f.say
+          : 'Could not unlock encryption on this device (' + reason + ').');
+  return false;
+}
+
+/**
+ * Tell the server which rule refused, so this stops needing a screenshot.
+ *
+ * One word, on the diagnostics channel that already strips everything it
+ * prints — no username, no password, no key material. The same arrangement
+ * that turned the call fault from guesswork into a log line.
+ */
+function reportE2E(reason) {
+  try { socket && socket.emit('call_diag', { what: 'e2e', reason: String(reason) }); } catch {}
 }
 
 // Per-brand APK release info, picked by the domain serving this page.
@@ -696,7 +767,20 @@ async function signin() {
     }
     if (res.error) return showAuthError(res.error);
     saveSession(res.token, res.username, res.avatar);
-    E2E.setup(pass, api).catch(() => {});
+    // ── The result is no longer discarded ──────────────────────────────────
+    //
+    // This is the moment the password is in hand, so it is the moment the key
+    // should unlock — and `.catch(() => {})` meant that when it did not,
+    // nobody learned anything. The person found out later, in a chat, from a
+    // prompt asking for the password they had just typed successfully.
+    //
+    // Still not awaited: entering the app must not wait on it. But a failure
+    // now reaches the server log, so the reason is known before anyone is
+    // asked to describe it.
+    E2E.setup(pass, api).then(
+      r => { if (r && !r.ok) reportE2E('login-' + r.reason); },
+      () => reportE2E('login-threw'),
+    );
     enterApp();
   } catch { showAuthError('Connection error — is the server running?'); }
   finally { btn.disabled = false; btn.textContent = label; }

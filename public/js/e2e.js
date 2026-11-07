@@ -52,34 +52,85 @@ const E2E = (() => {
     return { salt: b64.enc(salt), nonce: b64.enc(nonce), ct: b64.enc(ct) };
   }
 
-  // Runs at login while the password is in hand: unlock the existing identity
-  // or create one. `api` is the app's fetch helper.
+  // ── Unlock the identity, and SAY WHICH THING FAILED ───────────────────────
+  //
+  // Reported: on the web, after a long time away, login is accepted but
+  // opening a chat asks for the account password and never takes it — the
+  // same prompt, over and over.
+  //
+  // This returned a bare true/false, and the caller turned every false into
+  // "Could not unlock encryption with that password." At least five different
+  // things produce that false and only ONE of them is about the password:
+  //
+  //   • the blob does not open with it            — the password really is wrong
+  //   • /keys/me could not be reached             — the password was never tried
+  //   • /keys/me answered with an error body      — likewise, and api() does not
+  //                                                 throw on a non-2xx, it hands
+  //                                                 back the parsed error, whose
+  //                                                 missing encPriv then looked
+  //                                                 like "no identity yet"
+  //   • a public key with no private blob         — unlockable by nobody
+  //   • the server refused a replacement keypair  — 409, password never tried
+  //
+  // The last four cannot be fixed by typing a password, so telling somebody to
+  // try again is sending them round a loop that has no exit. The reason now
+  // comes back with the answer.
+  //
+  // Returns { ok, reason }. An object, so a caller that forgets `.ok` fails
+  // loudly on the next line rather than silently treating every outcome as
+  // success — a bare string would have been truthy for every failure.
   async function setup(password, api) {
+    let mine;
     try {
-      const mine = await api('/keys/me');
-      if (mine?.encPriv) {
-        // Identity exists — unlock only. Never publish a replacement keypair,
-        // or peers' messages (encrypted to the original key) become unreadable.
+      mine = await api('/keys/me');
+    } catch (e) {
+      // The request itself did not complete. Local keys, if the browser still
+      // has them, are a perfectly good answer — but say that is what happened.
+      return { ok: loadLocal(), reason: ready() ? 'local' : 'offline' };
+    }
+    // api() returns res.json() and throws only on a malformed body, so an
+    // error RESPONSE arrives here as an ordinary object. Without this, a 500
+    // from /keys/me has no encPriv, falls through to the branch below, and
+    // publishes a brand-new keypair — which the server then refuses 409. A
+    // server fault presented as a password problem.
+    if (!mine || mine.error) {
+      return { ok: loadLocal(), reason: ready() ? 'local' : 'server-error' };
+    }
+    if (mine.encPriv) {
+      // Identity exists — unlock only. Never publish a replacement keypair,
+      // or peers' messages (encrypted to the original key) become unreadable.
+      let sk = null;
+      try {
         const key = deriveKey(password, b64.dec(mine.encPriv.salt));
-        const sk = nacl.secretbox.open(b64.dec(mine.encPriv.ct), b64.dec(mine.encPriv.nonce), key);
-        if (sk) {
-          storeLocal({ publicKey: b64.dec(mine.publicKey), secretKey: new Uint8Array(sk) });
-          return true;
-        }
-        console.warn('[e2e] wrong password — key stays locked');
-        return false;
+        sk = nacl.secretbox.open(b64.dec(mine.encPriv.ct), b64.dec(mine.encPriv.nonce), key);
+      } catch (e) {
+        // A blob that is not base64, or is missing a field. Not the password.
+        return { ok: false, reason: 'bad-blob' };
       }
+      if (sk) {
+        storeLocal({ publicKey: b64.dec(mine.publicKey), secretKey: new Uint8Array(sk) });
+        return { ok: true, reason: 'unlocked' };
+      }
+      return { ok: false, reason: 'wrong-password' };
+    }
+    if (mine.publicKey) {
+      // A published key with nothing behind it. Creating a new identity below
+      // would be refused (the public key is write-once), so this would loop
+      // for ever asking for a password it never checks.
+      return { ok: false, reason: 'no-blob' };
+    }
+    try {
       const keys = nacl.box.keyPair();
       const r = await api('/keys', 'POST', {
         publicKey: b64.enc(keys.publicKey),
         encPriv: makeEncPrivBlob(keys.secretKey, password),
       });
-      if (r?.error === 'public_key_exists') return false;
+      if (r?.error === 'public_key_exists') return { ok: false, reason: 'key-exists' };
+      if (r?.error) return { ok: false, reason: 'create-failed' };
       storeLocal(keys);
-      return true;
+      return { ok: true, reason: 'created' };
     } catch (e) {
-      console.warn('[e2e] setup failed:', e);
-      return loadLocal();
+      return { ok: false, reason: 'offline' };
     }
   }
 

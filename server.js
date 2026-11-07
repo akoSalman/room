@@ -3776,6 +3776,31 @@ io.on('connection', (socket) => {
       console.log(`[ring] user=${socket.user.id} reason=${word(d.reason)}`);
       return;
     }
+    // ── Why the web client could not unlock a key ──────────────────────────
+    //
+    // Reported: after a long time away, login is accepted but opening a chat
+    // asks for the account password and never takes it.
+    //
+    // The client turned five different failures into one sentence blaming
+    // the password, and only one of them is about the password. Now it says
+    // which rule refused, and it says it here rather than on a screen
+    // somebody has to photograph.
+    //
+    // reason=wrong-password really is the password. offline and server-error
+    // mean it was never checked. no-blob, bad-blob and key-exists mean no
+    // password can ever work and the account needs attention. A login- prefix
+    // means it failed at sign-in, where the password was certainly correct —
+    // which narrows it further.
+    //
+    // No username and no key material: word() keeps letters and hyphens.
+    // Compared with String(), not word(): word() strips everything but
+    // letters and hyphens, so word('e2e') is 'ee'. The REASON still goes
+    // through word(), which is where untrusted text actually arrives — the
+    // channel name is one of a handful this file chooses itself.
+    if (String(d.what) === 'e2e') {
+      console.log(`[e2e] user=${socket.user.id} reason=${word(d.reason)}`);
+      return;
+    }
     if (word(d.what) !== 'share') return;
     console.log(`[share] user=${socket.user.id} outcome=${word(d.outcome)}`
       // Which failure it was. Stripped to letters and hyphens, so a message
