@@ -3624,6 +3624,28 @@ function emitMessageTo(userId, out, roomId) {
   io.to('user:' + userId).emit('message_received', extra);
 }
 
+/**
+ * Tell the two people in a DM that it has activity.
+ *
+ * TO THE TWO OF THEM, not to everybody. This went out as io.emit, which
+ * reaches every connected socket, and the payload carries room.name — which
+ * for a DM is literally `__dm__<a>__<b>__`. So every user on the server was
+ * told, continuously, which pairs of people were talking to each other. The
+ * clients only ever used it for their own sidebar and discarded the rest, so
+ * nothing showed; the information went out all the same.
+ *
+ * Found while looking for a missing call log, not reported.
+ */
+function emitDmActivity(room) {
+  if (!room || !room.is_dm || typeof room.name !== 'string') return;
+  const parts = room.name.split('__').filter(Boolean);   // ['dm', a, b]
+  if (parts.length !== 3) return;
+  for (const raw of [parts[1], parts[2]]) {
+    const id = parseInt(raw, 10);
+    if (id) io.to('user:' + id).emit('dm_activity', { room });
+  }
+}
+
 // Deliver a message to every member of a room over their personal channels.
 function broadcastRoomMessage(room, msg) {
   // Signed per recipient, not once for the room: a url now names the person it
@@ -4240,7 +4262,7 @@ io.on('connection', (socket) => {
 
     // Notify the other DM participant so they can add the DM room to sidebar
     if (room && room.is_dm) {
-      io.emit('dm_activity', { room });
+      emitDmActivity(room);
     }
     if (typeof ack === 'function') ack({ ok: true });
   });
@@ -4258,6 +4280,21 @@ io.on('connection', (socket) => {
     // is told "Ringing…" for this, and "Connecting…" only when NEITHER route
     // exists — which is the honest meaning of the word.
     const pushed = !roomId && hasPushRoute(parseInt(toUserId, 10), socket.user.id);
+    // ── What actually left this server ─────────────────────────────────────
+    //
+    // Reported: the caller sees "Ringing…", nobody answers, the caller gets a
+    // missed-call entry — and on the other phone there was no ring and no
+    // entry at all.
+    //
+    // "Ringing…" is shown for `pushed` as well as for the callee's own app
+    // confirming it is alerting, so the word alone does not say a phone rang.
+    // These two flags are the difference, and nothing recorded them: delivered
+    // means a socket was listening, pushed means a token existed to send to.
+    // Neither means anybody heard anything.
+    console.log(`[call] offer from=${socket.user.id} to=${parseInt(toUserId, 10) || 0}`
+      + ` kind=${kind === 'video' ? 'video' : 'voice'}`
+      + ` room=${roomId ? 1 : 0} delivered=${delivered ? 1 : 0} pushed=${pushed ? 1 : 0}`
+      + ` sockets=${live ? live.size : 0}`);
     if (typeof ack === 'function') ack({ delivered, pushed });
     io.to('user:' + toUserId).emit('call_offer', {
       fromUserId: socket.user.id, fromUsername: socket.user.username,
@@ -4332,7 +4369,13 @@ io.on('connection', (socket) => {
   // Record a finished 1:1 call in the DM's chat history (both users see it).
   socket.on('call_log', ({ peerId, kind, outcome, duration, outgoing }) => {
     const peer = parseInt(peerId, 10);
-    if (!peer || peer === socket.user.id) return;
+    if (!peer || peer === socket.user.id) {
+      // Silent until now, and the one outcome that would produce exactly the
+      // report: the caller's own screen shows a missed call from its local
+      // state while nothing is ever written for anybody.
+      console.log(`[call] log from=${socket.user.id} peer=${peer || 0} action=ignored-bad-peer`);
+      return;
+    }
     const a = Math.min(socket.user.id, peer);
     const b = Math.max(socket.user.id, peer);
     const dmName = `__dm__${a}__${b}__`;
@@ -4375,6 +4418,7 @@ io.on('connection', (socket) => {
       // The first report wins. The second is the same call seen from the
       // other end, and the one with a duration is no more correct than the
       // one without — they are the same number.
+      console.log(`[call] log from=${socket.user.id} peer=${peer} room=${dm.id} action=deduped`);
       return;
     }
 
@@ -4384,8 +4428,13 @@ io.on('connection', (socket) => {
     const msg = db.prepare(`
       SELECT m.*, u.username, u.avatar FROM messages m JOIN users u ON m.user_id = u.id WHERE m.id = ?
     `).get(result.lastInsertRowid);
+    // Which room it went into and who it was sent to. A log the caller can
+    // see and the callee cannot is either a different room or a delivery that
+    // never happened, and these two lines tell them apart.
+    console.log(`[call] log from=${socket.user.id} peer=${peer} room=${dm.id}`
+      + ` outcome=${JSON.parse(content).outcome} msg=${msg.id} action=inserted`);
     [socket.user.id, peer].forEach(id => emitMessageTo(id, signMessage(msg, id), msg.room_id));
-    io.emit('dm_activity', { room: dm });
+    emitDmActivity(dm);
   });
   socket.on('call_answer', ({ toUserId, sdp }) => {
     clearPendingCallsBetween(socket.user.id, parseInt(toUserId, 10));
@@ -4810,7 +4859,7 @@ io.on('connection', (socket) => {
       SELECT m.*, u.username, u.avatar FROM messages m JOIN users u ON m.user_id = u.id WHERE m.id = ?
     `).get(result.lastInsertRowid);
     [socket.user.id, target.id].forEach(id => emitMessageTo(id, signMessage(msg, id), msg.room_id));
-    io.emit('dm_activity', { room: dm });
+    emitDmActivity(dm);
 
     // An invitation is a real message, so it gets a real push — previously it
     // landed silently in the invitee's DMs and was only noticed by accident.
@@ -5234,7 +5283,7 @@ io.on('connection', (socket) => {
       },
       { fromUserId: socket.user.id },
     );
-    if (dstRoom.is_dm) io.emit('dm_activity', { room: dstRoom });
+    emitDmActivity(dstRoom);
     if (typeof ack === 'function') ack({ ok: true });
   });
 
