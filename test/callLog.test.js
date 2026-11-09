@@ -33,8 +33,25 @@ test('ONE CALL IS ONE ENTRY, however many ends report it', () => {
   const body = server.slice(i, server.indexOf('\n  });', i));
   assert.ok(/type = 'call'[\s\S]*?datetime\('now', '-15 seconds'\)/.test(body),
     'a second report of the same call is stored as a second entry');
-  assert.ok(/if \(twin\) \{[\s\S]{0,260}return;/.test(body),
-    'the duplicate is found and stored anyway');
+  // ── The branch's actual property, not its length ───────────────────────
+  //
+  // This measured the distance from `if (twin) {` to the `return`, in
+  // characters, and broke when a log line was added inside the branch — the
+  // behaviour was identical and the test failed on the comment length. What
+  // matters is that the branch returns and stores nothing; that is now what
+  // is checked, by reading the branch itself.
+  const at = body.indexOf('if (twin) {');
+  assert.ok(at > 0, 'the duplicate check is gone');
+  let depth = 0, end = -1;
+  for (let i = body.indexOf('{', at); i < body.length; i++) {
+    if (body[i] === '{') depth++;
+    else if (body[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
+  }
+  assert.ok(end > at, 'could not read the duplicate branch');
+  const branch = body.slice(at, end);
+  assert.match(branch, /\breturn;/, 'the duplicate is found and stored anyway');
+  assert.doesNotMatch(branch, /INSERT INTO messages/i,
+    'the duplicate branch stores a message after all');
 });
 
 test('…matched on what both reports agree about', () => {
