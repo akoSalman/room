@@ -344,10 +344,24 @@ test('the service task is registered at import time, not when a call starts', ()
   // notification is displayed. Registering it lazily is too late, and Android
   // kills the service on the spot.
   assert.ok(app.includes('registerCallService()'), 'the service task is never registered');
+  // ── Module scope, measured by braces, not by position ──────────────────
+  //
+  // This used to assert that the call appeared BEFORE the first top-level
+  // `function` in the file — a proxy for "at import time" that broke the
+  // moment another module-scope helper was declared above it. The helper ran
+  // at import time too, so the property held and the test failed anyway.
+  //
+  // What matters is that the call is not nested inside anything: at brace
+  // depth zero it runs when the module is evaluated, wherever it sits.
   const reg = app.indexOf('registerCallService()');
-  const firstFn = app.search(/^(export default )?function /m);
-  assert.ok(reg < firstFn || firstFn === -1,
-    'registration happens inside a component, which runs far too late');
+  let depth = 0;
+  for (let i = 0; i < reg; i++) {
+    const ch = app[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') depth--;
+  }
+  assert.strictEqual(depth, 0,
+    'registration happens inside a function or component, which runs far too late');
 });
 
 test('the service is started AND stopped, on every path', () => {
