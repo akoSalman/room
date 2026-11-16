@@ -12,7 +12,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fmtBytes } from '../download';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { Ionicons } from '@expo/vector-icons';
-import { C, isRTL } from '../theme';
+import { C } from '../theme';
+import { baseDirection, alignFor } from '../bidi';
 import { ClearScope, clearScopes, clearLabel, clearHint, clearConfirm } from '../peerActions';
 import * as peerActions from '../peerActions';
 import { apiFetch, getUsername, getUserId, getSocket, setAuth, getAvatar, RELEASE_TAG, RELEASE_FILE, BASE_URL } from '../api';
@@ -603,7 +604,8 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
 
       <View style={s.createRow}>
         <TextInput
-          style={s.createInput} placeholder="Search users or rooms…" placeholderTextColor={C.muted}
+          style={[s.createInput, { textAlign: alignFor(baseDirection(search)) }]}
+          placeholder="Search users or rooms…" placeholderTextColor={C.muted}
           value={search} onChangeText={onSearchChange} autoCapitalize="none"
         />
         <TouchableOpacity style={s.createBtn} onPress={() => setShowCreate(true)}>
@@ -1017,7 +1019,8 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
           <View style={s.renameCard}>
             <Text style={s.renameTitle}>Create Room</Text>
             <TextInput
-              style={s.renameInput} value={newRoom} onChangeText={setNewRoom}
+              style={[s.renameInput, { textAlign: alignFor(baseDirection(newRoom)) }]}
+              value={newRoom} onChangeText={setNewRoom}
               placeholder="Room name" placeholderTextColor={C.muted} autoFocus
               onSubmitEditing={createRoom}
             />
@@ -1049,7 +1052,8 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
           <View style={s.renameCard}>
             <Text style={s.renameTitle}>Rename Room</Text>
             <TextInput
-              style={s.renameInput} value={renameText} onChangeText={setRenameText}
+              style={[s.renameInput, { textAlign: alignFor(baseDirection(renameText)) }]}
+              value={renameText} onChangeText={setRenameText}
               placeholderTextColor={C.muted} autoFocus onSubmitEditing={saveRename}
             />
             <View style={s.renameRow}>
@@ -1072,7 +1076,8 @@ export default function RoomsScreen({ onSelectRoom, onLogout, openProfileOnMount
             <Text style={s.renameTitle}>Change username</Text>
             <Text style={s.usernameWarn}>{changesLeftText(changesLeft)}</Text>
             <TextInput
-              style={s.renameInput} value={newUsername} onChangeText={setNewUsername}
+              style={[s.renameInput, { textAlign: alignFor(baseDirection(newUsername)) }]}
+              value={newUsername} onChangeText={setNewUsername}
               placeholderTextColor={C.muted} autoCapitalize="none" autoCorrect={false}
               editable={changesLeft !== 0} onSubmitEditing={saveUsername}
             />
@@ -1115,7 +1120,7 @@ const s = StyleSheet.create({
   },
   updateBadgeText: { color: C.online, fontSize: 13, fontWeight: '700' },
   createRow: { flexDirection: 'row', padding: 10, gap: 8, borderBottomWidth: 1, borderBottomColor: C.border },
-  createInput: { flex: 1, backgroundColor: C.inputBg, borderRadius: 8, padding: 8, color: C.text, fontSize: 14, borderWidth: 1, borderColor: C.border, textAlign: isRTL ? 'right' : 'left' },
+  createInput: { flex: 1, backgroundColor: C.inputBg, borderRadius: 8, padding: 8, color: C.text, fontSize: 14, borderWidth: 1, borderColor: C.border },
   createBtn: { backgroundColor: C.accent, borderRadius: 8, paddingHorizontal: 14, justifyContent: 'center' },
   createBtnText: { color: '#fff', fontSize: 20, fontWeight: '700' },
   roomItem: { flexDirection: 'row', alignItems: 'center', padding: 14, borderBottomWidth: 1, borderBottomColor: C.border, gap: 10 },
@@ -1203,7 +1208,7 @@ const s = StyleSheet.create({
   // Rename modal
   renameCard: { backgroundColor: C.sidebar, margin: 32, borderRadius: 16, padding: 20, borderWidth: 1, borderColor: C.border },
   renameTitle: { color: C.text, fontWeight: '700', fontSize: 16, marginBottom: 14 },
-  renameInput: { backgroundColor: C.inputBg, borderRadius: 8, padding: 12, color: C.text, fontSize: 15, borderWidth: 1, borderColor: C.border, marginBottom: 16, textAlign: isRTL ? 'right' : 'left' },
+  renameInput: { backgroundColor: C.inputBg, borderRadius: 8, padding: 12, color: C.text, fontSize: 15, borderWidth: 1, borderColor: C.border, marginBottom: 16 },
   renameRow: { flexDirection: 'row', gap: 10 },
   renameCancel: { flex: 1, backgroundColor: C.inputBg, borderRadius: 8, padding: 12, alignItems: 'center' },
   renameCancelText: { color: C.muted, fontWeight: '600' },

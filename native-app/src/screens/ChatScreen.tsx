@@ -19,7 +19,7 @@ import * as ScreenCapture from 'expo-screen-capture';
 import {
   PinchGestureHandler, PanGestureHandler, State as GHState, GestureHandlerRootView,
 } from 'react-native-gesture-handler';
-import { C, isRTL } from '../theme';
+import { C } from '../theme';
 import { baseDirection, textDirection, isolate as bidiIsolate } from '../bidi';
 import { BASE_URL, apiFetch, ensureSocketAlive, getAvatar, getSocket, getToken, getUsername, tokenSync } from '../api';
 import { e2eReady, e2eDMPeerKey, e2eEncrypt, e2eDecrypt, e2eIsEncrypted, e2eSetup, e2eVerifyIdentity } from '../e2e';
@@ -8199,7 +8199,7 @@ const s = StyleSheet.create({
   inputBar: { flexDirection: 'row', alignItems: 'flex-end', padding: 10, backgroundColor: C.header, borderTopWidth: 1, borderTopColor: C.border, gap: 6 },
   iconBtn: { padding: 8 },
   iconBtnText: { fontSize: 22 },
-  input: { flex: 1, backgroundColor: C.inputBg, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 10, color: C.text, fontSize: 15, borderWidth: 1, borderColor: C.border, maxHeight: 120, textAlign: isRTL ? 'right' : 'left' },
+  input: { flex: 1, backgroundColor: C.inputBg, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 10, color: C.text, fontSize: 15, borderWidth: 1, borderColor: C.border, maxHeight: 120 },
   sendBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
   sendBtnText: { color: '#fff', fontSize: 16 },
   scrollFab: {

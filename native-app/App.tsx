@@ -5,6 +5,7 @@ import {
 } from 'react-native';
 import { useShareIntent } from 'expo-share-intent';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { reloadAppAsync } from 'expo';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import * as Notifications from 'expo-notifications';
@@ -45,10 +46,44 @@ import * as roomOrder from './src/roomOrder';
 import { C } from './src/theme';
 import * as notifyOnce from './src/notifyOnce';
 
-// Keep the app layout LTR even on RTL locales (Persian/Arabic): mirroring the
-// whole UI made screens look broken; message text itself still renders RTL.
-I18nManager.allowRTL(false);
-I18nManager.forceRTL(false);
+// ── One reload, at most, so an RTL locale is not left mirrored ─────────────
+//
+// index.js writes the flags; they land on the NEXT start. If THIS session is
+// still laid out right-to-left, that next start is worth having immediately,
+// rather than leaving somebody looking at a mirrored app until the process
+// happens to be killed — which, with a keep-alive service holding it in
+// memory, can be days.
+//
+// Here rather than in index.js because index.js also runs on a headless start
+// for an incoming call, and restarting the process mid-call to fix the look of
+// a screen nobody is on would be a poor trade.
+//
+// One shot, guarded by a stored marker: if the flag does not stick, the app
+// settles for the mirrored layout rather than restarting for ever. The marker
+// is cleared whenever the layout is right, so a later locale change gets the
+// same single attempt.
+const RTL_RELOAD_KEY = 'rtl-relayout-attempted';
+function unmirrorOnce() {
+  if (!I18nManager.isRTL) {
+    AsyncStorage.removeItem(RTL_RELOAD_KEY).catch(() => {});
+    return;
+  }
+  AsyncStorage.getItem(RTL_RELOAD_KEY)
+    .then(tried => {
+      if (tried) return;                 // already tried once; do not loop
+      return AsyncStorage.setItem(RTL_RELOAD_KEY, '1').then(() => reloadAppAsync());
+    })
+    .catch(() => {});
+}
+
+// The layout direction is settled in index.js, before anything here loads.
+//
+// These two calls used to live here, under a comment saying they kept the
+// layout LTR on an RTL locale. They cannot: React Native reads isRTL once at
+// module load and allowRTL only writes a flag the native side reads at the
+// NEXT startup, so the session they run in is mirrored regardless. Keeping
+// them here as well would say the problem was handled twice over when it was
+// not handled at all.
 
 // Notifications are for when the user is OUT of the app.
 //
@@ -265,6 +300,9 @@ const sh = StyleSheet.create({
 type Screen = 'auth' | 'rooms' | 'chat';
 
 export default function App() {
+  // First thing on mount: if this session is still mirrored, restart once so
+  // it is not. See unmirrorOnce above for why it is here and not in index.js.
+  useEffect(() => { unmirrorOnce(); }, []);
   const [screen, setScreen] = useState<Screen>('auth');
   const [room, setRoom] = useState<Room | null>(null);
   const [openProfileOnRooms, setOpenProfileOnRooms] = useState(false);

@@ -10,7 +10,8 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
-import { C, isRTL } from '../theme';
+import { C } from '../theme';
+import { baseDirection, alignFor } from '../bidi';
 import { useOrderedFavEmojis, noteEmojiUse } from '../favEmojis';
 import EmojiEditor from './EmojiEditor';
 import { mentionQuery, applyMention, filterUsernames } from '../mentions';
@@ -374,7 +375,15 @@ function ComposerInner(props: Props, ref: React.Ref<ComposerHandle>) {
       <View style={s.inputBar}>
         <TextInput
           ref={inputRef}
-          style={s.input}
+          // ── Aligned by what is IN it, not by the phone's locale ──────────
+          //
+          // This was `isRTL ? 'right' : 'left'`, which is now always 'left'
+          // because the layout is pinned LTR — so a Persian message would be
+          // typed against the wrong edge. The direction of a piece of text is
+          // a property of the text, and bidi.ts already decides it per
+          // message by counting strong characters. The same answer applies
+          // here.
+          style={[s.input, { textAlign: alignFor(baseDirection(text)) }]}
           placeholder={pendingMedia.length ? 'Add a caption…' : 'Message...'}
           placeholderTextColor={C.muted}
           value={text}
@@ -517,7 +526,7 @@ const s = StyleSheet.create({
     width: 54, marginTop: 3, fontSize: 9, color: C.muted, textAlign: 'center',
   },
   inputBar: { flexDirection: 'row', alignItems: 'flex-end', padding: 10, backgroundColor: C.header, borderTopWidth: 1, borderTopColor: C.border, gap: 6 },
-  input: { flex: 1, backgroundColor: C.inputBg, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 10, color: C.text, fontSize: 15, borderWidth: 1, borderColor: C.border, maxHeight: 120, textAlign: isRTL ? 'right' : 'left' },
+  input: { flex: 1, backgroundColor: C.inputBg, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 10, color: C.text, fontSize: 15, borderWidth: 1, borderColor: C.border, maxHeight: 120, },
   sendBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
   sendBtnText: { color: '#fff', fontSize: 16 },
   micBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
